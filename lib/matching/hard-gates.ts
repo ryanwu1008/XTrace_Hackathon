@@ -5,6 +5,7 @@ import type {
   DealStatus,
 } from "../contracts/domain";
 import {
+  TemporalValueV2Schema,
   sourceCanGroundOutputFact,
   sourceClaimSupportKind,
   type SourceRefV2,
@@ -68,14 +69,21 @@ function selectedPriorPredatesTrigger(
   priorInteractionAt: string,
   triggerEventAt: string,
 ): boolean {
-  if (/^\d{4}-\d{2}-\d{2}$/u.test(triggerEventAt)) {
-    return priorInteractionAt.slice(0, 10) < triggerEventAt;
+  const parsedPrior = TemporalValueV2Schema.safeParse(priorInteractionAt);
+  if (
+    !parsedPrior.success
+    || /^\d{4}-\d{2}-\d{2}$/u.test(parsedPrior.data)
+  ) {
+    throw new TypeError("Invalid prior interaction timestamp");
   }
-  const priorInstant = Date.parse(priorInteractionAt);
-  const triggerInstant = Date.parse(triggerEventAt);
-  return Number.isFinite(priorInstant)
-    && Number.isFinite(triggerInstant)
-    && priorInstant < triggerInstant;
+  const parsedTrigger = TemporalValueV2Schema.safeParse(triggerEventAt);
+  if (!parsedTrigger.success) {
+    throw new TypeError("Invalid trigger event date or timestamp");
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(parsedTrigger.data)) {
+    return parsedPrior.data.slice(0, 10) < parsedTrigger.data;
+  }
+  return Date.parse(parsedPrior.data) < Date.parse(parsedTrigger.data);
 }
 
 function substantiveStatement(statement: string): boolean {

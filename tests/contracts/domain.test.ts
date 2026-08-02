@@ -400,6 +400,15 @@ test("normalizes the legacy interested status to watchlist", () => {
   assert.equal(DealStatusSchema.parse("interested"), "watchlist");
 });
 
+test("legacy CompanyAnalysis keeps interested readable without a v1 assessment", () => {
+  const parsed = CompanyAnalysisSchema.parse(companyAnalysisFixture({
+    dealStatus: "interested",
+  }));
+
+  assert.equal(parsed.dealStatus, "watchlist");
+  assert.equal(parsed.beliefAssessment, undefined);
+});
+
 test("keeps the legacy SourceRef contract unchanged", () => {
   const sourceRef = {
     id: "source_1",

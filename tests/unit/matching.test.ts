@@ -333,6 +333,40 @@ test("date-only chronology rejects the same explicit calendar date across offset
   }
 });
 
+test("hard-gate runtime rejects malformed and calendar-invalid temporal inputs", () => {
+  const cases: Array<[
+    string,
+    (input: EvaluateBeliefRevisionHardGatesInput) => void,
+  ]> = [
+    ["malformed prior", (input) => {
+      input.priorInteraction.occurredAt = "1";
+      input.triggerEvent.eventAt = "2026-07-23";
+    }],
+    ["invalid prior calendar", (input) => {
+      input.priorInteraction.occurredAt = "2026-02-30T12:00:00.000Z";
+    }],
+    ["malformed trigger", (input) => {
+      input.triggerEvent.eventAt = "not-a-time";
+    }],
+    ["invalid trigger date", (input) => {
+      input.triggerEvent.eventAt = "2026-02-30";
+    }],
+    ["invalid trigger timestamp", (input) => {
+      input.triggerEvent.eventAt = "2026-02-30T12:00:00.000Z";
+    }],
+  ];
+
+  for (const [name, mutate] of cases) {
+    const input = gateInput();
+    mutate(input);
+    assert.throws(
+      () => evaluateBeliefRevisionHardGates(input),
+      /invalid|date|time/i,
+      name,
+    );
+  }
+});
+
 test("revisit mapping fails for every wrong interaction, index, text, event, or citation binding", () => {
   const cases: Array<[string, Record<string, unknown>]> = [
     ["interaction", { priorInteractionId: "interaction_other" }],
