@@ -34,6 +34,8 @@
 - The same `public_web` source can currently satisfy both event-side and prior-context gates. Event membership and Deal-memory lineage must become disjoint, explicit inputs.
 - Four score dimensions disappear before CompanyAnalysis persistence.
 - `excerpt` currently conflates exact source text, provider-normalized prose, and model inference.
+- The market service promotes cleaned RSS/API summaries and synthesized Crunchbase sentences into `excerpt`; `NormalizedMarketEvent` adds provenance fields outside runtime Zod validation; matching and both Claude reasoners still treat every `excerpt` as character-for-character exact.
+- Market dedupe and matching-source catalog construction silently coalesce same-ID sources; conflicting revisions can therefore be lost instead of failing closed. The production Worker calls `lib/matching/claude-reasoner.ts`, so changing only `lib/claude/service.ts` would leave the live path unsafe.
 - Chronology, revisit mapping, counterevidence, and action delta are neither typed nor persisted and do not gate Top 5.
 - Market provenance and immutable pinned replay do not exist.
 - Full action drafts do not receive Deal status or belief direction and leak internal content to founder-facing bodies.
@@ -52,7 +54,7 @@ Pinned window: `2026-07-19T00:00:00-07:00` through `2026-08-01T23:59:59-07:00`; 
 | Hush Security | `invested` | `positive` | evaluate follow-on and validate channel economics | 2026-07-21 agent-control incident plus 2026-07-28 Series A/strategic/channel evidence |
 | Irregular | `invested` | `negative` | pause follow-on and begin portfolio-risk review | 2026-07-30 Anthropic incident report directly challenges evaluation-containment assurance |
 
-Centralize remains in the ledger but is rejected from the final four because the 2026-07-29 announcement states total funding and does not establish the current round stage. Other accepted/rejected candidates and reasons remain auditable in the ledger.
+Centralize and ChipAgents remain `qualified_not_selected`, not rejected. Axios verifies Centralize raised $19m with NEA leading, while a company-provided job-board record separately corroborates Series A/NEA without making the floating job-page total authoritative. Axios verifies ChipAgents' $60m Series A2; its February issuer-supplied $74m total is retained only as a historical baseline. Under the four-case cap, both produced weaker or less distinct decision/action deltas than the selected four. Every accepted, qualified-not-selected, or rejected disposition and its evidence limits remain auditable in the ledger.
 
 ## Pending Product Decision
 
@@ -98,18 +100,33 @@ git commit -m "feat(research): add belief reversal evidence packages"
 
 **Files:**
 
+- Create: `lib/contracts/source-evidence.ts`
+- Create: `lib/contracts/legacy-evidence-adapter.ts`
 - Modify: `lib/contracts/domain.ts`
 - Modify: `lib/market/types.ts`
 - Modify: `lib/market/service.ts`
 - Modify: `lib/market/providers.ts`
 - Modify: `lib/market/dedupe.ts`
+- Modify: `lib/market/classification.ts`
+- Modify: `lib/market/selection.ts`
 - Modify: `lib/matching/context.ts`
+- Modify: `lib/matching/service.ts`
+- Modify: `lib/matching/claude-reasoner.ts`
+- Modify: `lib/claude/service.ts`
+- Modify: `db/repositories/intelligence.ts`
+- Modify: `worker/process-run.ts`
+- Modify: `worker/stages/match-opportunities.ts`
 - Test: `tests/contracts/domain.test.ts`
 - Test: `tests/unit/market-service.test.ts`
+- Test: `tests/integration/market-providers.test.ts`
+- Test: `tests/unit/matching.test.ts`
+- Test: `tests/unit/matching-reasoner.test.ts`
+- Test: `tests/unit/intelligence-repository.test.ts`
+- Test: `tests/integration/process-run.test.ts`
 
 **Step 1: Write failing tests for unsafe quote/provenance behavior**
 
-Prove that normalized-only text cannot be verified as a quotation; `model_inference` has no verbatim quotation; verified exact text requires a revision, locator, and content fingerprint; source summaries no longer fall into a verbatim field; and malformed event/source dates, authority, class, role, trigger source, or entity keys fail closed.
+Prove that normalized-only text cannot be verified as a quotation; `legacy_unverified` and `model_inference` cannot ground a factual claim; verified exact text requires a revision, immutable locator, retrieval date, and content fingerprint; source summaries no longer fall into a verbatim field; RSS/Federal Register/Crunchbase normalized or synthesized text is never marked exact; malformed event/source dates, authority, class, role, trigger source, or entity keys fail closed; same-ID source/event collisions throw before persistence; the matching catalog cannot silently last-win; legacy rows read only through an unverified adapter; and v1 judgments cannot replay against v2 evidence.
 
 **Step 2: Run focused tests and observe RED**
 
@@ -119,7 +136,11 @@ node --import tsx --test --test-concurrency=1 tests/contracts/domain.test.ts tes
 
 **Step 3: Implement v2 contracts with an explicit legacy read adapter**
 
-Introduce separate `verbatimExcerpt` and `normalizedStatement`; quote verification status; `eventAt`, `publishedAt`, `retrievedAt`, `entityKeys`, source class, source authority, and evidence role. Primary/secondary authority and trigger/corroborating/counterevidence role remain orthogonal. New writers cannot emit ambiguous `excerpt`; legacy artifacts remain readable but are marked unverified.
+Add parallel, strict `SourceRefV2` and `MarketEventV2` contracts instead of widening the legacy schema. Source text is a discriminated union of `verified_exact`, `normalized_only`, `legacy_unverified`, and `model_inference`; only `verified_exact` carries `verbatimExcerpt`, and normalized evidence remains eligible only as an explicitly non-quote paraphrase. Store `eventAt`, `publishedAt`, `retrievedAt`, `updatedAt`, `entityKeys`, trigger source, content fingerprint, source class, source authority, and evidence role. Primary/secondary authority and trigger/corroborating/counterevidence role remain orthogonal.
+
+Keep legacy schemas read-only. A one-way adapter maps legacy `excerpt` to `normalizedStatement` with `legacy_unverified`, preserves unknown dates as null, assigns unknown-legacy class/authority/role, and can never promote evidence to exact. Repository reads return v2; writes accept only writable v2 and reject legacy/unverified payloads. No v2-to-v1 adapter is allowed. New reasoner fingerprints bind all v2 evidence fields and cannot replay v1 judgments.
+
+Use one shared collision validator in market dedupe and matching catalog construction. Exact claim validation reads only `verified_exact.verbatimExcerpt`; normalized statements may support clearly labeled paraphrases but never quote validation, while legacy and model inference are retrieval/context only. Both Claude prompt paths expose separated fields and quote eligibility. Task 1 research DTOs remain staging inputs and must not be promoted to `verified_exact` until Task 6 creates immutable SourceRevisions and fingerprints.
 
 **Step 4: Run focused tests and observe GREEN**
 
