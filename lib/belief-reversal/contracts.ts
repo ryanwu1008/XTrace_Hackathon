@@ -250,7 +250,7 @@ const ResolvedScreeningSourceSchema = z.strictObject({
   sourceAuthority: SourceAuthoritySchema,
   evidenceRole: EvidenceRoleSchema,
   eventAt: IsoDateSchema.nullable(),
-  publishedAt: IsoDateSchema,
+  publishedAt: IsoDateSchema.nullable(),
   publicationTimestamp: IsoDateTimeSchema.nullable(),
   retrievedAt: IsoDateSchema,
   locator: NonEmptyStringSchema,
@@ -284,6 +284,7 @@ const CandidateIdentitySchema = z.strictObject({
   legalName: NonEmptyStringSchema.nullable(),
   officialDomain: z.string().url().nullable(),
   identityNote: NonEmptyStringSchema,
+  identitySourceIds: z.array(StableIdSchema).min(1),
 });
 const CandidateTriggerSchema = z.discriminatedUnion("status", [
   z.strictObject({
@@ -449,6 +450,12 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
     allIds.push(source.id);
     if (source.retrievedAt !== researchPackage.retrievalDate) issue(`${source.id} screening retrieval date does not match the package`);
     if (source.status === "resolved") {
+      if (source.evidenceRole === "trigger" && (source.eventAt === null || source.publishedAt === null)) {
+        issue(`${source.id} screening trigger requires event and publication dates`);
+      }
+      if (source.publicationTimestamp !== null && source.publishedAt === null) {
+        issue(`${source.id} screening timestamp requires a publication date`);
+      }
       const expected = sourceFingerprintInputs(source, source.candidateId);
       if (JSON.stringify(source.fingerprintInputs) !== JSON.stringify(expected)) issue(`${source.id} screening fingerprint mismatch`);
     }
@@ -462,6 +469,13 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
       if (screeningSource && screeningSource.candidateId !== entry.id) issue(`${entry.id} cannot borrow another candidate's screening source`);
       const selectedOwner = selectedSourceOwners.get(sourceId);
       if (selectedOwner && selectedOwner !== entry.caseId) issue(`${entry.id} cannot borrow another selected case's source`);
+    }
+    for (const sourceId of entry.companyIdentity.identitySourceIds) {
+      const screeningSource = screeningSources.get(sourceId);
+      const selectedOwner = selectedSourceOwners.get(sourceId);
+      if (!screeningSource && !selectedOwner) issue(`${entry.id} has unknown identity source ${sourceId}`);
+      if (screeningSource && screeningSource.candidateId !== entry.id) issue(`${entry.id} cannot borrow another candidate's identity source`);
+      if (selectedOwner && selectedOwner !== entry.caseId) issue(`${entry.id} cannot borrow another selected case's identity source`);
     }
     const screeningTriggerSource = screeningSources.get(entry.triggeringEvent.sourceId);
     const selectedTriggerSource = allSelectedSources.get(entry.triggeringEvent.sourceId);

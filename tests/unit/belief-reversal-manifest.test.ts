@@ -238,6 +238,7 @@ test("the machine ledger is auditable and distinguishes qualified-not-selected f
     assert.ok(entry.screeningSourceIds.length > 0);
     assert.ok(entry.missingEvidence.length > 0);
     assert.ok(entry.counterevidenceAndLimits.length > 0);
+    assert.ok(entry.companyIdentity.identitySourceIds.length > 0);
     assert.ok(entry.triggeringEvent.status === "resolved" || entry.triggeringEvent.status === "unresolved");
   }
   const centralize = researchPackage.candidateLedger.find((entry) => entry.companyIdentity.brandName === "Centralize");
@@ -371,6 +372,12 @@ test("candidate ledgers cannot borrow another candidate's screening source", () 
   assertManifestRejected((input) => {
     input.candidateLedger[0].triggeringEvent.sourceId = input.candidateLedger[1].triggeringEvent.sourceId;
   }, /another selected case|belongs/i);
+  assertManifestRejected((input) => {
+    input.candidateLedger[4].companyIdentity.identitySourceIds = input.candidateLedger[6].companyIdentity.identitySourceIds;
+  }, /another candidate.*identity|identity source/i);
+  assertManifestRejected((input) => {
+    input.candidateLedger[0].companyIdentity.identitySourceIds = input.candidateLedger[1].companyIdentity.identitySourceIds;
+  }, /another selected case.*identity|identity source/i);
 });
 
 test("publication timestamps require a publication date", () => {
