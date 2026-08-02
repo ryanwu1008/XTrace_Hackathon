@@ -27,6 +27,7 @@ function publicExactSource(
   title: string,
   canonicalUrl: string,
   verbatimExcerpt: string,
+  evidenceRole: "trigger" | "counterevidence" = "trigger",
 ) {
   return exactSourceV2(id, {
     title,
@@ -34,6 +35,7 @@ function publicExactSource(
     publisher: "Example Publisher",
     providerId: "example-feed",
     entityKeys: [],
+    evidenceRole,
     text: { status: "verified_exact", verbatimExcerpt },
   });
 }
@@ -193,11 +195,47 @@ test("builds a persisted score breakdown from all four approved dimensions", () 
   });
 });
 
+test("persists the same bounded score dimensions used by weighting", () => {
+  assert.deepEqual(buildOpportunityScoreBreakdown({
+    eventRelevance: 2,
+    dealRelevance: -1,
+    priorContextStrength: 0.7,
+    evidenceQuality: 0.9,
+  }), {
+    eventRelevance: 1,
+    dealRelevance: 0,
+    priorContextStrength: 0.7,
+    evidenceQuality: 0.9,
+    finalScore: 0.625,
+    confidence: "medium",
+  });
+});
+
+test("rejects every non-finite persisted score dimension", () => {
+  for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    for (const field of [
+      "eventRelevance",
+      "dealRelevance",
+      "priorContextStrength",
+      "evidenceQuality",
+    ] as const) {
+      assert.throws(() => buildOpportunityScoreBreakdown({
+        eventRelevance: 0.5,
+        dealRelevance: 0.5,
+        priorContextStrength: 0.5,
+        evidenceQuality: 0.5,
+        [field]: invalid,
+      }), /finite/i, `${field}: ${invalid}`);
+    }
+  }
+});
+
 function gateInput(): EvaluateBeliefRevisionHardGatesInput {
   return {
     priorInteraction: {
       id: "interaction_1",
       occurredAt: "2026-01-12T12:00:00.000Z",
+      sourceIds: ["interaction_1"],
       revisitConditions: [
         "Revisit after measurable enterprise adoption.",
         "Revisit after durable customer retention is demonstrated.",
@@ -223,7 +261,21 @@ function gateInput(): EvaluateBeliefRevisionHardGatesInput {
         "The public evidence does not yet establish durable customer retention.",
       citedSourceIds: ["counter_source_1"],
     },
-    resolvableSourceIds: ["trigger_source_1", "counter_source_1"],
+    sources: [
+      publicExactSource(
+        "trigger_source_1",
+        "Enterprise adoption",
+        "https://example.com/adoption",
+        "Acme reported measurable enterprise adoption.",
+      ),
+      publicExactSource(
+        "counter_source_1",
+        "Retention evidence",
+        "https://example.com/retention",
+        "The public evidence does not yet establish durable customer retention.",
+        "counterevidence",
+      ),
+    ],
     dealStatus: "passed" as const,
     direction: "positive" as const,
     proposedActions: actionsForDealStatusAndDirection("passed", "positive"),
@@ -265,6 +317,22 @@ test("chronology compares an exact date-only trigger without inventing a timesta
   assert.equal(result.chronology.triggerEventAt, "2026-07-23");
 });
 
+test("date-only chronology rejects the same explicit calendar date across offsets", () => {
+  for (const priorInteractionAt of [
+    "2026-07-23T00:30:00.000Z",
+    "2026-07-23T00:30:00+14:00",
+  ]) {
+    const input = gateInput();
+    input.priorInteraction.occurredAt = priorInteractionAt;
+    input.triggerEvent.eventAt = "2026-07-23";
+
+    const result = evaluateBeliefRevisionHardGates(input);
+
+    assert.equal(result.chronology.passed, false, priorInteractionAt);
+    assert.equal(result.allPassed, false, priorInteractionAt);
+  }
+});
+
 test("revisit mapping fails for every wrong interaction, index, text, event, or citation binding", () => {
   const cases: Array<[string, Record<string, unknown>]> = [
     ["interaction", { priorInteractionId: "interaction_other" }],
@@ -304,6 +372,20 @@ test("counterevidence fails when its statement is missing or any citation is unr
     assert.equal(result.counterevidence.passed, false);
     assert.equal(result.allPassed, false);
   }
+});
+
+test("counterevidence fails when a supporting source has the wrong evidence role", () => {
+  const input = gateInput();
+  const counterSource = input.sources.find(
+    (source) => source.id === "counter_source_1",
+  );
+  assert.ok(counterSource);
+  (counterSource as { evidenceRole: string }).evidenceRole = "trigger";
+
+  const result = evaluateBeliefRevisionHardGates(input);
+
+  assert.equal(result.counterevidence.passed, false);
+  assert.equal(result.allPassed, false);
 });
 
 test("action delta fails for unchanged, illegal, incomplete, or reordered proposed actions", () => {

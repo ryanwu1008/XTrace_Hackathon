@@ -1,21 +1,24 @@
-import { z } from "zod";
-
-import {
-  BeliefActionSchema,
-  BeliefRevisionGateResultsSchema,
-  type BeliefAction,
-  type BeliefChangeDirection,
-  type BeliefRevisionGateResults,
-  type DealStatus,
+import type {
+  BeliefAction,
+  BeliefChangeDirection,
+  BeliefRevisionGateResults,
+  DealStatus,
 } from "../contracts/domain";
+import {
+  sourceCanGroundOutputFact,
+  sourceClaimSupportKind,
+  type SourceRefV2,
+} from "../contracts/source-evidence";
 import {
   actionsForDealStatusAndDirection,
   beliefActionListsEqual,
+  parseBeliefActions,
 } from "../reports/action-policy";
 
 export interface SelectedPriorInteractionForBeliefRevision {
   id: string;
   occurredAt: string;
+  sourceIds: readonly string[];
   revisitConditions: readonly string[];
   provenance: "demo_fixture";
   label: "Sample decision record";
@@ -29,10 +32,10 @@ export interface SelectedTriggerEventForBeliefRevision {
 }
 
 export interface ClaimedRevisitConditionMapping {
-  priorInteractionId: string;
-  revisitConditionIndex: number;
-  revisitConditionText: string;
-  triggerEventId: string;
+  priorInteractionId: string | null;
+  revisitConditionIndex: number | null;
+  revisitConditionText: string | null;
+  triggerEventId: string | null;
   citedSourceIds: readonly string[];
 }
 
@@ -46,13 +49,11 @@ export interface EvaluateBeliefRevisionHardGatesInput {
   triggerEvent: SelectedTriggerEventForBeliefRevision;
   revisitMapping: ClaimedRevisitConditionMapping;
   counterevidence: ClaimedCounterevidence;
-  resolvableSourceIds: readonly string[];
+  sources: readonly SourceRefV2[];
   dealStatus: DealStatus;
   direction: BeliefChangeDirection;
   proposedActions: readonly BeliefAction[];
 }
-
-const ActionListSchema = z.array(BeliefActionSchema).min(1);
 
 function uniqueNonemptyResolvableIds(
   citedSourceIds: readonly string[],
@@ -61,6 +62,20 @@ function uniqueNonemptyResolvableIds(
   return citedSourceIds.length > 0
     && new Set(citedSourceIds).size === citedSourceIds.length
     && citedSourceIds.every((sourceId) => resolvableSourceIds.has(sourceId));
+}
+
+function selectedPriorPredatesTrigger(
+  priorInteractionAt: string,
+  triggerEventAt: string,
+): boolean {
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(triggerEventAt)) {
+    return priorInteractionAt.slice(0, 10) < triggerEventAt;
+  }
+  const priorInstant = Date.parse(priorInteractionAt);
+  const triggerInstant = Date.parse(triggerEventAt);
+  return Number.isFinite(priorInstant)
+    && Number.isFinite(triggerInstant)
+    && priorInstant < triggerInstant;
 }
 
 function substantiveStatement(statement: string): boolean {
@@ -72,16 +87,20 @@ function substantiveStatement(statement: string): boolean {
 export function evaluateBeliefRevisionHardGates(
   input: EvaluateBeliefRevisionHardGatesInput,
 ): BeliefRevisionGateResults {
-  const priorActions = ActionListSchema.parse(input.priorInteraction.priorActions);
-  const proposedActions = ActionListSchema.parse(input.proposedActions);
-  const resolvableSourceIds = new Set(input.resolvableSourceIds);
+  const priorActions = parseBeliefActions(input.priorInteraction.priorActions);
+  const proposedActions = parseBeliefActions(input.proposedActions);
+  const sourceById = new Map(input.sources.map((source) => [source.id, source]));
+  const resolvableSourceIds = new Set(sourceById.keys());
   const triggerSourceIds = new Set(input.triggerEvent.sourceIds);
 
-  const chronologyPassed = Date.parse(input.priorInteraction.occurredAt)
-    < Date.parse(input.triggerEvent.eventAt);
+  const chronologyPassed = selectedPriorPredatesTrigger(
+    input.priorInteraction.occurredAt,
+    input.triggerEvent.eventAt,
+  );
 
   const mapping = input.revisitMapping;
-  const mappedCondition = Number.isInteger(mapping.revisitConditionIndex)
+  const mappedCondition = typeof mapping.revisitConditionIndex === "number"
+    && Number.isInteger(mapping.revisitConditionIndex)
     && mapping.revisitConditionIndex >= 0
     ? input.priorInteraction.revisitConditions[mapping.revisitConditionIndex]
     : undefined;
@@ -102,7 +121,17 @@ export function evaluateBeliefRevisionHardGates(
   ) && uniqueNonemptyResolvableIds(
     input.counterevidence.citedSourceIds,
     resolvableSourceIds,
-  );
+  ) && input.counterevidence.citedSourceIds.every((sourceId) => {
+    const source = sourceById.get(sourceId);
+    return source !== undefined
+      && source.adaptation === "canonical"
+      && source.evidenceRole === "counterevidence"
+      && sourceCanGroundOutputFact(source)
+      && sourceClaimSupportKind(
+        source,
+        input.counterevidence.statement,
+      ) !== null;
+  });
 
   const expectedActions = actionsForDealStatusAndDirection(
     input.dealStatus,
@@ -113,7 +142,7 @@ export function evaluateBeliefRevisionHardGates(
     expectedActions,
   ) && !beliefActionListsEqual(priorActions, proposedActions);
 
-  return BeliefRevisionGateResultsSchema.parse({
+  return {
     chronology: {
       priorInteractionId: input.priorInteraction.id,
       priorInteractionAt: input.priorInteraction.occurredAt,
@@ -141,7 +170,7 @@ export function evaluateBeliefRevisionHardGates(
       passed: counterevidencePassed,
       failureReason: counterevidencePassed
         ? null
-        : "Counterevidence must be substantive and cite at least one resolvable source.",
+        : "Counterevidence must be substantive and cite canonical evidence that supports the complete statement.",
     },
     actionDelta: {
       priorActions,
@@ -155,5 +184,12 @@ export function evaluateBeliefRevisionHardGates(
       && revisitPassed
       && counterevidencePassed
       && actionDeltaPassed,
-  });
+  };
+}
+
+export function beliefRevisionGateResultsEqual(
+  left: BeliefRevisionGateResults,
+  right: BeliefRevisionGateResults,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }

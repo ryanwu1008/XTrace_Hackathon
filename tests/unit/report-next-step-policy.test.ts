@@ -6,10 +6,13 @@ import {
   sanitizeReportOpportunities,
 } from "../../lib/reports/next-step-policy";
 import {
+  BELIEF_ACTION_POLICY_VERSION,
   actionsForDealStatusAndDirection,
+  metadataForBeliefActionKind,
   renderRecommendedNextMove,
 } from "../../lib/reports/action-policy";
 import type {
+  BeliefAction,
   BeliefActionKind,
   BeliefChangeDirection,
   DealStatus,
@@ -34,6 +37,10 @@ const validLegacyOpportunity = {
   }],
   demoFixtureIds: [],
 };
+
+test("belief action policy exposes one immutable version for checkpoint binding", () => {
+  assert.equal(BELIEF_ACTION_POLICY_VERSION, "belief-action-policy-v1");
+});
 
 test("normalizes every non-array stored opportunities value to an empty list", () => {
   for (const value of [null, {}, 42, "legacy", true]) {
@@ -186,4 +193,58 @@ test("company analysis compatibility sanitization ignores caller prose when type
     value: "Reopen diligence and contact the founder.",
     actions,
   }), renderRecommendedNextMove(actions));
+});
+
+test("exported action-policy boundaries reject unknown runtime enum values", () => {
+  assert.throws(
+    () => actionsForDealStatusAndDirection("unknown" as DealStatus, "positive"),
+    /invalid/i,
+  );
+  assert.throws(
+    () => actionsForDealStatusAndDirection("passed", "unknown" as BeliefChangeDirection),
+    /invalid/i,
+  );
+  assert.throws(
+    () => metadataForBeliefActionKind("unknown" as BeliefActionKind),
+    /invalid/i,
+  );
+});
+
+test("render and sanitize boundaries reject empty or noncanonical runtime actions", () => {
+  const wrongMetadata = {
+    kind: "reopen_diligence",
+    scope: "portfolio",
+    priority: "standard",
+    visibility: "internal_only",
+  };
+  const unknownKind = {
+    kind: "invent_external_outreach",
+    scope: "deal",
+    priority: "standard",
+    visibility: "internal_only",
+  };
+
+  assert.throws(() => renderRecommendedNextMove([]), /invalid/i);
+  assert.throws(
+    () => renderRecommendedNextMove(
+      [unknownKind] as unknown as BeliefAction[],
+    ),
+    /invalid/i,
+  );
+  assert.throws(
+    () => renderRecommendedNextMove(
+      [wrongMetadata] as unknown as BeliefAction[],
+    ),
+    /invalid/i,
+  );
+  assert.throws(() => sanitizeCompanyAnalysisNextStep({
+    outcome: "belief_revised",
+    value: "Caller prose",
+    actions: [] as BeliefAction[],
+  }), /invalid/i);
+  assert.throws(() => sanitizeCompanyAnalysisNextStep({
+    outcome: "belief_revised",
+    value: "Caller prose",
+    actions: [wrongMetadata] as unknown as BeliefAction[],
+  }), /invalid/i);
 });

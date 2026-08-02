@@ -7,6 +7,8 @@ import type {
   DealStatus,
 } from "../contracts/domain";
 
+export const BELIEF_ACTION_POLICY_VERSION = "belief-action-policy-v1" as const;
+
 const ACTION_KINDS_BY_STATUS_AND_DIRECTION = {
   screening: {
     positive: ["advance_diligence"],
@@ -79,11 +81,33 @@ const COMPATIBILITY_TEXT_BY_KIND = {
     "Review the analysis failure before relying on this company analysis.",
 } as const satisfies Record<BeliefActionKind, string>;
 
+const VALID_STATUSES = new Set(Object.keys(ACTION_KINDS_BY_STATUS_AND_DIRECTION));
+const VALID_DIRECTIONS = new Set([
+  "positive",
+  "mixed",
+  "negative",
+  "none",
+  "unavailable",
+]);
+const VALID_ACTION_KINDS = new Set(Object.keys(COMPATIBILITY_TEXT_BY_KIND));
+
+function invalidActionPolicyInput(detail: string): TypeError {
+  return new TypeError(`Invalid belief action policy input: ${detail}`);
+}
+
+function requireActionKind(value: unknown): BeliefActionKind {
+  if (typeof value !== "string" || !VALID_ACTION_KINDS.has(value)) {
+    throw invalidActionPolicyInput("unknown action kind");
+  }
+  return value as BeliefActionKind;
+}
+
 export function metadataForBeliefActionKind(kind: BeliefActionKind): {
   scope: BeliefActionScope;
   priority: BeliefActionPriority;
   visibility: "internal_only";
 } {
+  kind = requireActionKind(kind);
   const scope: BeliefActionScope = kind === "review_analysis_failure"
     ? "analysis"
     : PORTFOLIO_ACTIONS.has(kind)
@@ -104,15 +128,53 @@ export function actionsForDealStatusAndDirection(
   status: DealStatus,
   direction: BeliefChangeDirection,
 ): BeliefAction[] {
+  if (typeof status !== "string" || !VALID_STATUSES.has(status)) {
+    throw invalidActionPolicyInput("unknown Deal status");
+  }
+  if (typeof direction !== "string" || !VALID_DIRECTIONS.has(direction)) {
+    throw invalidActionPolicyInput("unknown belief direction");
+  }
   return ACTION_KINDS_BY_STATUS_AND_DIRECTION[status][direction].map(
     actionForKind,
   );
+}
+
+export function parseBeliefActions(value: unknown): BeliefAction[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw invalidActionPolicyInput("actions must be a nonempty array");
+  }
+  return value.map((candidate) => {
+    if (typeof candidate !== "object" || candidate === null) {
+      throw invalidActionPolicyInput("each action must be an object");
+    }
+    const record = candidate as Record<string, unknown>;
+    const kind = requireActionKind(record.kind);
+    const expected = metadataForBeliefActionKind(kind);
+    const keys = Object.keys(record);
+    if (
+      keys.length !== 4
+      || !keys.every((key) =>
+        key === "kind"
+        || key === "scope"
+        || key === "priority"
+        || key === "visibility"
+      )
+      || record.scope !== expected.scope
+      || record.priority !== expected.priority
+      || record.visibility !== expected.visibility
+    ) {
+      throw invalidActionPolicyInput("action metadata is not canonical");
+    }
+    return { kind, ...expected };
+  });
 }
 
 export function beliefActionListsEqual(
   left: readonly BeliefAction[],
   right: readonly BeliefAction[],
 ): boolean {
+  left = parseBeliefActions(left);
+  right = parseBeliefActions(right);
   return left.length === right.length && left.every((action, index) => {
     const other = right[index];
     return other !== undefined
@@ -126,5 +188,7 @@ export function beliefActionListsEqual(
 export function renderRecommendedNextMove(
   actions: readonly BeliefAction[],
 ): string {
-  return actions.map((action) => COMPATIBILITY_TEXT_BY_KIND[action.kind]).join(" ");
+  return parseBeliefActions(actions)
+    .map((action) => COMPATIBILITY_TEXT_BY_KIND[action.kind])
+    .join(" ");
 }

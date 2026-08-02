@@ -253,6 +253,33 @@ function action(
 }
 
 function beliefAssessmentFixture(overrides: Record<string, unknown> = {}) {
+  const counterevidenceStatement =
+    "The public evidence does not yet establish durable customer retention.";
+  const triggerSource = exactSourceV2({
+    id: "trigger_source_1",
+    eventAt: "2026-07-23T12:00:00.000Z",
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: "Acme reported measurable enterprise adoption.",
+    },
+  });
+  const counterSource = exactSourceV2({
+    id: "counter_source_1",
+    evidenceRole: "counterevidence",
+    sourceRevisionId: "revision_acme_counterevidence_1",
+    locator: {
+      kind: "web_text",
+      selector: "main article p:nth-of-type(3)",
+    },
+    contentFingerprint: SHA256_B,
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: counterevidenceStatement,
+    },
+  });
+  const sampleDecisionSource = (
+    companyAnalysisFixture().sources as unknown[]
+  )[1] as SourceRefV2;
   return {
     schemaVersion: "belief-change-assessment-v1",
     dealStatus: "passed",
@@ -264,6 +291,25 @@ function beliefAssessmentFixture(overrides: Record<string, unknown> = {}) {
       evidenceQuality: 0.8,
       finalScore: 0.8,
       confidence: "high",
+    },
+    gateContext: {
+      priorInteraction: {
+        id: "interaction_1",
+        occurredAt: "2026-01-12T12:00:00.000Z",
+        sourceIds: ["interaction_1"],
+        revisitConditions: [
+          "Revisit after measurable enterprise adoption.",
+        ],
+        priorActions: [action("no_new_action")],
+        provenance: "demo_fixture",
+        label: "Sample decision record",
+      },
+      triggerEvent: {
+        id: "event_1",
+        eventAt: "2026-07-23T12:00:00.000Z",
+        sourceIds: ["trigger_source_1"],
+      },
+      sources: [triggerSource, counterSource, sampleDecisionSource],
     },
     gates: {
       chronology: {
@@ -279,14 +325,13 @@ function beliefAssessmentFixture(overrides: Record<string, unknown> = {}) {
         revisitConditionIndex: 0,
         revisitConditionText: "Revisit after measurable enterprise adoption.",
         triggerEventId: "event_1",
-        citedSourceIds: ["source_1"],
+        citedSourceIds: ["trigger_source_1"],
         passed: true,
         failureReason: null,
       },
       counterevidence: {
-        statement:
-          "The public evidence does not yet establish durable customer retention.",
-        citedSourceIds: ["source_1"],
+        statement: counterevidenceStatement,
+        citedSourceIds: ["counter_source_1"],
         passed: true,
         failureReason: null,
       },
@@ -301,6 +346,54 @@ function beliefAssessmentFixture(overrides: Record<string, unknown> = {}) {
     actions: [action("reopen_diligence")],
     ...overrides,
   };
+}
+
+function versionedCompanyAnalysisFixture(
+  beliefAssessment = beliefAssessmentFixture(),
+  overrides: Record<string, unknown> = {},
+) {
+  const legacy = companyAnalysisFixture();
+  const context = beliefAssessment.gateContext as {
+    sources: SourceRefV2[];
+    triggerEvent: { eventAt: string };
+  };
+  const [triggerSource] = context.sources;
+  const event = persistedMarketEventV2(triggerSource!, {
+    id: "event_1",
+    eventAt: context.triggerEvent.eventAt,
+    eventAtPrecision: "timestamp",
+  });
+  const sources = [...new Map([
+    ...(legacy.sources as SourceRefV2[]),
+    ...context.sources,
+  ].map((source) => [source.id, source])).values()];
+  return companyAnalysisFixture({
+    outcome: "belief_revised",
+    confidence: "high",
+    score: 0.8,
+    verifiedSourceCount: sources.length,
+    investmentMemory: {
+      ...(legacy.investmentMemory as Record<string, unknown>),
+      priorActions: (
+        beliefAssessment.gateContext as {
+          priorInteraction: { priorActions: BeliefAction[] };
+        }
+      ).priorInteraction.priorActions,
+    },
+    beliefAssessment,
+    marketEvidence: {
+      relationship: "satisfies",
+      explanation: "The trigger changed the selected prior revisit condition.",
+      eventIds: [event.id],
+      events: [event],
+      sourceIds: [triggerSource!.id],
+    },
+    recommendedNextMove: renderRecommendedNextMove(
+      beliefAssessment.actions as ReturnType<typeof action>[],
+    ),
+    sources,
+    ...overrides,
+  });
 }
 
 test("normalizes the legacy interested status to watchlist", () => {
@@ -1741,6 +1834,94 @@ test("accepts one complete strict versioned belief assessment", () => {
   assert.deepEqual(BeliefChangeAssessmentV1Schema.parse(assessment), assessment);
 });
 
+test("declared v1 recomputes every hard gate from authoritative context", () => {
+  type MutableAssessment = {
+    gates: {
+      chronology: Record<string, unknown>;
+      revisitConditionMapping: Record<string, unknown>;
+      counterevidence: Record<string, unknown>;
+      actionDelta: Record<string, unknown>;
+    };
+  };
+  const cases: Array<[string, (assessment: MutableAssessment) => void]> = [
+    ["fabricated interaction", (assessment) => {
+      assessment.gates.chronology.priorInteractionId = "interaction_fabricated";
+    }],
+    ["fabricated revisit index", (assessment) => {
+      assessment.gates.revisitConditionMapping.revisitConditionIndex = 1;
+      assessment.gates.revisitConditionMapping.revisitConditionText =
+        "Revisit after a plausible but unrecorded milestone.";
+    }],
+    ["fabricated revisit text", (assessment) => {
+      assessment.gates.revisitConditionMapping.revisitConditionText =
+        "Revisit after a different enterprise milestone.";
+    }],
+    ["fabricated trigger event", (assessment) => {
+      assessment.gates.revisitConditionMapping.triggerEventId = "event_fabricated";
+    }],
+    ["citation outside trigger membership", (assessment) => {
+      assessment.gates.revisitConditionMapping.citedSourceIds = [
+        "counter_source_1",
+      ];
+    }],
+    ["unsupported counter statement", (assessment) => {
+      assessment.gates.counterevidence.statement =
+        "A fabricated source claim says customer retention is fully durable.";
+    }],
+    ["counter citation without claim support", (assessment) => {
+      assessment.gates.counterevidence.citedSourceIds = ["trigger_source_1"];
+    }],
+    ["fabricated prior actions", (assessment) => {
+      assessment.gates.actionDelta.priorActions = [action("continue_monitoring")];
+    }],
+  ];
+
+  for (const [name, mutate] of cases) {
+    const assessment = structuredClone(
+      beliefAssessmentFixture(),
+    ) as unknown as MutableAssessment;
+    mutate(assessment);
+    assert.equal(
+      BeliefChangeAssessmentV1Schema.safeParse(assessment).success,
+      false,
+      name,
+    );
+  }
+});
+
+test("declared v1 binds its selected prior interaction to Sample source lineage", () => {
+  const assessment = structuredClone(
+    beliefAssessmentFixture(),
+  ) as unknown as {
+    gateContext: { priorInteraction: { sourceIds: string[] } };
+  };
+  assessment.gateContext.priorInteraction.sourceIds = ["trigger_source_1"];
+
+  assert.equal(
+    BeliefChangeAssessmentV1Schema.safeParse(assessment).success,
+    false,
+  );
+});
+
+test("declared v1 rejects supporting counterevidence cited under the wrong role", () => {
+  const assessment = structuredClone(
+    beliefAssessmentFixture(),
+  );
+  const mutable = assessment as unknown as {
+    gateContext: { sources: Array<{ id: string; evidenceRole: string }> };
+  };
+  const counterSource = mutable.gateContext.sources.find(
+    (source) => source.id === "counter_source_1",
+  );
+  assert.ok(counterSource);
+  counterSource.evidenceRole = "trigger";
+
+  assert.equal(
+    BeliefChangeAssessmentV1Schema.safeParse(assessment).success,
+    false,
+  );
+});
+
 test("rejects incomplete or extensible declared belief assessment v1 payloads", () => {
   const complete = beliefAssessmentFixture();
   const missingGates: Record<string, unknown> = { ...complete };
@@ -1851,14 +2032,7 @@ test("rejects noncanonical action metadata and an action list illegal for status
 
 test("new CompanyAnalysis payloads reject arbitrary compatibility text and cross-field score drift", () => {
   const beliefAssessment = beliefAssessmentFixture();
-  const actions = beliefAssessment.actions as ReturnType<typeof action>[];
-  const valid = companyAnalysisFixture({
-    outcome: "belief_revised",
-    confidence: "high",
-    score: 0.8,
-    beliefAssessment,
-    recommendedNextMove: renderRecommendedNextMove(actions),
-  });
+  const valid = versionedCompanyAnalysisFixture(beliefAssessment);
 
   assert.equal(CompanyAnalysisSchema.safeParse(valid).success, true);
   assert.equal(CompanyAnalysisSchema.safeParse({
@@ -1871,6 +2045,63 @@ test("new CompanyAnalysis payloads reject arbitrary compatibility text and cross
   }).success, false);
 });
 
+test("CompanyAnalysis re-resolves v1 gate context through canonical outer lineage", () => {
+  const valid = versionedCompanyAnalysisFixture();
+  assert.equal(CompanyAnalysisSchema.safeParse(valid).success, true);
+
+  const missingContextSource = structuredClone(valid) as unknown as {
+    sources: Array<{ id: string }>;
+    verifiedSourceCount: number;
+  };
+  missingContextSource.sources = missingContextSource.sources.filter(
+    (source: { id: string }) => source.id !== "counter_source_1",
+  );
+  missingContextSource.verifiedSourceCount = missingContextSource.sources.length;
+  assert.equal(
+    CompanyAnalysisSchema.safeParse(missingContextSource).success,
+    false,
+  );
+
+  const driftedMemory = structuredClone(valid) as unknown as {
+    investmentMemory: { revisitConditions: string[] };
+  };
+  driftedMemory.investmentMemory.revisitConditions = [
+    "Revisit after an unrelated milestone.",
+  ];
+  assert.equal(CompanyAnalysisSchema.safeParse(driftedMemory).success, false);
+});
+
+test("CompanyAnalysis rejects forged prior actions behind authentic Sample lineage", () => {
+  const beliefAssessment = structuredClone(beliefAssessmentFixture());
+  const mutable = beliefAssessment as unknown as {
+    gateContext: { priorInteraction: { priorActions: BeliefAction[] } };
+    gates: { actionDelta: { priorActions: BeliefAction[] } };
+  };
+  const forgedPriorActions = [action("continue_monitoring")];
+  mutable.gateContext.priorInteraction.priorActions = forgedPriorActions;
+  mutable.gates.actionDelta.priorActions = forgedPriorActions;
+  assert.equal(
+    BeliefChangeAssessmentV1Schema.safeParse(beliefAssessment).success,
+    true,
+    "the forged self-consistent assessment demonstrates why outer rebinding is required",
+  );
+
+  const analysis = versionedCompanyAnalysisFixture(beliefAssessment);
+  const outerMemory = analysis.investmentMemory as Record<string, unknown>;
+  outerMemory.priorActions = [action("no_new_action")];
+  assert.equal(CompanyAnalysisSchema.safeParse(analysis).success, false);
+});
+
+test("CompanyAnalysis declared v1 rejects a raw legacy interested outer status", () => {
+  const assessment = beliefAssessmentFixture();
+  const invalid = versionedCompanyAnalysisFixture(assessment, {
+    dealStatus: "interested",
+  });
+
+  assert.equal(BeliefChangeAssessmentV1Schema.safeParse(assessment).success, true);
+  assert.equal(CompanyAnalysisSchema.safeParse(invalid).success, false);
+});
+
 test("none and unavailable directions can never declare a belief revision", () => {
   for (const direction of ["none", "unavailable"] as const) {
     const kind = direction === "none"
@@ -1880,8 +2111,18 @@ test("none and unavailable directions can never declare a belief revision", () =
     const base = beliefAssessmentFixture({ direction, actions: proposedActions });
     const baseGates = base.gates as Record<string, unknown>;
     const actionDelta = baseGates.actionDelta as Record<string, unknown>;
+    const gateContext = base.gateContext as unknown as {
+      priorInteraction: Record<string, unknown>;
+    };
     const beliefAssessment = {
       ...base,
+      gateContext: {
+        ...gateContext,
+        priorInteraction: {
+          ...gateContext.priorInteraction,
+          priorActions: [action("continue_monitoring")],
+        },
+      },
       gates: {
         ...baseGates,
         actionDelta: {

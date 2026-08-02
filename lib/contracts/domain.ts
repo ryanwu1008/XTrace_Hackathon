@@ -17,7 +17,10 @@ import {
   type OpportunityScoreInputs,
 } from "../matching/scoring";
 import {
-  actionsForDealStatusAndDirection,
+  beliefRevisionGateResultsEqual,
+  evaluateBeliefRevisionHardGates,
+} from "../matching/hard-gates";
+import {
   beliefActionListsEqual,
   metadataForBeliefActionKind,
   renderRecommendedNextMove,
@@ -360,24 +363,13 @@ function validateGateFailureReason(
 
 export const ChronologyGateResultSchema = z.strictObject({
   priorInteractionId: z.string().min(1).nullable(),
-  priorInteractionAt: z.string().datetime().nullable(),
+  priorInteractionAt: z.string().datetime({ offset: true }).nullable(),
   triggerEventId: z.string().min(1).nullable(),
   triggerEventAt: TemporalValueV2Schema.nullable(),
   passed: z.boolean(),
   failureReason: GateFailureReasonSchema,
 }).superRefine((gate, context) => {
   validateGateFailureReason(gate, context);
-  const expectedPassed = gate.priorInteractionId !== null
-    && gate.priorInteractionAt !== null
-    && gate.triggerEventId !== null
-    && gate.triggerEventAt !== null
-    && Date.parse(gate.priorInteractionAt) < Date.parse(gate.triggerEventAt);
-  if (gate.passed !== expectedPassed) {
-    context.addIssue({
-      code: "custom",
-      message: "Chronology pass/fail must be derived from the selected timestamps",
-    });
-  }
 });
 
 export const RevisitConditionMappingGateResultSchema = z.strictObject({
@@ -415,21 +407,6 @@ export const CounterevidenceGateResultSchema = z.strictObject({
   failureReason: GateFailureReasonSchema,
 }).superRefine((gate, context) => {
   validateGateFailureReason(gate, context);
-  const words = gate.statement.trim().split(/\s+/u).filter(Boolean);
-  if (
-    gate.passed
-    && (
-      gate.statement.trim().length < 20
-      || words.length < 3
-      || gate.citedSourceIds.length === 0
-      || new Set(gate.citedSourceIds).size !== gate.citedSourceIds.length
-    )
-  ) {
-    context.addIssue({
-      code: "custom",
-      message: "A passed counterevidence gate requires substantive cited evidence",
-    });
-  }
 });
 
 export const ActionDeltaGateResultSchema = z.strictObject({
@@ -461,48 +438,80 @@ export const BeliefRevisionGateResultsSchema = z.strictObject({
 export const BELIEF_CHANGE_ASSESSMENT_SCHEMA_VERSION =
   "belief-change-assessment-v1" as const;
 
+export const AuthoritativeBeliefGateContextSchema = z.strictObject({
+  priorInteraction: z.strictObject({
+    id: z.string().min(1),
+    occurredAt: z.string().datetime({ offset: true }),
+    sourceIds: z.array(z.string().min(1)).length(1),
+    revisitConditions: z.array(z.string().min(1)).min(1),
+    priorActions: z.array(BeliefActionSchema).min(1),
+    provenance: z.literal("demo_fixture"),
+    label: z.literal(DEMO_FIXTURE_LABEL),
+  }),
+  triggerEvent: z.strictObject({
+    id: z.string().min(1),
+    eventAt: TemporalValueV2Schema,
+    sourceIds: z.array(z.string().min(1)).min(1),
+  }),
+  sources: z.array(SourceRefV2Schema).min(1),
+}).superRefine((gateContext, context) => {
+  const sourceIds = new Set(gateContext.sources.map((source) => source.id));
+  const priorSource = gateContext.sources.find(
+    (source) => source.id === gateContext.priorInteraction.sourceIds[0],
+  );
+  if (
+    gateContext.sources.some((source) => source.adaptation !== "canonical")
+    || sourceIds.size !== gateContext.sources.length
+    || new Set(gateContext.triggerEvent.sourceIds).size
+      !== gateContext.triggerEvent.sourceIds.length
+    || gateContext.triggerEvent.sourceIds.some((id) => !sourceIds.has(id))
+    || gateContext.priorInteraction.sourceIds[0]
+      !== gateContext.priorInteraction.id
+    || priorSource === undefined
+    || priorSource.adaptation !== "canonical"
+    || priorSource.provenance !== "demo_fixture"
+    || priorSource.title !== DEMO_FIXTURE_LABEL
+    || priorSource.evidenceRole !== "context"
+    || priorSource.eventAt !== gateContext.priorInteraction.occurredAt
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Authoritative gate context requires unique canonical trigger sources and an exact Sample decision record source binding",
+    });
+  }
+  validateSourcePayloads(gateContext.sources, context);
+});
+
 export const BeliefChangeAssessmentV1Schema = z.strictObject({
   schemaVersion: z.literal(BELIEF_CHANGE_ASSESSMENT_SCHEMA_VERSION),
   dealStatus: CanonicalDealStatusSchema,
   direction: BeliefChangeDirectionSchema,
   scoreBreakdown: OpportunityScoreBreakdownSchema,
+  gateContext: AuthoritativeBeliefGateContextSchema,
   gates: BeliefRevisionGateResultsSchema,
   actions: z.array(BeliefActionSchema).min(1),
 }).superRefine((assessment, context) => {
-  const expectedActions = actionsForDealStatusAndDirection(
-    assessment.dealStatus,
-    assessment.direction,
-  );
-  if (!beliefActionListsEqual(assessment.actions, expectedActions)) {
-    context.addIssue({
-      code: "custom",
-      message: "Typed actions must equal the deterministic status-direction policy",
+  try {
+    const recomputed = evaluateBeliefRevisionHardGates({
+      priorInteraction: assessment.gateContext.priorInteraction,
+      triggerEvent: assessment.gateContext.triggerEvent,
+      sources: assessment.gateContext.sources,
+      revisitMapping: assessment.gates.revisitConditionMapping,
+      counterevidence: assessment.gates.counterevidence,
+      dealStatus: assessment.dealStatus,
+      direction: assessment.direction,
+      proposedActions: assessment.actions,
     });
+    if (beliefRevisionGateResultsEqual(assessment.gates, recomputed)) return;
+  } catch {
+    // Nested schema issues and runtime policy validation both fail this boundary.
   }
-  if (
-    !beliefActionListsEqual(
-      assessment.gates.actionDelta.proposedActions,
-      assessment.actions,
-    )
-  ) {
-    context.addIssue({
-      code: "custom",
-      message: "Persisted proposed actions must equal the assessment actions",
-    });
-  }
-  const expectedActionDeltaPassed = beliefActionListsEqual(
-    assessment.gates.actionDelta.proposedActions,
-    expectedActions,
-  ) && !beliefActionListsEqual(
-    assessment.gates.actionDelta.priorActions,
-    expectedActions,
-  );
-  if (assessment.gates.actionDelta.passed !== expectedActionDeltaPassed) {
-    context.addIssue({
-      code: "custom",
-      message: "Action-delta pass/fail must be derived from prior and legal proposed actions",
-    });
-  }
+  context.addIssue({
+    code: "custom",
+    message:
+      "Every persisted hard gate must exactly equal its deterministic recomputation from authoritative context",
+  });
 });
 
 export const EvidenceFieldSchema = z.object({
@@ -553,6 +562,7 @@ export const InvestmentMemorySnapshotSchema = z.object({
   memoryIds: z.array(z.string().min(1)),
   sourceIds: z.array(z.string().min(1)),
   fixtureIds: z.array(z.string().min(1)),
+  priorActions: z.array(BeliefActionSchema).min(1).optional(),
 });
 
 const LegacyCompanyMarketEvidenceEventSchema = z.object({
@@ -686,7 +696,7 @@ export const CompanyBriefSchema = z.object({
   sourceLineage: z.array(EvidenceSourceRefSchema),
 });
 
-export const CompanyAnalysisSchema = z.object({
+const CompanyAnalysisObjectSchema = z.object({
   id: z.string().min(1),
   reportId: z.string().min(1),
   runId: z.string().uuid(),
@@ -712,6 +722,55 @@ export const CompanyAnalysisSchema = z.object({
 }).superRefine((analysis, context) => {
   const assessment = analysis.beliefAssessment;
   if (assessment) {
+    const analysisSourceById = new Map(
+      analysis.sources.map((source) => [source.id, source]),
+    );
+    const gateContext = assessment.gateContext;
+    const contextIdsResolve = gateContext.sources.every(
+      (source) => analysisSourceById.has(source.id),
+    );
+    const prior = gateContext.priorInteraction;
+    const priorSourceIdsMatchMemory = prior.sourceIds.every((sourceId) =>
+      analysis.investmentMemory.sourceIds.includes(sourceId)
+      && analysis.investmentMemory.fixtureIds.includes(sourceId)
+    );
+    const priorActionsMatchMemory =
+      analysis.investmentMemory.priorActions !== undefined
+      && beliefActionListsEqual(
+        analysis.investmentMemory.priorActions,
+        prior.priorActions,
+      );
+    const triggerEvent = analysis.marketEvidence.events.find(
+      (event) => event.id === gateContext.triggerEvent.id,
+    );
+    const triggerSourceIds = triggerEvent && "schemaVersion" in triggerEvent
+      ? triggerEvent.sources.map((source) => source.id)
+      : [];
+    if (
+      !contextIdsResolve
+      || !priorSourceIdsMatchMemory
+      || !priorActionsMatchMemory
+      || analysis.investmentMemory.lastEvaluatedAt !== prior.occurredAt
+      || JSON.stringify(analysis.investmentMemory.revisitConditions)
+        !== JSON.stringify(prior.revisitConditions)
+      || triggerEvent === undefined
+      || !("schemaVersion" in triggerEvent)
+      || triggerEvent.eventAt !== gateContext.triggerEvent.eventAt
+      || !sameStringSet(
+        gateContext.triggerEvent.sourceIds,
+        new Set(triggerSourceIds),
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Belief gate context must re-resolve through the analysis memory, event, and canonical source lineage",
+      });
+    }
+    validateSourcePayloads([
+      ...analysis.sources,
+      ...gateContext.sources,
+    ], context);
     if (assessment.dealStatus !== analysis.dealStatus) {
       context.addIssue({
         code: "custom",
@@ -893,6 +952,28 @@ export const CompanyAnalysisSchema = z.object({
     });
   }
 });
+
+export const CompanyAnalysisSchema = z.unknown().superRefine(
+  (value, context) => {
+    if (
+      typeof value === "object"
+      && value !== null
+      && "beliefAssessment" in value
+      && (value as { beliefAssessment?: unknown }).beliefAssessment !== undefined
+      && (
+        !("dealStatus" in value)
+        || !CanonicalDealStatusSchema.safeParse(
+          (value as { dealStatus?: unknown }).dealStatus,
+        ).success
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Versioned CompanyAnalysis requires a canonical outer Deal status",
+      });
+    }
+  },
+).pipe(CompanyAnalysisObjectSchema);
 
 export const ReportAnalysisStatusSchema = z.enum(["completed", "incomplete"]);
 

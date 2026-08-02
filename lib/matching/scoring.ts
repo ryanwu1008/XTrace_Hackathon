@@ -16,6 +16,13 @@ function bounded(value: number) {
   return Math.max(0, Math.min(1, value));
 }
 
+function finiteBounded(value: number, dimension: string): number {
+  if (!Number.isFinite(value)) {
+    throw new TypeError(`${dimension} must be finite`);
+  }
+  return bounded(value);
+}
+
 export function weightedOpportunityScore(input: OpportunityScoreInputs) {
   const score =
     0.35 * bounded(input.eventRelevance)
@@ -34,9 +41,18 @@ export function confidenceForScore(score: number): OpportunityConfidence {
 export function buildOpportunityScoreBreakdown(
   input: OpportunityScoreInputs,
 ): OpportunityScoreBreakdown {
-  const finalScore = weightedOpportunityScore(input);
+  const boundedInput = {
+    eventRelevance: finiteBounded(input.eventRelevance, "eventRelevance"),
+    dealRelevance: finiteBounded(input.dealRelevance, "dealRelevance"),
+    priorContextStrength: finiteBounded(
+      input.priorContextStrength,
+      "priorContextStrength",
+    ),
+    evidenceQuality: finiteBounded(input.evidenceQuality, "evidenceQuality"),
+  };
+  const finalScore = weightedOpportunityScore(boundedInput);
   return {
-    ...input,
+    ...boundedInput,
     finalScore,
     confidence: confidenceForScore(finalScore),
   };
