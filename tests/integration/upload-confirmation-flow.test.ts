@@ -14,6 +14,7 @@ import {
 import { createMemorySourceRegistry } from "../../db/repositories/source-registry";
 import { createMemoryDealRegistry } from "../../db/repositories/deal-registry";
 import type { RouteDependencies } from "../../lib/api/route-dependencies";
+import { evidenceSourceText } from "../../lib/contracts/domain";
 import {
   createMemoryPrivateObjectStorage,
   createPrivateDocumentAccess,
@@ -214,11 +215,17 @@ test("PDF page lineage reaches Deal memory only after explicit confirmation", as
   assert.ok(bundle);
   const source = bundle.facts[0]?.sources[0];
   assert.ok(source);
+  const page = "schemaVersion" in source
+    && source.locator?.kind === "document_page"
+    ? source.locator.page
+    : "page" in source
+    ? source.page
+    : undefined;
   assert.deepEqual({
     provenance: source.provenance,
     title: source.title,
-    page: source.page,
-    excerpt: source.excerpt,
+    page,
+    excerpt: evidenceSourceText(source),
   }, {
     provenance: "source_document",
     title: "acme.pdf",

@@ -1,10 +1,20 @@
 import { z } from "zod";
 
+import { CanonicalHttpUrlSchema } from "../security/safe-url";
+
 const StableIdSchema = z.string().regex(
   /^[a-z0-9]+(?:_[a-z0-9]+)*_v\d+$/,
   "Stable ids must use lowercase snake case and end in a version suffix",
 );
 const NonEmptyStringSchema = z.string().trim().min(1);
+const VerbatimExcerptSchema = z.string().refine(
+  (value) => value.trim().length > 0,
+  "Verbatim excerpts must contain non-whitespace text",
+);
+const BoundedVerbatimExcerptSchema = VerbatimExcerptSchema.refine(
+  (value) => value.trim().split(/\s+/u).length <= 25,
+  "Verbatim excerpts are bounded to 25 words",
+);
 const NonEmptyStringsSchema = z.array(NonEmptyStringSchema).min(1);
 const EntityKeySchema = z.string().regex(/^[a-z0-9]+(?:_[a-z0-9]+)*$/);
 
@@ -50,7 +60,7 @@ const EvidenceRoleSchema = z.enum(["trigger", "corroborating", "counterevidence"
 const FingerprintInputsSchema = z.strictObject({
   title: NonEmptyStringSchema,
   publisher: NonEmptyStringSchema,
-  canonicalUrl: z.string().url(),
+  canonicalUrl: CanonicalHttpUrlSchema,
   sourceClass: SourceClassSchema,
   sourceAuthority: SourceAuthoritySchema,
   evidenceRole: EvidenceRoleSchema,
@@ -59,7 +69,7 @@ const FingerprintInputsSchema = z.strictObject({
   publicationTimestamp: IsoDateTimeSchema.nullable(),
   retrievedAt: IsoDateSchema,
   locator: NonEmptyStringSchema,
-  verbatimExcerpt: NonEmptyStringSchema,
+  verbatimExcerpt: VerbatimExcerptSchema,
   normalizedStatement: NonEmptyStringSchema,
   referenceId: StableIdSchema,
 });
@@ -68,7 +78,7 @@ const ResearchSourceSchema = z.strictObject({
   id: StableIdSchema,
   title: NonEmptyStringSchema,
   publisher: NonEmptyStringSchema,
-  canonicalUrl: z.string().url(),
+  canonicalUrl: CanonicalHttpUrlSchema,
   sourceClass: SourceClassSchema,
   sourceAuthority: SourceAuthoritySchema,
   evidenceRole: EvidenceRoleSchema,
@@ -77,10 +87,7 @@ const ResearchSourceSchema = z.strictObject({
   publicationTimestamp: IsoDateTimeSchema.nullable(),
   retrievedAt: IsoDateSchema,
   locator: NonEmptyStringSchema,
-  verbatimExcerpt: NonEmptyStringSchema.refine(
-    (value) => value.split(/\s+/u).length <= 25,
-    "Verbatim excerpts are bounded to 25 words",
-  ),
+  verbatimExcerpt: BoundedVerbatimExcerptSchema,
   normalizedStatement: NonEmptyStringSchema,
   supportedClaimId: StableIdSchema,
   fingerprintInputs: FingerprintInputsSchema,
@@ -246,7 +253,7 @@ const ResolvedScreeningSourceSchema = z.strictObject({
   id: StableIdSchema,
   title: NonEmptyStringSchema,
   publisher: NonEmptyStringSchema,
-  canonicalUrl: z.string().url(),
+  canonicalUrl: CanonicalHttpUrlSchema,
   sourceClass: SourceClassSchema,
   sourceAuthority: SourceAuthoritySchema,
   evidenceRole: EvidenceRoleSchema,
@@ -255,7 +262,7 @@ const ResolvedScreeningSourceSchema = z.strictObject({
   publicationTimestamp: IsoDateTimeSchema.nullable(),
   retrievedAt: IsoDateSchema,
   locator: NonEmptyStringSchema,
-  verbatimExcerpt: NonEmptyStringSchema.refine((value) => value.split(/\s+/u).length <= 25),
+  verbatimExcerpt: BoundedVerbatimExcerptSchema,
   normalizedStatement: NonEmptyStringSchema,
   candidateId: StableIdSchema,
   fingerprintInputs: FingerprintInputsSchema,
@@ -269,7 +276,7 @@ const UnresolvedScreeningSourceSchema = z.strictObject({
   id: StableIdSchema,
   title: NonEmptyStringSchema,
   publisher: NonEmptyStringSchema,
-  surfacedUrl: z.string().url(),
+  surfacedUrl: CanonicalHttpUrlSchema,
   retrievedAt: IsoDateSchema,
   candidateId: StableIdSchema,
   reason: NonEmptyStringSchema,
@@ -311,7 +318,7 @@ const CandidateTriggerSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("resolved"),
     title: NonEmptyStringSchema,
-    canonicalUrl: z.string().url(),
+    canonicalUrl: CanonicalHttpUrlSchema,
     eventAt: IsoDateSchema,
     publishedAt: IsoDateSchema,
     retrievedAt: IsoDateSchema,

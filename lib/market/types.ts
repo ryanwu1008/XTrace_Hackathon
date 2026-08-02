@@ -73,4 +73,4 @@ export interface MarketScanOptions {
 
 export type PersistMarketEvents = (
   events: NormalizedMarketEvent[],
-) => Promise<void> | void;
+) => Promise<NormalizedMarketEvent[] | void> | NormalizedMarketEvent[] | void;

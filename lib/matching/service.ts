@@ -6,7 +6,9 @@ import {
   type OpportunityReportItem,
 } from "../contracts/domain";
 import {
+  assertConsistentCanonicalEvidenceUnits,
   sourceCanGroundOutputFact,
+  sourceClaimSupportKind,
   sourceTextForRetrieval,
   uniqueByCanonicalId,
   type MarketEventV2,
@@ -87,23 +89,6 @@ interface GroundedText {
 
 type ClaimScope = "public_fact" | "prior_context" | "any_fact";
 
-function supportKind(
-  source: SourceRefV2,
-  claim: string,
-): ClaimSupportV2["kind"] | null {
-  if (!sourceCanGroundOutputFact(source)) return null;
-  if (source.text.status === "verified_exact") {
-    if (source.text.verbatimExcerpt.includes(claim)) return "exact_quote";
-    if (source.text.normalizedStatement?.includes(claim)) {
-      return "normalized_non_quote";
-    }
-    return null;
-  }
-  return source.text.normalizedStatement.includes(claim)
-    ? "normalized_non_quote"
-    : null;
-}
-
 function sourceAllowedForScope(
   source: SourceRefV2,
   scope: ClaimScope,
@@ -134,7 +119,7 @@ function supportedClaims(
         || !validSourceIds.has(sourceId)
         || !sourceAllowedForScope(source, scope)
       ) return null;
-      return supportKind(source, claim);
+      return sourceClaimSupportKind(source, claim);
     });
     if (sourceIds.length === 0 || kinds.some((kind) => kind === null)) return [];
     return [ClaimSupportV2Schema.parse({
@@ -231,14 +216,15 @@ function uniqueClaimSupport(supports: ClaimSupportV2[]): ClaimSupportV2[] {
 
 export function createMatchingService(reasoner: MatchingReasoner) {
   const analyze = async (input: MatchingInput): Promise<GroundedMatch[]> => {
-    const events = uniqueByCanonicalId(
+    const events = uniqueByCanonicalId<MarketEventV2>(
       input.events.map(parseMarketEventV2Read),
       "market event",
     );
-    const sources = uniqueByCanonicalId([
+    const sources = uniqueByCanonicalId<SourceRefV2>([
       ...input.sources.map(parseSourceRefV2Read),
-      ...events.flatMap((event) => event.sources),
+      ...events.flatMap((event): SourceRefV2[] => [...event.sources]),
     ], "source");
+    assertConsistentCanonicalEvidenceUnits(sources);
     const validatedInput: MatchingInput = {
       ...input,
       events,
@@ -320,9 +306,12 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       for (const event of matchedEvents) {
         for (const source of event.sources) usedSourceIds.add(source.id);
       }
-      const demoFixtureIds = match.demoFixtureIds.filter((fixtureId) =>
-        context.fixtureIds.includes(fixtureId) && usedSourceIds.has(fixtureId)
-      );
+      const demoFixtureIds = [...new Set(context.fixtureIds)].filter((fixtureId) => {
+        const source = sourceById.get(fixtureId);
+        return usedSourceIds.has(fixtureId)
+          && source?.adaptation === "canonical"
+          && source.provenance === "demo_fixture";
+      });
       const score = weightedOpportunityScore({
         ...match.scoreInputs,
         eventRelevance: Math.min(

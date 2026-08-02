@@ -63,7 +63,7 @@ export function createClaudeMatchingReasoner(
           "Use only the supplied memory context and source catalog.",
           "Every sentence in whyNow and previousContext, and every implication, must appear as a key in claimSourceIds.",
           "Use verbatimExcerpt only when quoteEligible is true. A normalizedStatement is a non-quote canonical description: it may ground a factual claim only when factEligible is true, and must never be presented or described as a direct quotation.",
-          "Claims are validated mechanically: each claim must be an exact, character-for-character contiguous substring of the cited source's eligible verbatimExcerpt or normalizedStatement. Never merge two evidence strings into one sentence.",
+          "Claims are validated mechanically: each claim must equal one complete eligible evidence unit, character for character—either the cited source's full verbatimExcerpt or its full normalizedStatement. Never shorten an evidence unit, remove a qualifier or negation, or merge two evidence strings into one sentence.",
           "Sources with factEligible false, including legacy_unverified and model_inference text, are retrieval context only and cannot support output claims.",
           "memoryContexts text is retrieval output, not quotable evidence: use it to decide which Deals are relevant, then locate eligible text in the sources catalog.",
           "Synthetic fixture records are internal demo context, never external company facts.",
@@ -93,7 +93,7 @@ export function createClaudeMatchingReasoner(
           },
           scoreInputsNote: "scoreInputs values are JSON numbers between 0 and 1, never strings",
           claimSourceIds: {
-            "claim copied from eligible verbatim or normalized evidence": ["valid source IDs"],
+            "complete claim equal to one eligible verbatim or normalized evidence unit": ["valid source IDs"],
           },
         },
         deals: input.deals,

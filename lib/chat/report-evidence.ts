@@ -1,9 +1,14 @@
 import { evidenceQueryTokens } from "../demo/search";
 import {
-  CompanyAnalysisSchema,
+  evidenceSourceText,
   type CompanyAnalysis,
   type SourceRef,
 } from "../contracts/domain";
+import {
+  SAMPLE_DECISION_RECORD_LABEL,
+  sourceClaimSupportKind,
+} from "../contracts/source-evidence";
+import { safeParseCompanyAnalysisEvidence } from "../reports/company-analysis-evidence";
 import {
   sanitizeCompanyAnalysisNextStep,
   sanitizeReportOpportunities,
@@ -77,7 +82,8 @@ export function buildPersistedReportEvidence(input: {
       } else if (/\b(previous|history|context)\b/.test(normalizedQuestion)) {
         fields.unshift(fields.splice(1, 1)[0]);
       }
-      const conclusionEvidence = fields.map((field) => ({
+      const preferredField = fields[0];
+      const conclusionEvidence = fields.slice(0, 1).map((field) => ({
         text: field.text,
         sources: [{
           id: `report:${report.id}:opportunity:${reportIndex}:${opportunityIndex}:${opportunity.dealId}:${field.key}`,
@@ -86,10 +92,12 @@ export function buildPersistedReportEvidence(input: {
           excerpt: field.text,
         }],
       }));
-      const supportingEvidence = opportunity.sources.map((source) => ({
-        text: source.excerpt,
-        sources: [source],
-      }));
+      const supportingEvidence = opportunity.sources.flatMap((source) =>
+        "schemaVersion" in source
+          && sourceClaimSupportKind(source, preferredField.text) !== null
+          ? [{ text: evidenceSourceText(source), sources: [source] }]
+          : []
+      );
       return [...conclusionEvidence, ...supportingEvidence];
     });
   });
@@ -98,8 +106,8 @@ export function buildPersistedReportEvidence(input: {
 function parseCompanyAnalyses(value: unknown): CompanyAnalysis[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((analysis) => {
-    const parsed = CompanyAnalysisSchema.safeParse(analysis);
-    return parsed.success ? [parsed.data] : [];
+    const parsed = safeParseCompanyAnalysisEvidence(analysis);
+    return parsed ? [parsed] : [];
   });
 }
 
@@ -113,6 +121,26 @@ function companyAnalysisEvidence(input: {
   companyName: string;
 }): ChatEvidence[] {
   const analysis = input.analysis;
+  const linkedFixtureIds = new Set(
+    analysis.investmentMemory.fixtureIds.filter((fixtureId) =>
+      analysis.investmentMemory.sourceIds.includes(fixtureId)
+    ),
+  );
+  const sampleDecisionEvidence = analysis.sources.flatMap((source) => {
+    if (
+      !("schemaVersion" in source)
+      || source.adaptation !== "canonical"
+      || source.provenance !== "demo_fixture"
+      || source.title !== SAMPLE_DECISION_RECORD_LABEL
+      || !linkedFixtureIds.has(source.id)
+    ) {
+      return [];
+    }
+    const text = evidenceSourceText(source);
+    return sourceClaimSupportKind(source, text) === null
+      ? []
+      : [{ text, sources: [source] }];
+  });
   const haystack = [
     analysis.dealId,
     input.companyName,
@@ -123,7 +151,8 @@ function companyAnalysisEvidence(input: {
     ...analysis.investmentMemory.revisitConditions,
     analysis.marketEvidence.explanation,
     analysis.recommendedNextMove,
-    "latest analysis outcome decision reason was there material market evidence recommended next move",
+    ...sampleDecisionEvidence.map((item) => item.text),
+    "latest report analysis outcome previous history context decision reason was there material market evidence recommended next move",
     input.reportIndex === 0 ? "latest" : "",
   ].join(" ").toLocaleLowerCase();
   const searchableTokens = new Set(evidenceQueryTokens(haystack));
@@ -162,22 +191,38 @@ function companyAnalysisEvidence(input: {
       sourceIds: analysis.sources.map((source) => source.id),
     },
   ];
-  const preferredKey = /\bdecision\s+reason\b/.test(input.normalizedQuestion)
+  const preferredKey = /\b(decision\s+reason|previous|history|context)\b/.test(
+      input.normalizedQuestion,
+    )
     ? "decision-reason"
     : /\b(material|market)\b/.test(input.normalizedQuestion)
     ? "market-evidence"
     : /\b(recommend|recommended|next\s+move|next\s+step)\b/.test(
         input.normalizedQuestion,
-      )
+    )
     ? "next-move"
-    : "outcome";
+    : fields.map((field, index) => ({
+        key: field.key,
+        index,
+        score: input.tokens.filter((token) =>
+          evidenceQueryTokens(field.text).includes(token)
+        ).length,
+      }))
+      .sort((left, right) => right.score - left.score || left.index - right.index)
+      [0]?.key ?? "outcome";
+  const preferredField = fields.find((field) => field.key === preferredKey)!;
+  if (preferredKey === "decision-reason") {
+    return sampleDecisionEvidence;
+  }
   fields.sort((left, right) =>
     Number(right.key === preferredKey) - Number(left.key === preferredKey)
   );
   const sourceById = new Map(
     analysis.sources.map((source) => [source.id, source]),
   );
-  const conclusionEvidence = fields.map((field) => {
+  const conclusionEvidence = fields
+    .filter((field) => field.key === preferredKey)
+    .map((field) => {
     const inference: SourceRef = {
       id:
         `report:${input.reportId}:analysis:${input.reportIndex}:${input.analysisIndex}:${analysis.dealId}:${field.key}`,
@@ -192,14 +237,20 @@ function companyAnalysisEvidence(input: {
         inference,
         ...field.sourceIds.flatMap((sourceId) => {
           const source = sourceById.get(sourceId);
-          return source ? [source] : [];
+          return source
+              && "schemaVersion" in source
+              && sourceClaimSupportKind(source, field.text) !== null
+            ? [source]
+            : [];
         }),
       ],
     };
-  });
-  const supportingEvidence = analysis.sources.map((source) => ({
-    text: source.excerpt,
-    sources: [source],
-  }));
+    });
+  const supportingEvidence = analysis.sources.flatMap((source) =>
+    "schemaVersion" in source
+      && sourceClaimSupportKind(source, preferredField.text) !== null
+      ? [{ text: evidenceSourceText(source), sources: [source] }]
+      : []
+  );
   return [...conclusionEvidence, ...supportingEvidence];
 }

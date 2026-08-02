@@ -31,6 +31,7 @@ export function createClaudeReasoner(client: ClaudeClient) {
         "Every factual sentence must have source IDs in claimSourceIds.",
         "Use verbatimExcerpt only when quoteEligible is true.",
         "normalizedStatement is non-quote evidence and must never be represented as a direct quotation.",
+        "Each claim must equal one complete eligible evidence unit, character for character. Never shorten an evidence unit or remove a qualifier or negation.",
         "Sources with factEligible false are retrieval context only and cannot support output facts.",
         "Return JSON only. Return [] when evidence is insufficient.",
       ].join(" ");

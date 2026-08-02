@@ -39,6 +39,33 @@ function priorExactSource(
   verbatimExcerpt: string,
   provenance: "source_document" | "demo_fixture" = "source_document",
 ) {
+  if (provenance === "demo_fixture") {
+    return normalizedSourceV2(id, {
+      provenance,
+      title: "Sample decision record",
+      canonicalUrl: null,
+      documentId,
+      publisher: "Internal Deal Registry",
+      providerId: "deal-registry",
+      eventAt: null,
+      eventAtPrecision: null,
+      publishedAt: "2026-07-01T00:00:00.000Z",
+      publishedAtPrecision: "timestamp",
+      retrievedAt: "2026-07-02T00:00:00.000Z",
+      retrievedAtPrecision: "timestamp",
+      updatedAt: null,
+      updatedAtPrecision: null,
+      entityKeys: [],
+      sourceClass: "internal_decision_record",
+      sourceAuthority: "primary",
+      evidenceRole: "context",
+      text: {
+        status: "normalized_only",
+        normalizedStatement:
+          `Sample decision record. ${verbatimExcerpt}`,
+      },
+    });
+  }
   return exactSourceV2(id, {
     provenance,
     title,
@@ -306,6 +333,7 @@ test("normalized support stays non-quote while legacy and model text cannot supp
     providerId: "anthropic",
     eventAt: null,
     publishedAt: null,
+    publishedAtPrecision: null,
     retrievedAt: "2026-07-24T12:00:00.000Z",
     entityKeys: ["acme"],
     sourceClass: "model_output",
@@ -408,14 +436,65 @@ test("matching source ID conflicts throw before the reasoner is called", async (
   assert.equal(reasonerCalls, 0);
 });
 
+test("matching intrinsic-unit conflicts throw before the reasoner is called", async () => {
+  let reasonerCalls = 0;
+  const first = exactSourceV2("intrinsic_matching_source_a", {
+    sourceRevisionId: "revision_shared_matching",
+    locator: { kind: "web_text", selector: "#same" },
+  });
+  const roleSpoof = exactSourceV2("intrinsic_matching_source_b", {
+    sourceRevisionId: "revision_shared_matching",
+    locator: { kind: "web_text", selector: "#same" },
+    evidenceRole: "counterevidence",
+  });
+  const service = createMatchingService({
+    async reason() {
+      reasonerCalls += 1;
+      return [];
+    },
+  });
+
+  await assert.rejects(service.analyze({
+    deals: [{ id: "deal_1", companyName: "Acme", status: "passed" }],
+    events: [marketEventV2(first)],
+    memoryContexts: [],
+    sources: [first, roleSpoof],
+  }), /intrinsic evidence unit|conflicting evidence metadata/i);
+  assert.equal(reasonerCalls, 0);
+});
+
+test("matching rejects a stale canonical event before the reasoner is called", async () => {
+  let reasonerCalls = 0;
+  const source = normalizedSourceV2("stale_matching_source");
+  const validEvent = marketEventV2(source);
+  const service = createMatchingService({
+    async reason() {
+      reasonerCalls += 1;
+      return [];
+    },
+  });
+
+  await assert.rejects(service.analyze({
+    deals: [{ id: "deal_1", companyName: "Acme", status: "passed" }],
+    events: [{
+      ...validEvent,
+      summary: "Tampered after its canonical fingerprint was computed.",
+    }],
+    memoryContexts: [],
+    sources: [source],
+  }), /fingerprint.*canonical payload/i);
+  assert.equal(reasonerCalls, 0);
+});
+
 test("drops unsupported claims and retains explicit fixture lineage", async () => {
   const service = createMatchingService({
     reason: async () => [{
       dealId: "deal_1",
       whyNow: "AI infrastructure networks funding increased. Unsupported customer claim.",
-      previousContext: "The fund passed because timing was early.",
-      positiveImplications: ["Market timing improved."],
-      negativeImplications: ["Competition increased."],
+      previousContext:
+        "Sample decision record. The fund passed because timing was early.",
+      positiveImplications: [],
+      negativeImplications: [],
       nextStep: "Review the company.",
       citedSourceIds: [
         "market_1",
@@ -433,9 +512,9 @@ test("drops unsupported claims and retains explicit fixture lineage", async () =
       claimSourceIds: {
         "AI infrastructure networks funding increased.": ["market_1"],
         "Unsupported customer claim.": ["missing_source"],
-        "The fund passed because timing was early.": ["fixture_1"],
-        "Market timing improved.": ["market_1", "deal_source_1"],
-        "Competition increased.": ["market_1"],
+        "Sample decision record. The fund passed because timing was early.": [
+          "fixture_1",
+        ],
       },
     }],
   });
@@ -454,13 +533,13 @@ test("drops unsupported claims and retains explicit fixture lineage", async () =
         "market_1",
         "Market source",
         "https://example.com/market",
-        "AI infrastructure networks funding increased. Market timing improved. Competition increased.",
+        "AI infrastructure networks funding increased.",
       ),
       priorExactSource(
         "deal_source_1",
         "Deal deck",
         "doc_1",
-        "AI infrastructure networks Deal evidence. Market timing improved.",
+        "AI infrastructure networks Deal evidence.",
       ),
       priorExactSource(
         "fixture_1",
@@ -473,27 +552,18 @@ test("drops unsupported claims and retains explicit fixture lineage", async () =
   });
 
   assert.equal(result.length, 1);
-  assert.equal(result[0].whyNow, "AI infrastructure networks funding increased.");
-  assert.deepEqual(result[0].demoFixtureIds, ["fixture_1"]);
-  assert.deepEqual(result[0].sources.map((source) => source.id), [
+  const grounded = result[0];
+  assert.ok(grounded);
+  assert.equal(grounded.whyNow, "AI infrastructure networks funding increased.");
+  assert.deepEqual(grounded.demoFixtureIds, ["fixture_1"]);
+  assert.deepEqual(grounded.sources.map((source) => source.id), [
     "market_1",
     "fixture_1",
-    "deal_source_1",
   ]);
-  assert.deepEqual(result[0].implications, {
-    positive: ["Market timing improved."],
-    negative: ["Competition increased."],
+  assert.deepEqual(grounded.implications, {
+    positive: [],
+    negative: [],
   });
-  assert.deepEqual(
-    result[0].claimSupport.find((support) =>
-      support.text === "Market timing improved."
-    ),
-    {
-      text: "Market timing improved.",
-      kind: "exact_quote",
-      sourceIds: ["market_1", "deal_source_1"],
-    },
-  );
 });
 
 test("rejects a match with no Deal-linked evidence and sanitizes unsafe actions", async () => {
@@ -586,6 +656,62 @@ test("rejects fabricated matching claims even when every cited source id exists"
         "Example deck",
         "doc_1",
         "The company makes infrastructure software.",
+      ),
+    ],
+  });
+
+  assert.deepEqual(result, []);
+});
+
+test("rejects a matching claim that strips negation from a complete evidence unit", async () => {
+  const strippedClaim = "Acme signed enterprise customers.";
+  const negativeStatement =
+    "The source did not establish that Acme signed enterprise customers.";
+  const previousContext = "Acme builds enterprise customer infrastructure.";
+  const service = createMatchingService({
+    reason: async () => [{
+      dealId: "deal_1",
+      whyNow: strippedClaim,
+      previousContext,
+      positiveImplications: [],
+      negativeImplications: [],
+      nextStep: "Review the cited evidence.",
+      citedSourceIds: ["market_negative", "deal_source_negative"],
+      demoFixtureIds: [],
+      scoreInputs: {
+        eventRelevance: 0.8,
+        dealRelevance: 0.8,
+        priorContextStrength: 0.7,
+        evidenceQuality: 0.8,
+      },
+      claimSourceIds: {
+        [strippedClaim]: ["market_negative"],
+        [previousContext]: ["deal_source_negative"],
+      },
+    }],
+  });
+
+  const result = await service.match({
+    deals: [{ id: "deal_1", companyName: "Acme", status: "passed" }],
+    events: [],
+    memoryContexts: [{
+      dealId: "deal_1",
+      text: previousContext,
+      sourceIds: ["deal_source_negative"],
+      fixtureIds: [],
+    }],
+    sources: [
+      publicExactSource(
+        "market_negative",
+        "Negative customer evidence",
+        "https://example.com/negative-customer-evidence",
+        negativeStatement,
+      ),
+      priorExactSource(
+        "deal_source_negative",
+        "Acme deck",
+        "doc_acme_negative",
+        previousContext,
       ),
     ],
   });

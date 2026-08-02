@@ -4,8 +4,15 @@ import {
   type CompanyAnalysisCounts,
   type DealMemoryBundle,
   type EvidenceField,
-  type SourceRef,
 } from "../contracts/domain";
+import { parseSourceRefV2Read } from "../contracts/legacy-evidence-adapter";
+import {
+  assertConsistentCanonicalEvidenceUnits,
+  sourceClaimSupportKind,
+  uniqueByCanonicalId,
+  type SourceRefV2,
+} from "../contracts/source-evidence";
+import { interactionSourceV2 } from "../matching/context";
 import type { GroundedMatch } from "../matching/service";
 import type { MemoryContext } from "../xtrace/service";
 
@@ -92,13 +99,18 @@ function completeAnalysis(input: {
   const { bundle, contexts, match } = input;
   const interaction = latestInteraction(bundle);
   const localSources = bundleSources(bundle);
+  const sampleDecisionSources = localSources.filter((source) =>
+    source.adaptation === "canonical"
+    && source.provenance === "demo_fixture"
+  );
+  const matchedEventSources = uniqueSources(
+    match?.events.flatMap((event): SourceRefV2[] => [...event.sources]) ?? [],
+  );
   const sources = uniqueSources([
     ...localSources,
     ...(match?.sources ?? []),
+    ...matchedEventSources,
   ]);
-  const publicSourceIds = sources
-    .filter((source) => source.provenance === "public_web")
-    .map((source) => source.id);
   const outcome = match
     ? match.confidence === "low" ? "monitor" : "belief_revised"
     : "no_material_change";
@@ -109,7 +121,7 @@ function completeAnalysis(input: {
         explanation: match.whyNow,
         eventIds: match.events.map((event) => event.id),
         events: match.events,
-        sourceIds: publicSourceIds,
+        sourceIds: matchedEventSources.map((source) => source.id),
       }
     : {
         relationship: "none" as const,
@@ -139,14 +151,12 @@ function completeAnalysis(input: {
       revisitConditions: interaction?.revisitConditions ?? [],
       lastEvaluatedAt: interaction?.occurredAt ?? null,
       memoryIds: unique(contexts.map((context) => context.memoryId)),
-      sourceIds: unique(localSources.map((source) => source.id)),
-      fixtureIds: unique([
-        ...bundle.interactions.map((item) => item.id),
-        ...contexts.flatMap((context) => context.fixtureIds),
-      ]),
+      sourceIds: unique(sampleDecisionSources.map((source) => source.id)),
+      fixtureIds: unique(sampleDecisionSources.map((source) => source.id)),
     },
     marketEvidence,
     implications: match?.implications ?? { positive: [], negative: [] },
+    claimSupport: match?.claimSupport ?? [],
     recommendedNextMove: outcome === "belief_revised"
       ? match!.nextStep
       : CONTINUE_MONITORING,
@@ -208,22 +218,29 @@ function unavailableAnalysis(input: {
 
 function buildCompanyBrief(
   bundle: DealMemoryBundle,
-  sources: SourceRef[],
+  sources: SourceRefV2[],
 ): CompanyAnalysis["companyBrief"] {
   const interaction = latestInteraction(bundle);
   const fixtureId = interaction?.id;
-  const firstFact = bundle.facts[0];
+  const groundedFact = bundle.facts.map((fact) => ({
+    fact,
+    sourceIds: fact.sources.map(parseSourceRefV2Read)
+      .filter((source) =>
+        (source.provenance === "public_web"
+          || source.provenance === "source_document")
+        && sourceClaimSupportKind(source, fact.text) !== null
+      )
+      .map((source) => source.id),
+  })).find(({ sourceIds }) => sourceIds.length > 0);
 
   return {
     icSnapshot: [
-      ...(firstFact
+      ...(groundedFact
         ? [{
             label: "Company overview",
-            value: firstFact.text,
+            value: groundedFact.fact.text,
             unavailableReason: null,
-            sourceIds: unique(
-              firstFact.sources.map((source) => source.id),
-            ),
+            sourceIds: unique(groundedFact.sourceIds),
           }]
         : []),
       ...(fixtureId
@@ -240,40 +257,8 @@ function buildCompanyBrief(
           }]
         : []),
     ],
-    traction: [
-      exactEvidenceField(
-        "ARR",
-        /\bARR\b(?:\s*(?:of|:|=))?\s*\$[\d,.]+(?:[KMB])?/i,
-        bundle,
-      ),
-      exactEvidenceField(
-        "Customers / users",
-        /\b[\d,.]+\+?\s+(?:customers|users)\b/i,
-        bundle,
-      ),
-      exactEvidenceField(
-        "Growth",
-        /\b\d+(?:\.\d+)?%\s+(?:[A-Za-z-]+\s+){0,3}(?:growth|gains?|increase)\b/i,
-        bundle,
-      ),
-    ],
-    dealTerms: [
-      exactEvidenceField(
-        "Round",
-        /\b(?:pre-seed|seed|series\s+[A-Z])\b/i,
-        bundle,
-      ),
-      exactEvidenceField(
-        "Raise",
-        /\b(?:raising|raise|seeking)\s+\$[\d,.]+(?:[KMB])?\b/i,
-        bundle,
-      ),
-      exactEvidenceField(
-        "Valuation",
-        /\b(?:valuation|valued at)\s*(?:of|:|=|at)?\s*\$[\d,.]+(?:[KMB])?\b/i,
-        bundle,
-      ),
-    ],
+    traction: unavailableTraction(),
+    dealTerms: unavailableDealTerms(),
     risks: interaction
       ? interaction.concerns.map((concern) => ({
           severity: "medium" as const,
@@ -294,25 +279,6 @@ function buildCompanyBrief(
       : [],
     sourceLineage: sources,
   };
-}
-
-function exactEvidenceField(
-  label: string,
-  pattern: RegExp,
-  bundle: DealMemoryBundle,
-): EvidenceField {
-  for (const source of bundle.facts.flatMap((fact) => fact.sources)) {
-    const match = source.excerpt.match(pattern);
-    if (match?.[0]) {
-      return {
-        label,
-        value: match[0],
-        unavailableReason: null,
-        sourceIds: [source.id],
-      };
-    }
-  }
-  return unavailableField(label);
 }
 
 function unavailableTraction(): EvidenceField[] {
@@ -346,28 +312,22 @@ function latestInteraction(bundle: DealMemoryBundle) {
   )[0];
 }
 
-function bundleSources(bundle: DealMemoryBundle): SourceRef[] {
+function bundleSources(bundle: DealMemoryBundle): SourceRefV2[] {
   return uniqueSources([
-    ...bundle.facts.flatMap((fact) => fact.sources),
-    ...bundle.interactions.map((interaction): SourceRef => ({
-      id: interaction.id,
-      provenance: interaction.provenance,
-      title: interaction.label,
-      excerpt: [
-        interaction.label,
-        interaction.summary,
-        `Decision reason: ${interaction.decisionReason}`,
-        `Concerns: ${interaction.concerns.join(" ") || "None recorded."}`,
-        `Revisit conditions: ${
-          interaction.revisitConditions.join(" ") || "None recorded."
-        }`,
-      ].join(". "),
-    })),
+    ...bundle.facts.flatMap((fact) =>
+      fact.sources.flatMap((source) => {
+        const parsed = parseSourceRefV2Read(source);
+        return parsed.adaptation === "canonical" ? [parsed] : [];
+      })
+    ),
+    ...bundle.interactions.map(interactionSourceV2),
   ]);
 }
 
-function uniqueSources(sources: SourceRef[]): SourceRef[] {
-  return [...new Map(sources.map((source) => [source.id, source])).values()];
+function uniqueSources(sources: SourceRefV2[]): SourceRefV2[] {
+  const unique = uniqueByCanonicalId(sources, "source");
+  assertConsistentCanonicalEvidenceUnits(unique);
+  return unique;
 }
 
 function unique(values: string[]): string[] {

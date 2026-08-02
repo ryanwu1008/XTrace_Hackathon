@@ -23,16 +23,18 @@ import { sql } from "drizzle-orm";
 import type {
   CompanyBrief,
   CompanyMarketEvidence,
+  ClaimSupportV2,
+  EvidenceSourceRef,
   EvidenceCoverage,
   InvestmentMemorySnapshot,
   OpportunityReportItem,
-  SourceRef,
 } from "../lib/contracts/domain";
 import type {
   Calculation,
   ClaimEdge,
   EvidencePack,
 } from "../lib/contracts/evidence";
+
 import type {
   ActionDraft,
   CandidateProviderAttempt,
@@ -50,6 +52,10 @@ import type { ExtractionPreview } from "./repositories/uploaded-documents";
 import type {
   FundPolicyValues,
 } from "../seed/underwriting/balanced-policy-v1";
+
+type PersistedCompanyMarketEvidence = CompanyMarketEvidence & {
+  claimSupport?: ClaimSupportV2[];
+};
 
 export const workspaces = pgTable("workspaces", {
   id: text("id").primaryKey(),
@@ -602,14 +608,14 @@ export const companyAnalyses = pgTable("company_analyses", {
     .$type<InvestmentMemorySnapshot>()
     .notNull(),
   marketEvidence: jsonb("market_evidence")
-    .$type<CompanyMarketEvidence>()
+    .$type<PersistedCompanyMarketEvidence>()
     .notNull(),
   implications: jsonb("implications")
     .$type<{ positive: string[]; negative: string[] }>()
     .notNull(),
   recommendedNextMove: text("recommended_next_move").notNull(),
   companyBrief: jsonb("company_brief").$type<CompanyBrief>().notNull(),
-  sourceRefs: jsonb("source_refs").$type<SourceRef[]>().notNull(),
+  sourceRefs: jsonb("source_refs").$type<EvidenceSourceRef[]>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   primaryKey({ columns: [table.workspaceId, table.id] }),

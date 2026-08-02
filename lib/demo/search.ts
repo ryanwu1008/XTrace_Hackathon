@@ -1,7 +1,10 @@
 import type { ChatEvidence } from "../chat/service";
-import type { SourceRef } from "../contracts/domain";
+import type { EvidenceSourceRef, SourceRef } from "../contracts/domain";
+import { validateEvidenceSourceCatalog } from "../contracts/evidence-catalog";
 import { DEMO_DEAL_EVIDENCE } from "../corpus/evidence";
+import { DEMO_FIXTURES } from "../corpus/fixtures";
 import { DEMO_MARKET_REPORT_EVIDENCE } from "../corpus/market-evidence";
+import { interactionSourceV2 } from "../matching/context";
 import { buildDemoViewModel } from "./view-model";
 
 const STOP_WORDS = new Set([
@@ -61,20 +64,15 @@ function documentSource(
   };
 }
 
-function fixtureSource(deal: ReturnType<typeof buildDemoViewModel>["deals"][number]): SourceRef | null {
-  if (!deal.fixture) return null;
-  return {
-    id: deal.fixture.id,
-    provenance: "demo_fixture",
-    title: deal.fixture.label,
-    excerpt: [
-      deal.fixture.label,
-      deal.fixture.meetingSummary,
-      `Decision reason: ${deal.fixture.decisionReason}`,
-      `Concerns: ${deal.fixture.concerns.join(" ") || "None recorded."}`,
-      `Revisit conditions: ${deal.fixture.revisitConditions.join(" ") || "None recorded."}`,
-    ].join(". "),
-  };
+function fixtureSource(
+  deal: ReturnType<typeof buildDemoViewModel>["deals"][number],
+): EvidenceSourceRef | null {
+  const fixture = DEMO_FIXTURES.find((candidate) =>
+    candidate.dealId === deal.id
+  );
+  return fixture
+    ? interactionSourceV2({ ...fixture, summary: fixture.meetingSummary })
+    : null;
 }
 
 export function searchDemoEvidence(question: string): ChatEvidence[] {
@@ -101,7 +99,7 @@ export function searchDemoEvidence(question: string): ChatEvidence[] {
     const score = matches.length
       + queryTokens.filter((token) => companyTokens.has(token)).length * 100;
 
-    const sources = [source];
+    const sources: EvidenceSourceRef[] = [source];
     const fixture = fixtureSource(deal);
     if (fixture) sources.push(fixture);
     const fixtureContext = deal.fixture
@@ -130,8 +128,13 @@ export function searchDemoEvidence(question: string): ChatEvidence[] {
       ? [{ score, text: evidence.fact, sources: [evidence.source] }]
       : [];
   });
-  return [...dealEvidence, ...reportEvidence]
-    .sort((left, right) => right.score - left.score)
+  const candidates = [...dealEvidence, ...reportEvidence]
+    .sort((left, right) => right.score - left.score);
+  validateEvidenceSourceCatalog(
+    candidates.flatMap((candidate) => candidate.sources),
+    "demo search source",
+  );
+  return candidates
     .slice(0, 12)
     .map(({ text, sources }) => ({ text, sources }));
 }

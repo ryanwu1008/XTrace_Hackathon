@@ -325,7 +325,7 @@ test("dashboard supports report deep links, page anchors, and a two-row mobile n
 
   assert.match(page, /searchParams\.get\("view"\)/);
   assert.match(page, /searchParams\.get\("report"\)/);
-  assert.match(page, /#page=\$\{source\.page\}/);
+  assert.match(page, /#page=\$\{page\}/);
   assert.match(page, /No Deals match/i);
   assert.match(css, /grid-template-columns:repeat\(4,1fr\)/);
 });

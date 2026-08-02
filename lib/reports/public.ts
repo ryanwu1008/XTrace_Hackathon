@@ -2,10 +2,8 @@ import type {
   IntelligenceReportRecord,
   IntelligenceReportWrite,
 } from "../../db/repositories/intelligence";
-import {
-  CompanyAnalysisSchema,
-  type CompanyAnalysis,
-} from "../contracts/domain";
+import type { CompanyAnalysis } from "../contracts/domain";
+import { safeParseCompanyAnalysisEvidence } from "./company-analysis-evidence";
 import {
   sanitizeCompanyAnalysisNextStep,
   sanitizeReportOpportunities,
@@ -14,13 +12,13 @@ import {
 export function toPublicCompanyAnalysis(
   value: CompanyAnalysis,
 ): CompanyAnalysis | null {
-  const parsed = CompanyAnalysisSchema.safeParse(value);
-  if (!parsed.success) return null;
+  const parsed = safeParseCompanyAnalysisEvidence(value);
+  if (!parsed) return null;
   return {
-    ...parsed.data,
+    ...parsed,
     recommendedNextMove: sanitizeCompanyAnalysisNextStep({
-      outcome: parsed.data.outcome,
-      value: parsed.data.recommendedNextMove,
+      outcome: parsed.outcome,
+      value: parsed.recommendedNextMove,
     }),
   };
 }

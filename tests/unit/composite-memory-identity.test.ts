@@ -5,6 +5,7 @@ import { createMemoryIntelligenceRepository } from "../../db/repositories/intell
 import { createMemoryUploadedDocumentsRepository } from "../../db/repositories/uploaded-documents";
 import { createMemoryXTraceLineageRepository } from "../../db/repositories/xtrace-lineage";
 import { createMemoryDemoDataStore } from "../../lib/storage/service";
+import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelligence-report";
 
 const first = { workspaceId: "workspace:a", id: "external" };
 const second = { workspaceId: "workspace", id: "a:external" };
@@ -31,13 +32,12 @@ test("memory report identity is injective when workspace and report ids contain 
     [first, "First"],
     [second, "Second"],
   ] as const) {
-    await repository.saveReport({
+    await repository.saveReport(canonicalIntelligenceReportFixture({
       ...identity,
       runId: `run_${marketSummary.toLowerCase()}`,
       createdAt: "2026-07-28T12:00:00.000Z",
       marketSummary,
-      opportunities: [],
-    });
+    }));
   }
 
   assert.equal(

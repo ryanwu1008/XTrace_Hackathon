@@ -17,6 +17,7 @@ import {
   createMemoryUploadedDocumentsRepository,
 } from "../../db/repositories/uploaded-documents";
 import type { RouteDependencies } from "../../lib/api/route-dependencies";
+import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelligence-report";
 
 const WORKSPACE_ID = "workspace_product_deals";
 
@@ -55,14 +56,13 @@ async function productFixture() {
       confirmedAt: createdAt,
     });
   }
-  await intelligence.saveReport({
+  await intelligence.saveReport(canonicalIntelligenceReportFixture({
     id: "report_product",
     workspaceId: WORKSPACE_ID,
     runId: "run_product",
     createdAt: "2026-07-29T13:00:00.000Z",
     marketSummary: "Product report",
-    opportunities: [],
-  });
+  }));
   await uploads.create({
     id: "upload_product",
     workspaceId: WORKSPACE_ID,

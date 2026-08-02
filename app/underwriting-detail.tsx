@@ -2,11 +2,14 @@
 
 import { useEffect, useRef } from "react";
 
+import type { CompanyAnalysis } from "../lib/contracts/domain";
 import type {
   PublicActionDraft,
   PublicCandidateVersionSnapshot,
 } from "../lib/underwriting/read-model";
 import { SourceRevisionLink } from "./source-revision-link";
+import { formatTemporalForDisplay } from "../lib/format/temporal";
+import { safeExternalHttpUrl } from "../lib/security/safe-url";
 import {
   financialCalculationLineage,
   lineageForClaim,
@@ -230,13 +233,7 @@ export interface UnderwritingAnalysisContext {
   marketEvidence: {
     relationship: string;
     explanation: string;
-    events: Array<{
-      id: string;
-      title: string;
-      eventType: string;
-      publishedAt: string;
-      sourceIds: string[];
-    }>;
+    events: CompanyAnalysis["marketEvidence"]["events"];
   };
   implications: {
     positive: string[];
@@ -246,16 +243,7 @@ export interface UnderwritingAnalysisContext {
     previousMeetingSummary: string;
     decisionReason: string;
   };
-  sources: Array<{
-    id: string;
-    title: string;
-    url?: string;
-    documentId?: string;
-    page?: number;
-    publisher?: string;
-    provenance: string;
-    excerpt: string;
-  }>;
+  sources: CompanyAnalysis["sources"];
 }
 
 export function UnderwritingDetailDialog({
@@ -358,9 +346,15 @@ export function UnderwritingDetailPanel({
               <article key={event.id}>
                 <span>{humanize(event.eventType)}</span>
                 <h4>{event.title}</h4>
-                <time>{formatDate(event.publishedAt)}</time>
+                <time>
+                  {event.publishedAt
+                    ? formatDate(event.publishedAt)
+                    : "Publication date unknown"}
+                </time>
                 <footer>
-                  {event.sourceIds.map((sourceId) => {
+                  {("schemaVersion" in event
+                    ? event.sources.map((source) => source.id)
+                    : event.sourceIds).map((sourceId) => {
                     const source = analysis.sources.find(
                       (candidate) => candidate.id === sourceId,
                     );
@@ -1036,11 +1030,19 @@ function AnalysisSourceLink({
 }: {
   source: UnderwritingAnalysisContext["sources"][number];
 }) {
+  const page = "schemaVersion" in source
+    && source.locator?.kind === "document_page"
+    ? source.locator.page
+    : !("schemaVersion" in source)
+    ? source.page
+    : undefined;
   const href = source.documentId
     ? `/api/documents/${encodeURIComponent(source.documentId)}/access${
-        source.page ? `#page=${source.page}` : ""
+        page ? `#page=${page}` : ""
       }`
-    : source.url;
+    : safeExternalHttpUrl("schemaVersion" in source
+      ? source.canonicalUrl ?? undefined
+      : source.url);
   return href ? (
     <a href={href} target="_blank" rel="noreferrer">
       {source.publisher ?? source.title} ↗
@@ -1090,12 +1092,17 @@ function formatPercent(value: string | null): string {
     : value;
 }
 
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat("en", {
+export function formatDate(value: string): string {
+  const options = {
     month: "short",
     day: "numeric",
     year: "numeric",
-  }).format(new Date(value));
+  } as const;
+  return formatTemporalForDisplay({
+    value,
+    dateOnly: options,
+    timestamp: options,
+  });
 }
 
 function formatDateOnly(value: string): string {
@@ -1105,17 +1112,6 @@ function formatDateOnly(value: string): string {
     year: "numeric",
     timeZone: "UTC",
   }).format(new Date(`${value}T00:00:00.000Z`));
-}
-
-function safeExternalHttpUrl(value: string): string | null {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:"
-      ? url.toString()
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function humanize(value: string): string {

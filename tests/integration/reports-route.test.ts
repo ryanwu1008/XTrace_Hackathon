@@ -4,7 +4,8 @@ import test from "node:test";
 import "../helpers/public-demo";
 import { GET as getReport } from "../../app/api/reports/[id]/route";
 import {
-  getIntelligenceRepository,
+  createMemoryIntelligenceRepository,
+  type IntelligenceReportRecord,
   type IntelligenceReportWrite,
 } from "../../db/repositories/intelligence";
 import { toPublicReport } from "../../lib/reports/public";
@@ -53,13 +54,22 @@ test("public report serializer sanitizes a malicious legacy next step", () => {
 });
 
 test("report API sanitizes a malicious next step from a legacy durable report", async () => {
-  const repository = getIntelligenceRepository();
   const reportId = "report_api_legacy_malicious";
-  await repository.saveReport(legacyReport(reportId));
+  const storedLegacyReport = legacyReport(reportId);
+  const repository = {
+    ...createMemoryIntelligenceRepository(),
+    async getReport(workspaceId: string, id: string) {
+      return workspaceId === storedLegacyReport.workspaceId
+          && id === storedLegacyReport.id
+        ? storedLegacyReport as unknown as IntelligenceReportRecord
+        : null;
+    },
+  };
 
   const response = await getReport(
     new Request(`http://localhost/api/reports/${reportId}`),
     { params: Promise.resolve({ id: reportId }) },
+    { intelligence: repository },
   );
   assert.equal(response.status, 200);
   const payload = await response.json() as {

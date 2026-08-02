@@ -6,6 +6,8 @@ import type {
 import type { ExactSourceMemoryBundle } from "../db/repositories/deal-registry";
 import type { SourceEvidenceInput } from "../db/repositories/evidence-packs";
 import type { PersistedIngest } from "../lib/xtrace/service";
+import { parseSourceRefV2Read } from "../lib/contracts/legacy-evidence-adapter";
+import { sourceTextForRetrieval } from "../lib/contracts/source-evidence";
 import {
   STRUCTURED_IMAGE_EVIDENCE_PREFIX,
 } from "../lib/uploads/structured-image-evidence";
@@ -166,7 +168,9 @@ function isImageWithoutExactQuote(
         source.provenance === "model_inference"
         && source.documentId === upload.sourceId
         && source.sourceRevisionId === upload.sourceRevisionId
-        && source.excerpt.startsWith(STRUCTURED_IMAGE_EVIDENCE_PREFIX)
+        && sourceTextForRetrieval(parseSourceRefV2Read(source)).startsWith(
+          STRUCTURED_IMAGE_EVIDENCE_PREFIX,
+        )
       )
     )
     && Boolean(upload.extractionPreview?.facts.length)

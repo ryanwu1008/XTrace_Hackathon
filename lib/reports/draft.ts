@@ -1,9 +1,10 @@
 import type {
   CompanyAnalysis,
+  EvidenceSourceRef,
   OpportunityReportItem,
-  SourceRef,
 } from "../contracts/domain";
 import { sanitizeReportNextStep } from "./next-step-policy";
+import { safeExternalHttpUrl } from "../security/safe-url";
 
 export interface InternalReportDraft {
   subject: string;
@@ -141,20 +142,33 @@ function appendList(lines: string[], heading: string, items: string[]): void {
   lines.push("", heading, ...items.map((item) => `- ${item}`));
 }
 
-function formatSource(source: SourceRef, origin: string): string {
+function formatSource(source: EvidenceSourceRef, origin: string): string {
   const url = resolveSourceUrl(source, origin);
   return url ? `- ${source.title} — ${url}` : `- ${source.title}`;
 }
 
-function resolveSourceUrl(source: SourceRef, origin: string): string | undefined {
-  if (source.url) {
-    const url = new URL(source.url);
-    if (source.page && !url.hash) url.hash = `page=${source.page}`;
+function resolveSourceUrl(
+  source: EvidenceSourceRef,
+  origin: string,
+): string | undefined {
+  const externalUrl = "schemaVersion" in source
+    ? source.canonicalUrl ?? undefined
+    : source.url;
+  const page = "schemaVersion" in source
+    && source.locator?.kind === "document_page"
+    ? source.locator.page
+    : !("schemaVersion" in source)
+    ? source.page
+    : undefined;
+  const safeExternalUrl = safeExternalHttpUrl(externalUrl);
+  if (safeExternalUrl) {
+    const url = new URL(safeExternalUrl);
+    if (page && !url.hash) url.hash = `page=${page}`;
     return url.toString();
   }
   if (!source.documentId) return undefined;
-  const page = source.page ? `#page=${source.page}` : "";
-  return `${origin}/api/documents/${encodeURIComponent(source.documentId)}/access${page}`;
+  const pageAnchor = page ? `#page=${page}` : "";
+  return `${origin}/api/documents/${encodeURIComponent(source.documentId)}/access${pageAnchor}`;
 }
 
 function unique(values: string[]): string[] {

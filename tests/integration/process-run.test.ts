@@ -11,8 +11,15 @@ import { createMemoryIntelligenceRepository } from "../../db/repositories/intell
 import { createRunsRepository } from "../../db/repositories/runs";
 import type { DealMemoryBundle } from "../../lib/contracts/domain";
 import { buildPreloadedDealMemoryBundles } from "../../lib/corpus/service";
+import { classifyMarketEventForAnalysis } from "../../lib/market/classification";
+import { refingerprintMarketEvent } from "../../lib/market/identity";
 import type { NormalizedMarketEvent } from "../../lib/market/types";
 import { processClaimedRun } from "../../worker/process-run";
+import {
+  exactSourceV2,
+  marketEventV2,
+  normalizedSourceV2,
+} from "../helpers/source-evidence-v2";
 
 const READY_IMPORT_GATE = {
   async assertReady() {},
@@ -90,33 +97,76 @@ function createTestIntelligenceRepository() {
   });
 }
 
+function marketEventFixture(input: {
+  id: string;
+  sourceId: string;
+  title: string;
+  statement: string;
+  canonicalUrl: string;
+  publishedAt: string;
+  retrievedAt?: string;
+  providerId?: string;
+  eventType: string;
+  sectors: string[];
+  themes: string[];
+  positiveImplications?: string[];
+  negativeImplications?: string[];
+  confidence: "low" | "medium" | "high";
+  entityKeys?: string[];
+  publisher?: string;
+}): NormalizedMarketEvent {
+  const entityKeys = (input.entityKeys ?? []).map((key) =>
+    key.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+  ).filter(Boolean);
+  const source = normalizedSourceV2(input.sourceId, {
+    title: input.title,
+    canonicalUrl: input.canonicalUrl,
+    publisher: input.publisher ?? "Official source",
+    providerId: input.providerId ?? "official",
+    eventAt: null,
+    eventAtPrecision: null,
+    publishedAt: input.publishedAt,
+    publishedAtPrecision: "timestamp",
+    retrievedAt: input.retrievedAt ?? "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: input.statement,
+    },
+  });
+  return marketEventV2(source, {
+    id: input.id,
+    title: input.title,
+    eventType: input.eventType,
+    sectors: input.sectors,
+    themes: input.themes,
+    summary: input.statement,
+    positiveImplications: input.positiveImplications ?? [],
+    negativeImplications: input.negativeImplications ?? [],
+    confidence: input.confidence,
+    entityKeys,
+  }) as NormalizedMarketEvent;
+}
+
 function marketEvent(index: number): NormalizedMarketEvent {
   const hour = String(index).padStart(2, "0");
-  return {
+  return marketEventFixture({
     id: `market_${index}`,
+    sourceId: `market_source_${index}`,
     title: `AI infrastructure startup ${index} closes a Series B funding round`,
+    statement: `AI infrastructure startup ${index} raised venture funding.`,
+    canonicalUrl: `https://example.com/event-${index}`,
+    publishedAt: `2026-07-23T${hour}:00:00.000Z`,
     eventType: "funding",
     sectors: ["infrastructure"],
     themes: ["venture-capital"],
-    summary: `AI infrastructure startup ${index} raised venture funding.`,
-    positiveImplications: [],
-    negativeImplications: [],
-    publishedAt: `2026-07-23T${hour}:00:00.000Z`,
     confidence: "high",
-    sources: [{
-      id: `market_source_${index}`,
-      provenance: "public_web",
-      title: `AI infrastructure startup ${index} closes a Series B funding round`,
-      url: `https://example.com/event-${index}`,
-      publishedAt: `2026-07-23T${hour}:00:00.000Z`,
-      excerpt: `AI infrastructure startup ${index} raised venture funding.`,
-    }],
-    canonicalUrl: `https://example.com/event-${index}`,
-    contentChecksum: `checksum_${index}`,
-    retrievedAt: "2026-07-24T12:00:00.000Z",
-    providerId: "official",
     entityKeys: [`entity-${index}`],
-  };
+  });
 }
 
 test("a claimed run fails before market work when durable product-input confirmation is incomplete", async () => {
@@ -312,6 +362,42 @@ test("a claimed run persists market evidence, an always-present summary, and ran
   assert.equal(run?.id, queued.id);
   const intelligence = createTestIntelligenceRepository();
   const bundles = buildPreloadedDealMemoryBundles();
+  const ably = bundles.find(({ dealId }) => dealId === "deal_ably");
+  assert.ok(ably);
+  for (const fact of ably.facts) {
+    fact.sources = fact.sources.map((source) =>
+      source.id === "evidence_ably_page_5"
+        ? exactSourceV2(source.id, {
+          provenance: "source_document",
+          title: source.title,
+          canonicalUrl: null,
+          documentId: "document_ably",
+          publisher: null,
+          providerId: "source-registry",
+          eventAt: null,
+          eventAtPrecision: null,
+          publishedAt: null,
+          publishedAtPrecision: null,
+          retrievedAt: "2026-07-01T00:00:00.000Z",
+          retrievedAtPrecision: "timestamp",
+          updatedAt: null,
+          updatedAtPrecision: null,
+          entityKeys: ["ably"],
+          sourceClass: "company_official",
+          sourceAuthority: "primary",
+          evidenceRole: "context",
+          sourceRevisionId: "revision_evidence_ably_page_5",
+          locator: { kind: "document_page", page: 5 },
+          text: {
+            status: "verified_exact",
+            verbatimExcerpt:
+              "Ably is architected around four pillars of dependability, for realtime communication at the edge, delivered as a cloud-native pub/sub platform.",
+          },
+        })
+        : source
+    );
+  }
+  let downstreamEvents: NormalizedMarketEvent[] = [];
 
   const result = await processClaimedRun(run!, {
     runs,
@@ -335,36 +421,26 @@ test("a claimed run persists market evidence, an always-present summary, and ran
             rejectedCount: 0,
             lastSuccessAt: "2026-07-23T12:00:00.000Z",
           }],
-          events: [{
+          events: [marketEventFixture({
             id: "market_1",
+            sourceId: "market_source",
             title: "Realtime infrastructure company launches a cloud software platform",
+            statement: "The announcement concerns realtime infrastructure and launches a cloud software platform.",
+            canonicalUrl: "https://example.com/announcement",
+            publishedAt: "2026-07-20T00:00:00.000Z",
+            retrievedAt: "2026-07-23T12:00:00.000Z",
             eventType: "technology",
             sectors: ["infrastructure"],
             themes: ["realtime"],
-            summary: "A company launched a cloud software platform for realtime infrastructure.",
-            positiveImplications: [],
-            negativeImplications: [],
-            publishedAt: "2026-07-20T00:00:00.000Z",
             confidence: "medium",
-            sources: [{
-              id: "market_source",
-              provenance: "public_web",
-              title: "Realtime infrastructure company launches a cloud software platform",
-              url: "https://example.com/announcement",
-              publishedAt: "2026-07-20T00:00:00.000Z",
-              excerpt: "The announcement concerns realtime infrastructure and launches a cloud software platform.",
-            }],
-            canonicalUrl: "https://example.com/announcement",
-            contentChecksum: "checksum",
-            retrievedAt: "2026-07-23T12:00:00.000Z",
-            providerId: "official",
             entityKeys: ["realtime infrastructure"],
-          }],
+          })],
         };
       },
     },
     reasoner: {
-      async reason() {
+      async reason(input) {
+        downstreamEvents = structuredClone(input.events) as NormalizedMarketEvent[];
         return [{
           dealId: "deal_ably",
           whyNow: "The announcement concerns realtime infrastructure and launches a cloud software platform.",
@@ -401,7 +477,26 @@ test("a claimed run persists market evidence, an always-present summary, and ran
   assert.equal(result.report.counts.companyCount, 19);
   assert.equal(result.report.counts.beliefRevised, 1);
   assert.equal(result.report.priorityDealId, "deal_ably");
-  assert.equal((await intelligence.listMarketEvents("workspace_demo")).length, 1);
+  const persistedEvents = await intelligence.listMarketEvents("workspace_demo");
+  assert.equal(persistedEvents.length, 1);
+  assert.deepEqual(
+    downstreamEvents,
+    persistedEvents,
+    "the Worker must give matching the exact canonical payload it persisted",
+  );
+  const reportEvent = result.report.companyAnalyses.find(
+    (analysis) => analysis.dealId === "deal_ably",
+  )?.marketEvidence.events[0];
+  assert.deepEqual(
+    reportEvent,
+    persistedEvents[0],
+    "the report must embed the exact same-ID canonical event payload",
+  );
+  assert.notEqual(
+    persistedEvents[0].id,
+    "market_1",
+    "classification changes require a reidentified canonical event",
+  );
 });
 
 test("persists a generic public item but excludes it from downstream analysis without failing the run", async () => {
@@ -438,32 +533,21 @@ test("persists a generic public item but excludes it from downstream analysis wi
             rejectedCount: 0,
             lastSuccessAt: "2026-07-24T12:00:00.000Z",
           }],
-          events: [{
+          events: [marketEventFixture({
             id: "generic-fda-release",
+            sourceId: "generic-fda-source",
             title: "FDA names a new deputy commissioner",
+            statement: "The agency announced a leadership appointment.",
+            canonicalUrl: "https://www.fda.gov/news-events/leadership-appointment",
+            publishedAt: "2026-07-24T11:30:00.000Z",
+            retrievedAt: "2026-07-24T12:00:00.000Z",
+            providerId: "fda-news",
+            publisher: "U.S. Food and Drug Administration",
             eventType: "regulatory",
             sectors: ["healthcare"],
             themes: ["regulation"],
-            summary: "The agency announced a leadership appointment.",
-            positiveImplications: [],
-            negativeImplications: [],
-            publishedAt: "2026-07-24T11:30:00.000Z",
             confidence: "high",
-            sources: [{
-              id: "generic-fda-source",
-              provenance: "public_web",
-              title: "FDA names a new deputy commissioner",
-              url: "https://www.fda.gov/news-events/leadership-appointment",
-              publisher: "U.S. Food and Drug Administration",
-              publishedAt: "2026-07-24T11:30:00.000Z",
-              excerpt: "The agency announced a leadership appointment.",
-            }],
-            canonicalUrl: "https://www.fda.gov/news-events/leadership-appointment",
-            contentChecksum: "generic-fda-checksum",
-            retrievedAt: "2026-07-24T12:00:00.000Z",
-            providerId: "fda-news",
-            entityKeys: [],
-          }],
+          })],
         };
       },
     },
@@ -520,31 +604,19 @@ test("XTrace recall failure never falls back to structured memory and marks the 
             rejectedCount: 0,
             lastSuccessAt: "2026-07-23T12:00:00.000Z",
           }],
-          events: [{
+          events: [marketEventFixture({
             id: "market_2",
+            sourceId: "market_source_2",
             title: "SEC adopts final cybersecurity disclosure rule",
+            statement: "The final rule changes cybersecurity disclosure requirements for public companies.",
+            canonicalUrl: "https://example.com/event",
+            publishedAt: "2026-07-20T00:00:00.000Z",
+            retrievedAt: "2026-07-23T12:00:00.000Z",
             eventType: "regulatory",
             sectors: [],
             themes: [],
-            summary: "The final rule changes cybersecurity disclosure requirements for public companies.",
-            positiveImplications: [],
-            negativeImplications: [],
-            publishedAt: "2026-07-20T00:00:00.000Z",
             confidence: "medium",
-            sources: [{
-              id: "market_source_2",
-              provenance: "public_web",
-              title: "SEC adopts final cybersecurity disclosure rule",
-              url: "https://example.com/event",
-              publishedAt: "2026-07-20T00:00:00.000Z",
-              excerpt: "The final rule changes cybersecurity disclosure requirements for public companies.",
-            }],
-            canonicalUrl: "https://example.com/event",
-            contentChecksum: "checksum_2",
-            retrievedAt: "2026-07-23T12:00:00.000Z",
-            providerId: "official",
-            entityKeys: [],
-          }],
+          })],
         };
       },
     },
@@ -614,31 +686,19 @@ test("polls pending XTrace ingest jobs before recall", async () => {
             rejectedCount: 0,
             lastSuccessAt: "2026-07-24T12:00:00.000Z",
           }],
-          events: [{
+          events: [marketEventFixture({
             id: "market_3",
+            sourceId: "market_source_3",
             title: "SEC adopts final cybersecurity disclosure rule",
+            statement: "The final rule changes cybersecurity disclosure requirements for public companies.",
+            canonicalUrl: "https://example.com/event-3",
+            publishedAt: "2026-07-22T00:00:00.000Z",
+            retrievedAt: "2026-07-24T12:00:00.000Z",
             eventType: "regulatory",
             sectors: [],
             themes: [],
-            summary: "The final rule changes cybersecurity disclosure requirements for public companies.",
-            positiveImplications: [],
-            negativeImplications: [],
-            publishedAt: "2026-07-22T00:00:00.000Z",
             confidence: "medium",
-            sources: [{
-              id: "market_source_3",
-              provenance: "public_web",
-              title: "SEC adopts final cybersecurity disclosure rule",
-              url: "https://example.com/event-3",
-              publishedAt: "2026-07-22T00:00:00.000Z",
-              excerpt: "The final rule changes cybersecurity disclosure requirements for public companies.",
-            }],
-            canonicalUrl: "https://example.com/event-3",
-            contentChecksum: "checksum_3",
-            retrievedAt: "2026-07-24T12:00:00.000Z",
-            providerId: "official",
-            entityKeys: [],
-          }],
+          })],
         };
       },
     },
@@ -688,10 +748,10 @@ test("bounds market evidence before XTrace and Claude while preserving all event
   const bundles = buildPreloadedDealMemoryBundles();
   const fetchedEvents = Array.from({ length: 23 }, (_, index) =>
     marketEvent(index)
-  );
-  for (const event of fetchedEvents) {
-    event.summary = `${event.summary} ${"market evidence ".repeat(100)}`;
-  }
+  ).map((event) => refingerprintMarketEvent({
+    ...event,
+    summary: `${event.summary} ${"market evidence ".repeat(100)}`,
+  }));
   const recallQueries: string[] = [];
   let reasonerEventIds: string[] = [];
 
@@ -759,7 +819,9 @@ test("bounds market evidence before XTrace and Claude while preserving all event
 
   assert.deepEqual(
     reasonerEventIds,
-    Array.from({ length: 20 }, (_, offset) => `market_${22 - offset}`),
+    fetchedEvents.slice().reverse().slice(0, 20).map((event) =>
+      classifyMarketEventForAnalysis(event)?.id
+    ),
   );
   assert.equal(recallQueries.length, 19);
   assert.ok(

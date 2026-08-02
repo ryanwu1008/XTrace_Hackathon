@@ -460,6 +460,42 @@ test("normalized text cannot masquerade as exact support", () => {
   }, /verbatim|normalized|exact/i);
 });
 
+test("research contracts preserve verbatim whitespace without accepting whitespace-only text", () => {
+  const input = manifestCopy();
+  const original = firstSource(input).verbatimExcerpt as string;
+  const verbatim = `\n  ${original}  \t`;
+  firstSource(input).verbatimExcerpt = verbatim;
+  firstSource(input).fingerprintInputs.verbatimExcerpt = verbatim;
+
+  const parsed = parseBeliefReversalManifest(input);
+  assert.equal(parsed.selectedCases[0].sources[0].verbatimExcerpt, verbatim);
+  assert.equal(
+    parsed.selectedCases[0].sources[0].fingerprintInputs.verbatimExcerpt,
+    verbatim,
+  );
+
+  assertManifestRejected((candidate) => {
+    firstSource(candidate).verbatimExcerpt = " \n\t ";
+    firstSource(candidate).fingerprintInputs.verbatimExcerpt = " \n\t ";
+  }, /non-whitespace|verbatim|nonempty/i);
+});
+
+test("research source URLs reject unsafe protocols before seed promotion", () => {
+  assertManifestRejected((input) => {
+    const source = firstSource(input);
+    source.canonicalUrl = "javascript:alert(1)";
+    source.fingerprintInputs.canonicalUrl = "javascript:alert(1)";
+    for (const entry of input.candidateLedger) {
+      if (
+        entry.triggeringEvent.status === "resolved"
+        && entry.triggeringEvent.sourceId === source.id
+      ) {
+        entry.triggeringEvent.canonicalUrl = "javascript:alert(1)";
+      }
+    }
+  }, /canonical|http|url|protocol/i);
+});
+
 test("duplicate IDs fail across selected evidence, events, and candidate ledger", () => {
   assertManifestRejected((input) => {
     input.candidateLedger[0].id = firstSource(input).id;

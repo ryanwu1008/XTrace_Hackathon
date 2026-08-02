@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelligence-report";
+
 import { POST as chat } from "../../app/api/chat/route";
 import { GET as actionDrafts } from "../../app/api/action-drafts/route";
 import { PATCH as actionDraft } from "../../app/api/action-drafts/[id]/route";
@@ -452,39 +454,21 @@ test("forged workspace selectors cannot change product read scope or cross-tenan
     "user_forged_selector",
   );
   const intelligence = getIntelligenceRepository();
-  await intelligence.saveReport({
+  await intelligence.saveReport(canonicalIntelligenceReportFixture({
     id: "report_route_trusted",
     workspaceId: trustedWorkspace,
     runId: "run_route_trusted_report",
     createdAt: "2026-07-28T12:00:00.000Z",
     marketSummary: "Trusted report",
-    opportunities: [],
-  });
-  await intelligence.saveReport({
+  }));
+  await intelligence.saveReport(canonicalIntelligenceReportFixture({
     id: "report_route_other",
     workspaceId: otherWorkspace,
-    runId: "run_route_other_report",
+    runId: "00000000-0000-4000-8000-000000000464",
     createdAt: "2026-07-28T12:01:00.000Z",
     marketSummary: "Other report",
-    opportunities: [{
-      rank: 1,
-      dealId: "deal_route_other",
-      confidence: "medium",
-      score: 0.7,
-      whyNow: "Other workspace evidence",
-      previousContext: "Other workspace context",
-      implications: { positive: [], negative: [] },
-      nextStep: "Review cited evidence.",
-      sources: [{
-        id: "source_route_other",
-        provenance: "public_web",
-        title: "Other workspace source",
-        url: "https://example.test/other-workspace",
-        excerpt: "Other workspace evidence",
-      }],
-      demoFixtureIds: [],
-    }],
-  });
+    dealIds: ["deal_route_other"],
+  }));
   const trustedRun = await getDataClient().insertRun({
     workspaceId: trustedWorkspace,
     mode: "structured",
@@ -604,14 +588,13 @@ test("public sandbox reset ignores forged selectors and preserves immutable repo
   const otherWorkspace = "workspace_reset_other";
   const intelligence = getIntelligenceRepository();
   for (const workspaceId of [trustedWorkspace, otherWorkspace]) {
-    await intelligence.saveReport({
+    await intelligence.saveReport(canonicalIntelligenceReportFixture({
       id: "report_reset_shared",
       workspaceId,
       runId: `run_${workspaceId}`,
       createdAt: "2026-07-28T12:00:00.000Z",
       marketSummary: workspaceId,
-      opportunities: [],
-    });
+    }));
   }
 
   const response = await resetDemo(

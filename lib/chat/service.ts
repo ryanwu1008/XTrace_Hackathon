@@ -1,9 +1,18 @@
 import { ClaudeChatAnswerSchema } from "../claude/schemas";
-import type { SourceRef } from "../contracts/domain";
+import {
+  type EvidenceSourceRef,
+} from "../contracts/domain";
+import { parseSourceRefV2Read } from "../contracts/legacy-evidence-adapter";
+import {
+  assertConsistentCanonicalEvidenceUnits,
+  sourceCanGroundOutputFact,
+  uniqueByCanonicalId,
+  type SourceRefV2,
+} from "../contracts/source-evidence";
 
 export interface ChatEvidence {
   text: string;
-  sources: SourceRef[];
+  sources: EvidenceSourceRef[];
 }
 
 export type ChatMemoryStatus = "disabled" | "available" | "unavailable";
@@ -14,7 +23,7 @@ export type MemoryRecallOutcome =
 
 export interface ChatAnswer {
   answer: string;
-  citations: SourceRef[];
+  citations: EvidenceSourceRef[];
   usedXTrace: boolean;
   memoryStatus: ChatMemoryStatus;
   insufficientEvidence: boolean;
@@ -42,9 +51,7 @@ export function createGroundedChatService(dependencies: GroundedChatDependencies
       question: string;
       xtraceEnabled: boolean;
     }): Promise<ChatAnswer> {
-      const localEvidence = normalizeEvidence(
-        await dependencies.searchExistingData(input),
-      );
+      const rawLocalEvidence = await dependencies.searchExistingData(input);
       const recall = input.xtraceEnabled
         ? await dependencies.recallMemory(input)
         : { status: "disabled" as const };
@@ -57,9 +64,20 @@ export function createGroundedChatService(dependencies: GroundedChatDependencies
           insufficientEvidence: true,
         };
       }
-      const memoryEvidence = recall.status === "available"
-        ? normalizeEvidence(recall.evidence)
+      const rawMemoryEvidence = recall.status === "available"
+        ? recall.evidence
         : [];
+      const rawSources = uniqueByCanonicalId(
+        [...rawLocalEvidence, ...rawMemoryEvidence].flatMap((item) =>
+          item.sources
+        ),
+        "chat evidence source",
+      );
+      assertConsistentCanonicalEvidenceUnits(
+        rawSources.map(parseSourceRefV2Read),
+      );
+      const localEvidence = normalizeEvidence(rawLocalEvidence);
+      const memoryEvidence = normalizeEvidence(rawMemoryEvidence);
       if (input.xtraceEnabled && memoryEvidence.length === 0) {
         return {
           answer: "XTrace recall is currently unavailable, so the local-only answer was withheld to avoid presenting incomplete memory as complete.",
@@ -81,7 +99,7 @@ export function createGroundedChatService(dependencies: GroundedChatDependencies
         };
       }
 
-      const sources = new Map<string, SourceRef>();
+      const sources = new Map<string, EvidenceSourceRef>();
       const evidenceTextBySource = new Map<string, string[]>();
       for (const item of evidence) {
         for (const source of item.sources) {
@@ -97,7 +115,10 @@ export function createGroundedChatService(dependencies: GroundedChatDependencies
           "Answer only from supplied evidence.",
           "Return JSON with claims and insufficientEvidence.",
           "Every claim.text must be copied verbatim from at least one cited evidence item.",
-          "Every claim.sourceIds value must identify evidence that contains that exact text.",
+          "Every claim.text must equal one complete evidence item, character for character; never take a substring or remove a qualifier or negation.",
+          "Every claim.sourceIds value must identify evidence that exactly equals that text.",
+          "Evidence marked normalized_non_quote is a normalized statement and must never be presented as a verbatim quotation.",
+          "Only evidence marked exact_quote is eligible to be presented as a verbatim quotation.",
           "Do not infer, combine, or add facts that are not explicitly present.",
         ].join(" "),
         prompt: JSON.stringify({
@@ -105,6 +126,9 @@ export function createGroundedChatService(dependencies: GroundedChatDependencies
           evidence: evidence.map((item, index) => ({
             index: index + 1,
             text: item.text,
+            textStatus: item.textStatus,
+            supportKind: item.supportKind,
+            quoteEligible: item.supportKind === "exact_quote",
             sourceIds: item.sources.map((source) => source.id),
           })),
         }),
@@ -159,12 +183,39 @@ export function createGroundedChatService(dependencies: GroundedChatDependencies
   };
 }
 
-function normalizeEvidence(evidence: ChatEvidence[]): ChatEvidence[] {
+interface GroundableChatEvidence extends ChatEvidence {
+  textStatus: "verified_exact" | "normalized_only";
+  supportKind: "exact_quote" | "normalized_non_quote";
+  sources: [SourceRefV2];
+}
+
+function normalizeEvidence(evidence: ChatEvidence[]): GroundableChatEvidence[] {
   const normalized = evidence.flatMap((item) =>
-    item.sources.map((source) => ({
-      text: source.excerpt,
-      sources: [source],
-    }))
+    item.sources.flatMap((source): GroundableChatEvidence[] => {
+      const parsed = parseSourceRefV2Read(source);
+      if (!sourceCanGroundOutputFact(parsed)) return [];
+      if (parsed.text.status === "verified_exact") {
+        return [{
+          text: parsed.text.verbatimExcerpt,
+          textStatus: "verified_exact",
+          supportKind: "exact_quote",
+          sources: [parsed],
+        }, ...(parsed.text.normalizedStatement === undefined
+          ? []
+          : [{
+              text: parsed.text.normalizedStatement,
+              textStatus: "verified_exact" as const,
+              supportKind: "normalized_non_quote" as const,
+              sources: [parsed] as [SourceRefV2],
+            }])];
+      }
+      return [{
+        text: parsed.text.normalizedStatement,
+        textStatus: "normalized_only",
+        supportKind: "normalized_non_quote",
+        sources: [parsed],
+      }];
+    })
   );
   return [...new Map(normalized.map((item) => [
     `${item.sources[0].id}:${item.text}`,

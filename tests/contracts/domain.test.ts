@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   CompanyAnalysisSchema,
+  DealMemoryBundleSchema,
   DealStatusSchema,
   EvidenceFieldSchema,
   MarketEventSchema,
@@ -13,8 +14,11 @@ import {
   MarketEventV2Schema,
   SourceRefV2Schema,
   WritableMarketEventV2Schema,
+  WritableSourceRefV2Schema,
+  sourceClaimSupportKind,
   sourceCanGroundExactQuote,
   sourceCanGroundOutputFact,
+  type SourceRefV2,
 } from "../../lib/contracts/source-evidence";
 import {
   adaptLegacySourceRef,
@@ -42,9 +46,13 @@ function exactSourceV2(overrides: Record<string, unknown> = {}) {
     publisher: "Acme",
     providerId: "company-feed",
     eventAt: "2026-07-23T14:30:00.000Z",
+    eventAtPrecision: "timestamp",
     publishedAt: "2026-07-23T15:00:00.000Z",
+    publishedAtPrecision: "timestamp",
     retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
     updatedAt: null,
+    updatedAtPrecision: null,
     entityKeys: ["acme"],
     sourceClass: "company_official",
     sourceAuthority: "primary",
@@ -77,9 +85,13 @@ function marketEventV2(overrides: Record<string, unknown> = {}) {
     positiveImplications: [],
     negativeImplications: [],
     eventAt: "2026-07-23T14:30:00.000Z",
+    eventAtPrecision: "timestamp",
     publishedAt: "2026-07-23T15:00:00.000Z",
+    publishedAtPrecision: "timestamp",
     retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
     updatedAt: null,
+    updatedAtPrecision: null,
     confidence: "high",
     canonicalUrl: "https://acme.example/news/series-b",
     providerId: "company-feed",
@@ -102,6 +114,37 @@ function companyAnalysisFixture(
     page: 1,
     excerpt: "7bridges provides logistics orchestration software.",
   };
+  const sampleDecisionRecord = {
+    schemaVersion: "source-ref-v2",
+    adaptation: "canonical",
+    id: "interaction_1",
+    provenance: "demo_fixture",
+    title: "Sample decision record",
+    canonicalUrl: null,
+    documentId: null,
+    publisher: "Internal Deal Registry",
+    providerId: "deal-registry",
+    eventAt: "2026-01-12T12:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: null,
+    retrievedAtPrecision: null,
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: [],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: null,
+    locator: null,
+    contentFingerprint: null,
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Sample decision record. The fund passed pending stronger enterprise adoption.",
+    },
+  };
 
   return {
     id: "analysis_1",
@@ -113,7 +156,7 @@ function companyAnalysisFixture(
     outcome: "no_material_change",
     confidence: "low",
     score: 0.21,
-    verifiedSourceCount: 1,
+    verifiedSourceCount: 2,
     investmentMemory: {
       previousMeetingSummary: "The team presented its logistics platform.",
       decisionReason: "The fund passed pending stronger enterprise adoption.",
@@ -121,7 +164,7 @@ function companyAnalysisFixture(
       revisitConditions: ["Revisit after measurable enterprise adoption."],
       lastEvaluatedAt: "2026-01-12T12:00:00.000Z",
       memoryIds: ["memory_1"],
-      sourceIds: ["source_1"],
+      sourceIds: ["interaction_1"],
       fixtureIds: ["interaction_1"],
     },
     marketEvidence: {
@@ -162,17 +205,17 @@ function companyAnalysisFixture(
         title: "Enterprise adoption",
         detail: "Enterprise adoption was not yet demonstrated.",
         nextQuestion: "Has enterprise adoption materially improved?",
-        sourceIds: ["source_1"],
+        sourceIds: ["interaction_1"],
       }],
       decisionHistory: [{
         occurredAt: "2026-01-12T12:00:00.000Z",
         title: "Initial review",
         summary: "The fund passed pending stronger enterprise adoption.",
-        sourceIds: ["source_1"],
+        sourceIds: ["interaction_1"],
       }],
-      sourceLineage: [source],
+      sourceLineage: [source, sampleDecisionRecord],
     },
-    sources: [source],
+    sources: [source, sampleDecisionRecord],
     createdAt: "2026-07-24T12:00:00.000Z",
     ...overrides,
   };
@@ -246,6 +289,146 @@ test("only verified exact text can pass exact quote validation", () => {
   assert.equal(sourceCanGroundOutputFact(legacy), false);
 });
 
+test("verified exact parsing preserves every verbatim whitespace character", () => {
+  const verbatimExcerpt =
+    "\n  Acme closed a Series B funding round.  \n";
+  const parsed = WritableSourceRefV2Schema.parse(exactSourceV2({
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt,
+      normalizedStatement: "Acme completed its Series B financing.",
+    },
+  }));
+
+  assert.equal(parsed.text.status, "verified_exact");
+  assert.equal(parsed.text.verbatimExcerpt, verbatimExcerpt);
+  assert.equal(
+    sourceClaimSupportKind(parsed, verbatimExcerpt),
+    "exact_quote",
+  );
+  assert.equal(
+    sourceClaimSupportKind(
+      parsed,
+      "Acme closed a Series B funding round.",
+    ),
+    null,
+  );
+  assert.equal(WritableSourceRefV2Schema.safeParse(exactSourceV2({
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: " \n\t ",
+    },
+  })).success, false);
+});
+
+test("canonical source text enforces exact-word and normalized-character bounds", () => {
+  const twentyFiveWords = Array.from(
+    { length: 25 },
+    (_, index) => `word${index + 1}`,
+  ).join(" ");
+  const twentySixWords = `${twentyFiveWords} overflow`;
+  assert.equal(WritableSourceRefV2Schema.safeParse(exactSourceV2({
+    text: { status: "verified_exact", verbatimExcerpt: twentyFiveWords },
+  })).success, true);
+  assert.equal(WritableSourceRefV2Schema.safeParse(exactSourceV2({
+    text: { status: "verified_exact", verbatimExcerpt: twentySixWords },
+  })).success, false);
+
+  assert.equal(WritableSourceRefV2Schema.safeParse(exactSourceV2({
+    id: "source_normalized_bound",
+    sourceRevisionId: null,
+    locator: null,
+    text: { status: "normalized_only", normalizedStatement: "a".repeat(2_000) },
+  })).success, true);
+  assert.equal(WritableSourceRefV2Schema.safeParse(exactSourceV2({
+    id: "source_normalized_overflow",
+    sourceRevisionId: null,
+    locator: null,
+    text: { status: "normalized_only", normalizedStatement: "a".repeat(2_001) },
+  })).success, false);
+});
+
+test("canonical demo fixtures are permanently labeled normalized Sample decision records", () => {
+  const sampleDecisionRecord = exactSourceV2({
+    id: "fixture_sample_decision_record",
+    provenance: "demo_fixture",
+    title: "Sample decision record",
+    canonicalUrl: null,
+    documentId: null,
+    publisher: "Internal Deal Registry",
+    providerId: "deal-registry",
+    eventAt: "2026-07-01T16:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: null,
+    retrievedAtPrecision: null,
+    entityKeys: [],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: null,
+    locator: null,
+    contentFingerprint: null,
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Sample decision record. The synthetic team previously passed.",
+    },
+  });
+  assert.equal(
+    WritableSourceRefV2Schema.safeParse(sampleDecisionRecord).success,
+    true,
+  );
+
+  const invalidCases = [{
+    ...sampleDecisionRecord,
+    title: "Founder meeting",
+  }, {
+    ...sampleDecisionRecord,
+    sourceClass: "company_official",
+  }, {
+    ...sampleDecisionRecord,
+    sourceAuthority: "secondary",
+  }, {
+    ...sampleDecisionRecord,
+    evidenceRole: "trigger",
+  }, {
+    ...sampleDecisionRecord,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "The synthetic team previously passed.",
+    },
+  }, {
+    ...sampleDecisionRecord,
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Sample decision recordkeeping says this is a real founder meeting.",
+    },
+  }, {
+    ...sampleDecisionRecord,
+    sourceRevisionId: "revision_sample_decision_record",
+    locator: { kind: "document_page", page: 1 },
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    contentFingerprint: SHA256_A,
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: "The synthetic team previously passed.",
+      normalizedStatement:
+        "Sample decision record. The synthetic team previously passed.",
+    },
+  }];
+  for (const [index, candidate] of invalidCases.entries()) {
+    assert.equal(
+      WritableSourceRefV2Schema.safeParse(candidate).success,
+      false,
+      `invalid Sample decision record case ${index + 1}`,
+    );
+  }
+});
+
 test("verified exact evidence requires revision locator retrieval and fingerprint", () => {
   for (const field of [
     "sourceRevisionId",
@@ -269,6 +452,78 @@ test("verified exact evidence requires revision locator retrieval and fingerprin
     })).success,
     false,
     "normalized text cannot masquerade as a verbatim quotation",
+  );
+});
+
+test("temporal precision preserves date-only evidence without inventing midnight", () => {
+  const sameDayDateSource = exactSourceV2({
+    retrievedAt: "2026-07-23",
+    retrievedAtPrecision: "date",
+  });
+  const sameDayDateEvent = marketEventV2({
+    retrievedAt: "2026-07-23",
+    retrievedAtPrecision: "date",
+    sources: [sameDayDateSource],
+  });
+  const parsed = MarketEventV2Schema.parse(sameDayDateEvent);
+
+  assert.equal(parsed.retrievedAt, "2026-07-23");
+  assert.equal(parsed.retrievedAtPrecision, "date");
+  assert.equal(
+    MarketEventV2Schema.safeParse(marketEventV2({
+      retrievedAt: "2026-07-23",
+      retrievedAtPrecision: "timestamp",
+      sources: [sameDayDateSource],
+    })).success,
+    false,
+  );
+
+  const priorDaySource = exactSourceV2({
+    retrievedAt: "2026-07-22",
+    retrievedAtPrecision: "date",
+  });
+  assert.equal(
+    MarketEventV2Schema.safeParse(marketEventV2({
+      retrievedAt: "2026-07-22",
+      retrievedAtPrecision: "date",
+      sources: [priorDaySource],
+    })).success,
+    false,
+    "a retrieval date whose full possible interval precedes publication must fail",
+  );
+
+  const newerUpdateSource = exactSourceV2({
+    updatedAt: "2026-07-25",
+    updatedAtPrecision: "date",
+  });
+  assert.equal(
+    MarketEventV2Schema.safeParse(marketEventV2({
+      updatedAt: "2026-07-25",
+      updatedAtPrecision: "date",
+      sources: [newerUpdateSource],
+    })).success,
+    false,
+    "an update definitely newer than retrieval must fail",
+  );
+});
+
+test("temporal provenance rejects updates that are definitely later than retrieval", () => {
+  const source = exactSourceV2({
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    updatedAt: "2026-07-24T12:00:00.001Z",
+    updatedAtPrecision: "timestamp",
+  });
+  assert.equal(SourceRefV2Schema.safeParse(source).success, false);
+  assert.equal(
+    MarketEventV2Schema.safeParse(marketEventV2({
+      retrievedAt: "2026-07-24T12:00:00.000Z",
+      retrievedAtPrecision: "timestamp",
+      updatedAt: "2026-07-24T12:00:00.001Z",
+      updatedAtPrecision: "timestamp",
+      sources: [source],
+    })).success,
+    false,
   );
 });
 
@@ -323,6 +578,69 @@ test("model inference cannot impersonate primary or secondary source authority",
   }
 });
 
+test("fact-eligible public and document sources require complete retrieval lineage", () => {
+  const publicWithoutRetrieval = exactSourceV2({
+    sourceRevisionId: null,
+    locator: null,
+    retrievedAt: null,
+    retrievedAtPrecision: null,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "Acme completed its Series B financing.",
+    },
+  });
+  assert.equal(
+    SourceRefV2Schema.safeParse(publicWithoutRetrieval).success,
+    false,
+  );
+  assert.equal(
+    sourceCanGroundOutputFact(publicWithoutRetrieval as SourceRefV2),
+    false,
+  );
+
+  const documentWithoutLineage = exactSourceV2({
+    provenance: "source_document",
+    canonicalUrl: null,
+    documentId: null,
+    publisher: null,
+    providerId: "source-registry",
+    sourceRevisionId: null,
+    locator: null,
+    retrievedAt: null,
+    retrievedAtPrecision: null,
+    contentFingerprint: null,
+    evidenceRole: "context",
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "Acme completed its Series B financing.",
+    },
+  });
+  assert.equal(
+    SourceRefV2Schema.safeParse(documentWithoutLineage).success,
+    false,
+  );
+  assert.equal(
+    sourceCanGroundOutputFact(documentWithoutLineage as SourceRefV2),
+    false,
+  );
+});
+
+test("canonical source URLs require canonical HTTP or HTTPS form", () => {
+  for (const canonicalUrl of [
+    "javascript:alert(1)",
+    "data:text/html,malicious",
+    "ftp://example.com/source",
+    "https://acme.example/news/series-b?utm_source=test#fragment",
+  ]) {
+    assert.equal(
+      WritableSourceRefV2Schema.safeParse(exactSourceV2({ canonicalUrl }))
+        .success,
+      false,
+      canonicalUrl,
+    );
+  }
+});
+
 test("market event v2 fails closed on malformed provenance and trigger lineage", () => {
   assert.equal(MarketEventV2Schema.safeParse(marketEventV2()).success, true);
   assert.equal(MarketEventV2Schema.safeParse(marketEventV2({
@@ -339,6 +657,34 @@ test("market event v2 fails closed on malformed provenance and trigger lineage",
     marketEventV2({ sources: [exactSourceV2({ publisher: null })] }),
     marketEventV2({ sources: [exactSourceV2({ providerId: null })] }),
     marketEventV2({ sources: [exactSourceV2({ contentFingerprint: null })] }),
+    marketEventV2({
+      sources: [
+        exactSourceV2(),
+        exactSourceV2({ id: "source_second_trigger" }),
+      ],
+    }),
+    marketEventV2({
+      sources: [exactSourceV2({
+        sourceClass: "internal_decision_record",
+      })],
+    }),
+    marketEventV2({
+      sources: [exactSourceV2({ provenance: "source_document" })],
+    }),
+    marketEventV2({
+      sources: [exactSourceV2({ provenance: "demo_fixture" })],
+    }),
+    marketEventV2({
+      sources: [
+        exactSourceV2(),
+        exactSourceV2({
+          id: "source_synthetic_context",
+          provenance: "demo_fixture",
+          sourceClass: "internal_decision_record",
+          evidenceRole: "context",
+        }),
+      ],
+    }),
     marketEventV2({ triggerSourceId: "missing_source" }),
     marketEventV2({
       publishedAt: "2026-07-23T16:00:00.000Z",
@@ -362,6 +708,75 @@ test("market event v2 fails closed on malformed provenance and trigger lineage",
   }
 });
 
+test("market event entity keys exactly equal all embedded source entity keys", () => {
+  const trigger = exactSourceV2();
+  const corroborating = exactSourceV2({
+    id: "source_partner_corroborating",
+    title: "Partner corroboration",
+    canonicalUrl: "https://partner.example/announcement",
+    entityKeys: ["partner"],
+    evidenceRole: "corroborating",
+    sourceRevisionId: "revision_partner_corroborating",
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: "Partner confirmed the deployment.",
+      normalizedStatement: "The partner confirmed the deployment.",
+    },
+  });
+  const counterevidence = exactSourceV2({
+    id: "source_risk_counterevidence",
+    title: "Risk disclosure",
+    canonicalUrl: "https://risk.example/disclosure",
+    entityKeys: ["risk_entity"],
+    evidenceRole: "counterevidence",
+    sourceRevisionId: "revision_risk_counterevidence",
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: "Deployment timing remains uncertain.",
+      normalizedStatement: "The deployment schedule remains uncertain.",
+    },
+  });
+  const complete = marketEventV2({
+    entityKeys: ["acme", "partner", "risk_entity"],
+    sources: [trigger, corroborating, counterevidence],
+  });
+
+  assert.equal(MarketEventV2Schema.safeParse(complete).success, true);
+  assert.equal(MarketEventV2Schema.safeParse({
+    ...complete,
+    entityKeys: [...complete.entityKeys as string[], "injected_company"],
+  }).success, false);
+  assert.equal(MarketEventV2Schema.safeParse({
+    ...complete,
+    entityKeys: ["acme", "partner"],
+  }).success, false);
+});
+
+test("market events reject duplicate intrinsic units and evidence-role spoofing", () => {
+  const trigger = exactSourceV2();
+  const roleSpoof = {
+    ...trigger,
+    id: "source_exact_role_spoof",
+    evidenceRole: "counterevidence",
+  };
+  const textSpoof = {
+    ...trigger,
+    id: "source_exact_text_spoof",
+    evidenceRole: "corroborating",
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: "Acme did not close a Series B funding round.",
+      normalizedStatement: "Acme did not complete its Series B financing.",
+    },
+  };
+
+  for (const duplicate of [roleSpoof, textSpoof]) {
+    assert.equal(WritableMarketEventV2Schema.safeParse(marketEventV2({
+      sources: [trigger, duplicate],
+    })).success, false);
+  }
+});
+
 test("declared malformed v2 evidence cannot downgrade through the legacy adapter", () => {
   assert.throws(() => parseSourceRefV2Read({
     ...exactSourceV2(),
@@ -372,6 +787,19 @@ test("declared malformed v2 evidence cannot downgrade through the legacy adapter
     ...marketEventV2(),
     triggerSourceId: "missing_source",
   }));
+});
+
+test("canonical market-event reads reject a stale payload fingerprint", () => {
+  const source = persistedNormalizedSourceV2("source_stale_read");
+  const event = persistedMarketEventV2(source);
+  assert.equal(parseMarketEventV2Read(event).id, event.id);
+  assert.throws(
+    () => parseMarketEventV2Read({
+      ...event,
+      summary: "The canonical payload was changed without a new digest.",
+    }),
+    /fingerprint.*canonical payload/i,
+  );
 });
 
 test("any declared evidence schema version disables the legacy adapter", () => {
@@ -398,17 +826,39 @@ test("any declared evidence schema version disables the legacy adapter", () => {
   for (const schemaVersion of ["source-ref-v3", null, 3]) {
     assert.throws(
       () => parseSourceRefV2Read({ ...legacySource, schemaVersion }),
-      undefined,
       `source version ${String(schemaVersion)}`,
     );
   }
   for (const schemaVersion of ["market-event-v3", null, 3]) {
     assert.throws(
       () => parseMarketEventV2Read({ ...legacyEvent, schemaVersion }),
-      undefined,
       `event version ${String(schemaVersion)}`,
     );
   }
+});
+
+test("Deal facts preserve canonical v2 and reject malformed declared v2", () => {
+  const source = exactSourceV2();
+  const bundle = {
+    dealId: "deal_acme",
+    companyName: "Acme",
+    status: "passed",
+    facts: [{
+      text: "Acme completed its Series B financing.",
+      sources: [source],
+    }],
+    interactions: [],
+  };
+
+  const parsed = DealMemoryBundleSchema.parse(bundle);
+  assert.deepEqual(parsed.facts[0].sources[0], source);
+  assert.equal(DealMemoryBundleSchema.safeParse({
+    ...bundle,
+    facts: [{
+      ...bundle.facts[0],
+      sources: [{ ...source, providerId: null }],
+    }],
+  }).success, false);
 });
 
 test("legacy market event reads preserve unknown dates without inventing provenance", () => {
@@ -471,6 +921,71 @@ test("legacy normalized event reads preserve only validated known metadata", () 
   assert.equal(adapted.providerId, "legacy-provider");
   assert.deepEqual(adapted.entityKeys, ["legacy_entity"]);
   assert.equal(adapted.contentFingerprint, `sha256:${"c".repeat(64)}`);
+});
+
+test("legacy event reads reject impossible known chronology and duplicate entity keys", () => {
+  const legacy = {
+    id: "legacy_event_invalid_metadata",
+    title: "Legacy normalized event",
+    eventType: "announcement",
+    sectors: [],
+    themes: [],
+    summary: "A legacy normalized market event.",
+    positiveImplications: [],
+    negativeImplications: [],
+    publishedAt: "2026-07-23T15:00:00.000Z",
+    confidence: "medium",
+    sources: [{
+      id: "legacy_source_invalid_metadata",
+      provenance: "public_web",
+      title: "Legacy article",
+      excerpt: "Legacy evidence.",
+    }],
+    canonicalUrl: "https://legacy.example/article",
+    providerId: "legacy-provider",
+  };
+
+  assert.throws(() => parseMarketEventV2Read({
+    ...legacy,
+    retrievedAt: "2026-07-23T14:59:59.999Z",
+  }), /retrieved before publication/i);
+  assert.throws(() => parseMarketEventV2Read({
+    ...legacy,
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    updatedAt: "2026-07-24T12:00:00.001Z",
+  }), /update newer than retrieval/i);
+  assert.throws(() => parseMarketEventV2Read({
+    ...legacy,
+    entityKeys: ["legacy_entity", "legacy_entity"],
+  }), /entity keys must be unique/i);
+});
+
+test("legacy event reads reject duplicate source identities before projection", () => {
+  assert.throws(() => parseMarketEventV2Read({
+    id: "legacy_event_source_collision",
+    title: "Legacy normalized event",
+    eventType: "announcement",
+    sectors: [],
+    themes: [],
+    summary: "A legacy normalized market event.",
+    positiveImplications: [],
+    negativeImplications: [],
+    publishedAt: "2026-07-23T15:00:00.000Z",
+    confidence: "medium",
+    sources: [{
+      id: "legacy_source_collision",
+      provenance: "public_web",
+      title: "First legacy article",
+      url: "https://legacy.example/first",
+      excerpt: "First legacy evidence.",
+    }, {
+      id: "legacy_source_collision",
+      provenance: "public_web",
+      title: "Second legacy article",
+      url: "https://legacy.example/second",
+      excerpt: "Conflicting legacy evidence.",
+    }],
+  }), /source ids must be unique|conflicting source id/i);
 });
 
 test("rejects a client-supplied workspace in upload confirmation", () => {
@@ -548,6 +1063,94 @@ test("rejects low-confidence opportunity reports", () => {
   }));
 });
 
+test("claim support cannot label normalized evidence as an exact quote", () => {
+  const source = persistedNormalizedSourceV2("source_normalized_support");
+  const claim = source.text.status === "normalized_only"
+    ? source.text.normalizedStatement
+    : "unreachable";
+  assert.equal(OpportunityReportItemSchema.safeParse({
+    rank: 1,
+    dealId: "deal_acme",
+    confidence: "medium",
+    score: 0.7,
+    whyNow: claim,
+    previousContext: "A prior review exists.",
+    implications: { positive: [], negative: [] },
+    nextStep: "Review the evidence.",
+    sources: [source],
+    demoFixtureIds: [],
+    claimSupport: [{
+      text: claim,
+      kind: "exact_quote",
+      sourceIds: [source.id],
+    }],
+  }).success, false);
+});
+
+test("claim support requires a complete evidence unit and cannot strip negation", () => {
+  const strippedClaim = "Acme signed enterprise customers.";
+  const negativeStatement =
+    "The source did not establish that Acme signed enterprise customers.";
+  const exact = exactSourceV2({
+    id: "source_negative_exact",
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: negativeStatement,
+    },
+  });
+  const normalized = persistedNormalizedSourceV2(
+    "source_negative_normalized",
+    {
+      text: {
+        status: "normalized_only",
+        normalizedStatement: negativeStatement,
+      },
+    },
+  );
+  const opportunity = (
+    source: typeof exact | typeof normalized,
+    text: string,
+    kind: "exact_quote" | "normalized_non_quote",
+  ) => ({
+    rank: 1,
+    dealId: "deal_acme",
+    confidence: "medium",
+    score: 0.7,
+    whyNow: text,
+    previousContext: "A prior review exists.",
+    implications: { positive: [], negative: [] },
+    nextStep: "Review the evidence.",
+    sources: [source],
+    demoFixtureIds: [],
+    claimSupport: [{ text, kind, sourceIds: [source.id] }],
+  });
+
+  assert.equal(
+    OpportunityReportItemSchema.safeParse(
+      opportunity(exact, strippedClaim, "exact_quote"),
+    ).success,
+    false,
+  );
+  assert.equal(
+    OpportunityReportItemSchema.safeParse(
+      opportunity(normalized, strippedClaim, "normalized_non_quote"),
+    ).success,
+    false,
+  );
+  assert.equal(
+    OpportunityReportItemSchema.safeParse(
+      opportunity(exact, negativeStatement, "exact_quote"),
+    ).success,
+    true,
+  );
+  assert.equal(
+    OpportunityReportItemSchema.safeParse(
+      opportunity(normalized, negativeStatement, "normalized_non_quote"),
+    ).success,
+    true,
+  );
+});
+
 test("accepts a source-grounded no-change company analysis", () => {
   const parsed = CompanyAnalysisSchema.parse(companyAnalysisFixture());
 
@@ -560,6 +1163,131 @@ test("accepts a source-grounded no-change company analysis", () => {
   );
 });
 
+test("CompanyAnalysis history cannot impersonate a Sample record with public or missing lineage", () => {
+  const publicSource = persistedNormalizedSourceV2("public_history_impostor");
+  const base = companyAnalysisFixture();
+  const historicalMemory = {
+    previousMeetingSummary: "A founder meeting occurred.",
+    decisionReason: "The fund passed at the prior review.",
+    concerns: ["A concern was recorded."],
+    revisitConditions: ["Revisit after new evidence."],
+    lastEvaluatedAt: "2026-01-12T12:00:00.000Z",
+    memoryIds: ["memory_impostor"],
+    sourceIds: [publicSource.id],
+    fixtureIds: [publicSource.id],
+  };
+  const publicImpostor = {
+    ...base,
+    verifiedSourceCount: 1,
+    investmentMemory: historicalMemory,
+    companyBrief: {
+      ...(base.companyBrief as Record<string, unknown>),
+      decisionHistory: [{
+        occurredAt: "2026-01-12T12:00:00.000Z",
+        title: "Founder meeting",
+        summary: "The fund passed at the prior review.",
+        sourceIds: [publicSource.id],
+      }],
+      sourceLineage: [publicSource],
+    },
+    sources: [publicSource],
+  };
+  assert.equal(CompanyAnalysisSchema.safeParse(publicImpostor).success, false);
+
+  assert.equal(CompanyAnalysisSchema.safeParse({
+    ...publicImpostor,
+    investmentMemory: {
+      ...historicalMemory,
+      sourceIds: [],
+      fixtureIds: [],
+    },
+    companyBrief: {
+      ...(publicImpostor.companyBrief as Record<string, unknown>),
+      decisionHistory: [],
+      sourceLineage: [publicSource],
+    },
+  }).success, false);
+
+  assert.equal(CompanyAnalysisSchema.safeParse({
+    ...base,
+    investmentMemory: {
+      previousMeetingSummary: "No previous meeting summary was recorded.",
+      decisionReason: "No previous decision reason was recorded.",
+      concerns: [],
+      revisitConditions: [],
+      lastEvaluatedAt: null,
+      memoryIds: ["memory_omitted_fixture"],
+      sourceIds: ["source_1"],
+      fixtureIds: [],
+    },
+    companyBrief: {
+      ...(base.companyBrief as Record<string, unknown>),
+      decisionHistory: [],
+    },
+  }).success, false, "an unlinked Sample source cannot hide in analysis lineage");
+});
+
+test("Opportunity fixture IDs exactly resolve to canonical Sample decision records", () => {
+  const publicSource = persistedNormalizedSourceV2("opportunity_public_source");
+  const sampleSource = exactSourceV2({
+    id: "opportunity_sample_source",
+    provenance: "demo_fixture",
+    title: "Sample decision record",
+    canonicalUrl: null,
+    documentId: null,
+    publisher: "Internal Deal Registry",
+    providerId: "deal-registry",
+    eventAt: "2026-01-12T12:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: null,
+    retrievedAtPrecision: null,
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: [],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: null,
+    locator: null,
+    contentFingerprint: null,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "Sample decision record. The fund previously passed.",
+    },
+  });
+  const opportunity = {
+    rank: 1,
+    dealId: "deal_acme",
+    confidence: "medium",
+    score: 0.7,
+    whyNow: "New evidence changed.",
+    previousContext: "The fund previously passed.",
+    implications: { positive: [], negative: [] },
+    nextStep: "Review the evidence.",
+    sources: [publicSource, sampleSource],
+    demoFixtureIds: [sampleSource.id],
+  };
+  assert.equal(OpportunityReportItemSchema.safeParse(opportunity).success, true);
+  for (const invalid of [{
+    ...opportunity,
+    demoFixtureIds: [publicSource.id],
+  }, {
+    ...opportunity,
+    demoFixtureIds: [],
+  }, {
+    ...opportunity,
+    demoFixtureIds: [sampleSource.id, sampleSource.id],
+  }, {
+    ...opportunity,
+    sources: [publicSource],
+    demoFixtureIds: ["missing_sample_record"],
+  }]) {
+    assert.equal(OpportunityReportItemSchema.safeParse(invalid).success, false);
+  }
+});
+
 test("CompanyAnalysis parsing preserves complete v2 source and event provenance", () => {
   const source = persistedNormalizedSourceV2("source_persisted_v2");
   const event = persistedMarketEventV2(source);
@@ -568,8 +1296,8 @@ test("CompanyAnalysis parsing preserves complete v2 source and event provenance"
     confidence: "high",
     verifiedSourceCount: 1,
     investmentMemory: {
-      previousMeetingSummary: "A prior review exists.",
-      decisionReason: "The prior evidence was insufficient.",
+      previousMeetingSummary: "No previous meeting summary was recorded.",
+      decisionReason: "No previous decision reason was recorded.",
       concerns: [],
       revisitConditions: [],
       lastEvaluatedAt: null,
@@ -614,6 +1342,168 @@ test("CompanyAnalysis parsing preserves complete v2 source and event provenance"
   );
 });
 
+test("canonical CompanyAnalysis market source IDs exactly equal embedded event source IDs", () => {
+  const eventSource = persistedNormalizedSourceV2("source_market_event");
+  const unrelatedSource = persistedNormalizedSourceV2("source_unrelated_fact");
+  const event = persistedMarketEventV2(eventSource);
+  const fixture = (marketSourceIds: string[], sources = [eventSource]) =>
+    companyAnalysisFixture({
+      outcome: "belief_revised",
+      confidence: "high",
+      verifiedSourceCount: sources.length,
+      investmentMemory: {
+        previousMeetingSummary: "No previous meeting summary was recorded.",
+        decisionReason: "No previous decision reason was recorded.",
+        concerns: [],
+        revisitConditions: [],
+        lastEvaluatedAt: null,
+        memoryIds: [],
+        sourceIds: [],
+        fixtureIds: [],
+      },
+      marketEvidence: {
+        relationship: "satisfies",
+        explanation: "New normalized evidence changed the next review action.",
+        eventIds: [event.id],
+        events: [event],
+        sourceIds: marketSourceIds,
+      },
+      companyBrief: {
+        icSnapshot: [],
+        traction: [],
+        dealTerms: [],
+        risks: [],
+        decisionHistory: [],
+        sourceLineage: sources,
+      },
+      sources,
+    });
+
+  assert.equal(
+    CompanyAnalysisSchema.safeParse(fixture([eventSource.id])).success,
+    true,
+  );
+  assert.equal(
+    CompanyAnalysisSchema.safeParse(fixture([], [eventSource])).success,
+    false,
+    "missing embedded event lineage must fail closed",
+  );
+  assert.equal(
+    CompanyAnalysisSchema.safeParse(
+      fixture(
+        [eventSource.id, unrelatedSource.id],
+        [eventSource, unrelatedSource],
+      ),
+    ).success,
+    false,
+    "unrelated extra lineage must fail closed",
+  );
+  assert.equal(
+    CompanyAnalysisSchema.safeParse(
+      fixture([eventSource.id, eventSource.id]),
+    ).success,
+    false,
+    "duplicate canonical market source IDs must fail closed",
+  );
+  const duplicateEventIdsBase = fixture([eventSource.id]);
+  const duplicateEventIds = {
+    ...duplicateEventIdsBase,
+    marketEvidence: {
+      ...(duplicateEventIdsBase.marketEvidence as Record<string, unknown>),
+      eventIds: [event.id, event.id],
+    },
+  };
+  assert.equal(
+    CompanyAnalysisSchema.safeParse(duplicateEventIds).success,
+    false,
+    "duplicate canonical market event IDs must fail closed",
+  );
+});
+
+test("CompanyAnalysis rejects conflicting nested payloads for one source ID", () => {
+  const source = persistedNormalizedSourceV2("source_collision_v2");
+  const event = persistedMarketEventV2(source);
+  const conflicting = { ...source, title: "Conflicting top-level source" };
+  const fixture = companyAnalysisFixture({
+    outcome: "belief_revised",
+    confidence: "high",
+    verifiedSourceCount: 1,
+    investmentMemory: {
+      previousMeetingSummary: "No previous meeting summary was recorded.",
+      decisionReason: "No previous decision reason was recorded.",
+      concerns: [],
+      revisitConditions: [],
+      lastEvaluatedAt: null,
+      memoryIds: [],
+      sourceIds: [],
+      fixtureIds: [],
+    },
+    marketEvidence: {
+      relationship: "satisfies",
+      explanation: "New evidence changed the next action.",
+      eventIds: [event.id],
+      events: [event],
+      sourceIds: [source.id],
+    },
+    companyBrief: {
+      icSnapshot: [],
+      traction: [],
+      dealTerms: [],
+      risks: [],
+      decisionHistory: [],
+      sourceLineage: [conflicting],
+    },
+    sources: [conflicting],
+  });
+
+  assert.equal(CompanyAnalysisSchema.safeParse(fixture).success, false);
+});
+
+test("CompanyAnalysis claim support rejects legacy and model-only evidence", () => {
+  const legacyFixture = companyAnalysisFixture({
+    claimSupport: [{
+      text: "7bridges provides logistics orchestration software.",
+      kind: "normalized_non_quote",
+      sourceIds: ["source_1"],
+    }],
+  });
+  assert.equal(CompanyAnalysisSchema.safeParse(legacyFixture).success, false);
+
+  const model = exactSourceV2({
+    id: "source_1",
+    provenance: "model_inference",
+    sourceClass: "model_output",
+    sourceAuthority: "not_applicable",
+    evidenceRole: "context",
+    sourceRevisionId: null,
+    locator: null,
+    text: {
+      status: "model_inference",
+      normalizedStatement:
+        "7bridges provides logistics orchestration software.",
+      model: {
+        provider: "anthropic",
+        model: "claude-vision-test",
+        generatedAt: "2026-07-24T12:00:00.000Z",
+        inputFingerprint: SHA256_A,
+      },
+    },
+  });
+  const modelFixture = companyAnalysisFixture({
+    companyBrief: {
+      ...(companyAnalysisFixture().companyBrief as Record<string, unknown>),
+      sourceLineage: [model],
+    },
+    sources: [model],
+    claimSupport: [{
+      text: "7bridges provides logistics orchestration software.",
+      kind: "normalized_non_quote",
+      sourceIds: [model.id],
+    }],
+  });
+  assert.equal(CompanyAnalysisSchema.safeParse(modelFixture).success, false);
+});
+
 test("report boundaries reject declared malformed v2 instead of downgrading to legacy", () => {
   const malformedSource = {
     ...persistedNormalizedSourceV2("malformed_v2_source"),
@@ -644,8 +1534,8 @@ test("report boundaries reject declared malformed v2 instead of downgrading to l
     confidence: "high",
     verifiedSourceCount: 1,
     investmentMemory: {
-      previousMeetingSummary: "A prior review exists.",
-      decisionReason: "Prior evidence was insufficient.",
+      previousMeetingSummary: "No previous meeting summary was recorded.",
+      decisionReason: "No previous decision reason was recorded.",
       concerns: [],
       revisitConditions: [],
       lastEvaluatedAt: null,

@@ -2,6 +2,7 @@ import type {
   MarketEventV2,
   SourceRefV2,
 } from "../../lib/contracts/source-evidence";
+import { refingerprintMarketEvent } from "../../lib/market/identity";
 
 export const TEST_SHA256_A = `sha256:${"a".repeat(64)}`;
 export const TEST_SHA256_B = `sha256:${"b".repeat(64)}`;
@@ -21,9 +22,13 @@ export function exactSourceV2(
     publisher: "Acme",
     providerId: "company-feed",
     eventAt: null,
+    eventAtPrecision: null,
     publishedAt: "2026-07-23T15:00:00.000Z",
+    publishedAtPrecision: "timestamp",
     retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
     updatedAt: null,
+    updatedAtPrecision: null,
     entityKeys: ["acme"],
     sourceClass: "company_official",
     sourceAuthority: "primary",
@@ -63,7 +68,7 @@ export function marketEventV2(
   source: SourceRefV2 = normalizedSourceV2(),
   overrides: Record<string, unknown> = {},
 ): MarketEventV2 {
-  return {
+  return refingerprintMarketEvent({
     schemaVersion: "market-event-v2",
     adaptation: "canonical",
     id: "market_acme_series_b_1",
@@ -75,9 +80,13 @@ export function marketEventV2(
     positiveImplications: [],
     negativeImplications: [],
     eventAt: source.eventAt,
+    eventAtPrecision: source.eventAtPrecision,
     publishedAt: source.publishedAt,
+    publishedAtPrecision: source.publishedAtPrecision,
     retrievedAt: source.retrievedAt,
+    retrievedAtPrecision: source.retrievedAtPrecision,
     updatedAt: source.updatedAt,
+    updatedAtPrecision: source.updatedAtPrecision,
     confidence: "high",
     canonicalUrl: source.canonicalUrl,
     providerId: source.providerId,
@@ -86,5 +95,5 @@ export function marketEventV2(
     triggerSourceId: source.id,
     sources: [source],
     ...overrides,
-  } as MarketEventV2;
+  } as Extract<MarketEventV2, { adaptation: "canonical" }>);
 }

@@ -299,17 +299,70 @@ function atomLink(block: string): string | undefined {
   return alternate ? attribute(alternate, "href") : undefined;
 }
 
+const RFC_MONTH_INDEX = new Map([
+  ["jan", 0], ["feb", 1], ["mar", 2], ["apr", 3],
+  ["may", 4], ["jun", 5], ["jul", 6], ["aug", 7],
+  ["sep", 8], ["oct", 9], ["nov", 10], ["dec", 11],
+]);
+
+function isRealCalendarDate(year: number, monthIndex: number, day: number) {
+  const candidate = new Date(Date.UTC(year, monthIndex, day));
+  return candidate.getUTCFullYear() === year
+    && candidate.getUTCMonth() === monthIndex
+    && candidate.getUTCDate() === day;
+}
+
 function normalizedDate(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
   }
   const cleaned = cleanXmlText(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+    const parsedDate = new Date(`${cleaned}T00:00:00.000Z`);
+    if (
+      Number.isFinite(parsedDate.getTime())
+      && parsedDate.toISOString().slice(0, 10) === cleaned
+    ) {
+      return cleaned;
+    }
+    return undefined;
+  }
+
+  const isoMatch = cleaned.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})$/i,
+  );
+  const rfcMatch = cleaned.match(
+    /^(?:[A-Za-z]{3},\s*)?(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?\s+(?:GMT|UTC|[+-]\d{4})$/i,
+  );
+  if (!isoMatch && !rfcMatch) return undefined;
+  if (isoMatch) {
+    const [, year, month, day, hour, minute, second = "0"] = isoMatch;
+    if (
+      !isRealCalendarDate(Number(year), Number(month) - 1, Number(day))
+      || Number(hour) > 23
+      || Number(minute) > 59
+      || Number(second) > 59
+    ) return undefined;
+  }
+  if (rfcMatch) {
+    const [, day, monthName, year, hour, minute, second = "0", meridiem] =
+      rfcMatch;
+    const monthIndex = RFC_MONTH_INDEX.get(monthName.toLowerCase());
+    if (
+      monthIndex === undefined
+      || !isRealCalendarDate(Number(year), monthIndex, Number(day))
+      || Number(minute) > 59
+      || Number(second) > 59
+      || (meridiem ? Number(hour) < 1 || Number(hour) > 12 : Number(hour) > 23)
+    ) return undefined;
+  }
+
   // Some trade-press feeds glue am/pm onto the time ("12:31pm"), which
   // Date rejects; separate it before parsing.
   const parsed = new Date(cleaned.replace(/(\d)\s*(am|pm)\b/i, "$1 $2"));
   return Number.isFinite(parsed.getTime())
     ? parsed.toISOString()
-    : cleaned;
+    : undefined;
 }
 
 function parseRssItems(
@@ -502,7 +555,12 @@ function crunchbaseItem(entity: CrunchbaseEntity): RawSourceItem[] {
   const roundPermalink =
     entity.properties.identifier?.permalink ?? entity.uuid;
   const announcedOn = normalizedDate(entity.properties.announced_on);
-  if (!organization || !roundName || !roundPermalink || !announcedOn) {
+  if (
+    !organization
+    || !roundName
+    || !roundPermalink
+    || !announcedOn
+  ) {
     return [];
   }
 
@@ -541,7 +599,8 @@ function crunchbaseItem(entity: CrunchbaseEntity): RawSourceItem[] {
     sourceClass: "commercial_database",
     sourceAuthority: "secondary",
     evidenceRole: "trigger",
-    eventAt: announcedOn,
+    // Crunchbase's announced_on is the public-announcement date. It is not
+    // evidence of the round's close/event date, so chronology fails closed.
     publishedAt: announcedOn,
     summary: normalizedStatement,
     normalizedStatement,

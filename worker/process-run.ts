@@ -17,6 +17,8 @@ import {
   type OpportunityReportItem,
 } from "../lib/contracts/domain";
 import type { ProductInputGate } from "../lib/corpus/import-readiness";
+import { parseSourceRefV2Read } from "../lib/contracts/legacy-evidence-adapter";
+import { sourceTextForRetrieval } from "../lib/contracts/source-evidence";
 import { DEMO_MARKET_REPORT_EVIDENCE } from "../lib/corpus/market-evidence";
 import {
   buildMatchingSources,
@@ -33,6 +35,7 @@ import {
   selectMarketEventsForAnalysis,
   type MarketEventSelection,
 } from "../lib/market/selection";
+import { classifyMarketEventForAnalysis } from "../lib/market/classification";
 import type { MarketService } from "../lib/market/service";
 import type { MemoryContext } from "../lib/xtrace/service";
 import type { PersistedIngest } from "../lib/xtrace/service";
@@ -174,14 +177,24 @@ export async function processClaimedRun(
     }
 
     await updateStage("market_scan", "running");
-    const market = await dependencies.market.scanMarketWindow({
+    const scannedMarket = await dependencies.market.scanMarketWindow({
       days: 14,
       now: now(),
     });
-    await dependencies.intelligence.saveMarketEvents(
+    // Classification changes canonical sectors/themes and therefore identity.
+    // Normalize it once before the first durable write, then reuse that exact
+    // payload for selection, matching, reports, and underwriting.
+    const market = {
+      ...scannedMarket,
+      events: scannedMarket.events.map((event) =>
+        classifyMarketEventForAnalysis(event) ?? event
+      ),
+    };
+    const persistedMarketEvents = await dependencies.intelligence.saveMarketEvents(
       market.events,
       claimedRun.workspaceId,
     );
+    market.events = persistedMarketEvents;
     const portfolioTexts = new Map(bundles.map(
       (bundle) => [bundle.dealId, [
         bundle.companyName,
@@ -476,8 +489,7 @@ export async function processClaimedRun(
 }
 
 function isCanonicalImageOnlyBundle(bundle: DealMemoryBundle): boolean {
-  return bundle.interactions.length === 0
-    && bundle.facts.length > 0
+  return bundle.facts.length > 0
     && bundle.facts.every((fact) =>
       fact.text.startsWith(STRUCTURED_IMAGE_EVIDENCE_PREFIX)
       && fact.sources.length > 0
@@ -485,7 +497,9 @@ function isCanonicalImageOnlyBundle(bundle: DealMemoryBundle): boolean {
         source.provenance === "model_inference"
         && Boolean(source.documentId)
         && Boolean(source.sourceRevisionId)
-        && source.excerpt.startsWith(STRUCTURED_IMAGE_EVIDENCE_PREFIX)
+        && sourceTextForRetrieval(parseSourceRefV2Read(source)).startsWith(
+          STRUCTURED_IMAGE_EVIDENCE_PREFIX,
+        )
       )
     );
 }
@@ -547,6 +561,7 @@ function projectRecommendedOpportunities(
       whyNow: analysis.marketEvidence.explanation,
       previousContext: analysis.investmentMemory.decisionReason,
       implications: analysis.implications,
+      claimSupport: analysis.claimSupport ?? [],
       nextStep: analysis.recommendedNextMove,
       sources: analysis.sources,
       demoFixtureIds: analysis.investmentMemory.fixtureIds,

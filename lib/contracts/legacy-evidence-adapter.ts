@@ -9,6 +9,7 @@ import {
   type MarketEventV2,
   type SourceRefV2,
 } from "./source-evidence";
+import { assertMarketEventFingerprint } from "../market/identity";
 import { z } from "zod";
 
 const LegacyNormalizedEventMetadataSchema = z.object({
@@ -41,9 +42,13 @@ export function adaptLegacySourceRef(input: SourceRef): SourceRefV2 {
     publisher: source.publisher ?? null,
     providerId: null,
     eventAt: null,
+    eventAtPrecision: null,
     publishedAt: source.publishedAt ?? null,
+    publishedAtPrecision: source.publishedAt ? "timestamp" : null,
     retrievedAt: null,
+    retrievedAtPrecision: null,
     updatedAt: null,
+    updatedAtPrecision: null,
     entityKeys: [],
     sourceClass: "unknown_legacy",
     sourceAuthority: "unknown_legacy",
@@ -92,9 +97,13 @@ export function adaptLegacyMarketEvent(input: unknown): MarketEventV2 {
     positiveImplications: event.positiveImplications,
     negativeImplications: event.negativeImplications,
     eventAt: null,
+    eventAtPrecision: null,
     publishedAt: event.publishedAt,
+    publishedAtPrecision: "timestamp",
     retrievedAt: metadata.retrievedAt ?? null,
+    retrievedAtPrecision: metadata.retrievedAt ? "timestamp" : null,
     updatedAt: metadata.updatedAt ?? null,
+    updatedAtPrecision: metadata.updatedAt ? "timestamp" : null,
     confidence: event.confidence,
     canonicalUrl: metadata.canonicalUrl
       ?? event.sources.find((source) => source.url)?.url
@@ -109,7 +118,11 @@ export function adaptLegacyMarketEvent(input: unknown): MarketEventV2 {
 
 export function parseMarketEventV2Read(input: unknown): MarketEventV2 {
   const current = MarketEventV2Schema.safeParse(input);
-  if (current.success) return current.data;
+  if (current.success) {
+    return current.data.adaptation === "canonical"
+      ? assertMarketEventFingerprint(current.data)
+      : current.data;
+  }
   if (hasDeclaredSchemaVersion(input)) {
     throw current.error;
   }

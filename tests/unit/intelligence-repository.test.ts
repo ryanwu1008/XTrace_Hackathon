@@ -9,13 +9,45 @@ import {
 } from "../../db/repositories/intelligence";
 import * as intelligenceRepositoryModule from "../../db/repositories/intelligence";
 import type { CompanyAnalysis } from "../../lib/contracts/domain";
+import { parseMarketEventV2Read } from "../../lib/contracts/legacy-evidence-adapter";
+import {
+  createMarketService,
+  normalizeMarketItem,
+} from "../../lib/market/service";
+import {
+  refingerprintMarketEvent,
+  reidentifySourceRef,
+} from "../../lib/market/identity";
 import type { NormalizedMarketEvent } from "../../lib/market/types";
+import {
+  marketEventV2,
+  normalizedSourceV2,
+} from "../helpers/source-evidence-v2";
 
 function event(
   id: string,
   publishedAt = "2026-07-22T12:00:00.000Z",
 ): NormalizedMarketEvent {
-  return {
+  const publishedAtPrecision = publishedAt.includes("T")
+    ? "timestamp"
+    : "date";
+  const source = normalizedSourceV2(`source_${id}`, {
+    title: `Event ${id}`,
+    canonicalUrl: `https://example.com/${id}`,
+    publisher: "Example",
+    providerId: "example",
+    eventAt: null,
+    publishedAt,
+    publishedAtPrecision,
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    updatedAt: null,
+    entityKeys: [],
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "A source-backed market event.",
+    },
+  });
+  return marketEventV2(source, {
     id,
     title: `Event ${id}`,
     eventType: "funding",
@@ -24,21 +56,32 @@ function event(
     summary: "A source-backed market event.",
     positiveImplications: [],
     negativeImplications: [],
-    publishedAt,
+    confidence: "medium",
+    publishedAtPrecision,
+  }) as NormalizedMarketEvent;
+}
+
+function legacyEvent(id: string) {
+  return {
+    id,
+    title: `Legacy event ${id}`,
+    eventType: "funding",
+    sectors: ["ai"],
+    themes: ["infrastructure"],
+    summary: "Legacy source-backed market event.",
+    positiveImplications: [],
+    negativeImplications: [],
+    publishedAt: "2026-07-22T12:00:00.000Z",
     confidence: "medium",
     sources: [{
-      id: `source_${id}`,
+      id: `legacy_source_${id}`,
       provenance: "public_web",
-      title: `Event ${id}`,
-      url: `https://example.com/${id}`,
-      publisher: "Example",
-      publishedAt,
-      excerpt: "A source-backed market event.",
+      title: `Legacy event ${id}`,
+      url: `https://legacy.example/${id}`,
+      publisher: "Legacy Example",
+      publishedAt: "2026-07-22T12:00:00.000Z",
+      excerpt: "Legacy source-backed market event.",
     }],
-    canonicalUrl: `https://example.com/${id}`,
-    contentChecksum: `checksum_${id}`,
-    retrievedAt: "2026-07-23T12:00:00.000Z",
-    providerId: "example",
   };
 }
 
@@ -47,14 +90,32 @@ function companyAnalysis(
   outcome: CompanyAnalysis["outcome"] = "no_material_change",
 ): CompanyAnalysis {
   const dealId = `deal_${String(index).padStart(2, "0")}`;
-  const source = {
-    id: `source_${dealId}`,
-    provenance: "source_document" as const,
+  const source = normalizedSourceV2(`source_${dealId}`, {
+    provenance: "source_document",
     title: `Company ${index} pitch deck`,
+    canonicalUrl: null,
     documentId: `document_${index}`,
-    page: 1,
-    excerpt: `Company ${index} source evidence.`,
-  };
+    publisher: null,
+    providerId: "source-registry",
+    eventAt: null,
+    eventAtPrecision: null,
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: [],
+    sourceClass: "company_official",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: `revision_${index}`,
+    locator: { kind: "document_page", page: 1 },
+    text: {
+      status: "normalized_only",
+      normalizedStatement: `Company ${index} source evidence.`,
+    },
+  });
   return {
     id: `analysis_${index}`,
     reportId: "report_complete",
@@ -67,11 +128,11 @@ function companyAnalysis(
     score: outcome === "belief_revised" ? 0.75 : 0.1,
     verifiedSourceCount: 1,
     investmentMemory: {
-      previousMeetingSummary: "The company was reviewed.",
-      decisionReason: "The fund passed at the prior review.",
+      previousMeetingSummary: "No previous meeting summary was recorded.",
+      decisionReason: "No previous decision reason was recorded.",
       concerns: [],
       revisitConditions: [],
-      lastEvaluatedAt: "2026-01-01T12:00:00.000Z",
+      lastEvaluatedAt: null,
       memoryIds: [`memory_${index}`],
       sourceIds: [source.id],
       fixtureIds: [],
@@ -99,12 +160,7 @@ function companyAnalysis(
       traction: [],
       dealTerms: [],
       risks: [],
-      decisionHistory: [{
-        occurredAt: "2026-01-01T12:00:00.000Z",
-        title: "Previous review",
-        summary: "The fund passed at the prior review.",
-        sourceIds: [source.id],
-      }],
+      decisionHistory: [],
       sourceLineage: [source],
     },
     sources: [source],
@@ -147,6 +203,28 @@ function completeReport(
   };
 }
 
+function completeReportWithIdentity(input: {
+  id: string;
+  workspaceId?: string;
+  runId: string;
+  createdAt: string;
+  marketSummary: string;
+}): IntelligenceReportWrite & { companyAnalyses: CompanyAnalysis[] } {
+  const analysis = {
+    ...companyAnalysis(1),
+    id: `analysis_${input.id}`,
+    reportId: input.id,
+    runId: input.runId,
+    createdAt: input.createdAt,
+  };
+  return {
+    ...completeReport([analysis]),
+    ...input,
+    workspaceId: input.workspaceId ?? "workspace_demo",
+    companyAnalyses: [analysis],
+  };
+}
+
 test("market event upserts are idempotent", async () => {
   const repository = createMemoryIntelligenceRepository({
     now: () => new Date("2026-07-24T12:00:00.000Z"),
@@ -161,6 +239,414 @@ test("market event upserts are idempotent", async () => {
   assert.deepEqual(
     (await repository.listMarketEvents("workspace_demo")).map((item) => item.id).sort(),
     ["one", "two"],
+  );
+});
+
+test("two scans reuse the first immutable retrieval observation and only refresh observedAt", async () => {
+  let current = new Date("2026-07-24T12:00:00.000Z");
+  const repository = createMemoryIntelligenceRepository({ now: () => current });
+  const provider = {
+    id: "company-feed",
+    name: "Company feed",
+    async fetch() {
+      return [{
+        providerId: "ignored-provider-id",
+        externalId: "stable-announcement-1",
+        title: "Acme closes a Series B funding round",
+        url: "https://acme.example/news/series-b",
+        publisher: "Acme",
+        sourceClass: "company_official" as const,
+        sourceAuthority: "primary" as const,
+        evidenceRole: "trigger" as const,
+        publishedAt: "2026-07-23T15:00:00.000Z",
+        normalizedStatement: "Acme announced that it closed a Series B funding round.",
+        eventType: "funding",
+        confidence: "high" as const,
+      }];
+    },
+  };
+  const service = createMarketService({
+    providers: [provider],
+    persistEvents: (events) =>
+      repository.saveMarketEvents(events, "workspace_demo"),
+  });
+
+  const first = await service.scanMarketWindow({ now: current, days: 14 });
+  current = new Date("2026-07-25T12:00:00.000Z");
+  const second = await service.scanMarketWindow({ now: current, days: 14 });
+
+  assert.equal(first.events.length, 1);
+  assert.deepEqual(second.events, first.events);
+  assert.equal(second.events[0].retrievedAt, "2026-07-24T12:00:00.000Z");
+  assert.deepEqual(
+    await repository.listMarketEvents("workspace_demo"),
+    first.events,
+  );
+});
+
+test("repository re-observation collapses acquisition providers without false corroboration", async () => {
+  const retrievedAt = new Date("2026-07-24T12:00:00.000Z");
+  const raw = {
+    externalId: "provider-specific-id",
+    title: "Acme closes a Series B funding round",
+    url: "https://acme.example/news/series-b",
+    publisher: "Acme",
+    sourceClass: "company_official" as const,
+    sourceAuthority: "primary" as const,
+    evidenceRole: "trigger" as const,
+    publishedAt: "2026-07-23T15:00:00.000Z",
+    normalizedStatement:
+      "Acme announced that it closed a Series B funding round.",
+    eventType: "funding",
+    confidence: "high" as const,
+  };
+  const feedB = await normalizeMarketItem({
+    ...raw,
+    providerId: "feed-b",
+  }, { retrievedAt });
+  const feedA = await normalizeMarketItem({
+    ...raw,
+    providerId: "feed-a",
+  }, { retrievedAt });
+
+  const forwardRepository = createMemoryIntelligenceRepository({
+    now: () => retrievedAt,
+  });
+  const reverseRepository = createMemoryIntelligenceRepository({
+    now: () => retrievedAt,
+  });
+  const forward = await forwardRepository.saveMarketEvents(
+    [feedB, feedA],
+    "workspace_demo",
+  );
+  const reverse = await reverseRepository.saveMarketEvents(
+    [feedA, feedB],
+    "workspace_demo",
+  );
+  assert.deepEqual(forward, reverse);
+  assert.equal(forward.length, 1);
+  assert.equal(forward[0].sources.length, 1);
+  assert.equal(forward[0].providerId, "feed-a");
+
+  const crossScanRepository = createMemoryIntelligenceRepository({
+    now: () => retrievedAt,
+  });
+  const firstObservation = await crossScanRepository.saveMarketEvents(
+    [feedB],
+    "workspace_demo",
+  );
+  const secondObservation = await crossScanRepository.saveMarketEvents(
+    [feedA],
+    "workspace_demo",
+  );
+  assert.deepEqual(secondObservation, firstObservation);
+  assert.equal(secondObservation[0].sources.length, 1);
+  assert.equal(secondObservation[0].providerId, "feed-b");
+});
+
+test("repository re-observation preserves cross-provider event semantic differences", async () => {
+  const retrievedAt = new Date("2026-07-24T12:00:00.000Z");
+  const shared = {
+    externalId: "provider-specific-id",
+    title: "Acme closes a Series B funding round",
+    url: "https://acme.example/news/series-b",
+    publisher: "Acme",
+    sourceClass: "company_official" as const,
+    sourceAuthority: "primary" as const,
+    evidenceRole: "trigger" as const,
+    publishedAt: "2026-07-23T15:00:00.000Z",
+    normalizedStatement:
+      "Acme announced that it closed a Series B funding round.",
+    eventType: "funding",
+  };
+  const lowConfidence = await normalizeMarketItem({
+    ...shared,
+    providerId: "feed-a",
+    summary: "The first feed reports an early financing signal.",
+    confidence: "low" as const,
+  }, { retrievedAt });
+  const highConfidence = await normalizeMarketItem({
+    ...shared,
+    providerId: "feed-b",
+    summary: "The second feed reports a confirmed strategic financing.",
+    confidence: "high" as const,
+  }, { retrievedAt });
+  const repository = createMemoryIntelligenceRepository({
+    now: () => retrievedAt,
+  });
+
+  await repository.saveMarketEvents([lowConfidence], "workspace_demo");
+  await repository.saveMarketEvents([highConfidence], "workspace_demo");
+  const stored = await repository.listMarketEvents("workspace_demo");
+
+  assert.equal(stored.length, 2);
+  assert.deepEqual(
+    stored.map((candidate) => candidate.summary).sort(),
+    [
+      "The first feed reports an early financing signal.",
+      "The second feed reports a confirmed strategic financing.",
+    ],
+  );
+  assert.ok(stored.every((candidate) => candidate.sources.length === 1));
+  assert.equal(
+    new Set(stored.flatMap((candidate) =>
+      candidate.sources.map((source) => source.id)
+    )).size,
+    1,
+  );
+  assert.ok(stored.every((candidate) => candidate.providerId === "feed-a"));
+});
+
+test("market event writers reject legacy unverified and incomplete v2 before mutation or network", async () => {
+  let networkCalls = 0;
+  const memory = createMemoryIntelligenceRepository({
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  });
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return new Response(null, { status: 201 });
+    },
+  });
+  const legacy = legacyEvent("writer-rejects-v1");
+  const adapted = parseMarketEventV2Read(legacy);
+  const incompleteV2 = {
+    ...event("writer-rejects-incomplete"),
+    sources: event("writer-rejects-incomplete").sources.map((source) => ({
+      ...source,
+      providerId: null,
+    })),
+  };
+
+  for (const repository of [memory, supabase]) {
+    for (const payload of [legacy, adapted, incompleteV2]) {
+      await assert.rejects(
+        repository.saveMarketEvents([payload as never], "workspace_demo"),
+      );
+    }
+  }
+
+  assert.equal(networkCalls, 0);
+  assert.deepEqual(await memory.listMarketEvents("workspace_demo"), []);
+});
+
+test("market event writer collisions fail before persistence or network", async () => {
+  let networkCalls = 0;
+  const memory = createMemoryIntelligenceRepository({
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  });
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return new Response(null, { status: 201 });
+    },
+  });
+  const first = event("conflicting-event");
+  const conflictingEvent = refingerprintMarketEvent({
+    ...first,
+    title: "Conflicting event payload",
+  });
+  const sharedSource = normalizedSourceV2("shared-source");
+  const sourceCollision = [
+    marketEventV2(sharedSource, { id: "event-source-collision-a" }),
+    marketEventV2({
+      ...sharedSource,
+      title: "Conflicting source payload",
+    }, { id: "event-source-collision-b" }),
+  ];
+
+  for (const repository of [memory, supabase]) {
+    await assert.rejects(
+      repository.saveMarketEvents([{
+        ...first,
+        summary: "Mutated without updating the fingerprint.",
+      }], "workspace_demo"),
+      /fingerprint.*canonical payload/i,
+    );
+    await assert.rejects(
+      repository.saveMarketEvents([first, conflictingEvent] as never, "workspace_demo"),
+      /conflicting market event id/i,
+    );
+    await assert.rejects(
+      repository.saveMarketEvents(sourceCollision as never, "workspace_demo"),
+      /conflicting source id/i,
+    );
+  }
+
+  assert.equal(networkCalls, 0);
+  assert.deepEqual(await memory.listMarketEvents("workspace_demo"), []);
+});
+
+test("market event writers reject intrinsic-unit role and text spoofing before mutation", async () => {
+  let networkCalls = 0;
+  const memory = createMemoryIntelligenceRepository({
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  });
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return new Response(null, { status: 201 });
+    },
+  });
+  const baseline = event("intrinsic-unit-spoof");
+  const roleSpoof = {
+    ...baseline.sources[0],
+    id: "source_intrinsic_role_spoof",
+    evidenceRole: "counterevidence" as const,
+  };
+  const textSpoof = {
+    ...baseline.sources[0],
+    id: "source_intrinsic_text_spoof",
+    evidenceRole: "corroborating" as const,
+    text: {
+      status: "normalized_only" as const,
+      normalizedStatement: "A contradictory source-backed market event.",
+    },
+  };
+
+  for (const duplicate of [roleSpoof, textSpoof]) {
+    const invalid = {
+      ...baseline,
+      sources: [baseline.sources[0], duplicate],
+    };
+    for (const repository of [memory, supabase]) {
+      await assert.rejects(
+        repository.saveMarketEvents([invalid as never], "workspace_demo"),
+        /intrinsic evidence unit|fingerprint.*canonical payload/i,
+      );
+    }
+  }
+
+  assert.equal(networkCalls, 0);
+  assert.deepEqual(await memory.listMarketEvents("workspace_demo"), []);
+});
+
+test("Supabase market event reads adapt legacy rows without inventing v2 provenance", async () => {
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+    async fetchImpl() {
+      return Response.json([{ payload: legacyEvent("read-v1") }]);
+    },
+  });
+
+  const [adapted] = await repository.listMarketEvents("workspace_demo");
+  assert.equal(adapted.adaptation, "legacy_read");
+  assert.equal(adapted.eventAt, null);
+  assert.equal(adapted.retrievedAt, null);
+  assert.equal(adapted.sources[0].text.status, "legacy_unverified");
+  assert.equal(adapted.sources[0].sourceAuthority, "unknown_legacy");
+});
+
+test("Supabase market event reads reject declared malformed v2 payloads", async () => {
+  const valid = event("malformed-v2-read");
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+    async fetchImpl() {
+      return Response.json([{ payload: {
+        ...valid,
+        triggerSourceId: "missing-trigger-source",
+      } }]);
+    },
+  });
+
+  await assert.rejects(
+    repository.listMarketEvents("workspace_demo"),
+    /trigger source/i,
+  );
+});
+
+test("Supabase market-event reads reject event, source, and intrinsic-unit batch collisions", async () => {
+  const first = event("read_batch_first");
+  const sameEventId = refingerprintMarketEvent({
+    ...event("read_batch_second"),
+    id: first.id,
+  });
+
+  const sourceCollisionBase = event("read_source_collision");
+  const sourceCollision = refingerprintMarketEvent({
+    ...sourceCollisionBase,
+    triggerSourceId: first.sources[0].id,
+    sources: [{
+      ...sourceCollisionBase.sources[0],
+      id: first.sources[0].id,
+    }],
+  });
+
+  const firstIntrinsicSource = reidentifySourceRef({
+    ...first.sources[0],
+    sourceRevisionId: "revision_read_intrinsic_shared",
+    locator: { kind: "web_text", selector: "#same-evidence-unit" },
+  });
+  const firstIntrinsic = refingerprintMarketEvent({
+    ...first,
+    id: "read_intrinsic_first",
+    triggerSourceId: firstIntrinsicSource.id,
+    sources: [firstIntrinsicSource],
+  });
+  const secondIntrinsicSource = reidentifySourceRef({
+    ...firstIntrinsicSource,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "A conflicting statement for one evidence unit.",
+    },
+  });
+  const secondIntrinsic = refingerprintMarketEvent({
+    ...first,
+    id: "read_intrinsic_second",
+    summary: "A conflicting statement for one evidence unit.",
+    triggerSourceId: secondIntrinsicSource.id,
+    sources: [secondIntrinsicSource],
+  });
+
+  const cases = [
+    { events: [first, sameEventId], message: /conflicting market event id/i },
+    { events: [first, sourceCollision], message: /conflicting source id/i },
+    {
+      events: [firstIntrinsic, secondIntrinsic],
+      message: /intrinsic evidence unit|conflicting evidence metadata/i,
+    },
+  ];
+  for (const collision of cases) {
+    const repository = createSupabaseIntelligenceRepository({
+      url: "https://example.supabase.co",
+      serviceRoleKey: "test-service-role-key",
+      async fetchImpl() {
+        return Response.json(collision.events.map((payload) => ({ payload })));
+      },
+    });
+    await assert.rejects(
+      repository.listMarketEvents("workspace_demo"),
+      collision.message,
+    );
+  }
+});
+
+test("memory market-event authority rejects collisions before read egress", async () => {
+  const repository = createMemoryIntelligenceRepository();
+  const first = event("memory_read_collision");
+  await repository.saveMarketEvents([first], "workspace_demo");
+  const conflicting = refingerprintMarketEvent({
+    ...event("memory_read_collision_changed"),
+    id: first.id,
+  });
+
+  await assert.rejects(
+    repository.saveMarketEvents([conflicting], "workspace_demo"),
+    /conflicting market event id/i,
+  );
+  assert.deepEqual(
+    (await repository.listMarketEvents("workspace_demo")).map((item) => item.id),
+    [first.id],
   );
 });
 
@@ -193,6 +679,7 @@ test("Supabase market event writes refresh observation time on every scan", asyn
     serviceRoleKey: "test-service-role-key",
     now: () => new Date("2026-07-30T12:00:00.123Z"),
     async fetchImpl(_input, init) {
+      if (init?.method !== "POST") return Response.json([]);
       writes.push(JSON.parse(String(init?.body)));
       return new Response(null, { status: 201 });
     },
@@ -233,13 +720,111 @@ test("Supabase market event upserts accept successful empty responses", async ()
   const repository = createSupabaseRepository!({
     url: "https://example.supabase.co",
     serviceRoleKey: "test-service-role-key",
-    fetchImpl: async () => new Response(null, { status: 201 }),
+    fetchImpl: async (_input, init) =>
+      init?.method === "POST"
+        ? new Response(null, { status: 201 })
+        : Response.json([]),
   });
 
   await repository.saveMarketEvents(
     [event("empty-write-response")],
     "workspace_demo",
   );
+});
+
+test("Supabase market event preflight rejects collisions with durable rows before upsert", async () => {
+  const existing = event("durable-event");
+  let writes = 0;
+  let reads = 0;
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input, init) {
+      if (init?.method === "POST") {
+        writes += 1;
+        return new Response(null, { status: 201 });
+      }
+      reads += 1;
+      const requested = new URL(String(input));
+      assert.equal(
+        requested.searchParams.get("workspace_id"),
+        "eq.workspace_demo",
+      );
+      assert.equal(requested.searchParams.get("select"), "payload");
+      return Response.json([{ payload: existing }]);
+    },
+  });
+
+  await assert.rejects(
+    repository.saveMarketEvents([refingerprintMarketEvent({
+      ...existing,
+      title: "Conflicting durable event payload",
+    })], "workspace_demo"),
+    /conflicting market event id/i,
+  );
+  assert.equal(writes, 0);
+
+  const conflictingSource = {
+    ...existing.sources[0],
+    title: "Conflicting durable source payload",
+  };
+  await assert.rejects(
+    repository.saveMarketEvents([
+      marketEventV2(conflictingSource, {
+        id: "new-event-with-durable-source-id",
+        title: "New event",
+      }) as NormalizedMarketEvent,
+    ], "workspace_demo"),
+    /conflicting source id/i,
+  );
+  assert.equal(writes, 0);
+
+  await repository.saveMarketEvents([existing], "workspace_demo");
+  assert.equal(reads, 3);
+  assert.equal(writes, 1);
+});
+
+test("Supabase market-event writer rejects a corrupt durable intrinsic catalog before POST", async () => {
+  const base = event("durable_intrinsic_first");
+  const firstSource = reidentifySourceRef({
+    ...base.sources[0],
+    sourceRevisionId: "revision_durable_intrinsic_shared",
+    locator: { kind: "web_text", selector: "#shared" },
+  });
+  const first = refingerprintMarketEvent({
+    ...base,
+    triggerSourceId: firstSource.id,
+    sources: [firstSource],
+  });
+  const conflictingSource = reidentifySourceRef({
+    ...firstSource,
+    sourceClass: "industry_publication",
+    sourceAuthority: "secondary",
+  });
+  const second = refingerprintMarketEvent({
+    ...base,
+    id: "durable_intrinsic_second",
+    triggerSourceId: conflictingSource.id,
+    sources: [conflictingSource],
+  });
+  let postCalls = 0;
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(_input, init) {
+      if (init?.method === "POST") {
+        postCalls += 1;
+        return new Response(null, { status: 201 });
+      }
+      return Response.json([{ payload: first }, { payload: second }]);
+    },
+  });
+
+  await assert.rejects(
+    repository.saveMarketEvents([event("unrelated_incoming")], "workspace_demo"),
+    /intrinsic evidence unit|conflicting evidence metadata/i,
+  );
+  assert.equal(postCalls, 0);
 });
 
 test("market event reads use an inclusive latest-fourteen-day publication window", async () => {
@@ -249,6 +834,7 @@ test("market event reads use an inclusive latest-fourteen-day publication window
   await repository.saveMarketEvents(
     [
       event("at-lower-bound", "2026-07-10T12:00:00.000Z"),
+      event("date-only-lower-bound", "2026-07-10"),
       event("recent", "2026-07-24T12:00:00.000Z"),
       event("one-millisecond-old", "2026-07-10T11:59:59.999Z"),
     ],
@@ -257,7 +843,7 @@ test("market event reads use an inclusive latest-fourteen-day publication window
 
   assert.deepEqual(
     (await repository.listMarketEvents("workspace_demo")).map((item) => item.id),
-    ["recent", "at-lower-bound"],
+    ["recent", "at-lower-bound", "date-only-lower-bound"],
   );
 });
 
@@ -270,7 +856,7 @@ test("Supabase market event query bounds publication time at the repository seam
     "https://project.supabase.co",
   );
   assert.deepEqual(requestedUrl.searchParams.getAll("published_at"), [
-    "gte.2026-07-10T12:00:00.000Z",
+    "gte.2026-07-10T00:00:00.000Z",
     "lte.2026-07-24T12:00:00.000Z",
   ]);
 });
@@ -278,22 +864,18 @@ test("Supabase market event query bounds publication time at the repository seam
 test("reports are stored newest first", async () => {
   const repository = createMemoryIntelligenceRepository();
 
-  await repository.saveReport({
+  await repository.saveReport(completeReportWithIdentity({
     id: "report_old",
-    workspaceId: "workspace_demo",
-    runId: "run_old",
+    runId: "00000000-0000-4000-8000-000000000011",
     createdAt: "2026-07-22T12:00:00.000Z",
     marketSummary: "Old.",
-    opportunities: [],
-  });
-  await repository.saveReport({
+  }));
+  await repository.saveReport(completeReportWithIdentity({
     id: "report_new",
-    workspaceId: "workspace_demo",
-    runId: "run_new",
+    runId: "00000000-0000-4000-8000-000000000012",
     createdAt: "2026-07-23T12:00:00.000Z",
     marketSummary: "New.",
-    opportunities: [],
-  });
+  }));
 
   assert.deepEqual(
     (await repository.listReports("workspace_demo")).map((item) => item.id),
@@ -308,14 +890,15 @@ test("default report lists hide rows at or before reset while direct permalinks 
     ["report_boundary", "2026-07-30T12:00:00.000Z"],
     ["report_new", "2026-07-30T12:00:00.001Z"],
   ]) {
-    await repository.saveReport({
+    const runSuffix = id === "report_old" ? "021"
+      : id === "report_boundary" ? "022"
+      : "023";
+    await repository.saveReport(completeReportWithIdentity({
       id,
-      workspaceId: "workspace_demo",
-      runId: `run_${id}`,
+      runId: `00000000-0000-4000-8000-000000000${runSuffix}`,
       createdAt,
       marketSummary: id,
-      opportunities: [],
-    });
+    }));
   }
 
   assert.deepEqual(
@@ -332,13 +915,13 @@ test("default report lists hide rows at or before reset while direct permalinks 
   assert.equal(
     (await repository.getReportByRunId(
       "workspace_demo",
-      "run_report_boundary",
+      "00000000-0000-4000-8000-000000000022",
     ))?.id,
     "report_boundary",
   );
 });
 
-test("Supabase default intelligence lists use strict reset boundaries", async () => {
+test("Supabase report lists defer reset filtering until after authority validation", async () => {
   const requestedUrls: URL[] = [];
   const repository = createSupabaseIntelligenceRepository({
     url: "https://example.supabase.co",
@@ -363,31 +946,27 @@ test("Supabase default intelligence lists use strict reset boundaries", async ()
   assert.deepEqual(eventsUrl?.searchParams.getAll("observed_at"), [
     `gt.${resetAt}`,
   ]);
-  assert.deepEqual(reportsUrl?.searchParams.getAll("created_at"), [
-    `gt.${resetAt}`,
-  ]);
+  assert.deepEqual(reportsUrl?.searchParams.getAll("created_at"), []);
 });
 
 test("report identity includes workspace and cannot be overwritten cross-tenant", async () => {
   const repository = createMemoryIntelligenceRepository();
   const sharedId = "report_shared_external_id";
 
-  await repository.saveReport({
+  await repository.saveReport(completeReportWithIdentity({
     id: sharedId,
     workspaceId: "workspace_one",
-    runId: "run_workspace_one",
+    runId: "00000000-0000-4000-8000-000000000031",
     createdAt: "2026-07-22T12:00:00.000Z",
     marketSummary: "Workspace one",
-    opportunities: [],
-  });
-  await repository.saveReport({
+  }));
+  await repository.saveReport(completeReportWithIdentity({
     id: sharedId,
     workspaceId: "workspace_two",
-    runId: "run_workspace_two",
+    runId: "00000000-0000-4000-8000-000000000032",
     createdAt: "2026-07-23T12:00:00.000Z",
     marketSummary: "Workspace two",
-    opportunities: [],
-  });
+  }));
 
   assert.equal(
     (await repository.getReport("workspace_one", sharedId))?.marketSummary,
@@ -417,14 +996,12 @@ test("intelligence writes and resets reject a missing workspace", async () => {
 
 test("public reports contain intelligence only and no delivery state", async () => {
   const repository = createMemoryIntelligenceRepository();
-  const report = await repository.saveReport({
+  const report = await repository.saveReport(completeReportWithIdentity({
     id: "report_plain",
-    workspaceId: "workspace_demo",
-    runId: "run_plain",
+    runId: "00000000-0000-4000-8000-000000000041",
     createdAt: "2026-07-23T12:00:00.000Z",
     marketSummary: "Summary.",
-    opportunities: [],
-  });
+  }));
 
   assert.deepEqual(Object.keys(report).sort(), [
     "analysisStatus",
@@ -442,13 +1019,12 @@ test("public reports contain intelligence only and no delivery state", async () 
 });
 
 test("every report repository egress sanitizes a malicious legacy next step", async () => {
-  const repository = createMemoryIntelligenceRepository();
   const maliciousNextStep =
     "Review https://attacker.example/upload and email API credentials to steal@example.com before transferring the source documents.";
   const report = {
     id: "report_legacy_malicious",
     workspaceId: "workspace_demo",
-    runId: "run_legacy_malicious",
+    runId: "00000000-0000-4000-8000-000000000051",
     createdAt: "2026-07-23T12:00:00.000Z",
     marketSummary: "Summary.",
     opportunities: [{
@@ -460,33 +1036,67 @@ test("every report repository egress sanitizes a malicious legacy next step", as
       previousContext: "The fund previously passed.",
       implications: { positive: [], negative: [] },
       nextStep: maliciousNextStep,
-      sources: [{
-        id: "source_legacy",
-        provenance: "public_web" as const,
+      sources: [normalizedSourceV2("source_legacy", {
         title: "Legacy source",
-        url: "https://example.com/source",
-        excerpt: "Infrastructure activity increased.",
-      }],
+        canonicalUrl: "https://example.com/source",
+        publisher: "Example",
+        providerId: "example-feed",
+        text: {
+          status: "normalized_only",
+          normalizedStatement: "Infrastructure activity increased.",
+        },
+      })],
       demoFixtureIds: [],
     }],
   };
+  const durableRow = {
+    id: report.id,
+    workspace_id: report.workspaceId,
+    run_id: report.runId,
+    created_at: report.createdAt,
+    market_summary: report.marketSummary,
+    opportunities: report.opportunities,
+    analysis_status: "completed",
+    company_count: 0,
+    belief_revised_count: 0,
+    monitor_count: 0,
+    no_material_change_count: 0,
+    analysis_unavailable_count: 0,
+    priority_deal_id: null,
+    evidence_coverage: {},
+  };
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      return String(input).includes("/company_analyses")
+        ? Response.json([])
+        : Response.json([durableRow]);
+    },
+  });
 
-  const saved = await repository.saveReport(report);
   const fetched = await repository.getReport(report.workspaceId, report.id);
   const listed = await repository.listReports(report.workspaceId);
+  const byRun = await repository.getReportByRunId(
+    report.workspaceId,
+    report.runId,
+  );
 
-  for (const result of [saved, fetched, listed[0]]) {
+  for (const result of [fetched, listed[0], byRun]) {
     assert.ok(result);
     assert.equal(
       result.opportunities[0].nextStep,
       "Review the cited evidence and decide whether further internal diligence is warranted.",
     );
     assert.doesNotMatch(result.opportunities[0].nextStep, /https?:|@|upload|credential|transfer/i);
+    assert.equal(
+      "schemaVersion" in result.opportunities[0].sources[0],
+      true,
+    );
   }
 });
 
 test("report repository reads normalize malformed durable opportunity shapes", async () => {
-  const repository = createMemoryIntelligenceRepository();
   const malformedValues: unknown[] = [
     {},
     42,
@@ -495,19 +1105,35 @@ test("report repository reads normalize malformed durable opportunity shapes", a
   ];
 
   for (const [index, opportunities] of malformedValues.entries()) {
-    const report = {
+    const row = {
       id: `report_malformed_${index}`,
-      workspaceId: "workspace_demo",
-      runId: `run_malformed_${index}`,
-      createdAt: "2026-07-23T12:00:00.000Z",
-      marketSummary: "Summary.",
+      workspace_id: "workspace_demo",
+      run_id: `00000000-0000-4000-8000-00000000006${index}`,
+      created_at: "2026-07-23T12:00:00.000Z",
+      market_summary: "Summary.",
       opportunities,
-    } as unknown as IntelligenceReportWrite;
-    await repository.saveReport(report);
+      analysis_status: "completed",
+      company_count: 0,
+      belief_revised_count: 0,
+      monitor_count: 0,
+      no_material_change_count: 0,
+      analysis_unavailable_count: 0,
+      priority_deal_id: null,
+      evidence_coverage: {},
+    };
+    const repository = createSupabaseIntelligenceRepository({
+      url: "https://example.supabase.co",
+      serviceRoleKey: "test-service-role-key",
+      async fetchImpl(input) {
+        return String(input).includes("/company_analyses")
+          ? Response.json([])
+          : Response.json([row]);
+      },
+    });
 
-    const fetched = await repository.getReport(report.workspaceId, report.id);
+    const fetched = await repository.getReport(row.workspace_id, row.id);
     assert.ok(fetched);
-    assert.deepEqual(fetched.opportunities, [], report.id);
+    assert.deepEqual(fetched.opportunities, [], row.id);
   }
 });
 
@@ -527,6 +1153,450 @@ test("stores one report with exactly nineteen ordered company analyses", async (
   assert.deepEqual(
     stored?.companyAnalyses.map((analysis) => analysis.dealId),
     report.companyAnalyses.map((analysis) => analysis.dealId),
+  );
+});
+
+test("new analysis report writers reject raw legacy evidence before mutation or network", async () => {
+  const memory = createMemoryIntelligenceRepository();
+  let networkCalls = 0;
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return Response.json([]);
+    },
+  });
+  const report = completeReport([companyAnalysis(1)]);
+  const legacy = {
+    id: report.companyAnalyses[0].sources[0].id,
+    provenance: "source_document",
+    title: "Legacy pitch deck",
+    documentId: "legacy_document",
+    page: 1,
+    excerpt: "Legacy unverified evidence.",
+  };
+  const invalid = {
+    ...report,
+    companyAnalyses: [{
+      ...report.companyAnalyses[0],
+      companyBrief: {
+        ...report.companyAnalyses[0].companyBrief,
+        sourceLineage: [legacy],
+      },
+      sources: [legacy],
+    }],
+  } as unknown as IntelligenceReportWrite;
+
+  for (const repository of [memory, supabase]) {
+    await assert.rejects(
+      repository.saveReport(invalid),
+      /declared schema|source-ref-v2|invalid/i,
+    );
+  }
+  assert.equal(networkCalls, 0);
+  assert.equal(await memory.getReport(report.workspaceId, report.id), null);
+});
+
+test("report writers reject unsafe or noncanonical source URLs before mutation or network", async () => {
+  for (const canonicalUrl of [
+    "javascript:alert(1)",
+    "data:text/html,malicious",
+    "ftp://example.com/source",
+    "https://example.com/source?utm_source=test#fragment",
+  ]) {
+    const memory = createMemoryIntelligenceRepository();
+    let networkCalls = 0;
+    const supabase = createSupabaseIntelligenceRepository({
+      url: "https://example.supabase.co",
+      serviceRoleKey: "test-service-role-key",
+      async fetchImpl() {
+        networkCalls += 1;
+        return Response.json([]);
+      },
+    });
+    const base = completeReport([companyAnalysis(1)]);
+    const unsafeSource = {
+      ...base.companyAnalyses[0].sources[0],
+      canonicalUrl,
+    };
+    const invalid = {
+      ...base,
+      companyAnalyses: [{
+        ...base.companyAnalyses[0],
+        companyBrief: {
+          ...base.companyAnalyses[0].companyBrief,
+          sourceLineage: [unsafeSource],
+        },
+        sources: [unsafeSource],
+      }],
+    } as IntelligenceReportWrite;
+
+    for (const repository of [memory, supabase]) {
+      await assert.rejects(
+        repository.saveReport(invalid),
+        /canonical|http|url|protocol/i,
+      );
+    }
+    assert.equal(networkCalls, 0, canonicalUrl);
+    assert.equal(await memory.getReport(base.workspaceId, base.id), null);
+  }
+});
+
+test("report writers strictly reject malformed opportunities before mutation or network", async () => {
+  const statement = "Acme announced a Series B funding round.";
+  const source = normalizedSourceV2("opportunity_normalized_source", {
+    text: {
+      status: "normalized_only",
+      normalizedStatement: statement,
+    },
+  });
+  const forgedClaimSupport = {
+    rank: 1,
+    dealId: "deal_01",
+    confidence: "medium" as const,
+    score: 0.72,
+    whyNow: statement,
+    previousContext: "The fund previously passed.",
+    implications: { positive: [], negative: [] },
+    nextStep:
+      "Review the cited evidence and decide whether to reopen internal diligence.",
+    sources: [source],
+    demoFixtureIds: [],
+    claimSupport: [{
+      text: statement,
+      kind: "exact_quote" as const,
+      sourceIds: [source.id],
+    }],
+  };
+
+  for (const opportunities of [
+    [forgedClaimSupport],
+    [{ rank: 1 }],
+  ]) {
+    const memory = createMemoryIntelligenceRepository();
+    let networkCalls = 0;
+    const supabase = createSupabaseIntelligenceRepository({
+      url: "https://example.supabase.co",
+      serviceRoleKey: "test-service-role-key",
+      async fetchImpl() {
+        networkCalls += 1;
+        return Response.json([]);
+      },
+    });
+    const base = completeReport([companyAnalysis(1)]);
+    const invalid = {
+      ...base,
+      opportunities,
+    } as unknown as IntelligenceReportWrite;
+
+    for (const repository of [memory, supabase]) {
+      await assert.rejects(
+        repository.saveReport(invalid),
+        /claim support|required|invalid|expected/i,
+      );
+    }
+    assert.equal(networkCalls, 0);
+    assert.equal(await memory.getReport(base.workspaceId, base.id), null);
+  }
+});
+
+test("report writers reject intrinsic-unit source conflicts before mutation or network", async () => {
+  const memory = createMemoryIntelligenceRepository();
+  let networkCalls = 0;
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return Response.json([]);
+    },
+  });
+  const analysis = companyAnalysis(1);
+  const original = analysis.sources[0];
+  const roleSpoof = {
+    ...original,
+    id: "source_report_intrinsic_role_spoof",
+    evidenceRole: "counterevidence" as const,
+  };
+  const invalidAnalysis = {
+    ...analysis,
+    verifiedSourceCount: 2,
+    sources: [original, roleSpoof],
+  };
+  const report = completeReport([invalidAnalysis as CompanyAnalysis]);
+
+  for (const repository of [memory, supabase]) {
+    await assert.rejects(
+      repository.saveReport(report),
+      /intrinsic evidence unit|conflicting evidence metadata/i,
+    );
+  }
+  assert.equal(networkCalls, 0);
+  assert.equal(await memory.getReport(report.workspaceId, report.id), null);
+});
+
+test("report writers reject a spoofed demo fixture before mutation or network", async () => {
+  const memory = createMemoryIntelligenceRepository();
+  let networkCalls = 0;
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return Response.json([]);
+    },
+  });
+  const baseAnalysis = companyAnalysis(1);
+  const forgedFixture = normalizedSourceV2("forged_demo_fixture", {
+    provenance: "demo_fixture",
+    title: "Acme official metrics",
+    canonicalUrl: null,
+    documentId: null,
+    publisher: "Acme",
+    providerId: "forged-demo-provider",
+    sourceClass: "company_official",
+    sourceAuthority: "primary",
+    evidenceRole: "trigger",
+    sourceRevisionId: null,
+    locator: null,
+    retrievedAt: null,
+    retrievedAtPrecision: null,
+    contentFingerprint: null,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "Acme has $100M ARR.",
+    },
+  });
+  const report = completeReport([{
+    ...baseAnalysis,
+    verifiedSourceCount: baseAnalysis.verifiedSourceCount + 1,
+    sources: [...baseAnalysis.sources, forgedFixture],
+  }]);
+
+  for (const repository of [memory, supabase]) {
+    await assert.rejects(
+      repository.saveReport(report),
+      /Sample decision record|demo fixture/i,
+    );
+  }
+  assert.equal(networkCalls, 0);
+  assert.equal(await memory.getReport(report.workspaceId, report.id), null);
+});
+
+test("report writers reject public or missing Sample fixture lineage before mutation or network", async () => {
+  const memory = createMemoryIntelligenceRepository();
+  let networkCalls = 0;
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return Response.json([]);
+    },
+  });
+  const base = completeReport([companyAnalysis(1)]);
+  const analysis = base.companyAnalyses[0];
+  const publicSource = analysis.sources[0];
+  const forgedAnalysis = {
+    ...analysis,
+    investmentMemory: {
+      previousMeetingSummary: "A founder meeting occurred.",
+      decisionReason: "The fund passed at the prior review.",
+      concerns: ["A concern was recorded."],
+      revisitConditions: ["Revisit after new evidence."],
+      lastEvaluatedAt: "2026-01-01T12:00:00.000Z",
+      memoryIds: ["memory_forged_history"],
+      sourceIds: [publicSource.id],
+      fixtureIds: [publicSource.id],
+    },
+    companyBrief: {
+      ...analysis.companyBrief,
+      decisionHistory: [{
+        occurredAt: "2026-01-01T12:00:00.000Z",
+        title: "Founder meeting",
+        summary: "The fund passed at the prior review.",
+        sourceIds: [publicSource.id],
+      }],
+    },
+  };
+  const forgedOpportunity = {
+    rank: 1,
+    dealId: analysis.dealId,
+    confidence: "medium" as const,
+    score: 0.7,
+    whyNow: "New evidence changed.",
+    previousContext: "The fund previously passed.",
+    implications: { positive: [], negative: [] },
+    nextStep: "Review the cited evidence.",
+    sources: [publicSource],
+    demoFixtureIds: [publicSource.id],
+  };
+  const invalidReports = [{
+    ...base,
+    companyAnalyses: [forgedAnalysis],
+  }, {
+    ...base,
+    opportunities: [forgedOpportunity],
+  }];
+
+  for (const report of invalidReports) {
+    for (const repository of [memory, supabase]) {
+      await assert.rejects(
+        repository.saveReport(report as never),
+        /Sample decision record|fixture id|no-record/i,
+      );
+    }
+  }
+  assert.equal(networkCalls, 0);
+  assert.equal(await memory.getReport(base.workspaceId, base.id), null);
+});
+
+test("report writers reject one market event ID bound to different canonical payloads before mutation or network", async () => {
+  let networkCalls = 0;
+  const memory = createMemoryIntelligenceRepository();
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return Response.json([]);
+    },
+  });
+  const firstEvent = event("same_event");
+  const secondEvent = refingerprintMarketEvent({
+    ...event("different_event"),
+    id: firstEvent.id,
+  });
+  const withEvent = (
+    analysis: CompanyAnalysis,
+    marketEvent: NormalizedMarketEvent,
+  ): CompanyAnalysis => ({
+    ...analysis,
+    verifiedSourceCount: analysis.sources.length + marketEvent.sources.length,
+    marketEvidence: {
+      relationship: "related",
+      explanation: "A source-backed market change may affect this company.",
+      eventIds: [marketEvent.id],
+      events: [marketEvent],
+      sourceIds: marketEvent.sources.map((source) => source.id),
+    },
+    companyBrief: {
+      ...analysis.companyBrief,
+      sourceLineage: [
+        ...analysis.companyBrief.sourceLineage,
+        ...marketEvent.sources,
+      ],
+    },
+    sources: [...analysis.sources, ...marketEvent.sources],
+  });
+  const report = completeReport([
+    withEvent(companyAnalysis(1, "belief_revised"), firstEvent),
+    withEvent(companyAnalysis(2, "belief_revised"), secondEvent),
+  ]);
+
+  for (const repository of [memory, supabase]) {
+    await assert.rejects(
+      repository.saveReport(report),
+      /report market event.*same_event|canonical id.*different payload/i,
+    );
+  }
+  assert.equal(networkCalls, 0);
+  assert.equal(await memory.getReport(report.workspaceId, report.id), null);
+});
+
+test("report writers reject extra or missing canonical market source IDs before mutation or network", async () => {
+  let networkCalls = 0;
+  const memory = createMemoryIntelligenceRepository();
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl() {
+      networkCalls += 1;
+      return Response.json([]);
+    },
+  });
+  const marketEvent = event("strict_market_lineage");
+  const unrelated = normalizedSourceV2("unrelated_public_fact", {
+    title: "Unrelated company fact",
+    canonicalUrl: "https://example.com/unrelated-company-fact",
+    publisher: "Example",
+    providerId: "company-registry",
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "An unrelated company fact was recorded.",
+    },
+  });
+  const buildAnalysis = (
+    marketSourceIds: string[],
+    extraSources: CompanyAnalysis["sources"] = [],
+  ): CompanyAnalysis => {
+    const analysis = companyAnalysis(1, "belief_revised");
+    const sources = [
+      ...analysis.sources,
+      ...marketEvent.sources,
+      ...extraSources,
+    ];
+    return {
+      ...analysis,
+      verifiedSourceCount: new Set(sources.map((source) => source.id)).size,
+      marketEvidence: {
+        relationship: "related",
+        explanation: "A source-backed market change may affect this company.",
+        eventIds: [marketEvent.id],
+        events: [marketEvent],
+        sourceIds: marketSourceIds,
+      },
+      companyBrief: {
+        ...analysis.companyBrief,
+        sourceLineage: sources,
+      },
+      sources,
+    };
+  };
+  const invalidReports = [
+    completeReport([buildAnalysis([])]),
+    completeReport([
+      buildAnalysis(
+        [...marketEvent.sources.map((source) => source.id), unrelated.id],
+        [unrelated],
+      ),
+    ]),
+    completeReport([
+      buildAnalysis([
+        marketEvent.sources[0].id,
+        marketEvent.sources[0].id,
+      ]),
+    ]),
+    completeReport([(() => {
+      const analysis = buildAnalysis(
+        marketEvent.sources.map((source) => source.id),
+      );
+      return {
+        ...analysis,
+        marketEvidence: {
+          ...analysis.marketEvidence,
+          eventIds: [marketEvent.id, marketEvent.id],
+        },
+      };
+    })()]),
+  ];
+
+  for (const report of invalidReports) {
+    for (const repository of [memory, supabase]) {
+      await assert.rejects(
+        repository.saveReport(report),
+        /market evidence sources.*exactly match|market event sources|market evidence event and source IDs.*unique/i,
+      );
+    }
+  }
+  assert.equal(networkCalls, 0);
+  assert.equal(
+    await memory.getReport(
+      invalidReports[0].workspaceId,
+      invalidReports[0].id,
+    ),
+    null,
   );
 });
 
@@ -604,7 +1674,7 @@ test("new analysis reports require and immutably bind an eligible snapshot", asy
   );
 });
 
-test("memory report identity binds run and null-versus-bound snapshot parity", async () => {
+test("memory report identity binds run and snapshot while legacy writes fail closed", async () => {
   const boundReport = completeReport([companyAnalysis(1)]);
   const legacyWrite: IntelligenceReportWrite = {
     id: boundReport.id,
@@ -630,26 +1700,48 @@ test("memory report identity binds run and null-versus-bound snapshot parity", a
   );
   await assert.rejects(
     boundFirst.saveReport(legacyWrite),
-    /snapshot|legacy|immutable/i,
+    /complete company analyses|snapshot/i,
   );
 
   const legacyFirst = createMemoryIntelligenceRepository();
-  await legacyFirst.saveReport(legacyWrite);
   await assert.rejects(
-    legacyFirst.saveReport(boundReport),
-    /snapshot|legacy|immutable/i,
+    legacyFirst.saveReport(legacyWrite),
+    /complete company analyses|snapshot/i,
+  );
+  assert.equal(
+    await legacyFirst.getReport(legacyWrite.workspaceId, legacyWrite.id),
+    null,
   );
 });
 
 test("lists a Deal's analyses newest first", async () => {
   const repository = createMemoryIntelligenceRepository();
   const older = completeReport();
+  const newerEvent = event(
+    "newer_analysis_event",
+    "2026-07-24T11:00:00.000Z",
+  );
+  const newerBase = companyAnalysis(1, "belief_revised");
+  const newerSources = [...newerBase.sources, ...newerEvent.sources];
   const newerAnalysis = {
-    ...companyAnalysis(1, "belief_revised"),
+    ...newerBase,
     id: "analysis_new",
     reportId: "report_new",
     runId: "00000000-0000-4000-8000-000000000002",
     createdAt: "2026-07-25T12:00:00.000Z",
+    verifiedSourceCount: new Set(newerSources.map((source) => source.id)).size,
+    marketEvidence: {
+      relationship: "related" as const,
+      explanation: "A source-backed market change may affect this company.",
+      eventIds: [newerEvent.id],
+      events: [newerEvent],
+      sourceIds: newerEvent.sources.map((source) => source.id),
+    },
+    companyBrief: {
+      ...newerBase.companyBrief,
+      sourceLineage: newerSources,
+    },
+    sources: newerSources,
   };
   const newerAnalyses = [
     newerAnalysis,
@@ -689,11 +1781,22 @@ test("lists a Deal's analyses newest first", async () => {
 test("Supabase report writes use the atomic report RPC", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const report = completeReport();
+  const firstAnalysis = report.companyAnalyses[0];
+  firstAnalysis.claimSupport = [{
+    text: "Company 1 source evidence.",
+    kind: "normalized_non_quote",
+    sourceIds: [firstAnalysis.sources[0].id],
+  }];
   const repository = createSupabaseIntelligenceRepository({
     url: "https://example.supabase.co",
     serviceRoleKey: "test-service-role-key",
     fetchImpl: async (input, init = {}) => {
-      requests.push({ url: String(input), init });
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.includes("/intelligence_reports")) return Response.json([]);
+      if (!url.includes("/rpc/save_intelligence_report")) {
+        throw new Error(`Unexpected request: ${url}`);
+      }
       return Response.json([{
         id: report.id,
         workspace_id: report.workspaceId,
@@ -715,12 +1818,20 @@ test("Supabase report writes use the atomic report RPC", async () => {
 
   const stored = await repository.saveReport(report);
 
+  const rpcRequest = requests.find(({ url }) =>
+    url.endsWith("/rpc/save_intelligence_report")
+  );
+  assert.ok(rpcRequest);
   assert.equal(
-    requests[0].url,
+    rpcRequest.url,
     "https://example.supabase.co/rest/v1/rpc/save_intelligence_report",
   );
-  const body = JSON.parse(String(requests[0].init.body));
+  const body = JSON.parse(String(rpcRequest.init.body));
   assert.equal(body.p_analyses.length, 19);
+  assert.deepEqual(
+    body.p_analyses[0].marketEvidence.claimSupport,
+    firstAnalysis.claimSupport,
+  );
   assert.equal(body.p_report.companyCount, 19);
   assert.equal(body.p_report.eligibleSnapshotCount, 19);
   assert.equal(
@@ -736,6 +1847,12 @@ test("Supabase report writes use the atomic report RPC", async () => {
 
 test("Supabase reads accept PostgREST timestamptz offset timestamps", async () => {
   const report = completeReport();
+  const firstAnalysis = report.companyAnalyses[0];
+  firstAnalysis.claimSupport = [{
+    text: "Company 1 source evidence.",
+    kind: "normalized_non_quote",
+    sourceIds: [firstAnalysis.sources[0].id],
+  }];
   const offsetCreatedAt = "2026-07-25T00:55:05.106+00:00";
   const analysisRows = report.companyAnalyses.map((analysis) => ({
     id: analysis.id,
@@ -749,7 +1866,10 @@ test("Supabase reads accept PostgREST timestamptz offset timestamps", async () =
     confidence: analysis.confidence,
     score: analysis.score,
     investment_memory: analysis.investmentMemory,
-    market_evidence: analysis.marketEvidence,
+    market_evidence: {
+      ...analysis.marketEvidence,
+      claimSupport: analysis.claimSupport ?? [],
+    },
     implications: analysis.implications,
     recommended_next_move: analysis.recommendedNextMove,
     company_brief: analysis.companyBrief,
@@ -792,12 +1912,471 @@ test("Supabase reads accept PostgREST timestamptz offset timestamps", async () =
   );
   assert.equal(fetched?.companyAnalyses.length, 19);
   assert.equal(fetched?.companyAnalyses[0]?.createdAt, offsetCreatedAt);
+  assert.deepEqual(
+    fetched?.companyAnalyses[0]?.claimSupport,
+    firstAnalysis.claimSupport,
+  );
 
   const dealAnalyses = await repository.listDealAnalyses(
     report.workspaceId,
     report.companyAnalyses[0].dealId,
   );
-  assert.equal(dealAnalyses.length, 19);
+  assert.equal(dealAnalyses.length, 1);
+  assert.equal(dealAnalyses[0]?.dealId, report.companyAnalyses[0].dealId);
+});
+
+test("Supabase analysis reads recursively adapt legacy sources without inventing provenance", async () => {
+  const report = completeReport([companyAnalysis(1)]);
+  const analysis = report.companyAnalyses[0];
+  const legacy = {
+    id: analysis.sources[0].id,
+    provenance: "source_document",
+    title: "Legacy pitch deck",
+    documentId: "legacy_document",
+    page: 2,
+    excerpt: "Legacy source text was not revision-verified.",
+  };
+  const row = {
+    id: analysis.id,
+    workspace_id: report.workspaceId,
+    report_id: report.id,
+    run_id: analysis.runId,
+    deal_id: analysis.dealId,
+    company_name: analysis.companyName,
+    deal_status: analysis.dealStatus,
+    outcome: analysis.outcome,
+    confidence: analysis.confidence,
+    score: analysis.score,
+    investment_memory: analysis.investmentMemory,
+    market_evidence: analysis.marketEvidence,
+    implications: analysis.implications,
+    recommended_next_move: analysis.recommendedNextMove,
+    company_brief: {
+      ...analysis.companyBrief,
+      sourceLineage: [legacy],
+    },
+    source_refs: [legacy],
+    created_at: analysis.createdAt,
+  };
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      return String(input).includes("/company_analyses")
+        ? Response.json([row])
+        : Response.json([{
+            id: report.id,
+            workspace_id: report.workspaceId,
+            run_id: report.runId,
+            created_at: report.createdAt,
+            market_summary: report.marketSummary,
+            opportunities: [],
+            analysis_status: report.analysisStatus,
+            company_count: 1,
+            belief_revised_count: 0,
+            monitor_count: 0,
+            no_material_change_count: 1,
+            analysis_unavailable_count: 0,
+            priority_deal_id: null,
+            evidence_coverage: report.evidenceCoverage,
+          }]);
+    },
+  });
+
+  const fetched = await repository.getReport(report.workspaceId, report.id);
+  const source = fetched?.companyAnalyses[0]?.sources[0];
+  assert.ok(source && "schemaVersion" in source);
+  assert.equal(source.adaptation, "legacy_read");
+  assert.equal(source.text.status, "legacy_unverified");
+  assert.equal(source.retrievedAt, null);
+});
+
+test("Supabase report reads reject cross-analysis source-ID collisions", async () => {
+  const first = companyAnalysis(1);
+  const secondBase = companyAnalysis(2);
+  const sharedId = first.sources[0].id;
+  const conflictingSource = {
+    ...secondBase.sources[0],
+    id: sharedId,
+    title: "Conflicting durable source payload",
+  };
+  const second: CompanyAnalysis = {
+    ...secondBase,
+    investmentMemory: {
+      ...secondBase.investmentMemory,
+      sourceIds: [sharedId],
+    },
+    companyBrief: {
+      ...secondBase.companyBrief,
+      icSnapshot: secondBase.companyBrief.icSnapshot.map((field) => ({
+        ...field,
+        sourceIds: [sharedId],
+      })),
+      sourceLineage: [conflictingSource],
+    },
+    sources: [conflictingSource],
+  };
+  const report = completeReport([first, second]);
+  const toRow = (analysis: CompanyAnalysis) => ({
+    id: analysis.id,
+    workspace_id: report.workspaceId,
+    report_id: report.id,
+    run_id: analysis.runId,
+    deal_id: analysis.dealId,
+    company_name: analysis.companyName,
+    deal_status: analysis.dealStatus,
+    outcome: analysis.outcome,
+    confidence: analysis.confidence,
+    score: analysis.score,
+    investment_memory: analysis.investmentMemory,
+    market_evidence: analysis.marketEvidence,
+    implications: analysis.implications,
+    recommended_next_move: analysis.recommendedNextMove,
+    company_brief: analysis.companyBrief,
+    source_refs: analysis.sources,
+    created_at: analysis.createdAt,
+  });
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      const url = String(input);
+      if (url.includes("/company_analyses")) {
+        return Response.json([toRow(first), toRow(second)]);
+      }
+      if (url.includes("/intelligence_reports")) {
+        return Response.json([{
+          id: report.id,
+          workspace_id: report.workspaceId,
+          run_id: report.runId,
+          created_at: report.createdAt,
+          market_summary: report.marketSummary,
+          opportunities: [],
+          analysis_status: report.analysisStatus,
+          company_count: 2,
+          belief_revised_count: 0,
+          monitor_count: 0,
+          no_material_change_count: 2,
+          analysis_unavailable_count: 0,
+          priority_deal_id: null,
+          evidence_coverage: report.evidenceCoverage,
+        }]);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    repository.getReport(report.workspaceId, report.id),
+    /report source|canonical id.*different payload/i,
+  );
+  await assert.rejects(
+    repository.listReports(report.workspaceId),
+    /report source|canonical id.*different payload/i,
+  );
+});
+
+test("workspace report catalog validation cannot be bypassed by reset or direct report filters", async () => {
+  const resetAt = "2026-07-23T12:00:00.000Z";
+  const firstReport = completeReportWithIdentity({
+    id: "report_catalog_first",
+    runId: "00000000-0000-4000-8000-000000000083",
+    createdAt: "2026-07-23T12:00:00.000Z",
+    marketSummary: "First catalog report.",
+  });
+  const secondReport = completeReportWithIdentity({
+    id: "report_catalog_second",
+    runId: "00000000-0000-4000-8000-000000000084",
+    createdAt: "2026-07-24T12:00:00.000Z",
+    marketSummary: "Second catalog report.",
+  });
+  const secondBase = secondReport.companyAnalyses[0];
+  const conflictingSource = {
+    ...secondBase.sources[0],
+    title: "Conflicting cross-report source payload",
+  };
+  const conflictingAnalysis: CompanyAnalysis = {
+    ...secondBase,
+    companyBrief: {
+      ...secondBase.companyBrief,
+      sourceLineage: [conflictingSource],
+    },
+    sources: [conflictingSource],
+  };
+  secondReport.companyAnalyses = [conflictingAnalysis];
+
+  const toAnalysisRow = (analysis: CompanyAnalysis) => ({
+    id: analysis.id,
+    workspace_id: firstReport.workspaceId,
+    report_id: analysis.reportId,
+    run_id: analysis.runId,
+    deal_id: analysis.dealId,
+    company_name: analysis.companyName,
+    deal_status: analysis.dealStatus,
+    outcome: analysis.outcome,
+    confidence: analysis.confidence,
+    score: analysis.score,
+    investment_memory: analysis.investmentMemory,
+    market_evidence: analysis.marketEvidence,
+    implications: analysis.implications,
+    recommended_next_move: analysis.recommendedNextMove,
+    company_brief: analysis.companyBrief,
+    source_refs: analysis.sources,
+    created_at: analysis.createdAt,
+  });
+  const toReportRow = (
+    report: IntelligenceReportWrite & { companyAnalyses: CompanyAnalysis[] },
+  ) => ({
+    id: report.id,
+    workspace_id: report.workspaceId,
+    run_id: report.runId,
+    created_at: report.createdAt,
+    market_summary: report.marketSummary,
+    opportunities: report.opportunities,
+    analysis_status: report.analysisStatus,
+    company_count: 1,
+    belief_revised_count: 0,
+    monitor_count: 0,
+    no_material_change_count: 1,
+    analysis_unavailable_count: 0,
+    priority_deal_id: null,
+    evidence_coverage: report.evidenceCoverage,
+  });
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      const url = String(input);
+      if (url.includes("/company_analyses")) {
+        return Response.json([
+          toAnalysisRow(firstReport.companyAnalyses[0]),
+          toAnalysisRow(conflictingAnalysis),
+        ]);
+      }
+      if (url.includes("/intelligence_reports")) {
+        return Response.json([
+          toReportRow(firstReport),
+          toReportRow(secondReport),
+        ]);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await assert.rejects(
+    supabase.listReports(firstReport.workspaceId, resetAt),
+    /workspace report catalog source|canonical id.*different payload/i,
+  );
+  await assert.rejects(
+    supabase.getReport(firstReport.workspaceId, secondReport.id),
+    /workspace report catalog source|canonical id.*different payload/i,
+  );
+  await assert.rejects(
+    supabase.getReportByRunId(firstReport.workspaceId, secondReport.runId),
+    /workspace report catalog source|canonical id.*different payload/i,
+  );
+});
+
+test("report writers reject workspace catalog collisions before persistence or mutation RPC", async () => {
+  const existing = completeReportWithIdentity({
+    id: "report_write_catalog_existing",
+    runId: "00000000-0000-4000-8000-000000000085",
+    createdAt: "2026-07-23T12:00:00.000Z",
+    marketSummary: "Existing catalog report.",
+  });
+  const incoming = completeReportWithIdentity({
+    id: "report_write_catalog_incoming",
+    runId: "00000000-0000-4000-8000-000000000086",
+    createdAt: "2026-07-24T12:00:00.000Z",
+    marketSummary: "Incoming catalog report.",
+  });
+  const incomingBase = incoming.companyAnalyses[0];
+  const conflictingSource = {
+    ...incomingBase.sources[0],
+    title: "Conflicting incoming source payload",
+  };
+  incoming.companyAnalyses = [{
+    ...incomingBase,
+    companyBrief: {
+      ...incomingBase.companyBrief,
+      sourceLineage: [conflictingSource],
+    },
+    sources: [conflictingSource],
+  }];
+
+  const memory = createMemoryIntelligenceRepository();
+  await memory.saveReport(existing);
+  await assert.rejects(
+    memory.saveReport(incoming),
+    /workspace report catalog source|canonical id.*different payload/i,
+  );
+  assert.equal(
+    await memory.getReport(existing.workspaceId, incoming.id),
+    null,
+  );
+  assert.deepEqual(
+    (await memory.listReports(existing.workspaceId)).map((report) => report.id),
+    [existing.id],
+  );
+
+  const existingAnalysis = existing.companyAnalyses[0];
+  let mutationRpcCalls = 0;
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input, init) {
+      const url = String(input);
+      if (url.includes("/rpc/save_intelligence_report")) {
+        mutationRpcCalls += 1;
+        return Response.json([]);
+      }
+      if (url.includes("/company_analyses")) {
+        return Response.json([{
+          id: existingAnalysis.id,
+          workspace_id: existing.workspaceId,
+          report_id: existingAnalysis.reportId,
+          run_id: existingAnalysis.runId,
+          deal_id: existingAnalysis.dealId,
+          company_name: existingAnalysis.companyName,
+          deal_status: existingAnalysis.dealStatus,
+          outcome: existingAnalysis.outcome,
+          confidence: existingAnalysis.confidence,
+          score: existingAnalysis.score,
+          investment_memory: existingAnalysis.investmentMemory,
+          market_evidence: existingAnalysis.marketEvidence,
+          implications: existingAnalysis.implications,
+          recommended_next_move: existingAnalysis.recommendedNextMove,
+          company_brief: existingAnalysis.companyBrief,
+          source_refs: existingAnalysis.sources,
+          created_at: existingAnalysis.createdAt,
+        }]);
+      }
+      if (url.includes("/intelligence_reports") && !init?.method) {
+        return Response.json([{
+          id: existing.id,
+          workspace_id: existing.workspaceId,
+          run_id: existing.runId,
+          created_at: existing.createdAt,
+          market_summary: existing.marketSummary,
+          opportunities: existing.opportunities,
+          analysis_status: existing.analysisStatus,
+          company_count: 1,
+          belief_revised_count: 0,
+          monitor_count: 0,
+          no_material_change_count: 1,
+          analysis_unavailable_count: 0,
+          priority_deal_id: null,
+          evidence_coverage: existing.evidenceCoverage,
+        }]);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await assert.rejects(
+    supabase.saveReport(incoming),
+    /workspace report catalog source|canonical id.*different payload/i,
+  );
+  assert.equal(mutationRpcCalls, 0);
+});
+
+test("Deal analysis history validation cannot be bypassed by cross-Deal filtering", async () => {
+  const firstReport = completeReportWithIdentity({
+    id: "report_history_first",
+    runId: "00000000-0000-4000-8000-000000000081",
+    createdAt: "2026-07-23T12:00:00.000Z",
+    marketSummary: "First historical analysis.",
+  });
+  const secondReport = completeReportWithIdentity({
+    id: "report_history_second",
+    runId: "00000000-0000-4000-8000-000000000082",
+    createdAt: "2026-07-24T12:00:00.000Z",
+    marketSummary: "Second historical analysis.",
+  });
+  const secondBase = secondReport.companyAnalyses[0];
+  const conflictingSource = {
+    ...secondBase.sources[0],
+    title: "Conflicting historical source payload",
+  };
+  const conflictingAnalysis: CompanyAnalysis = {
+    ...secondBase,
+    dealId: "deal_cross_catalog_two",
+    companyName: "Cross Catalog Two",
+    companyBrief: {
+      ...secondBase.companyBrief,
+      sourceLineage: [conflictingSource],
+    },
+    sources: [conflictingSource],
+  };
+  secondReport.companyAnalyses = [conflictingAnalysis];
+
+  const memory = createMemoryIntelligenceRepository();
+  await memory.saveReport(firstReport);
+  await assert.rejects(
+    memory.saveReport(secondReport),
+    /workspace report catalog source|canonical id.*different payload/i,
+  );
+  assert.equal(
+    await memory.getReport(firstReport.workspaceId, secondReport.id),
+    null,
+  );
+
+  const toRow = (analysis: CompanyAnalysis) => ({
+    id: analysis.id,
+    workspace_id: firstReport.workspaceId,
+    report_id: analysis.reportId,
+    run_id: analysis.runId,
+    deal_id: analysis.dealId,
+    company_name: analysis.companyName,
+    deal_status: analysis.dealStatus,
+    outcome: analysis.outcome,
+    confidence: analysis.confidence,
+    score: analysis.score,
+    investment_memory: analysis.investmentMemory,
+    market_evidence: analysis.marketEvidence,
+    implications: analysis.implications,
+    recommended_next_move: analysis.recommendedNextMove,
+    company_brief: analysis.companyBrief,
+    source_refs: analysis.sources,
+    created_at: analysis.createdAt,
+  });
+  const supabase = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      const url = String(input);
+      if (url.includes("/company_analyses")) {
+        return Response.json([
+          toRow(firstReport.companyAnalyses[0]),
+          toRow(conflictingAnalysis),
+        ]);
+      }
+      if (url.includes("/intelligence_reports")) {
+        return Response.json([firstReport, secondReport].map((report) => ({
+          id: report.id,
+          workspace_id: report.workspaceId,
+          run_id: report.runId,
+          created_at: report.createdAt,
+          market_summary: report.marketSummary,
+          opportunities: report.opportunities,
+          analysis_status: report.analysisStatus,
+          company_count: 1,
+          belief_revised_count: 0,
+          monitor_count: 0,
+          no_material_change_count: 1,
+          analysis_unavailable_count: 0,
+          priority_deal_id: null,
+          evidence_coverage: report.evidenceCoverage,
+        })));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await assert.rejects(
+    supabase.listDealAnalyses(
+      firstReport.workspaceId,
+      firstReport.companyAnalyses[0].dealId,
+    ),
+    /workspace report catalog source|canonical id.*different payload/i,
+  );
 });
 
 test("Supabase reads quarantine malformed legacy analyses without hiding valid rows", async () => {
@@ -983,14 +2562,12 @@ test("resetScanProducts wipes reports and market events but nothing else is reac
     now: () => new Date("2026-07-24T12:00:00.000Z"),
   });
   await repository.saveMarketEvents([event("wiped")], "workspace_demo");
-  await repository.saveReport({
+  await repository.saveReport(completeReportWithIdentity({
     id: "report_wiped",
-    workspaceId: "workspace_demo",
-    runId: "run_wiped",
+    runId: "00000000-0000-4000-8000-000000000071",
     createdAt: "2026-07-23T12:00:00.000Z",
     marketSummary: "To be wiped.",
-    opportunities: [],
-  });
+  }));
 
   await repository.resetScanProducts("workspace_demo");
 

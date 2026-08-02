@@ -15,9 +15,12 @@ import type {
   DealStatus,
   EvidenceCoverage,
   EvidenceField,
+  EvidenceSourceRef,
   OpportunityReportItem,
-  SourceRef,
 } from "../lib/contracts/domain";
+import { evidenceSourceText } from "../lib/contracts/domain";
+import { formatTemporalForDisplay } from "../lib/format/temporal";
+import { safeExternalHttpUrl } from "../lib/security/safe-url";
 
 export interface IntelligenceReportView {
   id: string;
@@ -69,14 +72,18 @@ const confidenceOrder: Record<CompanyAnalysisConfidence, number> = {
   low: 2,
 };
 
-function formatReportDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+export function formatReportDate(value: string) {
+  return formatTemporalForDisplay({
+    value,
+    dateOnly: { month: "short", day: "numeric", year: "numeric" },
+    timestamp: {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    },
+  });
 }
 
 // Grounded text is assembled from claim sentences, so the same source
@@ -339,13 +346,14 @@ export function PriorityResult({
           {!!analysis.marketEvidence.events.length && (
             <ul>
               {analysis.marketEvidence.events.map((event) => {
-                const sourceUrl = event.sourceIds
+                const eventSourceIds = "schemaVersion" in event
+                  ? event.sources.map((source) => source.id)
+                  : event.sourceIds;
+                const sourceUrl = eventSourceIds
                   .map((sourceId) => analysis.sources.find(
                     (source) => source.id === sourceId,
                   ))
-                  .map((source) =>
-                    source && "url" in source ? source.url : undefined
-                  )
+                  .map((source) => source ? sourceHref(source) : undefined)
                   .find(Boolean);
                 return (
                   <li key={event.id}>
@@ -361,7 +369,11 @@ export function PriorityResult({
                     ) : (
                       <strong>{event.title}</strong>
                     )}
-                    <small>{event.eventType} · {formatReportDate(event.publishedAt)}</small>
+                    <small>
+                      {event.eventType} · {event.publishedAt
+                        ? formatReportDate(event.publishedAt)
+                        : "Publication date unknown"}
+                    </small>
                   </li>
                 );
               })}
@@ -612,7 +624,7 @@ export function CompanyBrief({
                     <article key={source.id}>
                       <span>{source.provenance.replace("_", " ")}</span>
                       <h3>{source.title}</h3>
-                      <p>{source.excerpt}</p>
+                      <p>{evidenceSourceText(source)}</p>
                       <CompanySourceLink source={source} />
                     </article>
                   ))
@@ -630,7 +642,7 @@ function EvidenceFields({
   sources,
 }: {
   fields: EvidenceField[];
-  sources: SourceRef[];
+  sources: EvidenceSourceRef[];
 }) {
   return fields.length ? (
     <div className="vsee-evidence-fields">
@@ -661,7 +673,7 @@ function BriefFieldsWithSample({
   section,
 }: {
   fields: EvidenceField[];
-  sources: SourceRef[];
+  sources: EvidenceSourceRef[];
   profile: SampleDealProfile | undefined;
   section: "traction" | "dealTerms";
 }) {
@@ -731,7 +743,7 @@ function SourceIds({
   sources,
 }: {
   ids: string[];
-  sources: SourceRef[];
+  sources: EvidenceSourceRef[];
 }) {
   const resolved = ids.flatMap((id) => {
     const source = sources.find((candidate) => candidate.id === id);
@@ -746,13 +758,30 @@ function SourceIds({
   ) : null;
 }
 
-function CompanySourceLink({ source }: { source: SourceRef }) {
-  const href = source.documentId
-    ? `/api/documents/${encodeURIComponent(source.documentId)}/access${source.page ? `#page=${source.page}` : ""}`
+function sourcePage(source: EvidenceSourceRef): number | undefined {
+  if (!("schemaVersion" in source)) return source.page;
+  return source.locator?.kind === "document_page"
+    ? source.locator.page
+    : undefined;
+}
+
+export function sourceHref(source: EvidenceSourceRef): string | undefined {
+  const page = sourcePage(source);
+  if (source.documentId) {
+    return `/api/documents/${encodeURIComponent(source.documentId)}/access${page ? `#page=${page}` : ""}`;
+  }
+  const externalUrl = "schemaVersion" in source
+    ? source.canonicalUrl ?? undefined
     : source.url;
+  return safeExternalHttpUrl(externalUrl);
+}
+
+function CompanySourceLink({ source }: { source: EvidenceSourceRef }) {
+  const page = sourcePage(source);
+  const href = sourceHref(source);
   return href ? (
     <a href={href} target="_blank" rel="noreferrer">
-      {source.publisher ?? source.title}{source.page ? ` · p.${source.page}` : ""} ↗
+      {source.publisher ?? source.title}{page ? ` · p.${page}` : ""} ↗
     </a>
   ) : <span>{source.title}</span>;
 }

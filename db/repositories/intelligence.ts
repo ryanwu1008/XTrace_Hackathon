@@ -1,9 +1,11 @@
 import {
   CompanyAnalysisSchema,
   EvidenceCoverageSchema,
+  OpportunityReportItemSchema,
   ReportAnalysisStatusSchema,
   type CompanyAnalysis,
   type CompanyAnalysisCounts,
+  type EvidenceSourceRef,
   type EvidenceCoverage,
   type OpportunityReportItem,
   type ReportAnalysisStatus,
@@ -12,8 +14,28 @@ import {
   IntegrationTransportError,
   isRetryableTransportStatus,
 } from "../../lib/api/errors";
-import { withinPublicationWindow } from "../../lib/market/dedupe";
-import type { NormalizedMarketEvent } from "../../lib/market/types";
+import {
+  parseMarketEventV2Read,
+  parseSourceRefV2Read,
+} from "../../lib/contracts/legacy-evidence-adapter";
+import {
+  assertConsistentCanonicalEvidenceUnits,
+  uniqueByCanonicalId,
+  WritableMarketEventV2Schema,
+  WritableSourceRefV2Schema,
+  type MarketEventV2,
+  type SourceRefV2,
+  type WritableMarketEventV2,
+} from "../../lib/contracts/source-evidence";
+import {
+  assertCanonicalMarketEventUrls,
+  coalesceEquivalentTriggerAcquisitions,
+  dedupeEvents,
+  withinPublicationWindow,
+} from "../../lib/market/dedupe";
+import { assertMarketEventFingerprint } from "../../lib/market/identity";
+import { canonicalMarketObservationKey } from "../../lib/market/observation";
+import { compareUtf8 } from "../../lib/format/canonical-order";
 import { sanitizeReportOpportunities } from "../../lib/reports/next-step-policy";
 import { afterReset, filterAfterReset } from "./test-generations";
 
@@ -56,13 +78,13 @@ export interface IntelligenceReportRecord extends IntelligenceReportIdentity {
 
 export interface IntelligenceRepository {
   saveMarketEvents(
-    events: NormalizedMarketEvent[],
+    events: WritableMarketEventV2[],
     workspaceId: string,
-  ): Promise<void>;
+  ): Promise<WritableMarketEventV2[]>;
   listMarketEvents(
     workspaceId: string,
     resetAt?: string | null,
-  ): Promise<NormalizedMarketEvent[]>;
+  ): Promise<MarketEventV2[]>;
   saveReport(report: IntelligenceReportWrite): Promise<IntelligenceReportRecord>;
   getReport(
     workspaceId: string,
@@ -102,6 +124,22 @@ function currentMarketWindow(now: () => Date) {
   return marketWindowAt(now());
 }
 
+function validateMarketEventReadBatch(
+  values: readonly unknown[],
+): MarketEventV2[] {
+  const events = values.map(parseMarketEventV2Read);
+  for (const event of events) {
+    if (event.adaptation === "canonical") {
+      assertCanonicalMarketEventUrls(event);
+    }
+  }
+  uniqueByCanonicalId(events, "market event");
+  const sources = events.flatMap((event): SourceRefV2[] => [...event.sources]);
+  uniqueByCanonicalId(sources, "source");
+  assertConsistentCanonicalEvidenceUnits(sources);
+  return events;
+}
+
 export function buildMarketEventsReadPath(input: {
   workspaceId: string;
   now: Date;
@@ -112,7 +150,7 @@ export function buildMarketEventsReadPath(input: {
     ? ""
     : `&observed_at=gt.${encodeURIComponent(input.resetAt)}`;
   return `/market_events?workspace_id=eq.${encodeURIComponent(input.workspaceId)}`
-    + `&published_at=gte.${encodeURIComponent(window.from.toISOString())}`
+    + `&published_at=gte.${encodeURIComponent(`${window.from.toISOString().slice(0, 10)}T00:00:00.000Z`)}`
     + `&published_at=lte.${encodeURIComponent(window.to.toISOString())}`
     + resetFilter
     + "&select=payload&order=published_at.desc";
@@ -242,6 +280,203 @@ function parseCompanyAnalyses(
   });
 }
 
+function validateReportEvidenceBatch(
+  opportunities: readonly OpportunityReportItem[],
+  analyses: readonly CompanyAnalysis[],
+): void {
+  validateCompanyAnalysisEvidenceBatch(
+    analyses,
+    opportunities.flatMap((opportunity) => opportunity.sources),
+    "report",
+  );
+}
+
+function validateCompanyAnalysisEvidenceBatch(
+  analyses: readonly CompanyAnalysis[],
+  additionalSources: readonly EvidenceSourceRef[],
+  label: string,
+): void {
+  const events = analyses.flatMap((analysis) =>
+    analysis.marketEvidence.events
+  );
+  uniqueByCanonicalId(events, `${label} market event`);
+  const sources = [
+    ...additionalSources,
+    ...analyses.flatMap((analysis) => [
+      ...analysis.sources,
+      ...analysis.companyBrief.sourceLineage,
+      ...analysis.marketEvidence.events.flatMap((event): SourceRefV2[] =>
+        "schemaVersion" in event ? [...event.sources] : []
+      ),
+    ]),
+  ];
+  uniqueByCanonicalId(sources, `${label} source`);
+  assertConsistentCanonicalEvidenceUnits(
+    sources.flatMap((source): SourceRefV2[] =>
+      "schemaVersion" in source ? [source] : [parseSourceRefV2Read(source)]
+    ),
+  );
+}
+
+function validateReportReadBatch(
+  reports: readonly IntelligenceReportRecord[],
+): IntelligenceReportRecord[] {
+  uniqueByCanonicalId(reports, "workspace report");
+  validateCompanyAnalysisEvidenceBatch(
+    reports.flatMap((report) => report.companyAnalyses),
+    reports.flatMap((report) =>
+      report.opportunities.flatMap((opportunity) => opportunity.sources)
+    ),
+    "workspace report catalog",
+  );
+  return [...reports];
+}
+
+function adaptOpportunityEvidenceRead(
+  opportunities: readonly OpportunityReportItem[],
+): OpportunityReportItem[] {
+  return opportunities.map((opportunity) =>
+    OpportunityReportItemSchema.parse({
+      ...opportunity,
+      sources: opportunity.sources.map(parseSourceRefV2Read),
+    })
+  );
+}
+
+function adaptCompanyAnalysisEvidenceRead(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const sources = Array.isArray(input.sources)
+    ? input.sources.map(parseSourceRefV2Read)
+    : input.sources;
+  const companyBrief = input.companyBrief;
+  const briefRecord = companyBrief
+      && typeof companyBrief === "object"
+      && !Array.isArray(companyBrief)
+    ? companyBrief as Record<string, unknown>
+    : null;
+  const adaptedBrief = companyBrief
+      && briefRecord
+    ? {
+        ...briefRecord,
+        sourceLineage: Array.isArray(briefRecord.sourceLineage)
+          ? briefRecord.sourceLineage.map(parseSourceRefV2Read)
+          : briefRecord.sourceLineage,
+      }
+    : companyBrief;
+  const marketEvidence = input.marketEvidence;
+  const marketRecord = marketEvidence
+      && typeof marketEvidence === "object"
+      && !Array.isArray(marketEvidence)
+    ? marketEvidence as Record<string, unknown>
+    : null;
+  const adaptedMarketEvidence = marketEvidence
+      && marketRecord
+    ? {
+        ...marketRecord,
+        events: Array.isArray(marketRecord.events)
+          ? marketRecord.events.map((event: unknown) => {
+              if (
+                event
+                && typeof event === "object"
+                && (
+                  "schemaVersion" in event
+                  || "sources" in event
+                )
+              ) return parseMarketEventV2Read(event);
+              // Historical compact report events do not contain enough
+              // provenance to construct V2 without inventing fields.
+              return event;
+            })
+          : marketRecord.events,
+      }
+    : marketEvidence;
+  return {
+    ...input,
+    sources,
+    companyBrief: adaptedBrief,
+    marketEvidence: adaptedMarketEvidence,
+  };
+}
+
+function assertWritableReportEvidence(report: IntelligenceReportWrite): void {
+  const opportunitySources = report.opportunities.flatMap(
+    (opportunity) => opportunity.sources,
+  );
+  const writableOpportunitySources = opportunitySources.map((source) =>
+    WritableSourceRefV2Schema.parse(source)
+  );
+  if (report.companyAnalyses === undefined) return;
+  const analysisSources = report.companyAnalyses.flatMap((analysis) => [
+    ...analysis.sources,
+    ...analysis.companyBrief.sourceLineage,
+  ]);
+  const events = report.companyAnalyses.flatMap((analysis) =>
+    analysis.marketEvidence.events
+  );
+  const writableAnalysisSources = analysisSources.map((source) =>
+    WritableSourceRefV2Schema.parse(source)
+  );
+  const writableEvents = events.map((event) => {
+    const writable = assertCanonicalMarketEventUrls(
+      assertMarketEventFingerprint(WritableMarketEventV2Schema.parse(event)),
+    );
+    for (const source of writable.sources) {
+      WritableSourceRefV2Schema.parse(source);
+    }
+    return writable;
+  });
+  uniqueByCanonicalId<MarketEventV2>(
+    writableEvents,
+    "report market event",
+  );
+  uniqueByCanonicalId<SourceRefV2>(
+    [
+      ...writableOpportunitySources,
+      ...writableAnalysisSources,
+      ...writableEvents.flatMap((event): SourceRefV2[] => [...event.sources]),
+    ],
+    "report source",
+  );
+  assertConsistentCanonicalEvidenceUnits([
+    ...writableOpportunitySources,
+    ...writableAnalysisSources,
+    ...writableEvents.flatMap((event): SourceRefV2[] => [...event.sources]),
+  ]);
+}
+
+function validateCanonicalReportWrite(report: IntelligenceReportWrite): {
+  canonicalReport: IntelligenceReportWrite;
+  snapshot: { count: number; fingerprint: string };
+} {
+  if (report.companyAnalyses === undefined) {
+    throw new Error(
+      "New report writes require complete company analyses and an eligible Deal snapshot.",
+    );
+  }
+  if (!Array.isArray(report.opportunities)) {
+    throw new Error("New report writes require an opportunity array.");
+  }
+  // Preserve source-contract diagnostics (unsafe URL, spoofed Sample record,
+  // stale event fingerprint) before the aggregate schema reports a generic
+  // declared-evidence failure. Both checks remain pre-mutation/pre-network.
+  assertWritableReportEvidence(report);
+  const canonicalReport: IntelligenceReportWrite = {
+    ...report,
+    opportunities: report.opportunities.map((opportunity) =>
+      OpportunityReportItemSchema.parse(opportunity)
+    ),
+    companyAnalyses: report.companyAnalyses.map((analysis) =>
+      CompanyAnalysisSchema.parse(analysis)
+    ),
+  };
+  const snapshot = validateEligibleSnapshot(canonicalReport);
+  if (!snapshot) {
+    throw new Error("New report writes require an eligible Deal snapshot.");
+  }
+  return { canonicalReport, snapshot };
+}
+
 function validateEligibleSnapshot(report: IntelligenceReportWrite): {
   count: number;
   fingerprint: string;
@@ -282,17 +517,23 @@ function validateEligibleSnapshot(report: IntelligenceReportWrite): {
   return { count: report.eligibleDealCount, fingerprint };
 }
 
-function safeReport(report: IntelligenceReportWrite): IntelligenceReportRecord {
+/** Durable read projection; legacy evidence is adapted here, never written. */
+function projectReportRead(
+  report: IntelligenceReportWrite,
+): IntelligenceReportRecord {
   const cloned = structuredClone(report);
   const legacyShape = { ...cloned };
   delete legacyShape.eligibleDealCount;
   delete legacyShape.eligibleSnapshotFingerprint;
   const workspaceId = requiredWorkspaceId(cloned.workspaceId);
-  const opportunities = sanitizeReportOpportunities(cloned.opportunities);
+  const opportunities = adaptOpportunityEvidenceRead(
+    sanitizeReportOpportunities(cloned.opportunities),
+  );
   const companyAnalyses = parseCompanyAnalyses({
     ...cloned,
     opportunities,
   });
+  validateReportEvidenceBatch(opportunities, companyAnalyses);
   const counts = companyAnalyses.length > 0
     ? countsFromAnalyses(companyAnalyses)
     : cloned.counts ?? countsFromAnalyses([]);
@@ -322,6 +563,59 @@ function requiredWorkspaceId(workspaceId: string): string {
   return normalized;
 }
 
+function writableMarketEventBatch(items: readonly unknown[]) {
+  const events = items.map((item) =>
+    assertCanonicalMarketEventUrls(
+      assertMarketEventFingerprint(WritableMarketEventV2Schema.parse(item)),
+    )
+  );
+  uniqueByCanonicalId(events, "market event");
+  uniqueByCanonicalId(events.flatMap((event) => event.sources), "source");
+  return dedupeEvents(events).map((event) =>
+    WritableMarketEventV2Schema.parse(event)
+  );
+}
+
+function marketObservationInvariant(event: WritableMarketEventV2): string {
+  return canonicalMarketObservationKey(event);
+}
+
+function reconcileMarketObservations(
+  existing: readonly MarketEventV2[],
+  incoming: readonly WritableMarketEventV2[],
+): WritableMarketEventV2[] {
+  const coalescedIncoming = coalesceEquivalentTriggerAcquisitions(
+    incoming,
+    existing,
+  ).map((event) => WritableMarketEventV2Schema.parse(event));
+  const byObservation = new Map<string, WritableMarketEventV2>();
+  for (const candidate of existing) {
+    if (candidate.adaptation !== "canonical") continue;
+    const event = WritableMarketEventV2Schema.parse(candidate);
+    const key = marketObservationInvariant(event);
+    const prior = byObservation.get(key);
+    if (prior && prior.id !== event.id) {
+      throw new Error(
+        "Durable market evidence contains duplicate canonical observations.",
+      );
+    }
+    byObservation.set(key, event);
+  }
+
+  const resolved: WritableMarketEventV2[] = [];
+  for (const event of coalescedIncoming) {
+    const key = marketObservationInvariant(event);
+    const prior = byObservation.get(key);
+    if (prior) {
+      resolved.push(prior);
+      continue;
+    }
+    byObservation.set(key, event);
+    resolved.push(event);
+  }
+  return uniqueByCanonicalId(resolved, "market event");
+}
+
 function workspaceIdentity(workspaceId: string, externalId: string): string {
   return JSON.stringify([requiredWorkspaceId(workspaceId), externalId]);
 }
@@ -332,7 +626,7 @@ export function createMemoryIntelligenceRepository(
   const events = new Map<string, {
     workspaceId: string;
     observedAt: string;
-    event: NormalizedMarketEvent;
+    event: WritableMarketEventV2;
   }>();
   const reports = new Map<string, IntelligenceReportRecord>();
   const snapshots = new Map<string, {
@@ -341,21 +635,46 @@ export function createMemoryIntelligenceRepository(
     fingerprint: string | null;
   }>();
   const now = options.now ?? (() => new Date());
+  function reportCatalogForWorkspace(
+    workspaceId: string,
+  ): IntelligenceReportRecord[] {
+    const catalog = [...reports.values()]
+      .filter((report) => report.workspaceId === workspaceId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((report) => structuredClone(report));
+    return validateReportReadBatch(catalog);
+  }
   return {
     async saveMarketEvents(items, workspaceId) {
       workspaceId = requiredWorkspaceId(workspaceId);
+      const validatedItems = writableMarketEventBatch(items);
+      const existing = validateMarketEventReadBatch([...events.values()]
+        .filter((row) => row.workspaceId === workspaceId)
+        .map((row) => row.event));
+      uniqueByCanonicalId([...existing, ...validatedItems], "market event");
+      uniqueByCanonicalId(
+        [...existing, ...validatedItems].flatMap(
+          (event): SourceRefV2[] => [...event.sources],
+        ),
+        "source",
+      );
+      const canonicalItems = reconcileMarketObservations(
+        existing,
+        validatedItems,
+      );
       const observedAt = now().toISOString();
-      for (const event of items) {
+      for (const event of canonicalItems) {
         events.set(workspaceIdentity(workspaceId, event.id), {
           workspaceId,
           observedAt,
           event: structuredClone(event),
         });
       }
+      return structuredClone(canonicalItems);
     },
     async listMarketEvents(workspaceId, resetAt = null) {
       const { to } = currentMarketWindow(now);
-      return [...events.values()]
+      const rows = [...events.values()]
         .filter((row) =>
           row.workspaceId === workspaceId
           && afterReset(row.observedAt, resetAt)
@@ -364,19 +683,28 @@ export function createMemoryIntelligenceRepository(
             to,
             MARKET_EVENT_WINDOW_DAYS,
           )
-        )
-        .map((row) => structuredClone(row.event))
-        .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt));
+        );
+      return validateMarketEventReadBatch(
+        rows.map((row) => structuredClone(row.event)),
+      ).sort((left, right) =>
+        compareUtf8(right.publishedAt ?? "", left.publishedAt ?? "")
+      );
     },
     async saveReport(report) {
-      const snapshot = validateEligibleSnapshot(report);
-      const validated = safeReport(report);
+      const { canonicalReport, snapshot } = validateCanonicalReportWrite(report);
+      const validated = projectReportRead(canonicalReport);
       const key = workspaceIdentity(validated.workspaceId, validated.id);
+      validateReportReadBatch([
+        ...reportCatalogForWorkspace(validated.workspaceId).filter(
+          (existing) => existing.id !== validated.id,
+        ),
+        validated,
+      ]);
       const existingSnapshot = snapshots.get(key);
       const submittedSnapshot = {
         runId: validated.runId,
-        count: snapshot?.count ?? null,
-        fingerprint: snapshot?.fingerprint ?? null,
+        count: snapshot.count,
+        fingerprint: snapshot.fingerprint,
       };
       if (
         existingSnapshot
@@ -399,29 +727,21 @@ export function createMemoryIntelligenceRepository(
       return structuredClone(validated);
     },
     async getReport(workspaceId, reportId) {
-      const report = reports.get(workspaceIdentity(workspaceId, reportId));
-      return report ? structuredClone(report) : null;
+      return reportCatalogForWorkspace(workspaceId).find(
+        (report) => report.id === reportId,
+      ) ?? null;
     },
     async getReportByRunId(workspaceId, runId) {
-      const report = [...reports.values()].find(
-        (candidate) =>
-          candidate.workspaceId === workspaceId
-          && candidate.runId === runId,
-      );
-      return report ? structuredClone(report) : null;
+      return reportCatalogForWorkspace(workspaceId).find(
+        (report) => report.runId === runId,
+      ) ?? null;
     },
     async listReports(workspaceId, resetAt = null) {
-      return filterAfterReset(
-        [...reports.values()]
-          .filter((report) => report.workspaceId === workspaceId),
-        resetAt,
-      )
-        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-        .map((report) => structuredClone(report));
+      const catalog = reportCatalogForWorkspace(workspaceId);
+      return filterAfterReset(catalog, resetAt);
     },
     async listDealAnalyses(workspaceId, dealId) {
-      return [...reports.values()]
-        .filter((report) => report.workspaceId === workspaceId)
+      return reportCatalogForWorkspace(workspaceId)
         .flatMap((report) => report.companyAnalyses)
         .filter((analysis) => analysis.dealId === dealId)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -481,7 +801,15 @@ export function createSupabaseIntelligenceRepository(options: {
   ): CompanyAnalysis | null {
     if (!Array.isArray(row.source_refs)) return null;
     const sources = row.source_refs;
-    const parsed = CompanyAnalysisSchema.safeParse({
+    const storedMarketEvidence = row.market_evidence;
+    const claimSupport = storedMarketEvidence
+        && typeof storedMarketEvidence === "object"
+        && !Array.isArray(storedMarketEvidence)
+        && "claimSupport" in storedMarketEvidence
+      ? storedMarketEvidence.claimSupport
+      : undefined;
+    const parsed = CompanyAnalysisSchema.safeParse(
+      adaptCompanyAnalysisEvidenceRead({
       id: row.id,
       reportId: row.report_id,
       runId: row.run_id,
@@ -499,20 +827,22 @@ export function createSupabaseIntelligenceRepository(options: {
         ),
       ).size,
       investmentMemory: row.investment_memory,
-      marketEvidence: row.market_evidence,
+      marketEvidence: storedMarketEvidence,
       implications: row.implications,
       recommendedNextMove: row.recommended_next_move,
       companyBrief: row.company_brief,
       sources,
+      claimSupport,
       createdAt: row.created_at,
-    });
+      }),
+    );
     return parsed.success ? parsed.data : null;
   }
   function toReport(
     row: Record<string, unknown>,
     analyses: CompanyAnalysis[] = [],
   ): IntelligenceReportRecord {
-    return safeReport({
+    return projectReportRead({
       id: String(row.id),
       workspaceId: String(row.workspace_id),
       runId: String(row.run_id),
@@ -560,15 +890,56 @@ export function createSupabaseIntelligenceRepository(options: {
     }
     return grouped;
   }
+  async function reportCatalogForWorkspace(
+    rawWorkspaceId: string,
+  ): Promise<IntelligenceReportRecord[]> {
+    const workspaceId = requiredWorkspaceId(rawWorkspaceId);
+    const rows = await request(
+      `/intelligence_reports?workspace_id=eq.${encodeURIComponent(workspaceId)}`
+      + "&order=created_at.desc",
+    ) as Record<string, unknown>[];
+    const reportIds = rows.map((row) => String(row.id));
+    const analyses = await analysesForReportIds(workspaceId, reportIds);
+    return validateReportReadBatch(rows.map((row) => {
+      const reportId = String(row.id);
+      return toReport(row, analyses.get(reportId) ?? []);
+    }));
+  }
   return {
     async saveMarketEvents(items, workspaceId) {
       workspaceId = requiredWorkspaceId(workspaceId);
-      if (!items.length) return;
+      const validatedItems = writableMarketEventBatch(items);
+      if (!validatedItems.length) return [];
+      const existingRows = await request(
+        `/market_events?workspace_id=eq.${encodeURIComponent(workspaceId)}`
+        + "&select=payload",
+      ) as Array<{ payload: unknown }>;
+      const existingEvents = validateMarketEventReadBatch(
+        existingRows.map((row) => row.payload),
+      );
+      const allEvents: MarketEventV2[] = [
+        ...existingEvents,
+        ...validatedItems,
+      ];
+      uniqueByCanonicalId<MarketEventV2>(
+        allEvents,
+        "market event",
+      );
+      uniqueByCanonicalId<SourceRefV2>(
+        allEvents.flatMap((event): SourceRefV2[] =>
+          [...event.sources]
+        ),
+        "source",
+      );
+      const canonicalItems = reconcileMarketObservations(
+        existingEvents,
+        validatedItems,
+      );
       const observedAt = now().toISOString();
       await request("/market_events?on_conflict=workspace_id,id", {
         method: "POST",
         headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
-        body: JSON.stringify(items.map((event) => ({
+        body: JSON.stringify(canonicalItems.map((event) => ({
           workspace_id: workspaceId,
           id: event.id,
           published_at: event.publishedAt,
@@ -576,19 +947,36 @@ export function createSupabaseIntelligenceRepository(options: {
           payload: event,
         }))),
       });
+      return structuredClone(canonicalItems);
     },
     async listMarketEvents(workspaceId, resetAt = null) {
+      const readNow = now();
       const rows = await request(
-        buildMarketEventsReadPath({ workspaceId, now: now(), resetAt }),
-      ) as Array<{ payload: NormalizedMarketEvent }>;
-      return rows.map((row) => row.payload);
+        buildMarketEventsReadPath({ workspaceId, now: readNow, resetAt }),
+      ) as Array<{ payload: unknown }>;
+      return validateMarketEventReadBatch(rows.map((row) => row.payload))
+        .filter((event) =>
+          event.publishedAt !== null
+          && withinPublicationWindow(
+            event.publishedAt,
+            readNow,
+            MARKET_EVENT_WINDOW_DAYS,
+          )
+        );
     },
     async saveReport(report) {
-      const snapshot = validateEligibleSnapshot(report);
-      const validated = safeReport(report);
-      const analysesToPersist = report.companyAnalyses === undefined
+      const { canonicalReport, snapshot } = validateCanonicalReportWrite(report);
+      const validated = projectReportRead(canonicalReport);
+      const analysesToPersist = canonicalReport.companyAnalyses === undefined
         ? []
         : validated.companyAnalyses;
+      const existingCatalog = await reportCatalogForWorkspace(
+        validated.workspaceId,
+      );
+      validateReportReadBatch([
+        ...existingCatalog.filter((existing) => existing.id !== validated.id),
+        validated,
+      ]);
       const rows = await request("/rpc/save_intelligence_report", {
         method: "POST",
         headers: { Prefer: "return=representation" },
@@ -609,12 +997,16 @@ export function createSupabaseIntelligenceRepository(options: {
               validated.counts.analysisUnavailable,
             priorityDealId: validated.priorityDealId,
             evidenceCoverage: validated.evidenceCoverage,
-            eligibleSnapshotCount: snapshot?.count ?? null,
-            eligibleSnapshotFingerprint: snapshot?.fingerprint ?? null,
+            eligibleSnapshotCount: snapshot.count,
+            eligibleSnapshotFingerprint: snapshot.fingerprint,
           },
           p_analyses: analysesToPersist.map((analysis) => ({
             ...analysis,
             workspaceId: validated.workspaceId,
+            marketEvidence: {
+              ...analysis.marketEvidence,
+              claimSupport: analysis.claimSupport ?? [],
+            },
             sourceRefs: analysis.sources,
           })),
         }),
@@ -622,48 +1014,28 @@ export function createSupabaseIntelligenceRepository(options: {
       return toReport(rows[0], validated.companyAnalyses);
     },
     async getReport(workspaceId, reportId) {
-      const rows = await request(
-        `/intelligence_reports?workspace_id=eq.${encodeURIComponent(workspaceId)}`
-        + `&id=eq.${encodeURIComponent(reportId)}&limit=1`,
-      ) as Record<string, unknown>[];
-      if (!rows[0]) return null;
-      const analyses = await analysesForReportIds(workspaceId, [reportId]);
-      return toReport(rows[0], analyses.get(reportId) ?? []);
+      return (await reportCatalogForWorkspace(workspaceId)).find(
+        (report) => report.id === reportId,
+      ) ?? null;
     },
     async getReportByRunId(workspaceId, runId) {
-      const rows = await request(
-        `/intelligence_reports?workspace_id=eq.${encodeURIComponent(workspaceId)}`
-        + `&run_id=eq.${encodeURIComponent(runId)}&limit=1`,
-      ) as Record<string, unknown>[];
-      if (!rows[0]) return null;
-      const reportId = String(rows[0].id);
-      const analyses = await analysesForReportIds(workspaceId, [reportId]);
-      return toReport(rows[0], analyses.get(reportId) ?? []);
+      return (await reportCatalogForWorkspace(workspaceId)).find(
+        (report) => report.runId === runId,
+      ) ?? null;
     },
     async listReports(workspaceId, resetAt = null) {
-      const resetFilter = resetAt === null
-        ? ""
-        : `&created_at=gt.${encodeURIComponent(resetAt)}`;
-      const rows = await request(
-        `/intelligence_reports?workspace_id=eq.${encodeURIComponent(workspaceId)}`
-        + `${resetFilter}&order=created_at.desc`,
-      ) as Record<string, unknown>[];
-      const reportIds = rows.map((row) => String(row.id));
-      const analyses = await analysesForReportIds(workspaceId, reportIds);
-      return rows.map((row) => {
-        const reportId = String(row.id);
-        return toReport(row, analyses.get(reportId) ?? []);
-      });
+      return filterAfterReset(
+        await reportCatalogForWorkspace(workspaceId),
+        resetAt,
+      );
     },
     async listDealAnalyses(workspaceId, dealId) {
-      const rows = await request(
-        `/company_analyses?workspace_id=eq.${encodeURIComponent(workspaceId)}`
-        + `&deal_id=eq.${encodeURIComponent(dealId)}&order=created_at.desc`,
-      ) as Record<string, unknown>[];
-      return rows.flatMap((row) => {
-        const analysis = toAnalysis(row);
-        return analysis ? [analysis] : [];
-      });
+      return (await reportCatalogForWorkspace(workspaceId))
+        .flatMap((report) => report.companyAnalyses)
+        .filter((analysis) => analysis.dealId === dealId)
+        .sort((left, right) =>
+          right.createdAt.localeCompare(left.createdAt)
+        );
     },
     async resetScanProducts(workspaceId) {
       workspaceId = requiredWorkspaceId(workspaceId);

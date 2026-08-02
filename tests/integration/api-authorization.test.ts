@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelligence-report";
+
 import { POST as chat } from "../../app/api/chat/route";
 import { GET as actionDrafts } from "../../app/api/action-drafts/route";
 import { PATCH as actionDraft } from "../../app/api/action-drafts/[id]/route";
@@ -325,14 +327,13 @@ for (const route of [
 
 test("report and report-by-run reads cannot cross workspaces", async () => {
   const repository = getIntelligenceRepository();
-  await repository.saveReport({
+  await repository.saveReport(canonicalIntelligenceReportFixture({
     id: "report_workspace_other",
     workspaceId: "workspace_other",
     runId: "run_workspace_other_report",
     createdAt: "2026-07-28T12:00:00.000Z",
     marketSummary: "Other workspace summary",
-    opportunities: [],
-  });
+  }));
 
   await withDeployment("public_demo", async () => {
     const byId = await report(
@@ -470,25 +471,14 @@ test("import serializers hide provider diagnostics", () => {
 
 test("Deal analysis reads cannot cross workspaces", async () => {
   const repository = getIntelligenceRepository();
-  await repository.saveReport({
+  await repository.saveReport(canonicalIntelligenceReportFixture({
     id: "report_other_deal_analysis",
     workspaceId: "workspace_other",
-    runId: "run_other_deal_analysis",
+    runId: "00000000-0000-4000-8000-000000000473",
     createdAt: "2026-07-28T13:00:00.000Z",
     marketSummary: "Other workspace analysis",
-    opportunities: [{
-      rank: 1,
-      dealId: "deal_ably",
-      confidence: "medium",
-      score: 0.7,
-      whyNow: "Other workspace evidence",
-      previousContext: "Other workspace context",
-      implications: { positive: [], negative: [] },
-      nextStep: "Review cited evidence.",
-      sources: [],
-      demoFixtureIds: [],
-    }],
-  });
+    dealIds: ["deal_ably"],
+  }));
 
   await withDeployment("public_demo", async () => {
     const response = await dealAnalyses(
@@ -547,14 +537,13 @@ test("public demo preloaded PDF access never receives a private capability", asy
 
 test("public demo reset is forbidden and cannot delete another workspace report", async () => {
   const repository = getIntelligenceRepository();
-  await repository.saveReport({
+  await repository.saveReport(canonicalIntelligenceReportFixture({
     id: "report_reset_other_workspace",
     workspaceId: "workspace_other",
     runId: "run_reset_other_workspace",
     createdAt: "2026-07-28T14:00:00.000Z",
     marketSummary: "Must survive forbidden reset",
-    opportunities: [],
-  });
+  }));
 
   await withDeployment("public_demo", async () => {
     const response = await resetDemo(request("/api/demo/reset", { method: "POST" }));

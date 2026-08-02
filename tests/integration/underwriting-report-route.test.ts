@@ -34,6 +34,7 @@ import {
 import {
   buildUnderwritingNarrative,
 } from "../../lib/underwriting/narrative";
+import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelligence-report";
 
 const WORKSPACE_ID = "workspace_read_api";
 const REPORT_ID = "report_read_api";
@@ -550,14 +551,13 @@ async function readRepositories(options: {
     artifacts,
   });
   const intelligence = createMemoryIntelligenceRepository();
-  await intelligence.saveReport({
+  await intelligence.saveReport(canonicalIntelligenceReportFixture({
     id: REPORT_ID,
     workspaceId: WORKSPACE_ID,
     runId: RUN_ID,
     createdAt: "2026-07-29T12:00:00.000Z",
     marketSummary: "Persisted market summary",
-    opportunities: [],
-  });
+  }));
   const batch = await runs.createOrReuseBatch({
     workspaceId: WORKSPACE_ID,
     scanRunId: RUN_ID,
@@ -859,14 +859,13 @@ test("report detail attaches an explicit persisted underwriting batch summary", 
 
 test("public demo report detail never reads persisted underwriting state", async () => {
   const intelligence = createMemoryIntelligenceRepository();
-  await intelligence.saveReport({
+  await intelligence.saveReport(canonicalIntelligenceReportFixture({
     id: "report_demo",
     workspaceId: "workspace_demo",
     runId: "run_demo",
     createdAt: "2026-07-29T12:00:00.000Z",
     marketSummary: "Synthetic demo report",
-    opportunities: [],
-  });
+  }));
   const runs = createMemoryUnderwritingRunsRepository();
   runs.getBatchByScanRunId = async () => {
     throw new Error("Demo mode reached persisted underwriting");

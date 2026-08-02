@@ -1,7 +1,11 @@
 import { z } from "zod";
 
+import {
+  TemporalValueV2Schema,
+} from "../contracts/source-evidence";
 import { canonicalizeUrl, dedupeEvents, withinPublicationWindow } from "./dedupe";
-import { reidentifyMarketEvent } from "./identity";
+import { classifyMarketEventForAnalysis } from "./classification";
+import { reidentifyMarketEvent, reidentifySourceRef } from "./identity";
 import type {
   MarketProvider,
   MarketProviderReport,
@@ -81,15 +85,24 @@ function cleanText(value: string): string {
     .trim();
 }
 
-function validDate(value: string | undefined, label: string): Date {
+function validTemporal(
+  value: string | undefined,
+  label: string,
+): { value: string; precision: "date" | "timestamp" } {
   if (!value) {
     throw new TypeError(`Market source item requires a ${label}.`);
   }
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) {
+  const parsed = TemporalValueV2Schema.safeParse(value);
+  if (!parsed.success) {
     throw new TypeError(`Market source item has an invalid ${label}.`);
   }
-  return date;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(parsed.data)) {
+    return { value: parsed.data, precision: "date" };
+  }
+  return {
+    value: new Date(parsed.data).toISOString(),
+    precision: "timestamp",
+  };
 }
 
 async function sha256(value: string): Promise<string> {
@@ -119,14 +132,17 @@ export async function normalizeMarketItem(
     throw parsedItem.error;
   }
   const item = parsedItem.data;
-  const publishedAt = validDate(item.publishedAt, "publication time");
+  const publishedAt = validTemporal(item.publishedAt, "publication time");
   const eventAt = item.eventAt
-    ? validDate(item.eventAt, "event time").toISOString()
+    ? validTemporal(item.eventAt, "event time")
     : null;
   const retrievedAt = item.retrievedAt
-    ? validDate(item.retrievedAt, "retrieval time")
-    : options.retrievedAt ?? new Date();
-  if (!Number.isFinite(retrievedAt.getTime())) {
+    ? validTemporal(item.retrievedAt, "retrieval time")
+    : {
+        value: (options.retrievedAt ?? new Date()).toISOString(),
+        precision: "timestamp" as const,
+      };
+  if (!retrievedAt.value) {
     throw new TypeError("Market source item has an invalid retrieval time.");
   }
 
@@ -145,45 +161,31 @@ export async function normalizeMarketItem(
   }
 
   const canonicalUrl = canonicalizeUrl(item.url);
-  const normalizedPublicationTime = publishedAt.toISOString();
+  const normalizedPublicationTime = publishedAt.value;
   const updatedAt = item.updatedAt
-    ? validDate(item.updatedAt, "update time").toISOString()
+    ? validTemporal(item.updatedAt, "update time")
     : null;
-  const retrievedAtValue = retrievedAt.toISOString();
+  const retrievedAtValue = retrievedAt.value;
   const entityKeys = [...new Set(item.entities ?? [])];
   const sourceContentFingerprint = `sha256:${await sha256(normalizedStatement)}`;
-  const sourceChecksum = await sha256(JSON.stringify({
-    canonicalUrl,
-    contentFingerprint: sourceContentFingerprint,
-    entityKeys,
-    eventAt,
-    evidenceRole: item.evidenceRole,
-    externalId: item.externalId ?? "",
-    normalizedStatement,
-    providerId: item.providerId,
-    publishedAt: normalizedPublicationTime,
-    publisher,
-    retrievedAt: retrievedAtValue,
-    sourceAuthority: item.sourceAuthority,
-    sourceClass: item.sourceClass,
-    title,
-    updatedAt,
-  }));
-  const sourceId = `source_${sourceChecksum.slice(0, 24)}`;
-  const source = {
+  const source = reidentifySourceRef({
     schemaVersion: "source-ref-v2" as const,
     adaptation: "canonical" as const,
-    id: sourceId,
+    id: "source_pending_identity",
     provenance: "public_web" as const,
     title,
     canonicalUrl,
     documentId: null,
     publisher,
     providerId: item.providerId,
-    eventAt,
+    eventAt: eventAt?.value ?? null,
+    eventAtPrecision: eventAt?.precision ?? null,
     publishedAt: normalizedPublicationTime,
+    publishedAtPrecision: publishedAt.precision,
     retrievedAt: retrievedAtValue,
-    updatedAt,
+    retrievedAtPrecision: retrievedAt.precision,
+    updatedAt: updatedAt?.value ?? null,
+    updatedAtPrecision: updatedAt?.precision ?? null,
     entityKeys,
     sourceClass: item.sourceClass,
     sourceAuthority: item.sourceAuthority,
@@ -195,7 +197,7 @@ export async function normalizeMarketItem(
       status: "normalized_only" as const,
       normalizedStatement,
     },
-  };
+  });
   const eventPayload = {
     schemaVersion: "market-event-v2" as const,
     adaptation: "canonical" as const,
@@ -208,15 +210,19 @@ export async function normalizeMarketItem(
       item.positiveImplications?.map(cleanText).filter(Boolean) ?? [],
     negativeImplications:
       item.negativeImplications?.map(cleanText).filter(Boolean) ?? [],
-    eventAt,
+    eventAt: eventAt?.value ?? null,
+    eventAtPrecision: eventAt?.precision ?? null,
     publishedAt: normalizedPublicationTime,
+    publishedAtPrecision: publishedAt.precision,
     retrievedAt: retrievedAtValue,
-    updatedAt,
+    retrievedAtPrecision: retrievedAt.precision,
+    updatedAt: updatedAt?.value ?? null,
+    updatedAtPrecision: updatedAt?.precision ?? null,
     confidence: item.confidence ?? "low",
     canonicalUrl,
     providerId: item.providerId,
     entityKeys,
-    triggerSourceId: sourceId,
+    triggerSourceId: source.id,
     sources: [source],
   };
   return reidentifyMarketEvent(eventPayload);
@@ -273,9 +279,12 @@ export function createMarketService(
               }
 
               try {
-                accepted.push(await normalizeMarketItem(candidate, {
+                const normalized = await normalizeMarketItem(candidate, {
                   retrievedAt: to,
-                }));
+                });
+                accepted.push(
+                  classifyMarketEventForAnalysis(normalized) ?? normalized,
+                );
               } catch {
                 rejectedCount += 1;
               }
@@ -311,9 +320,12 @@ export function createMarketService(
       const events = dedupeEvents(
         providerResults.flatMap((result) => result.events),
       );
-      if (events.length > 0) {
-        await persistEvents(events);
-      }
+      const persistedEvents = events.length > 0
+        ? await persistEvents(events)
+        : undefined;
+      const canonicalEvents = persistedEvents === undefined
+        ? events
+        : dedupeEvents(persistedEvents);
 
       const successfulProviders = providerResults.filter(
         (result) => result.succeeded,
@@ -332,7 +344,7 @@ export function createMarketService(
           to: to.toISOString(),
           days,
         },
-        events,
+        events: canonicalEvents,
         providers: providerResults.map((result) => result.report),
       };
     },

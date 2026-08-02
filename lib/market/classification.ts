@@ -1,4 +1,5 @@
 import { sourceTextForRetrieval } from "../contracts/source-evidence";
+import { reidentifyMarketEvent } from "./identity";
 import type { NormalizedMarketEvent } from "./types";
 
 interface EvidenceRule {
@@ -118,9 +119,17 @@ export function classifyMarketEventForAnalysis(
   const themes = matchingLabels(text, THEME_RULES);
   if (themes.length === 0) return null;
 
-  return {
+  const sectors = matchingLabels(text, SECTOR_RULES);
+  if (
+    JSON.stringify(event.sectors) === JSON.stringify(sectors)
+    && JSON.stringify(event.themes) === JSON.stringify(themes)
+  ) {
+    return event;
+  }
+
+  return reidentifyMarketEvent({
     ...event,
-    sectors: matchingLabels(text, SECTOR_RULES),
+    sectors,
     themes,
-  };
+  });
 }

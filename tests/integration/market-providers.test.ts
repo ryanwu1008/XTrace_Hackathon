@@ -229,7 +229,7 @@ test("Federal Register emits normalized-only primary government evidence", async
 
   assert.equal(items.length, 1);
   assert.equal(items[0].providerId, "federal-register");
-  assert.equal(items[0].publishedAt, "2026-07-21T00:00:00.000Z");
+  assert.equal(items[0].publishedAt, "2026-07-21");
   assert.equal(items[0].eventType, "regulatory");
   assert.equal(
     items[0].normalizedStatement,
@@ -416,6 +416,71 @@ test("does not treat an Atom update timestamp as a new publication", async () =>
   );
 });
 
+test("RSS does not invent a timezone for an offset-less publication datetime", async () => {
+  const offsetlessRss = `<?xml version="1.0"?>
+    <rss version="2.0"><channel><item>
+      <guid>offsetless-story</guid>
+      <title>Offset-less story</title>
+      <link>https://publisher.example/offsetless-story</link>
+      <pubDate>2026-07-23T12:00:00</pubDate>
+      <description>The publisher omitted the required timezone.</description>
+    </item></channel></rss>`;
+  const provider = createRssMarketProvider({
+    id: "offsetless-feed",
+    name: "Offset-less feed",
+    url: "https://publisher.example/feed.xml",
+    publisher: "Publisher",
+  }, {
+    fetch: async () => new Response(offsetlessRss, { status: 200 }),
+  });
+
+  const [raw] = await provider.fetch(WINDOW);
+  assert.equal(raw.publishedAt, undefined);
+
+  const scan = await createMarketService({ providers: [provider] })
+    .scanMarketWindow({ now: NOW, days: 14 });
+  assert.deepEqual(scan.events, []);
+  assert.equal(scan.providers[0].acceptedCount, 0);
+  assert.equal(scan.providers[0].rejectedCount, 1);
+});
+
+test("RSS rejects impossible calendars and every timestamp without an explicit zone", async () => {
+  const invalidDates = [
+    "2026-02-30",
+    "2026-02-30T12:00:00Z",
+    "30 Feb 2026 12:00:00 GMT",
+    "2026-07-23 12:00:00",
+    "Jul 23 2026 12:00:00",
+  ];
+  const feed = `<?xml version="1.0"?><rss version="2.0"><channel>${
+    invalidDates.map((date, index) => `<item>
+      <guid>invalid-date-${index}</guid>
+      <title>Invalid date story ${index}</title>
+      <link>https://publisher.example/invalid-date-${index}</link>
+      <pubDate>${date}</pubDate>
+      <description>The date must fail closed.</description>
+    </item>`).join("")
+  }</channel></rss>`;
+  const provider = createRssMarketProvider({
+    id: "invalid-date-feed",
+    name: "Invalid date feed",
+    url: "https://publisher.example/feed.xml",
+    publisher: "Publisher",
+  }, {
+    fetch: async () => new Response(feed, { status: 200 }),
+  });
+
+  const items = await provider.fetch(WINDOW);
+  assert.equal(items.length, invalidDates.length);
+  assert.ok(items.every((item) => item.publishedAt === undefined));
+
+  const scan = await createMarketService({ providers: [provider] })
+    .scanMarketWindow({ now: NOW, days: 14 });
+  assert.deepEqual(scan.events, []);
+  assert.equal(scan.providers[0].acceptedCount, 0);
+  assert.equal(scan.providers[0].rejectedCount, invalidDates.length);
+});
+
 test("Crunchbase emits synthesized normalized-only secondary database evidence", async () => {
   const calls: FetchCall[] = [];
   const provider = createCrunchbaseProvider("authorized-test-key", {
@@ -429,8 +494,8 @@ test("Crunchbase emits synthesized normalized-only secondary database evidence",
   assert.equal(items.length, 1);
   assert.equal(items[0].providerId, "crunchbase");
   assert.equal(items[0].title, "Acme — Series B - Acme");
-  assert.equal(items[0].eventAt, "2026-07-20T00:00:00.000Z");
-  assert.equal(items[0].publishedAt, "2026-07-20T00:00:00.000Z");
+  assert.equal(items[0].eventAt, undefined);
+  assert.equal(items[0].publishedAt, "2026-07-20");
   assert.match(items[0].normalizedStatement ?? "", /USD 40000000/);
   assert.equal(items[0].sourceClass, "commercial_database");
   assert.equal(items[0].sourceAuthority, "secondary");
@@ -455,8 +520,15 @@ test("Crunchbase emits synthesized normalized-only secondary database evidence",
   );
   assert.deepEqual(
     (JSON.parse(String(calls[0].init?.body)) as { field_ids: string[] })
-      .field_ids.slice(-2),
-    ["funded_organization_categories", "investor_identifiers"],
+      .field_ids,
+    [
+      "identifier",
+      "announced_on",
+      "funded_organization_identifier",
+      "money_raised",
+      "funded_organization_categories",
+      "investor_identifiers",
+    ],
   );
 });
 
@@ -594,7 +666,7 @@ test("runs a fourteen-day scan from recorded providers and preserves scoped fail
   );
 });
 
-test("parses publisher feeds whose dates glue am/pm to the time", async () => {
+test("parses publisher feeds whose explicitly zoned dates glue am/pm to the time", async () => {
   const feed = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
@@ -603,7 +675,7 @@ test("parses publisher feeds whose dates glue am/pm to the time", async () => {
       <guid>trade-1</guid>
       <title>Health system expands remote patient monitoring program</title>
       <link>https://trade.example/rpm-expansion</link>
-      <pubDate>Jul 23, 2026 12:31pm</pubDate>
+      <pubDate>23 Jul 2026 12:31pm GMT</pubDate>
       <description>The health system announced a major expansion of its remote patient monitoring program.</description>
     </item>
   </channel>

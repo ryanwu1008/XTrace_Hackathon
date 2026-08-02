@@ -8,6 +8,8 @@ import {
 } from "../../lib/matching/context";
 import { createClaudeMatchingReasoner } from "../../lib/matching/claude-reasoner";
 import { createClaudeReasoner } from "../../lib/claude/service";
+import { WritableMarketEventV2Schema } from "../../lib/contracts/source-evidence";
+import { refingerprintMarketEvent } from "../../lib/market/identity";
 import {
   exactSourceV2,
   marketEventV2,
@@ -83,6 +85,13 @@ test("structured matching context preserves source and synthetic-fixture lineage
       .normalizedStatement ?? "",
     /Decision reason: The synthetic team passed pending stronger adoption evidence/i,
   );
+  const fixtureSource = sources.find((source) =>
+    source.id === "fixture_ably"
+  );
+  assert.equal(fixtureSource?.eventAt, "2026-07-01T00:00:00.000Z");
+  assert.equal(fixtureSource?.eventAtPrecision, "timestamp");
+  assert.equal(fixtureSource?.publishedAt, null);
+  assert.equal(fixtureSource?.publishedAtPrecision, null);
 });
 
 test("Claude matching reasoner parses JSON and rejects Deals outside the candidate set", async () => {
@@ -222,6 +231,9 @@ test("both Claude prompt paths separate normalized text from quote eligibility",
       calls[0],
       /"verbatimExcerpt":"Normalized provider prose is not a quotation\."/,
     );
+    assert.match(calls[0], /complete eligible evidence unit/i);
+    assert.match(calls[0], /qualifier|negation/i);
+    assert.doesNotMatch(calls[0], /contiguous substring/i);
     assert.doesNotMatch(calls[0], /every cited source's excerpt/i);
   }
 });
@@ -403,15 +415,21 @@ test("retrieval metadata changes invalidate v2 judgment replay", async () => {
 
   const stamped = (retrievedAt: string) => {
     const input = replayInput();
+    const canonicalEvent = WritableMarketEventV2Schema.parse(event);
     return {
       ...input,
-      events: [{
-        ...event,
+      events: [refingerprintMarketEvent({
+        ...canonicalEvent,
         retrievedAt,
-        sources: event.sources.map((source) => ({ ...source, retrievedAt })),
-      }],
+        sources: canonicalEvent.sources.map((source) => ({
+          ...source,
+          retrievedAt,
+        })),
+      })],
       sources: input.sources.map((source) =>
-        source.id === eventSource.id ? { ...source, retrievedAt } : source
+        source.id === eventSource.id && source.adaptation === "canonical"
+          ? { ...source, retrievedAt }
+          : source
       ),
     };
   };

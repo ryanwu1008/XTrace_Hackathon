@@ -16,14 +16,22 @@ import {
 import { buildPersistedReportEvidence } from "../../../lib/chat/report-evidence";
 import { createClaudeClient } from "../../../lib/claude/client";
 import { ChatRequestSchema } from "../../../lib/contracts/http";
-import type { SourceRef } from "../../../lib/contracts/domain";
+import {
+  evidenceSourceText,
+  type EvidenceSourceRef,
+} from "../../../lib/contracts/domain";
+import {
+  validateEvidenceSourceCatalog,
+} from "../../../lib/contracts/evidence-catalog";
 import { DEMO_DEAL_EVIDENCE } from "../../../lib/corpus/evidence";
+import { DEMO_FIXTURES } from "../../../lib/corpus/fixtures";
 import { getPreloadedDocument } from "../../../lib/corpus/manifest";
 import {
   evidenceQueryTokens,
   searchDemoEvidence,
 } from "../../../lib/demo/search";
 import { buildDemoViewModel } from "../../../lib/demo/view-model";
+import { interactionSourceV2 } from "../../../lib/matching/context";
 import {
   getXTraceClient,
   isXTraceConfigured,
@@ -37,11 +45,11 @@ import {
 export const dynamic = "force-dynamic";
 
 function allDemoSources() {
-  const sources = new Map<string, SourceRef>();
+  const candidates: EvidenceSourceRef[] = [];
   for (const evidence of DEMO_DEAL_EVIDENCE) {
     const document = getPreloadedDocument(evidence.documentId);
     if (!document) continue;
-    sources.set(evidence.id, {
+    candidates.push({
       id: evidence.id,
       provenance: evidence.provenance,
       title: document.title,
@@ -51,29 +59,25 @@ function allDemoSources() {
     });
   }
   for (const deal of buildDemoViewModel().deals) {
-    sources.set(`source_${deal.documentId}`, {
+    const document = getPreloadedDocument(deal.documentId);
+    if (!document) continue;
+    candidates.push({
       id: `source_${deal.documentId}`,
       provenance: "source_document",
-      title: deal.sourceTitle,
+      title: document.title,
       documentId: deal.documentId,
-      excerpt: `${deal.sourceTitle} is the supplied source document associated with ${deal.companyName}.`,
+      excerpt:
+        `${document.title} is a supplied source document in the demo corpus.`,
     });
-    if (deal.fixture) {
-      sources.set(deal.fixture.id, {
-        id: deal.fixture.id,
-      provenance: "demo_fixture",
-      title: deal.fixture.label,
-      excerpt: [
-        deal.fixture.label,
-        deal.fixture.meetingSummary,
-        `Decision reason: ${deal.fixture.decisionReason}`,
-        `Concerns: ${deal.fixture.concerns.join(" ") || "None recorded."}`,
-        `Revisit conditions: ${deal.fixture.revisitConditions.join(" ") || "None recorded."}`,
-      ].join(". "),
-      });
-    }
   }
-  return sources;
+  for (const fixture of DEMO_FIXTURES) {
+    candidates.push(interactionSourceV2({
+      ...fixture,
+      summary: fixture.meetingSummary,
+    }));
+  }
+  const sources = validateEvidenceSourceCatalog(candidates, "demo Chat source");
+  return new Map(sources.map((source) => [source.id, source]));
 }
 
 async function searchRuntimeIntelligence(
@@ -88,6 +92,13 @@ async function searchRuntimeIntelligence(
     repository.listMarketEvents(workspaceId),
     repository.listReports(workspaceId),
   ]);
+  validateEvidenceSourceCatalog([
+    ...events.flatMap((event): EvidenceSourceRef[] => [...event.sources]),
+    ...reports.flatMap((report) => [
+      ...report.opportunities.flatMap((opportunity) => opportunity.sources),
+      ...report.companyAnalyses.flatMap((analysis) => analysis.sources),
+    ]),
+  ], "runtime Chat authority source");
   const eventEvidence = events.flatMap((event) => {
     const sources = isDurableWorkspaceMode(mode)
       ? event.sources.filter((source) =>
@@ -130,17 +141,22 @@ async function searchRuntimeIntelligence(
     reports: searchableReports,
     companyByDeal,
   });
-  return [...eventEvidence, ...reportEvidence].slice(0, 12);
+  const runtimeEvidence = [...eventEvidence, ...reportEvidence];
+  validateEvidenceSourceCatalog(
+    runtimeEvidence.flatMap((item) => item.sources),
+    "runtime Chat source",
+  );
+  return runtimeEvidence.slice(0, 12);
 }
 
-function hasDemoFixtureSource(sources: readonly SourceRef[]): boolean {
+function hasDemoFixtureSource(sources: readonly EvidenceSourceRef[]): boolean {
   return sources.some((source) => source.provenance === "demo_fixture");
 }
 
 function isProductOpportunityEvidence(
   opportunity: {
     demoFixtureIds: readonly string[];
-    sources: readonly SourceRef[];
+    sources: readonly EvidenceSourceRef[];
   },
 ): boolean {
   return opportunity.demoFixtureIds.length === 0
@@ -150,7 +166,7 @@ function isProductOpportunityEvidence(
 function isProductCompanyAnalysisEvidence(
   analysis: {
     investmentMemory: { fixtureIds: readonly string[] };
-    sources: readonly SourceRef[];
+    sources: readonly EvidenceSourceRef[];
   },
 ): boolean {
   return analysis.investmentMemory.fixtureIds.length === 0
@@ -161,22 +177,29 @@ async function productMemoryScope(
   workspaceId: string,
   repository: IntelligenceRepository,
 ): Promise<{
-  sourceById: Map<string, SourceRef>;
+  sourceById: Map<string, EvidenceSourceRef>;
   candidateDealIds: string[];
 }> {
   const reports = await repository.listReports(workspaceId);
-  const sourceById = new Map<string, SourceRef>();
+  validateEvidenceSourceCatalog(
+    reports.flatMap((report) => [
+      ...report.opportunities.flatMap((opportunity) => opportunity.sources),
+      ...report.companyAnalyses.flatMap((analysis) => analysis.sources),
+    ]),
+    "Chat memory authority source",
+  );
+  const durableSourceCandidates: EvidenceSourceRef[] = [];
   const dealIds = new Set<string>();
   const addDurableDealSources = (
     dealId: string,
-    sources: readonly SourceRef[],
+    sources: readonly EvidenceSourceRef[],
   ) => {
     const durableSources = sources.filter((source) =>
       source.provenance !== "demo_fixture"
     );
     if (durableSources.length === 0) return;
     dealIds.add(dealId);
-    for (const source of durableSources) sourceById.set(source.id, source);
+    durableSourceCandidates.push(...durableSources);
   };
   for (const report of reports) {
     for (const opportunity of report.opportunities) {
@@ -188,8 +211,12 @@ async function productMemoryScope(
       addDurableDealSources(analysis.dealId, analysis.sources);
     }
   }
+  const durableSources = validateEvidenceSourceCatalog(
+    durableSourceCandidates,
+    "Chat durable source",
+  );
   return {
-    sourceById,
+    sourceById: new Map(durableSources.map((source) => [source.id, source])),
     candidateDealIds: [...dealIds],
   };
 }
@@ -236,7 +263,7 @@ async function recallExistingMemory(
         return source ? [source] : [];
       });
       return sources.map((source) => ({
-        text: source.excerpt,
+        text: evidenceSourceText(source),
         sources: [source],
       }));
     });

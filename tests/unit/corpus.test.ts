@@ -9,6 +9,10 @@ import { DEMO_DEAL_EVIDENCE } from "../../lib/corpus/evidence";
 import { DEMO_FIXTURES } from "../../lib/corpus/fixtures";
 import { DEMO_MARKET_REPORT_EVIDENCE } from "../../lib/corpus/market-evidence";
 import {
+  evidenceSourceText,
+  type EvidenceSourceRef,
+} from "../../lib/contracts/domain";
+import {
   getPreloadedDocument,
   listDocumentDeals,
   listPreloadedDocuments,
@@ -23,6 +27,14 @@ import {
 } from "../../lib/corpus/service";
 
 const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+function evidenceSourcePage(source: EvidenceSourceRef | undefined) {
+  if (!source) return undefined;
+  if (!("schemaVersion" in source)) return source.page;
+  return source.locator?.kind === "document_page"
+    ? source.locator.page
+    : undefined;
+}
 
 test("the fixed corpus is exactly 9 pitch decks, 4 market reports, and 1 reference with matching files", async () => {
   const documents = listPreloadedDocuments();
@@ -244,8 +256,11 @@ test("confirmation persists the complete labeled fixture and emits page-backed e
     "Sample decision record",
   );
   assert.equal(result.memoryBundles[0].facts[0].sources[0].provenance, "source_document");
-  assert.equal(result.memoryBundles[0].facts[0].sources[0].page, 4);
-  assert.match(result.memoryBundles[0].facts[0].sources[0].excerpt, /unified, AI powered logistics platform/i);
+  assert.equal(evidenceSourcePage(result.memoryBundles[0].facts[0].sources[0]), 4);
+  assert.match(
+    evidenceSourceText(result.memoryBundles[0].facts[0].sources[0]),
+    /unified, AI powered logistics platform/i,
+  );
 });
 
 test("confirmation creates source-backed memory and synthetic decision context for 100Plus", async () => {
@@ -267,7 +282,7 @@ test("confirmation creates source-backed memory and synthetic decision context f
     /remote patient monitoring/i,
   );
   assert.equal(result.memoryBundles[0].interactions[0].provenance, "demo_fixture");
-  assert.equal(result.memoryBundles[0].facts[0].sources[0].page, 1);
+  assert.equal(evidenceSourcePage(result.memoryBundles[0].facts[0].sources[0]), 1);
 });
 
 test("confirmation splits the combined PDF into eleven page-scoped Deals", async () => {
@@ -294,7 +309,7 @@ test("confirmation splits the combined PDF into eleven page-scoped Deals", async
   assert.deepEqual(
     result.memoryBundles.map((bundle) => ({
       dealId: bundle.dealId,
-      page: bundle.facts[0]?.sources[0]?.page,
+      page: evidenceSourcePage(bundle.facts[0]?.sources[0]),
     })),
     deals.map((deal) => ({ dealId: deal.dealId, page: deal.page })),
   );
@@ -304,7 +319,10 @@ test("the worker builds all single- and multi-page preloaded Deal memory bundles
   const bundles = buildPreloadedDealMemoryBundles();
   assert.equal(bundles.length, 19);
   assert.equal(new Set(bundles.map((bundle) => bundle.dealId)).size, 19);
-  assert.equal(bundles.every((bundle) => bundle.facts[0]?.sources[0]?.page), true);
+  assert.equal(
+    bundles.every((bundle) => evidenceSourcePage(bundle.facts[0]?.sources[0])),
+    true,
+  );
   assert.equal(bundles.filter((bundle) =>
     bundle.facts[0]?.sources[0]?.documentId === "doc_pitch_combined"
   ).length, 11);

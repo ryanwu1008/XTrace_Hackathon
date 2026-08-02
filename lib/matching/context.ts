@@ -1,9 +1,11 @@
 import type {
   DealMemoryBundle,
+  DealInteraction,
   MarketEvent,
   SourceRef,
 } from "../contracts/domain";
 import {
+  assertConsistentCanonicalEvidenceUnits,
   uniqueByCanonicalId,
   type MarketEventV2,
   type SourceRefV2,
@@ -13,6 +15,47 @@ import {
   parseSourceRefV2Read,
 } from "../contracts/legacy-evidence-adapter";
 import type { MatchingMemoryContext } from "./service";
+
+export function interactionSourceV2(
+  interaction: DealInteraction,
+): SourceRefV2 {
+  return {
+    schemaVersion: "source-ref-v2",
+    adaptation: "canonical",
+    id: interaction.id,
+    provenance: interaction.provenance,
+    title: interaction.label,
+    canonicalUrl: null,
+    documentId: null,
+    publisher: "Internal Deal Registry",
+    providerId: "deal-registry",
+    eventAt: interaction.occurredAt,
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: null,
+    retrievedAtPrecision: null,
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: [],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: null,
+    locator: null,
+    contentFingerprint: null,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: [
+        interaction.label,
+        interaction.summary,
+        `Decision reason: ${interaction.decisionReason}`,
+        `Concerns: ${interaction.concerns.join(" ") || "None recorded."}`,
+        `Revisit conditions: ${interaction.revisitConditions.join(" ") || "None recorded."}`,
+      ].join(". "),
+    },
+  };
+}
 
 export function buildStructuredMemoryContexts(
   bundles: DealMemoryBundle[],
@@ -42,48 +85,21 @@ export function buildMatchingSources(
   events: Array<MarketEvent | MarketEventV2>,
   baselineSources: Array<SourceRef | SourceRefV2> = [],
 ): SourceRefV2[] {
-  const sources = [
+  const sources: SourceRefV2[] = [
     ...bundles.flatMap((bundle) =>
       bundle.facts.flatMap((fact) => fact.sources.map(parseSourceRefV2Read))
     ),
     ...bundles.flatMap((bundle) =>
-      bundle.interactions.map((interaction): SourceRefV2 => ({
-        schemaVersion: "source-ref-v2",
-        adaptation: "canonical",
-        id: interaction.id,
-        provenance: interaction.provenance,
-        title: interaction.label,
-        canonicalUrl: null,
-        documentId: null,
-        publisher: "Internal Deal Registry",
-        providerId: "deal-registry",
-        eventAt: interaction.occurredAt,
-        publishedAt: interaction.occurredAt,
-        retrievedAt: null,
-        updatedAt: null,
-        entityKeys: [],
-        sourceClass: "internal_decision_record",
-        sourceAuthority: "primary",
-        evidenceRole: "context",
-        sourceRevisionId: null,
-        locator: null,
-        contentFingerprint: null,
-        text: {
-          status: "normalized_only",
-          normalizedStatement: [
-            interaction.label,
-            interaction.summary,
-            `Decision reason: ${interaction.decisionReason}`,
-            `Concerns: ${interaction.concerns.join(" ") || "None recorded."}`,
-            `Revisit conditions: ${interaction.revisitConditions.join(" ") || "None recorded."}`,
-          ].join(". "),
-        },
-      }))
+      bundle.interactions.map(interactionSourceV2)
     ),
-    ...events.flatMap((event) => parseMarketEventV2Read(event).sources),
+    ...events.flatMap((event): SourceRefV2[] => [
+      ...parseMarketEventV2Read(event).sources,
+    ]),
     ...baselineSources.map(parseSourceRefV2Read),
   ];
-  return uniqueByCanonicalId(sources, "source");
+  const uniqueSources = uniqueByCanonicalId<SourceRefV2>(sources, "source");
+  assertConsistentCanonicalEvidenceUnits(uniqueSources);
+  return uniqueSources;
 }
 
 function unique(values: string[]): string[] {

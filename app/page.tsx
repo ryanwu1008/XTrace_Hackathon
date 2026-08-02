@@ -21,6 +21,8 @@ import { decisionReasonLabel } from "../lib/demo/decision-label";
 import { SAMPLE_DEAL_PROFILES } from "./deal-profiles";
 import type { ChatMemoryStatus } from "../lib/chat/service";
 import type { ConfirmUpload } from "../lib/contracts/http";
+import type { EvidenceSourceRef } from "../lib/contracts/domain";
+import type { MarketEventV2 } from "../lib/contracts/source-evidence";
 import type {
   UploadRecoveryDto,
   UploadRecoveryDetailDto,
@@ -36,6 +38,8 @@ import {
   type UiSession,
 } from "./ui-capabilities";
 import { SourceRevisionLink } from "./source-revision-link";
+import { formatTemporalForDisplay } from "../lib/format/temporal";
+import { safeExternalHttpUrl } from "../lib/security/safe-url";
 
 type UploadedDocument = SourceUploadDto;
 
@@ -113,7 +117,7 @@ interface Run {
   completedAt: string | null;
 }
 
-interface Source {
+interface LegacyUiSource {
   id: string;
   title: string;
   url?: string;
@@ -130,19 +134,9 @@ interface Source {
     | "underwriting_reference";
 }
 
-interface MarketEvent {
-  id: string;
-  title: string;
-  eventType: string;
-  sectors: string[];
-  themes: string[];
-  summary: string;
-  positiveImplications: string[];
-  negativeImplications: string[];
-  publishedAt: string;
-  confidence: "low" | "medium" | "high";
-  sources: Source[];
-}
+type Source = EvidenceSourceRef | LegacyUiSource;
+
+type MarketEvent = MarketEventV2;
 
 type Report = IntelligenceReportView;
 
@@ -223,13 +217,17 @@ function formatBytes(bytes: number) {
     : `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
-function shortDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+export function shortDate(value: string) {
+  return formatTemporalForDisplay({
+    value,
+    dateOnly: { month: "short", day: "numeric" },
+    timestamp: {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    },
+  });
 }
 
 async function loadCanonicalUploads(): Promise<UploadedDocument[]> {
@@ -1542,7 +1540,7 @@ function MarketView({ events }: { events: MarketEvent[] }) {
         <div className="vsee-event-list">
           {events.map((event) => (
             <article className="vsee-event" key={event.id}>
-              <header><span>{event.eventType}</span><b className={event.confidence}>{event.confidence} confidence</b><time>{shortDate(event.publishedAt)}</time></header>
+              <header><span>{event.eventType}</span><b className={event.confidence}>{event.confidence} confidence</b><time>{event.publishedAt ? shortDate(event.publishedAt) : "Date unknown"}</time></header>
               <h2>{event.title}</h2>
               <p>{event.summary}</p>
               <div className="vsee-tags">{[...event.sectors, ...event.themes].map((tag) => <span key={tag}>{tag}</span>)}</div>
@@ -1787,23 +1785,30 @@ function Empty({ title, copy }: { title: string; copy: string }) {
 }
 
 function SourceLink({ source }: { source: Source }) {
+  const legacy = !("schemaVersion" in source);
+  const sourceUrl = legacy ? source.url : source.canonicalUrl ?? undefined;
+  const page = legacy
+    ? source.page
+    : source.locator?.kind === "document_page"
+    ? source.locator.page
+    : undefined;
   if (
     source.provenance === "source_document"
-    && source.url?.startsWith("/api/source-revisions/")
+    && sourceUrl?.startsWith("/api/source-revisions/")
   ) {
     return (
       <SourceRevisionLink revisionId={source.id}>
         {source.publisher ?? source.title}
-        {source.page ? ` · p.${source.page}` : ""} ↗
+        {page ? ` · p.${page}` : ""} ↗
       </SourceRevisionLink>
     );
   }
   const href = source.documentId
-    ? `/api/documents/${encodeURIComponent(source.documentId)}/access${source.page ? `#page=${source.page}` : ""}`
-    : source.url;
+    ? `/api/documents/${encodeURIComponent(source.documentId)}/access${page ? `#page=${page}` : ""}`
+    : safeExternalHttpUrl(sourceUrl);
   return href
     ? <a href={href} target="_blank" rel="noreferrer">
-        {source.publisher ?? source.title}{source.page ? ` · p.${source.page}` : ""} ↗
+        {source.publisher ?? source.title}{page ? ` · p.${page}` : ""} ↗
       </a>
     : <span>{source.title}</span>;
 }

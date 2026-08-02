@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { evidenceSourceText } from "../../lib/contracts/domain";
 import { searchDemoEvidence } from "../../lib/demo/search";
 
 test("search returns only evidence already present in the fixed corpus", () => {
@@ -28,7 +29,15 @@ test("search ranks an exact combined-PDF company and preserves its page citation
   const results = searchDemoEvidence("What does Mirror do?");
   assert.ok(results.length > 0);
   assert.equal(results[0].sources[0].id, "evidence_mirror_page_3");
-  assert.equal(results[0].sources[0].page, 3);
+  const source = results[0].sources[0];
+  assert.equal(
+    "schemaVersion" in source && source.locator?.kind === "document_page"
+      ? source.locator.page
+      : "page" in source
+      ? source.page
+      : undefined,
+    3,
+  );
   assert.equal(
     results.some((result) =>
       result.sources.some((source) => source.id === "evidence_7bridges_page_4")
@@ -53,5 +62,8 @@ test("search finds and cites a synthetic decision reason", () => {
     .flatMap((result) => result.sources)
     .find((source) => source.id === "fixture_fellowtrip_passed");
   assert.ok(fixture);
-  assert.match(fixture.excerpt, /Decision reason: The team passed because the broad travel-collaboration proposition/i);
+  assert.match(
+    evidenceSourceText(fixture),
+    /Decision reason: The team passed because the broad travel-collaboration proposition/i,
+  );
 });

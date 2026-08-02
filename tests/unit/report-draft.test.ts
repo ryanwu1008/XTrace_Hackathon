@@ -6,6 +6,10 @@ import {
   buildInternalReportDraft,
 } from "../../lib/reports/draft";
 import type { CompanyAnalysis } from "../../lib/contracts/domain";
+import {
+  exactSourceV2,
+  normalizedSourceV2,
+} from "../helpers/source-evidence-v2";
 
 const report = {
   id: "report_1",
@@ -134,6 +138,72 @@ test("builds a cited internal VC report draft without a recipient", () => {
   assert.doesNotMatch(draft.bodyText, /reconnect/i);
   assert.doesNotMatch(`${draft.subject}\n${draft.bodyText}`, /^To:/m);
   assert.doesNotMatch(draft.bodyText, /Hi founder|outreach/i);
+});
+
+test("report drafts preserve v2 canonical URLs and typed document pages", () => {
+  const draft = buildInternalReportDraft({
+    report: {
+      ...report,
+      opportunities: [{
+        ...report.opportunities[0],
+        sources: [
+          normalizedSourceV2("v2_public", {
+            title: "V2 public announcement",
+            canonicalUrl: "https://news.example/v2-announcement",
+          }),
+          exactSourceV2("v2_document", {
+            provenance: "source_document",
+            title: "V2 company deck",
+            canonicalUrl: null,
+            documentId: "doc v2",
+            publisher: "V2 Company",
+            providerId: "source-registry",
+            sourceClass: "company_official",
+            sourceAuthority: "primary",
+            evidenceRole: "context",
+            locator: { kind: "document_page", page: 7 },
+          }),
+        ],
+      }],
+    },
+    companyNames: { deal_ably: "Ably" },
+    appOrigin: "https://vsee.example",
+  });
+
+  assert.match(draft.bodyText, /https:\/\/news\.example\/v2-announcement/);
+  assert.match(
+    draft.bodyText,
+    /https:\/\/vsee\.example\/api\/documents\/doc%20v2\/access#page=7/,
+  );
+});
+
+test("report drafts render unsafe legacy external URLs as plain source titles", () => {
+  for (const url of [
+    "javascript:alert(1)",
+    "data:text/html,malicious",
+    "ftp://example.com/source",
+  ]) {
+    const draft = buildInternalReportDraft({
+      report: {
+        ...report,
+        opportunities: [{
+          ...report.opportunities[0],
+          sources: [{
+            id: `unsafe_${url.slice(0, 3)}`,
+            provenance: "public_web",
+            title: "Unsafe legacy source",
+            url,
+            excerpt: "Legacy evidence.",
+          }],
+        }],
+      },
+      companyNames: { deal_ably: "Ably" },
+      appOrigin: "https://vsee.example",
+    });
+
+    assert.match(draft.bodyText, /Unsafe legacy source/);
+    assert.doesNotMatch(draft.bodyText, /javascript:|data:|ftp:/i);
+  }
 });
 
 test("never copies a malicious legacy next step into a report draft", () => {

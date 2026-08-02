@@ -1,8 +1,13 @@
 import { z } from "zod";
 
 import {
+  assertConsistentCanonicalEvidenceUnits,
   MarketEventV2Schema,
+  SAMPLE_DECISION_RECORD_LABEL,
   SourceRefV2Schema,
+  sourceClaimSupportKind,
+  sourceTextForRetrieval,
+  uniqueByCanonicalId,
   type MarketEventV2,
   type SourceRefV2,
 } from "./source-evidence";
@@ -19,7 +24,7 @@ export const DealStatusSchema = z.preprocess(
   z.enum(["screening", "watchlist", "evaluating", "passed", "invested"]),
 );
 
-export const DEMO_FIXTURE_LABEL = "Sample decision record" as const;
+export const DEMO_FIXTURE_LABEL = SAMPLE_DECISION_RECORD_LABEL;
 
 export const RunStatusSchema = z.enum([
   "queued",
@@ -68,11 +73,96 @@ export const ClaimSupportV2Schema = z.strictObject({
   text: z.string().min(1),
   kind: z.enum(["exact_quote", "normalized_non_quote"]),
   sourceIds: z.array(z.string().min(1)).min(1),
+}).superRefine((support, context) => {
+  if (new Set(support.sourceIds).size !== support.sourceIds.length) {
+    context.addIssue({
+      code: "custom",
+      message: "Claim support source IDs must be unique",
+    });
+  }
 });
+
+type ParsedEvidenceSource = SourceRefV2 | z.infer<typeof SourceRefSchema>;
+
+function validateSourcePayloads(
+  sources: readonly ParsedEvidenceSource[],
+  context: z.RefinementCtx,
+): void {
+  try {
+    uniqueByCanonicalId(sources, "evidence source");
+    assertConsistentCanonicalEvidenceUnits(
+      sources.flatMap((source): SourceRefV2[] =>
+        "schemaVersion" in source ? [source] : []
+      ),
+    );
+  } catch (error) {
+    context.addIssue({
+      code: "custom",
+      message: error instanceof Error
+        ? error.message
+        : "Evidence source IDs must resolve to one canonical payload",
+    });
+  }
+}
+
+function validateClaimSupport(
+  sources: readonly ParsedEvidenceSource[],
+  supports: readonly z.infer<typeof ClaimSupportV2Schema>[],
+  context: z.RefinementCtx,
+): void {
+  validateSourcePayloads(sources, context);
+  const byId = new Map(sources.map((source) => [source.id, source]));
+  for (const support of supports) {
+    const kinds = support.sourceIds.map((sourceId) => {
+      const source = byId.get(sourceId);
+      if (!source || !("schemaVersion" in source)) return null;
+      return sourceClaimSupportKind(source, support.text);
+    });
+    if (kinds.some((kind) => kind === null)) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Claim support must resolve to eligible canonical evidence containing the claim text",
+      });
+      continue;
+    }
+    const requiredKind = kinds.includes("normalized_non_quote")
+      ? "normalized_non_quote"
+      : "exact_quote";
+    if (support.kind !== requiredKind) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Claim support kind must match the strictest support available from every cited source",
+      });
+    }
+  }
+}
+
+function canonicalSampleDecisionSourceIds(
+  sources: readonly ParsedEvidenceSource[],
+): Set<string> {
+  return new Set(sources.flatMap((source) =>
+    "schemaVersion" in source
+      && source.adaptation === "canonical"
+      && source.provenance === "demo_fixture"
+      ? [source.id]
+      : []
+  ));
+}
+
+function sameStringSet(
+  left: readonly string[],
+  right: ReadonlySet<string>,
+): boolean {
+  return new Set(left).size === left.length
+    && left.length === right.size
+    && left.every((value) => right.has(value));
+}
 
 export const DealFactSchema = z.object({
   text: z.string().min(1),
-  sources: z.array(SourceRefSchema).min(1),
+  sources: z.array(EvidenceSourceRefSchema).min(1),
 });
 
 export const DealInteractionSchema = z.object({
@@ -123,6 +213,22 @@ export const OpportunityReportItemSchema = z.object({
   sources: z.array(EvidenceSourceRefSchema).min(1),
   demoFixtureIds: z.array(z.string()),
   claimSupport: z.array(ClaimSupportV2Schema).optional(),
+}).superRefine((opportunity, context) => {
+  validateClaimSupport(
+    opportunity.sources,
+    opportunity.claimSupport ?? [],
+    context,
+  );
+  const fixtureSourceIds = canonicalSampleDecisionSourceIds(
+    opportunity.sources,
+  );
+  if (!sameStringSet(opportunity.demoFixtureIds, fixtureSourceIds)) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Opportunity fixture IDs must uniquely and exactly resolve to canonical Sample decision record sources",
+    });
+  }
 });
 
 export const CompanyAnalysisOutcomeSchema = z.enum([
@@ -171,6 +277,11 @@ export const EvidenceFieldSchema = z.object({
     });
   }
 });
+
+const NO_RECORDED_MEETING = "No previous meeting summary was recorded.";
+const NO_RECORDED_DECISION = "No previous decision reason was recorded.";
+const MEMORY_ANALYSIS_UNAVAILABLE =
+  "Analysis unavailable because XTrace did not return verified investment memory for this company.";
 
 export const InvestmentMemorySnapshotSchema = z.object({
   previousMeetingSummary: z.string().min(1),
@@ -240,10 +351,40 @@ export const CompanyMarketEvidenceSchema = z.object({
       ? event.sources.map((source) => source.id)
       : event.sourceIds
   ));
-  if (eventSourceIds.some((sourceId) => !evidence.sourceIds.includes(sourceId))) {
+  const canonicalEvents = evidence.events.every((event) =>
+    "schemaVersion" in event && event.adaptation === "canonical"
+  );
+  const eventIdSet = new Set(evidence.eventIds);
+  const eventSourceIdSet = new Set(eventSourceIds);
+  const evidenceSourceIdSet = new Set(evidence.sourceIds);
+  if (
+    canonicalEvents
+    && (
+      eventIdSet.size !== evidence.eventIds.length
+      || eventIdSet.size !== evidence.events.length
+      || evidenceSourceIdSet.size !== evidence.sourceIds.length
+    )
+  ) {
     context.addIssue({
       code: "custom",
-      message: "Market event sources must be included in market evidence sources",
+      message: "Canonical market evidence event and source IDs must be unique",
+    });
+  }
+  const canonicalSetsDiffer = canonicalEvents
+    && (
+      eventSourceIdSet.size !== evidenceSourceIdSet.size
+      || [...eventSourceIdSet].some((sourceId) =>
+        !evidenceSourceIdSet.has(sourceId)
+      )
+    );
+  const legacyEventSourceMissing = !canonicalEvents
+    && eventSourceIds.some((sourceId) => !evidenceSourceIdSet.has(sourceId));
+  if (canonicalSetsDiffer || legacyEventSourceMissing) {
+    context.addIssue({
+      code: "custom",
+      message: canonicalEvents
+        ? "Canonical market evidence sources must exactly match embedded event sources"
+        : "Market event sources must be included in market evidence sources",
     });
   }
 
@@ -301,6 +442,7 @@ export const CompanyAnalysisSchema = z.object({
     positive: z.array(z.string().min(1)),
     negative: z.array(z.string().min(1)),
   }),
+  claimSupport: z.array(ClaimSupportV2Schema).optional(),
   recommendedNextMove: z.string().min(1),
   companyBrief: CompanyBriefSchema,
   sources: z.array(EvidenceSourceRefSchema),
@@ -340,6 +482,9 @@ export const CompanyAnalysisSchema = z.object({
   if (
     analysis.verifiedSourceCount !== sourceIds.size
     || analysis.marketEvidence.sourceIds.some((id) => !sourceIds.has(id))
+    || (analysis.claimSupport ?? []).some((support) =>
+      support.sourceIds.some((id) => !sourceIds.has(id))
+    )
   ) {
     context.addIssue({
       code: "custom",
@@ -347,6 +492,21 @@ export const CompanyAnalysisSchema = z.object({
         "Verified source counts and market evidence must match analysis lineage",
     });
   }
+
+  const embeddedEventSources = analysis.marketEvidence.events.flatMap(
+    (event): ParsedEvidenceSource[] =>
+      "schemaVersion" in event ? [...event.sources] : [],
+  );
+  validateSourcePayloads([
+    ...analysis.sources,
+    ...embeddedEventSources,
+    ...analysis.companyBrief.sourceLineage,
+  ], context);
+  validateClaimSupport(
+    analysis.sources,
+    analysis.claimSupport ?? [],
+    context,
+  );
 
   const briefSourceIds = [
     ...analysis.companyBrief.icSnapshot,
@@ -367,6 +527,60 @@ export const CompanyAnalysisSchema = z.object({
     context.addIssue({
       code: "custom",
       message: "All company claims must resolve to the analysis source lineage",
+    });
+  }
+
+  const fixtureIds = analysis.investmentMemory.fixtureIds;
+  const fixtureIdSet = new Set(fixtureIds);
+  const analysisSampleIds = canonicalSampleDecisionSourceIds(analysis.sources);
+  const briefLineageIds = new Set(lineageSourceIds);
+  if (
+    !sameStringSet(fixtureIds, analysisSampleIds)
+    || fixtureIds.some((fixtureId) =>
+      !memorySourceIds.includes(fixtureId) || !briefLineageIds.has(fixtureId)
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Investment-memory fixture IDs must uniquely resolve to canonical Sample decision record lineage",
+    });
+  }
+  if (fixtureIds.length === 0) {
+    const fixedNoRecord =
+      analysis.investmentMemory.previousMeetingSummary === NO_RECORDED_MEETING
+      && analysis.investmentMemory.decisionReason === NO_RECORDED_DECISION;
+    const fixedUnavailable =
+      analysis.investmentMemory.previousMeetingSummary
+          === MEMORY_ANALYSIS_UNAVAILABLE
+      && analysis.investmentMemory.decisionReason
+          === MEMORY_ANALYSIS_UNAVAILABLE;
+    if (
+      analysis.investmentMemory.lastEvaluatedAt !== null
+      || analysis.investmentMemory.concerns.length !== 0
+      || analysis.investmentMemory.revisitConditions.length !== 0
+      || analysis.companyBrief.decisionHistory.length !== 0
+      || (!fixedNoRecord && !fixedUnavailable)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Investment memory without a Sample decision record may only use the fixed no-record payload",
+      });
+    }
+  } else if (analysis.investmentMemory.lastEvaluatedAt === null) {
+    context.addIssue({
+      code: "custom",
+      message: "Sample decision records require an evaluation date",
+    });
+  }
+  if (analysis.companyBrief.decisionHistory.some((item) =>
+    item.sourceIds.some((sourceId) => !fixtureIdSet.has(sourceId))
+  )) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Decision history must resolve only to linked Sample decision records",
     });
   }
 });
@@ -417,6 +631,12 @@ export type CompanyMarketEvidence = z.infer<
 export type CompanyRisk = z.infer<typeof CompanyRiskSchema>;
 export type CompanyBrief = z.infer<typeof CompanyBriefSchema>;
 export type CompanyAnalysis = z.infer<typeof CompanyAnalysisSchema>;
+
+export function evidenceSourceText(source: EvidenceSourceRef): string {
+  return "schemaVersion" in source
+    ? sourceTextForRetrieval(source)
+    : source.excerpt;
+}
 export type ReportAnalysisStatus = z.infer<
   typeof ReportAnalysisStatusSchema
 >;

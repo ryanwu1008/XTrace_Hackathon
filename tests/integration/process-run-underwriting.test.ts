@@ -28,7 +28,12 @@ import {
   createMemoryUnderwritingRunsRepository,
   type CandidateFinalization,
 } from "../../db/repositories/underwriting-runs";
-import type { CompanyAnalysis } from "../../lib/contracts/domain";
+import type {
+  CompanyAnalysis,
+  DealInteraction,
+} from "../../lib/contracts/domain";
+import { sourceTextForRetrieval } from "../../lib/contracts/source-evidence";
+import { interactionSourceV2 } from "../../lib/matching/context";
 import {
   ScenarioInputFieldSchema,
   type FundPolicySnapshot,
@@ -67,8 +72,78 @@ import type {
 } from "../../lib/claude/client";
 import { BALANCED_POLICY_VALUES } from "../../seed/underwriting/balanced-policy-v1";
 import { processClaimedRun } from "../../worker/process-run";
+import type { NormalizedMarketEvent } from "../../lib/market/types";
+import {
+  exactSourceV2,
+  marketEventV2,
+  normalizedSourceV2,
+} from "../helpers/source-evidence-v2";
 
 const NOW = new Date("2026-07-29T12:00:00.000Z");
+
+const IMAGE_INTERACTION = {
+  id: "fixture_image",
+  occurredAt: "2026-06-01T12:00:00.000Z",
+  summary:
+    "Image Acme was previously passed while enterprise deployment evidence was missing.",
+  decisionReason:
+    "The synthetic team required enterprise deployment evidence before reopening diligence.",
+  concerns: ["Enterprise adoption was not yet verified."],
+  revisitConditions: [
+    "Revisit after a verified enterprise deployment.",
+  ],
+  provenance: "demo_fixture",
+  label: "Sample decision record",
+} satisfies DealInteraction;
+
+const IMAGE_DECISION_EVIDENCE = sourceTextForRetrieval(
+  interactionSourceV2(IMAGE_INTERACTION),
+);
+
+function underwritingMarketEvent(input: {
+  id: string;
+  sourceId: string;
+  title: string;
+  statement: string;
+  canonicalUrl: string;
+  eventType: string;
+  sectors: string[];
+  themes: string[];
+  positiveImplications?: string[];
+  entityKeys: string[];
+}): NormalizedMarketEvent {
+  const source = normalizedSourceV2(input.sourceId, {
+    title: input.title,
+    canonicalUrl: input.canonicalUrl,
+    publisher: "Official source",
+    providerId: "official",
+    eventAt: null,
+    eventAtPrecision: null,
+    publishedAt: "2026-07-28T00:00:00.000Z",
+    publishedAtPrecision: "timestamp",
+    retrievedAt: NOW.toISOString(),
+    retrievedAtPrecision: "timestamp",
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: input.entityKeys,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: input.statement,
+    },
+  });
+  return marketEventV2(source, {
+    id: input.id,
+    title: input.title,
+    eventType: input.eventType,
+    sectors: input.sectors,
+    themes: input.themes,
+    summary: input.statement,
+    positiveImplications: input.positiveImplications ?? [],
+    negativeImplications: [],
+    confidence: "high",
+    entityKeys: input.entityKeys,
+  }) as NormalizedMarketEvent;
+}
 
 const policy: FundPolicySnapshot = {
   id: "fund_policy:workspace_1:v1",
@@ -604,14 +679,34 @@ async function uploadedDealRegistry() {
       facts: [{
         text:
           "Uploaded Acme provides clinical workflow automation for health systems.",
-        sources: [{
-          id: "source_uploaded",
+        sources: [exactSourceV2("source_uploaded", {
           provenance: "source_document",
           title: "Uploaded Acme founder memo",
+          canonicalUrl: null,
           documentId: "document_uploaded",
-          excerpt:
-            "Uploaded Acme provides clinical workflow automation for health systems.",
-        }],
+          publisher: "Uploaded Acme",
+          providerId: "source-registry",
+          eventAt: null,
+          eventAtPrecision: null,
+          publishedAt: null,
+          publishedAtPrecision: null,
+          retrievedAt: "2026-07-29T10:00:00.000Z",
+          retrievedAtPrecision: "timestamp",
+          updatedAt: null,
+          updatedAtPrecision: null,
+          entityKeys: ["uploaded-acme"],
+          sourceClass: "company_official",
+          sourceAuthority: "primary",
+          evidenceRole: "context",
+          sourceRevisionId: "revision_uploaded",
+          locator: { kind: "line_range", startLine: 1, endLine: 1 },
+          contentFingerprint: `sha256:${"c".repeat(64)}`,
+          text: {
+            status: "verified_exact",
+            verbatimExcerpt:
+              "Uploaded Acme provides clinical workflow automation for health systems.",
+          },
+        })],
       }],
       interactions: [],
     },
@@ -630,7 +725,9 @@ async function uploadedDealRegistry() {
   return { registry, sources };
 }
 
-async function imageOnlyDealRegistry() {
+async function imageOnlyDealRegistry(options: {
+  includeNonImageFact?: boolean;
+} = {}) {
   const sources = createMemorySourceRegistry();
   await sources.createInitialRevision({
     id: "revision_image",
@@ -645,6 +742,21 @@ async function imageOnlyDealRegistry() {
     extractedAt: "2026-07-29T10:00:00.000Z",
     createdAt: "2026-07-29T10:00:01.000Z",
   });
+  if (options.includeNonImageFact) {
+    await sources.createInitialRevision({
+      id: "revision_image_registry_note",
+      workspaceId: "workspace_1",
+      sourceId: "document_image_registry_note",
+      contentHash: `sha256:${"7".repeat(64)}`,
+      objectKey: "private/uploads/image-acme-registry-note.txt",
+      objectVersion: "object:image-acme-registry-note:v1",
+      contentType: "text/plain",
+      extractorId: "plain_text_v1",
+      extractorVersion: "1",
+      extractedAt: "2026-07-29T10:00:02.000Z",
+      createdAt: "2026-07-29T10:00:03.000Z",
+    });
+  }
   const registry = createMemoryDealRegistry({ sourceRegistry: sources });
   const structuredText =
     "Structured image evidence (not a quotation): ARR = 8000000 USD.";
@@ -665,16 +777,73 @@ async function imageOnlyDealRegistry() {
       status: "passed",
       facts: [{
         text: structuredText,
-        sources: [{
-          id: "evidence_image_arr",
+        sources: [normalizedSourceV2("evidence_image_arr", {
           provenance: "model_inference",
           title: "image-acme.png",
+          canonicalUrl: null,
           documentId: "document_image",
+          publisher: null,
+          providerId: "anthropic",
+          eventAt: null,
+          eventAtPrecision: null,
+          publishedAt: null,
+          publishedAtPrecision: null,
+          retrievedAt: "2026-07-29T10:00:00.000Z",
+          retrievedAtPrecision: "timestamp",
+          updatedAt: null,
+          updatedAtPrecision: null,
+          entityKeys: ["image-acme"],
+          sourceClass: "model_output",
+          sourceAuthority: "not_applicable",
+          evidenceRole: "context",
           sourceRevisionId: "revision_image",
-          excerpt: structuredText,
-        }],
-      }],
-      interactions: [],
+          locator: null,
+          contentFingerprint: `sha256:${"9".repeat(64)}`,
+          text: {
+            status: "model_inference",
+            normalizedStatement: structuredText,
+            model: {
+              provider: "anthropic",
+              model: "claude-vision-test",
+              generatedAt: "2026-07-29T10:00:00.000Z",
+              inputFingerprint: `sha256:${"8".repeat(64)}`,
+            },
+          },
+        })],
+      }, ...(options.includeNonImageFact
+        ? [{
+          text: "Image Acme has a source-backed registry note.",
+          sources: [normalizedSourceV2("source_image_registry_note", {
+            provenance: "source_document",
+            title: "Image Acme registry note",
+            canonicalUrl: null,
+            documentId: "document_image_registry_note",
+            publisher: "Image Acme",
+            providerId: "source-registry",
+            eventAt: null,
+            eventAtPrecision: null,
+            publishedAt: null,
+            publishedAtPrecision: null,
+            retrievedAt: "2026-07-29T10:00:00.000Z",
+            retrievedAtPrecision: "timestamp",
+            updatedAt: null,
+            updatedAtPrecision: null,
+            entityKeys: ["image-acme"],
+            sourceClass: "company_official",
+            sourceAuthority: "primary",
+            evidenceRole: "context",
+            sourceRevisionId: "revision_image_registry_note",
+            locator: null,
+            contentFingerprint: `sha256:${"7".repeat(64)}`,
+            text: {
+              status: "normalized_only",
+              normalizedStatement:
+                "Image Acme has a source-backed registry note.",
+            },
+          })],
+        }]
+        : [])],
+      interactions: [IMAGE_INTERACTION],
     },
     memoryLineage: {
       evidence: {
@@ -684,10 +853,41 @@ async function imageOnlyDealRegistry() {
           sourceId: "document_image",
           sourceRevisionId: "revision_image",
         },
+        ...(options.includeNonImageFact
+          ? {
+            source_image_registry_note: {
+              workspaceId: "workspace_1",
+              dealId: "deal_image",
+              sourceId: "document_image_registry_note",
+              sourceRevisionId: "revision_image_registry_note",
+            },
+          }
+          : {}),
       },
-      interactions: {},
+      interactions: {
+        fixture_image: {
+          workspaceId: "workspace_1",
+          dealId: "deal_image",
+          sourceId: "document_image",
+          sourceRevisionId: "revision_image",
+        },
+      },
     },
   });
+  if (options.includeNonImageFact) {
+    await registry.confirmSourceAssignment({
+      requestId: "confirm_image_registry_note",
+      workspaceId: "workspace_1",
+      dealId: "deal_image",
+      companyId: "company_image",
+      companyName: "Image Acme",
+      status: "passed",
+      sourceRevisionId: "revision_image_registry_note",
+      assignedByUserId: "user_1",
+      reason: "User confirmed the separate registry note source.",
+      confirmedAt: "2026-07-29T10:02:00.000Z",
+    });
+  }
   return { registry, sources, structuredText };
 }
 
@@ -707,41 +907,28 @@ function imageMarketScan() {
       rejectedCount: 0,
       lastSuccessAt: NOW.toISOString(),
     }],
-    events: [{
+    events: [underwritingMarketEvent({
       id: "market_image",
+      sourceId: "market_source_image",
       title: "Image Acme wins enterprise deployment",
+      statement: "Image Acme won a new enterprise deployment.",
+      canonicalUrl: "https://example.com/image-acme-deployment",
       eventType: "customer",
       sectors: ["enterprise software"],
       themes: ["revenue", "adoption"],
-      summary: "Image Acme won a new enterprise deployment.",
       positiveImplications: [
         "The deployment supports continued commercial adoption.",
       ],
-      negativeImplications: [],
-      publishedAt: "2026-07-28T00:00:00.000Z",
-      confidence: "high" as const,
-      sources: [{
-        id: "market_source_image",
-        provenance: "public_web" as const,
-        title: "Image Acme wins enterprise deployment",
-        url: "https://example.com/image-acme-deployment",
-        publishedAt: "2026-07-28T00:00:00.000Z",
-        excerpt: "Image Acme won a new enterprise deployment.",
-      }],
-      canonicalUrl: "https://example.com/image-acme-deployment",
-      contentChecksum: "image-acme-market-v1",
-      retrievedAt: NOW.toISOString(),
-      providerId: "official",
       entityKeys: ["image-acme"],
-    }],
+    })],
   };
 }
 
-function imageReasonedMatch(structuredText: string) {
+function imageReasonedMatch() {
   return {
     dealId: "deal_image",
     whyNow: "Image Acme won a new enterprise deployment.",
-    previousContext: structuredText,
+    previousContext: IMAGE_DECISION_EVIDENCE,
     positiveImplications: [
       "Image Acme won a new enterprise deployment.",
     ],
@@ -749,9 +936,9 @@ function imageReasonedMatch(structuredText: string) {
     nextStep: "Review the structured image evidence and deployment source.",
     citedSourceIds: [
       "market_source_image",
-      "evidence_image_arr",
+      "fixture_image",
     ],
-    demoFixtureIds: [],
+    demoFixtureIds: ["fixture_image"],
     scoreInputs: {
       eventRelevance: 0.9,
       dealRelevance: 0.9,
@@ -762,7 +949,9 @@ function imageReasonedMatch(structuredText: string) {
       "Image Acme won a new enterprise deployment.": [
         "market_source_image",
       ],
-      [structuredText]: ["evidence_image_arr"],
+      [IMAGE_DECISION_EVIDENCE]: [
+        "fixture_image",
+      ],
     },
   };
 }
@@ -942,9 +1131,12 @@ test("changes the batch fingerprint when candidate source metadata changes under
   });
   const firstAnalysis = analysis("deal_a", 0.99);
   const revisedAnalysis = structuredClone(firstAnalysis);
-  revisedAnalysis.sources[0]!.excerpt = "A corrected immutable excerpt.";
-  revisedAnalysis.companyBrief.sourceLineage[0]!.excerpt =
-    "A corrected immutable excerpt.";
+  const revisedSource = revisedAnalysis.sources[0]!;
+  const revisedLineage = revisedAnalysis.companyBrief.sourceLineage[0]!;
+  assert.ok(!("schemaVersion" in revisedSource));
+  assert.ok(!("schemaVersion" in revisedLineage));
+  revisedSource.excerpt = "A corrected immutable excerpt.";
+  revisedLineage.excerpt = "A corrected immutable excerpt.";
 
   const first = await orchestrator.createBatchAndSelections({
     scanRun,
@@ -2703,38 +2895,23 @@ test("processes a confirmed uploaded Deal from the authoritative registry before
             rejectedCount: 0,
             lastSuccessAt: NOW.toISOString(),
           }],
-          events: [{
+          events: [underwritingMarketEvent({
             id: "market_uploaded",
+            sourceId: "market_source_uploaded",
             title:
               "Uploaded Acme raises Series B for clinical workflow automation",
+            statement:
+              "Uploaded Acme raised funding to expand clinical workflow automation for health systems.",
+            canonicalUrl:
+              "https://example.com/uploaded-acme-expansion",
             eventType: "funding",
             sectors: ["healthcare"],
             themes: ["clinical", "workflow", "automation"],
-            summary:
-              "Uploaded Acme raised funding to expand clinical workflow automation for health systems.",
             positiveImplications: [
               "The expansion may satisfy the saved revisit condition.",
             ],
-            negativeImplications: [],
-            publishedAt: "2026-07-28T00:00:00.000Z",
-            confidence: "high" as const,
-            sources: [{
-              id: "market_source_uploaded",
-              provenance: "public_web" as const,
-              title:
-                "Uploaded Acme raises Series B for clinical workflow automation",
-              url: "https://example.com/uploaded-acme-expansion",
-              publishedAt: "2026-07-28T00:00:00.000Z",
-              excerpt:
-                "Uploaded Acme raised funding to expand clinical workflow automation for health systems.",
-            }],
-            canonicalUrl:
-              "https://example.com/uploaded-acme-expansion",
-            contentChecksum: "uploaded-acme-market-v1",
-            retrievedAt: NOW.toISOString(),
-            providerId: "official",
             entityKeys: ["uploaded-acme"],
-          }],
+          })],
         };
       },
     },
@@ -2838,18 +3015,19 @@ test("structured mode matches an image-only Deal into the ranked opportunity rep
       async reason(input) {
         assert.deepEqual(input.deals.map(({ id }) => id), ["deal_image"]);
         assert.equal(input.memoryContexts[0]?.text.includes(structuredText), true);
-        assert.deepEqual(
-          input.sources.find(({ id }) => id === "evidence_image_arr"),
-          {
-            id: "evidence_image_arr",
-            provenance: "model_inference",
-            title: "image-acme.png",
-            documentId: "document_image",
-            sourceRevisionId: "revision_image",
-            excerpt: structuredText,
-          },
+        const imageSource = input.sources.find(
+          ({ id }) => id === "evidence_image_arr",
         );
-        return [imageReasonedMatch(structuredText)];
+        assert.equal(imageSource?.schemaVersion, "source-ref-v2");
+        assert.equal(imageSource?.adaptation, "canonical");
+        assert.equal(imageSource?.text.status, "model_inference");
+        assert.equal(
+          imageSource && "normalizedStatement" in imageSource.text
+            ? imageSource.text.normalizedStatement
+            : null,
+          structuredText,
+        );
+        return [imageReasonedMatch()];
       },
     },
     underwriting: {
@@ -2909,7 +3087,7 @@ test("XTrace mode uses a partial structured fallback only for an image-only Deal
       async reason(input) {
         assert.deepEqual(input.deals.map(({ id }) => id), ["deal_image"]);
         assert.equal(input.memoryContexts[0]?.text.includes(structuredText), true);
-        return [imageReasonedMatch(structuredText)];
+        return [imageReasonedMatch()];
       },
     },
     xtrace: {
@@ -2961,6 +3139,97 @@ test("XTrace mode uses a partial structured fallback only for an image-only Deal
     /structured image evidence.*partial fallback/i.test(warning)
     && /intentionally bypassed/i.test(warning)
     && /not counted as XTrace recall/i.test(warning)
+  ));
+});
+
+test("XTrace mode does not use structured-image fallback when a Deal has a non-image factual source", async () => {
+  const { registry } = await imageOnlyDealRegistry({
+    includeNonImageFact: true,
+  });
+  const runs = createRunsRepository(createMemoryDataClient({ now: () => NOW }));
+  await runs.create({
+    workspaceId: "workspace_1",
+    mode: "xtrace",
+    windowDays: 14,
+  });
+  const claimed = await runs.claimNext("worker_1");
+  assert.ok(claimed);
+  let recallCalls = 0;
+
+  const result = await processClaimedRun(claimed, {
+    runs,
+    intelligence: createMemoryIntelligenceRepository({ now: () => NOW }),
+    dealRegistry: registry,
+    importGate: { async assertReady() {} },
+    market: {
+      async scanMarketWindow() {
+        return imageMarketScan();
+      },
+    },
+    reasoner: {
+      async reason(input) {
+        assert.deepEqual(input.deals.map(({ id }) => id), ["deal_image"]);
+        assert.deepEqual(input.memoryContexts[0]?.sourceIds, [
+          "source_image_registry_note",
+        ]);
+        return [];
+      },
+    },
+    xtrace: {
+      async listOpenIngestJobs() {
+        return [];
+      },
+      async pollIngestJob() {
+        throw new Error("No pending jobs expected.");
+      },
+      async recallDealContext(input) {
+        recallCalls += 1;
+        assert.deepEqual(input.candidateDealIds, ["deal_image"]);
+        return [{
+          dealId: "deal_image",
+          memoryId: "memory_mixed_image",
+          memoryType: "semantic",
+          text: "Image Acme has a source-backed registry note.",
+          score: 0.9,
+          provenance: "source_document" as const,
+          sourceIds: ["source_image_registry_note"],
+          fixtureIds: [],
+        }];
+      },
+    },
+    underwriting: {
+      async createBatchAndSelections() {
+        return {
+          id: "batch_mixed_image_xtrace",
+          workspaceId: "workspace_1",
+          scanRunId: claimed.id,
+          status: "completed",
+          batchInputFingerprint: `sha256:${"3".repeat(64)}`,
+          fundPolicySnapshotId: policy.id,
+          rerunOfId: null,
+          createdAt: NOW.toISOString(),
+        };
+      },
+      async processCandidate() {
+        throw new Error("No candidate processing is expected.");
+      },
+    },
+    now: () => NOW,
+  });
+
+  assert.equal(recallCalls, 1);
+  assert.equal(result.run.status, "completed");
+  assert.equal(result.report.evidenceCoverage.recalledDealCount, 1);
+  assert.equal(
+    result.report.evidenceCoverage.structuredImageFallbackDealCount,
+    0,
+  );
+  assert.deepEqual(
+    result.report.companyAnalyses[0]?.investmentMemory.memoryIds,
+    ["memory_mixed_image"],
+  );
+  assert.ok(result.run.warnings.every((warning) =>
+    !/structured image evidence.*partial fallback/i.test(warning)
   ));
 });
 

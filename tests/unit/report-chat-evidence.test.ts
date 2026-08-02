@@ -3,7 +3,15 @@ import test from "node:test";
 
 import { buildPersistedReportEvidence } from "../../lib/chat/report-evidence";
 import { createGroundedChatService } from "../../lib/chat/service";
-import type { CompanyAnalysis } from "../../lib/contracts/domain";
+import {
+  evidenceSourceText,
+  type CompanyAnalysis,
+} from "../../lib/contracts/domain";
+import { interactionSourceV2 } from "../../lib/matching/context";
+import {
+  marketEventV2,
+  normalizedSourceV2,
+} from "../helpers/source-evidence-v2";
 
 test("raw malicious report input cannot steer Chat recommendation evidence", () => {
   const evidence = buildPersistedReportEvidence({
@@ -38,7 +46,7 @@ test("raw malicious report input cannot steer Chat recommendation evidence", () 
     "Review the cited evidence and decide whether further internal diligence is warranted.",
   );
   assert.equal(
-    evidence[0].sources[0].excerpt,
+    evidenceSourceText(evidence[0].sources[0]),
     "Review the cited evidence and decide whether further internal diligence is warranted.",
   );
   assert.doesNotMatch(
@@ -59,23 +67,28 @@ test("duplicate report opportunities retain a citation identity bound to their e
       ],
     }],
   });
-  const firstRecommendation = evidence[0];
-  const secondRecommendation = evidence[4];
+  const firstRecommendation = evidence.find((item) =>
+    item.text === "Review the cited evidence and decide whether further internal diligence is warranted."
+  );
+  const secondRecommendation = evidence.find((item) =>
+    item !== firstRecommendation
+    && item.text === firstRecommendation?.text
+  );
+  assert.ok(firstRecommendation);
+  assert.ok(secondRecommendation);
   assert.notEqual(
     firstRecommendation.sources[0].id,
     secondRecommendation.sources[0].id,
   );
 
+  let modelCalled = false;
   const chat = createGroundedChatService({
     searchExistingData: async () => evidence,
     recallMemory: async () => ({ status: "available" as const, evidence: [] }),
-    complete: async () => JSON.stringify({
-      claims: [{
-        text: firstRecommendation.text,
-        sourceIds: firstRecommendation.sources.map((source) => source.id),
-      }],
-      insufficientEvidence: false,
-    }),
+    complete: async () => {
+      modelCalled = true;
+      return "{}";
+    },
   });
   const answer = await chat.answer({
     workspaceId: "workspace_demo",
@@ -83,10 +96,9 @@ test("duplicate report opportunities retain a citation identity bound to their e
     xtraceEnabled: false,
   });
 
-  assert.equal(answer.answer, firstRecommendation.text);
-  assert.deepEqual(answer.citations.map((source) => source.excerpt), [
-    firstRecommendation.text,
-  ]);
+  assert.equal(answer.insufficientEvidence, true);
+  assert.deepEqual(answer.citations, []);
+  assert.equal(modelCalled, false);
 });
 
 function opportunity(whyNow: string) {
@@ -133,11 +145,11 @@ function companyAnalysis(
     score: 0,
     verifiedSourceCount: 1,
     investmentMemory: {
-      previousMeetingSummary: "The fund reviewed the logistics proposition.",
-      decisionReason: "The fund passed pending repeatable adoption evidence.",
-      concerns: ["Repeatable adoption was not established."],
-      revisitConditions: ["Revisit when adoption evidence changes."],
-      lastEvaluatedAt: "2026-01-10T12:00:00.000Z",
+      previousMeetingSummary: "No previous meeting summary was recorded.",
+      decisionReason: "No previous decision reason was recorded.",
+      concerns: [],
+      revisitConditions: [],
+      lastEvaluatedAt: null,
       memoryIds: ["memory_7bridges"],
       sourceIds: [source.id],
       fixtureIds: [],
@@ -170,10 +182,9 @@ function companyAnalysis(
   };
 }
 
-test("CompanyAnalysis evidence answers outcome, decision reason, market change, and next move", () => {
+test("CompanyAnalysis evidence projects non-memory report fields", () => {
   const questions = [
     "What is the latest analysis outcome for 7bridges?",
-    "What is the latest decision reason for 7bridges?",
     "Was there material market evidence for 7bridges?",
     "What is the latest recommended next move for 7bridges?",
   ];
@@ -190,6 +201,206 @@ test("CompanyAnalysis evidence answers outcome, decision reason, market change, 
     });
     assert.ok(evidence.length > 0, question);
   }
+});
+
+test("CompanyAnalysis previous context projects the complete canonical Sample decision record", () => {
+  const fixture = interactionSourceV2({
+    id: "fixture_report_7bridges_passed",
+    occurredAt: "2026-01-10T12:00:00.000Z",
+    summary: "The fund reviewed the logistics proposition.",
+    decisionReason: "The fund passed pending repeatable adoption evidence.",
+    concerns: ["Repeatable adoption was not established."],
+    revisitConditions: ["Revisit when adoption evidence changes."],
+    provenance: "demo_fixture",
+    label: "Sample decision record",
+  });
+  const base = companyAnalysis();
+  const analysis = {
+    ...base,
+    investmentMemory: {
+      ...base.investmentMemory,
+      previousMeetingSummary: "The fund reviewed the logistics proposition.",
+      decisionReason: "The fund passed pending repeatable adoption evidence.",
+      concerns: ["Repeatable adoption was not established."],
+      revisitConditions: ["Revisit when adoption evidence changes."],
+      lastEvaluatedAt: "2026-01-10T12:00:00.000Z",
+      sourceIds: [fixture.id],
+      fixtureIds: [fixture.id],
+    },
+    companyBrief: {
+      ...base.companyBrief,
+      sourceLineage: [fixture],
+    },
+    sources: [fixture],
+  };
+
+  const evidence = buildPersistedReportEvidence({
+    question: "What previous context does the latest report have for 7bridges?",
+    companyByDeal: new Map([["deal_7bridges", "7bridges"]]),
+    reports: [{
+      id: "report_company",
+      opportunities: [],
+      companyAnalyses: [analysis],
+    }],
+  });
+
+  assert.deepEqual(evidence, [{
+    text: evidenceSourceText(fixture),
+    sources: [fixture],
+  }]);
+  assert.match(evidence[0].text, /^Sample decision record\./);
+});
+
+test("CompanyAnalysis previous context fails closed without a linked Sample decision record", () => {
+  const base = companyAnalysis();
+  const publicSource = normalizedSourceV2("public_previous_context", {
+    text: {
+      status: "normalized_only",
+      normalizedStatement: base.investmentMemory.decisionReason,
+    },
+  });
+  const analysis = {
+    ...base,
+    investmentMemory: {
+      ...base.investmentMemory,
+      sourceIds: [publicSource.id],
+      fixtureIds: ["missing_sample_decision_record"],
+    },
+    companyBrief: {
+      ...base.companyBrief,
+      sourceLineage: [publicSource],
+    },
+    sources: [publicSource],
+  };
+
+  const evidence = buildPersistedReportEvidence({
+    question: "What previous context does the latest report have for 7bridges?",
+    companyByDeal: new Map([["deal_7bridges", "7bridges"]]),
+    reports: [{
+      id: "report_company",
+      opportunities: [],
+      companyAnalyses: [analysis],
+    }],
+  });
+
+  assert.deepEqual(evidence, []);
+});
+
+test("CompanyAnalysis Chat does not borrow a source from another report field", async () => {
+  const source = normalizedSourceV2("canonical_unrelated_company_source", {
+    provenance: "source_document",
+    title: "7bridges pitch deck",
+    canonicalUrl: null,
+    documentId: "doc_7bridges",
+    publisher: null,
+    providerId: "source-registry",
+    sourceClass: "company_official",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: "revision_7bridges",
+    locator: { kind: "document_page", page: 4 },
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "No material market evidence matched this company during the current 14-day scan.",
+    },
+  });
+  const base = companyAnalysis();
+  const analysis = {
+    ...base,
+    investmentMemory: {
+      ...base.investmentMemory,
+      sourceIds: [source.id],
+    },
+    companyBrief: {
+      ...base.companyBrief,
+      sourceLineage: [source],
+    },
+    sources: [source],
+  };
+  const evidence = buildPersistedReportEvidence({
+    question: "What is the latest recommended next move for 7bridges?",
+    companyByDeal: new Map([["deal_7bridges", "7bridges"]]),
+    reports: [{
+      id: "report_company",
+      opportunities: [],
+      companyAnalyses: [analysis],
+    }],
+  });
+  let modelCalled = false;
+  const chat = createGroundedChatService({
+    searchExistingData: async () => evidence,
+    recallMemory: async () => ({ status: "available", evidence: [] }),
+    complete: async () => {
+      modelCalled = true;
+      return "{}";
+    },
+  });
+
+  const answer = await chat.answer({
+    workspaceId: "workspace_demo",
+    question: "What is the latest recommended next move for 7bridges?",
+    xtraceEnabled: false,
+  });
+
+  assert.equal(answer.insufficientEvidence, true);
+  assert.deepEqual(answer.citations, []);
+  assert.equal(modelCalled, false);
+});
+
+test("report Chat rejects a stale nested market-event fingerprint before the model", async () => {
+  const source = normalizedSourceV2("report_stale_event_source");
+  const event = marketEventV2(source);
+  const base = companyAnalysis();
+  const analysis = {
+    ...base,
+    outcome: "belief_revised" as const,
+    confidence: "high" as const,
+    score: 0.8,
+    verifiedSourceCount: 2,
+    marketEvidence: {
+      relationship: "related" as const,
+      explanation: "A source-backed event changed the current review.",
+      eventIds: [event.id],
+      events: [{
+        ...event,
+        summary: "Tampered after the canonical digest was computed.",
+      }],
+      sourceIds: [source.id],
+    },
+    companyBrief: {
+      ...base.companyBrief,
+      sourceLineage: [...base.companyBrief.sourceLineage, source],
+    },
+    sources: [...base.sources, source],
+  };
+  const evidence = buildPersistedReportEvidence({
+    question: "Was there material market evidence for 7bridges?",
+    companyByDeal: new Map([["deal_7bridges", "7bridges"]]),
+    reports: [{
+      id: "report_stale_event",
+      opportunities: [],
+      companyAnalyses: [analysis],
+    }],
+  });
+  let modelCalled = false;
+  const chat = createGroundedChatService({
+    searchExistingData: async () => evidence,
+    recallMemory: async () => ({ status: "available", evidence: [] }),
+    complete: async () => {
+      modelCalled = true;
+      return "{}";
+    },
+  });
+
+  const answer = await chat.answer({
+    workspaceId: "workspace_demo",
+    question: "Was there material market evidence for 7bridges?",
+    xtraceEnabled: false,
+  });
+  assert.deepEqual(evidence, []);
+  assert.equal(answer.insufficientEvidence, true);
+  assert.equal(modelCalled, false);
 });
 
 test("does not expose an unavailable analysis as a company fact", () => {

@@ -4,7 +4,11 @@ import {
   getXTraceLineageRepository,
   type XTraceLineageRepository,
 } from "../../db/repositories/xtrace-lineage";
-import type { DealMemoryBundle, Provenance } from "../contracts/domain";
+import {
+  evidenceSourceText,
+  type DealMemoryBundle,
+  type Provenance,
+} from "../contracts/domain";
 import {
   XTraceHttpError,
   isAcceptedXTraceSearchResponse,
@@ -380,7 +384,7 @@ function serializeBundle(
   },
 ): string {
   const facts = bundle.facts.flatMap((fact) => fact.sources.map((source) =>
-    `[${source.provenance}] source_id=${source.id}; title=${source.title}; excerpt=${source.excerpt}; fact=${fact.text}`,
+    `[${source.provenance}] source_id=${source.id}; title=${source.title}; evidence=${evidenceSourceText(source)}; fact=${fact.text}`,
   ));
   const interactions = bundle.interactions.map((interaction) =>
     `[demo_fixture] fixture_id=${interaction.id}; label=${interaction.label}; occurred_at=${interaction.occurredAt}; summary=${interaction.summary}; decision_reason=${interaction.decisionReason}; concerns=${interaction.concerns.join(" | ")}; revisit_conditions=${interaction.revisitConditions.join(" | ")}`,
