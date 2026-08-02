@@ -30,6 +30,7 @@ import {
 } from "../../db/repositories/underwriting-runs";
 import {
   BeliefChangeAssessmentV1Schema,
+  CompanyAnalysisSchema,
   type CompanyAnalysis,
   type DealInteraction,
 } from "../../lib/contracts/domain";
@@ -249,7 +250,6 @@ function analysis(
     "outcome" | "confidence"
   >> = {},
 ): CompanyAnalysis {
-  const sourceId = `source_${dealId}`;
   const priorInteraction = {
     id: `fixture_${dealId}`,
     occurredAt: "2026-01-01T00:00:00.000Z",
@@ -343,7 +343,13 @@ function analysis(
     gates,
     actions,
   });
-  return {
+  const event = marketEventV2(triggerSource, {
+    id: gateContext.triggerEvent.id,
+    eventAt: gateContext.triggerEvent.eventAt,
+    eventAtPrecision: "date",
+    sources: [triggerSource, counterSource],
+  });
+  return CompanyAnalysisSchema.parse({
     id: `analysis_${dealId}`,
     reportId: "report_1",
     runId: scanRun.id,
@@ -353,7 +359,7 @@ function analysis(
     outcome: input.outcome ?? "belief_revised",
     confidence: input.confidence ?? scoreBreakdown.confidence,
     score,
-    verifiedSourceCount: 1,
+    verifiedSourceCount: 3,
     investmentMemory: {
       previousMeetingSummary: "Prior meeting",
       decisionReason: "The market was too early.",
@@ -361,22 +367,16 @@ function analysis(
       revisitConditions: ["Revisit after a market change."],
       lastEvaluatedAt: "2026-01-01T00:00:00.000Z",
       memoryIds: [],
-      sourceIds: [sourceId],
-      fixtureIds: [],
+      sourceIds: [priorSource.id],
+      fixtureIds: [priorSource.id],
       priorActions: priorInteraction.priorActions,
     },
     marketEvidence: {
       relationship: "satisfies",
       explanation: "The saved market evidence changes the prior timing belief.",
-      eventIds: ["event_1"],
-      events: [{
-        id: "event_1",
-        title: "Market event",
-        eventType: "funding",
-        publishedAt: "2026-07-28T00:00:00.000Z",
-        sourceIds: [sourceId],
-      }],
-      sourceIds: [sourceId],
+      eventIds: [event.id],
+      events: [event],
+      sourceIds: event.sources.map((source) => source.id),
     },
     implications: {
       positive: ["The market may now support adoption."],
@@ -393,25 +393,13 @@ function analysis(
         occurredAt: "2026-01-01T00:00:00.000Z",
         title: "Passed",
         summary: "The market was too early.",
-        sourceIds: [sourceId],
+        sourceIds: [priorSource.id],
       }],
-      sourceLineage: [{
-        id: sourceId,
-        provenance: "source_document",
-        title: `Source ${dealId}`,
-        documentId: `document_${dealId}`,
-        excerpt: "Saved source evidence.",
-      }],
+      sourceLineage: [triggerSource, counterSource, priorSource],
     },
-    sources: [{
-      id: sourceId,
-      provenance: "source_document",
-      title: `Source ${dealId}`,
-      documentId: `document_${dealId}`,
-      excerpt: "Saved source evidence.",
-    }],
+    sources: [triggerSource, counterSource, priorSource],
     createdAt: NOW.toISOString(),
-  };
+  });
 }
 
 function deal(id: string): RegisteredDeal {
@@ -1268,6 +1256,36 @@ test("outer, assessment, and registry status mismatches cannot enter underwritin
   assert.deepEqual(runs.inspect().candidates, []);
 });
 
+test("complete CompanyAnalysis lineage is required before ranking or underwriting", async () => {
+  const invalid = analysis("deal_invalid_outer_lineage", 0.8);
+  invalid.marketEvidence = {
+    ...invalid.marketEvidence,
+    eventIds: ["event_unrelated"],
+    events: invalid.marketEvidence.events.map((event) => ({
+      ...event,
+      id: "event_unrelated",
+    })),
+  };
+
+  assert.deepEqual(rankBeliefRevisionCandidates([invalid]), []);
+
+  const runs = createMemoryUnderwritingRunsRepository({ now: () => NOW });
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    autoProcessCandidates: false,
+  });
+  await orchestrator.createBatchAndSelections({
+    scanRun,
+    report: report([invalid]),
+    analyses: [invalid],
+    eligibleDeals: [deal(invalid.dealId)],
+    forceRefresh: false,
+  });
+
+  assert.deepEqual(runs.inspect().candidates, []);
+});
+
 test("reuses the same immutable batch input without creating duplicate candidates", async () => {
   let sequence = 0;
   const runs = createMemoryUnderwritingRunsRepository({
@@ -1377,12 +1395,32 @@ test("changes the batch fingerprint when candidate source metadata changes under
   });
   const firstAnalysis = analysis("deal_a", 0.99);
   const revisedAnalysis = structuredClone(firstAnalysis);
-  const revisedSource = revisedAnalysis.sources[0]!;
-  const revisedLineage = revisedAnalysis.companyBrief.sourceLineage[0]!;
-  assert.ok(!("schemaVersion" in revisedSource));
-  assert.ok(!("schemaVersion" in revisedLineage));
-  revisedSource.excerpt = "A corrected immutable excerpt.";
-  revisedLineage.excerpt = "A corrected immutable excerpt.";
+  const originalSource = revisedAnalysis.sources[0]!;
+  assert.ok("schemaVersion" in originalSource);
+  const revisedSource = {
+    ...originalSource,
+    publisher: "Corrected immutable publisher metadata",
+  };
+  revisedAnalysis.sources = revisedAnalysis.sources.map((source) =>
+    source.id === revisedSource.id ? revisedSource : source
+  );
+  revisedAnalysis.companyBrief.sourceLineage =
+    revisedAnalysis.companyBrief.sourceLineage.map((source) =>
+      source.id === revisedSource.id ? revisedSource : source
+    );
+  revisedAnalysis.beliefAssessment!.gateContext.sources =
+    revisedAnalysis.beliefAssessment!.gateContext.sources.map((source) =>
+      source.id === revisedSource.id ? revisedSource : source
+    );
+  const originalEvent = revisedAnalysis.marketEvidence.events[0]!;
+  assert.ok("schemaVersion" in originalEvent);
+  revisedAnalysis.marketEvidence.events = [marketEventV2(revisedSource, {
+    ...originalEvent,
+    sources: originalEvent.sources.map((source) =>
+      source.id === revisedSource.id ? revisedSource : source
+    ),
+  })];
+  const changedAnalysis = CompanyAnalysisSchema.parse(revisedAnalysis);
 
   const first = await orchestrator.createBatchAndSelections({
     scanRun,
@@ -1393,8 +1431,8 @@ test("changes the batch fingerprint when candidate source metadata changes under
   });
   const changed = await orchestrator.createBatchAndSelections({
     scanRun,
-    report: report([revisedAnalysis]),
-    analyses: [revisedAnalysis],
+    report: report([changedAnalysis]),
+    analyses: [changedAnalysis],
     eligibleDeals: [deal("deal_a")],
     forceRefresh: false,
   });

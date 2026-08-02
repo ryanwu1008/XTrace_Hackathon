@@ -5,9 +5,20 @@ import {
   buildFullDraftText,
   buildInternalReportDraft,
 } from "../../lib/reports/draft";
-import type { CompanyAnalysis } from "../../lib/contracts/domain";
+import {
+  BeliefChangeAssessmentV1Schema,
+  CompanyAnalysisSchema,
+} from "../../lib/contracts/domain";
+import { interactionSourceV2 } from "../../lib/matching/context";
+import { evaluateBeliefRevisionHardGates } from "../../lib/matching/hard-gates";
+import { buildOpportunityScoreBreakdown } from "../../lib/matching/scoring";
+import {
+  actionsForDealStatusAndDirection,
+  renderRecommendedNextMove,
+} from "../../lib/reports/action-policy";
 import {
   exactSourceV2,
+  marketEventV2,
   normalizedSourceV2,
 } from "../helpers/source-evidence-v2";
 
@@ -49,7 +60,108 @@ const report = {
   }],
 };
 
-const companyAnalysis: CompanyAnalysis = {
+const priorInteraction = {
+  id: "fixture_ably",
+  occurredAt: "2026-01-10T12:00:00.000Z",
+  summary: "The fund reviewed Ably in an earlier meeting.",
+  decisionReason: "The fund passed because timing was early.",
+  concerns: ["Differentiation remained an open question."],
+  revisitConditions: ["Revisit when source-backed market demand increases."],
+  priorActions: actionsForDealStatusAndDirection("passed", "none"),
+  provenance: "demo_fixture" as const,
+  label: "Sample decision record" as const,
+};
+const priorSource = interactionSourceV2(priorInteraction);
+const triggerSource = exactSourceV2("public_ably_trigger", {
+  title: "Funding announcement",
+  canonicalUrl: "https://news.example/funding",
+  eventAt: "2026-07-23",
+  eventAtPrecision: "date",
+  publishedAt: "2026-07-23",
+  publishedAtPrecision: "date",
+  retrievedAt: "2026-07-24T17:00:00.000Z",
+  retrievedAtPrecision: "timestamp",
+  evidenceRole: "trigger",
+  text: {
+    status: "verified_exact",
+    verbatimExcerpt: "Infrastructure demand increased.",
+  },
+});
+const counterSource = exactSourceV2("public_ably_counter", {
+  title: "Funding announcement counterevidence",
+  canonicalUrl: "https://news.example/funding-counterevidence",
+  eventAt: "2026-07-23",
+  eventAtPrecision: "date",
+  publishedAt: "2026-07-23",
+  publishedAtPrecision: "date",
+  retrievedAt: "2026-07-24T17:00:00.000Z",
+  retrievedAtPrecision: "timestamp",
+  evidenceRole: "counterevidence",
+  text: {
+    status: "verified_exact",
+    verbatimExcerpt:
+      "The announcement does not establish durable customer retention.",
+  },
+});
+const marketEvent = marketEventV2(triggerSource, {
+  id: "event_ably",
+  eventAt: "2026-07-23",
+  eventAtPrecision: "date",
+  sources: [triggerSource, counterSource],
+});
+const scoreBreakdown = buildOpportunityScoreBreakdown({
+  eventRelevance: 0.87,
+  dealRelevance: 0.87,
+  priorContextStrength: 0.87,
+  evidenceQuality: 0.87,
+});
+const actions = actionsForDealStatusAndDirection("passed", "positive");
+const gateContext = {
+  priorInteraction: {
+    id: priorInteraction.id,
+    occurredAt: priorInteraction.occurredAt,
+    sourceIds: [priorInteraction.id],
+    revisitConditions: priorInteraction.revisitConditions,
+    priorActions: priorInteraction.priorActions,
+    provenance: priorInteraction.provenance,
+    label: priorInteraction.label,
+  },
+  triggerEvent: {
+    id: marketEvent.id,
+    eventAt: marketEvent.eventAt!,
+    sourceIds: marketEvent.sources.map((source) => source.id),
+  },
+  sources: [triggerSource, counterSource, priorSource],
+};
+const gates = evaluateBeliefRevisionHardGates({
+  priorInteraction: gateContext.priorInteraction,
+  triggerEvent: gateContext.triggerEvent,
+  revisitMapping: {
+    priorInteractionId: priorInteraction.id,
+    revisitConditionIndex: 0,
+    revisitConditionText: priorInteraction.revisitConditions[0],
+    triggerEventId: marketEvent.id,
+    citedSourceIds: [triggerSource.id],
+  },
+  counterevidence: {
+    statement: "The announcement does not establish durable customer retention.",
+    citedSourceIds: [counterSource.id],
+  },
+  sources: gateContext.sources,
+  dealStatus: "passed",
+  direction: "positive",
+  proposedActions: actions,
+});
+const beliefAssessment = BeliefChangeAssessmentV1Schema.parse({
+  schemaVersion: "belief-change-assessment-v1",
+  dealStatus: "passed",
+  direction: "positive",
+  scoreBreakdown,
+  gateContext,
+  gates,
+  actions,
+});
+const companyAnalysis = CompanyAnalysisSchema.parse({
   id: "analysis_ably",
   reportId: report.id,
   runId: "00000000-0000-4000-8000-000000000001",
@@ -58,8 +170,8 @@ const companyAnalysis: CompanyAnalysis = {
   dealStatus: "passed",
   outcome: "belief_revised",
   confidence: "high",
-  score: 0.87,
-  verifiedSourceCount: 2,
+  score: scoreBreakdown.finalScore,
+  verifiedSourceCount: 3,
   investmentMemory: {
     previousMeetingSummary: "The fund reviewed Ably in an earlier meeting.",
     decisionReason: "The fund passed because timing was early.",
@@ -67,28 +179,23 @@ const companyAnalysis: CompanyAnalysis = {
     revisitConditions: ["Revisit when source-backed market demand increases."],
     lastEvaluatedAt: "2026-01-10T12:00:00.000Z",
     memoryIds: ["memory_ably"],
-    sourceIds: ["document_1"],
-    fixtureIds: ["fixture_1"],
+    sourceIds: [priorSource.id],
+    fixtureIds: [priorSource.id],
+    priorActions: priorInteraction.priorActions,
   },
   marketEvidence: {
     relationship: "satisfies",
     explanation: "Infrastructure demand increased.",
-    eventIds: ["event_1"],
-    events: [{
-      id: "event_1",
-      title: "Funding announcement",
-      eventType: "funding",
-      publishedAt: "2026-07-23T12:00:00.000Z",
-      sourceIds: ["public_1"],
-    }],
-    sourceIds: ["public_1"],
+    eventIds: [marketEvent.id],
+    events: [marketEvent],
+    sourceIds: marketEvent.sources.map((source) => source.id),
   },
   implications: {
     positive: ["The addressable market may expand."],
     negative: ["Competition may increase."],
   },
-  recommendedNextMove:
-    "Review the cited evidence and decide whether to reopen internal diligence.",
+  beliefAssessment,
+  recommendedNextMove: renderRecommendedNextMove(actions),
   companyBrief: {
     icSnapshot: [],
     traction: [],
@@ -98,19 +205,19 @@ const companyAnalysis: CompanyAnalysis = {
       title: "Differentiation",
       detail: "Differentiation remained an open question.",
       nextQuestion: "What evidence now establishes differentiation?",
-      sourceIds: ["document_1"],
+      sourceIds: [priorSource.id],
     }],
     decisionHistory: [{
       occurredAt: "2026-01-10T12:00:00.000Z",
       title: "Passed",
       summary: "The fund passed because timing was early.",
-      sourceIds: ["document_1"],
+      sourceIds: [priorSource.id],
     }],
-    sourceLineage: report.opportunities[0].sources,
+    sourceLineage: [triggerSource, counterSource, priorSource],
   },
-  sources: report.opportunities[0].sources,
+  sources: [triggerSource, counterSource, priorSource],
   createdAt: report.createdAt,
-};
+});
 
 test("builds a cited internal VC report draft without a recipient", () => {
   const draft = buildInternalReportDraft({
@@ -233,6 +340,29 @@ test("keeps a zero-match market report truthful", () => {
   });
 
   assert.match(draft.bodyText, /No medium- or high-confidence Deal overlap was found/);
+});
+
+test("current analyses suppress stale legacy opportunity fallback when none is v1 eligible", () => {
+  const draft = buildInternalReportDraft({
+    report: {
+      ...report,
+      companyAnalyses: [{
+        ...companyAnalysis,
+        outcome: "monitor",
+        confidence: "low",
+        score: 0.4,
+      }],
+    },
+    companyNames: { deal_ably: "Ably" },
+    appOrigin: "https://vsee.example",
+  });
+
+  assert.match(
+    draft.bodyText,
+    /No medium- or high-confidence Deal overlap was found/,
+  );
+  assert.doesNotMatch(draft.bodyText, /#1 · ABLY/);
+  assert.doesNotMatch(draft.bodyText, /Why now:/);
 });
 
 test("copies the full draft as subject followed by body", () => {

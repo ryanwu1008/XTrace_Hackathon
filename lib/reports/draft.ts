@@ -32,7 +32,10 @@ export function buildInternalReportDraft(
   const recommendedAnalyses = rankBeliefRevisionCandidates(
     input.report.companyAnalyses ?? [],
   );
-  const opportunities = input.report.opportunities.slice(0, 5);
+  const hasCompanyAnalyses = input.report.companyAnalyses !== undefined;
+  const opportunities = hasCompanyAnalyses
+    ? []
+    : input.report.opportunities.slice(0, 5);
   const bodySections = recommendedAnalyses.length > 0
     ? recommendedAnalyses.map((analysis, index) =>
         formatCompanyAnalysis(analysis, index, origin)

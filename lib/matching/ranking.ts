@@ -1,11 +1,17 @@
 import {
   BELIEF_CHANGE_ASSESSMENT_SCHEMA_VERSION,
   BeliefChangeAssessmentV1Schema,
+  CompanyAnalysisSchema,
   type BeliefChangeAssessmentV1,
   type CompanyAnalysisConfidence,
   type CompanyAnalysisOutcome,
   type DealStatus,
 } from "../contracts/domain";
+import {
+  canonicalEvidenceJson,
+  MarketEventV2Schema,
+  SourceRefV2Schema,
+} from "../contracts/source-evidence";
 import { compareUtf8 } from "../format/canonical-order";
 
 export interface BeliefRevisionRankingCandidate {
@@ -17,6 +23,12 @@ export interface BeliefRevisionRankingCandidate {
   beliefAssessment?: BeliefChangeAssessmentV1;
 }
 
+type GroundedRankingCandidate = BeliefRevisionRankingCandidate & {
+  events: unknown;
+  sources: unknown;
+  demoFixtureIds: unknown;
+};
+
 export function isEligibleBeliefRevision(
   candidate: BeliefRevisionRankingCandidate,
   historicalStatus?: DealStatus,
@@ -26,6 +38,7 @@ export function isEligibleBeliefRevision(
   );
   if (!assessment.success) return false;
   const value = assessment.data;
+  if (!hasCompleteRankingLineage(candidate, value)) return false;
   const materialDirection = value.direction === "positive"
     || value.direction === "mixed"
     || value.direction === "negative";
@@ -38,6 +51,65 @@ export function isEligibleBeliefRevision(
     && candidate.confidence === value.scoreBreakdown.confidence
     && candidate.dealStatus === value.dealStatus
     && (historicalStatus === undefined || historicalStatus === value.dealStatus);
+}
+
+function hasCompleteRankingLineage(
+  candidate: BeliefRevisionRankingCandidate,
+  assessment: BeliefChangeAssessmentV1,
+): boolean {
+  if (!isGroundedRankingCandidate(candidate)) {
+    return CompanyAnalysisSchema.safeParse(candidate).success;
+  }
+  const sources = SourceRefV2Schema.array().safeParse(candidate.sources);
+  const events = MarketEventV2Schema.array().safeParse(candidate.events);
+  const fixtureIds = Array.isArray(candidate.demoFixtureIds)
+    && candidate.demoFixtureIds.every((id) => typeof id === "string")
+    ? candidate.demoFixtureIds
+    : null;
+  if (!sources.success || !events.success || fixtureIds === null) return false;
+
+  const sourceById = new Map(sources.data.map((source) => [source.id, source]));
+  if (sourceById.size !== sources.data.length) return false;
+  const contextSourcesResolve = assessment.gateContext.sources.every(
+    (source) => {
+      const outer = sourceById.get(source.id);
+      return outer !== undefined
+        && canonicalEvidenceJson(outer) === canonicalEvidenceJson(source);
+    },
+  );
+  const trigger = assessment.gateContext.triggerEvent;
+  const outerEvent = events.data.find((event) => event.id === trigger.id);
+  const triggerIds = outerEvent?.sources.map((source) => source.id) ?? [];
+  const eventSourcesResolve = outerEvent?.sources.every((source) => {
+    const outer = sourceById.get(source.id);
+    return outer !== undefined
+      && canonicalEvidenceJson(outer) === canonicalEvidenceJson(source);
+  }) ?? false;
+  const prior = assessment.gateContext.priorInteraction;
+  return contextSourcesResolve
+    && outerEvent?.adaptation === "canonical"
+    && outerEvent.eventAt === trigger.eventAt
+    && sameStringSet(trigger.sourceIds, triggerIds)
+    && eventSourcesResolve
+    && fixtureIds.length === 1
+    && fixtureIds[0] === prior.id
+    && prior.sourceIds.length === 1
+    && prior.sourceIds[0] === prior.id
+    && sourceById.has(prior.id);
+}
+
+function isGroundedRankingCandidate(
+  candidate: BeliefRevisionRankingCandidate,
+): candidate is GroundedRankingCandidate {
+  return "events" in candidate
+    && "sources" in candidate
+    && "demoFixtureIds" in candidate;
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length
+    && new Set(left).size === left.length
+    && left.every((id) => right.includes(id));
 }
 
 export function rankBeliefRevisionCandidates<

@@ -306,18 +306,16 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       }
       const match = rows[0]!;
       const context = contexts[0]!;
-      const dealLineageIds = new Set([
-        ...context.sourceIds,
-        ...context.fixtureIds,
-      ]);
-      const validSourceIds = new Set(
-        match.citedSourceIds.filter((sourceId) => sourceById.has(sourceId)),
-      );
+      if (!hasCurrentSelection(match)) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because matching omitted required selected authority.",
+        )];
+      }
       const referencedIds = unique([
-        ...match.citedSourceIds,
         ...Object.values(match.claimSourceIds).flat(),
-        ...(match.revisitCitedSourceIds ?? []),
-        ...(match.counterevidence?.citedSourceIds ?? []),
+        ...match.revisitCitedSourceIds,
+        ...match.counterevidence.citedSourceIds,
       ]);
       if (referencedIds.some((sourceId) => !sourceById.has(sourceId))) {
         return [unavailableMatch(
@@ -326,26 +324,21 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         )];
       }
 
-      const selectedEvent = match.selectedTriggerEventId
-        ? events.find((event) => event.id === match.selectedTriggerEventId)
-        : events.find((event) =>
-          event.sources.some((source) => validSourceIds.has(source.id))
-        );
-      if (match.selectedTriggerEventId && !selectedEvent) {
+      const selectedEvent = events.find(
+        (event) => event.id === match.selectedTriggerEventId,
+      );
+      if (!selectedEvent) {
         return [unavailableMatch(
           deal,
           "Analysis unavailable because the selected trigger event did not resolve to the supplied event set.",
         )];
       }
-      if (!selectedEvent) return [];
       const eventSourceIds = new Set(
         selectedEvent.sources.map((source) => source.id),
       );
-      const selectedPrior = match.selectedPriorInteractionId
-        ? (context.interactionCandidates ?? []).find(
-          (candidate) => candidate.id === match.selectedPriorInteractionId,
-        )
-        : undefined;
+      const selectedPrior = (context.interactionCandidates ?? []).find(
+        (candidate) => candidate.id === match.selectedPriorInteractionId,
+      );
       if (
         selectedPrior
         && (
@@ -361,14 +354,16 @@ export function createMatchingService(reasoner: MatchingReasoner) {
           "Analysis unavailable because event and prior-memory source membership crossed.",
         )];
       }
-      const dealSourceIds = selectedPrior
-        ? selectedPrior.sourceIds.filter((sourceId) => validSourceIds.has(sourceId))
-        : [...validSourceIds].filter((sourceId) => dealLineageIds.has(sourceId));
-      const publicSourceIds = [...validSourceIds].filter((sourceId) =>
-        eventSourceIds.has(sourceId)
-        && sourceById.get(sourceId)?.provenance === "public_web"
+      const dealSourceIds = selectedPrior?.sourceIds ?? [];
+      const publicSourceIds = [...eventSourceIds].filter((sourceId) =>
+        sourceById.get(sourceId)?.provenance === "public_web"
       );
-      if (!publicSourceIds.length || !dealSourceIds.length) return [];
+      if (!publicSourceIds.length || !dealSourceIds.length) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because selected event or prior authority had no canonical grounding sources.",
+        )];
+      }
       const deterministicRelevance = overlapStrength(
         publicSourceIds,
         dealSourceIds,
@@ -376,7 +371,12 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         deal,
         [selectedEvent],
       );
-      if (deterministicRelevance === 0) return [];
+      if (deterministicRelevance === 0) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because the selected event and prior authority were not grounded to this Deal.",
+        )];
+      }
 
       const whyNow = groundedText(
         match.whyNow,
@@ -392,7 +392,12 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         sourceById,
         "prior_context",
       );
-      if (!whyNow.text || !previousContext.text) return [];
+      if (!whyNow.text || !previousContext.text) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because required why-now or prior-context claims were not grounded.",
+        )];
+      }
 
       const groundedImplications = [
         ...match.positiveImplications,
@@ -410,6 +415,31 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       const negativeImplications = match.negativeImplications.filter((claim) =>
         groundedImplications.some((groundedClaim) => groundedClaim.text === claim)
       );
+      if (
+        positiveImplications.length === 0 && negativeImplications.length === 0
+      ) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because required implication grounding was absent.",
+        )];
+      }
+      const selectedAuthorityIds = new Set([
+        ...eventSourceIds,
+        ...dealSourceIds,
+      ]);
+      if (
+        match.revisitCitedSourceIds.some((sourceId) =>
+          !eventSourceIds.has(sourceId)
+        )
+        || match.counterevidence.citedSourceIds.some((sourceId) =>
+          !selectedAuthorityIds.has(sourceId)
+        )
+      ) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because required citations crossed selected Deal/event authority.",
+        )];
+      }
       const usedSourceIds = new Set([
         ...whyNow.sourceIds,
         ...previousContext.sourceIds,
@@ -448,37 +478,6 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         ...previousContext.supports,
         ...groundedImplications.flatMap((claim) => claim.supports),
       ]);
-      if (!hasCurrentSelection(match)) {
-        const legacyFixtureIds = dealSourceIds.filter((sourceId) => {
-          const source = sourceById.get(sourceId);
-          return source?.adaptation === "canonical"
-            && source.provenance === "demo_fixture";
-        });
-        return [{
-          dealId: match.dealId,
-          dealStatus: deal.status,
-          outcome: "analysis_unavailable" as const,
-          confidence: scoreBreakdown.confidence,
-          score: scoreBreakdown.finalScore,
-          whyNow: whyNow.text,
-          previousContext: previousContext.text,
-          implications: {
-            positive: positiveImplications,
-            negative: negativeImplications,
-          },
-          nextStep: renderRecommendedNextMove(
-            actionsForDealStatusAndDirection(deal.status, "unavailable"),
-          ),
-          relationship,
-          events: [],
-          demoFixtureIds: legacyFixtureIds,
-          sources: [...usedSourceIds].flatMap((sourceId) => {
-            const source = sourceById.get(sourceId);
-            return source ? [source] : [];
-          }),
-          claimSupport,
-        }];
-      }
       if (
         selectedEvent.adaptation !== "canonical"
         || selectedEvent.eventAt === null

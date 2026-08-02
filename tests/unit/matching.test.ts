@@ -601,31 +601,7 @@ test("uses one safe application-owned next-step template for every Deal status",
 });
 
 test("normalized support stays non-quote while legacy and model text cannot support output facts", async () => {
-  const publicSource = normalizedSourceV2("market_normalized", {
-    text: {
-      status: "normalized_only",
-      normalizedStatement: "Acme announced a Series B funding round.",
-    },
-  });
-  const priorSource = exactSourceV2("prior_exact", {
-    provenance: "source_document",
-    title: "Investment record",
-    canonicalUrl: null,
-    documentId: "document_prior_1",
-    publisher: "Internal Deal Registry",
-    providerId: "deal-registry",
-    eventAt: null,
-    publishedAt: "2026-01-10T12:00:00.000Z",
-    retrievedAt: "2026-01-10T13:00:00.000Z",
-    entityKeys: ["acme"],
-    sourceClass: "internal_decision_record",
-    sourceAuthority: "primary",
-    evidenceRole: "context",
-    text: {
-      status: "verified_exact",
-      verbatimExcerpt: "The fund passed because market timing was early.",
-    },
-  });
+  const fixture = strictBeliefRevisionFixture({ prefix: "support" });
   const legacySource = adaptLegacySourceRef({
     id: "legacy_unverified",
     provenance: "public_web",
@@ -661,75 +637,43 @@ test("normalized support stays non-quote while legacy and model text cannot supp
       },
     },
   });
-  const service = createMatchingService({
-    reason: async () => [{
-      dealId: "deal_1",
-      whyNow: "Acme announced a Series B funding round.",
-      previousContext: "The fund passed because market timing was early.",
-      positiveImplications: [
-        "Acme announced a Series B funding round.",
-        "Legacy customer adoption increased.",
-        "The financing guarantees product-market fit.",
-      ],
-      negativeImplications: [],
-      nextStep: "Review the evidence.",
-      citedSourceIds: [
-        publicSource.id,
-        priorSource.id,
-        legacySource.id,
-        modelSource.id,
-      ],
-      demoFixtureIds: [],
-      scoreInputs: {
-        eventRelevance: 0.9,
-        dealRelevance: 0.9,
-        priorContextStrength: 0.9,
-        evidenceQuality: 0.9,
-      },
-      claimSourceIds: {
-        "Acme announced a Series B funding round.": [publicSource.id],
-        "The fund passed because market timing was early.": [priorSource.id],
-        "Legacy customer adoption increased.": [legacySource.id],
-        "The financing guarantees product-market fit.": [modelSource.id],
-      },
-    }],
-  });
+  fixture.observation.positiveImplications.push(
+    "Legacy customer adoption increased.",
+    "The financing guarantees product-market fit.",
+  );
+  fixture.observation.claimSourceIds = {
+    ...fixture.observation.claimSourceIds,
+    "Legacy customer adoption increased.": [legacySource.id],
+    "The financing guarantees product-market fit.": [modelSource.id],
+  };
+  fixture.input.sources.push(legacySource, modelSource);
 
-  const matches = await service.analyze({
-    deals: [{ id: "deal_1", companyName: "Acme", status: "passed" }],
-    events: [marketEventV2(publicSource)],
-    memoryContexts: [{
-      dealId: "deal_1",
-      text: "Prior context",
-      sourceIds: [priorSource.id],
-      fixtureIds: [],
-    }],
-    sources: [publicSource, priorSource, legacySource, modelSource],
-  });
+  const matches = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
 
   assert.equal(matches.length, 1);
   assert.deepEqual(matches[0].implications.positive, [
-    "Acme announced a Series B funding round.",
+    fixture.observation.whyNow,
   ]);
   assert.deepEqual(matches[0].claimSupport, [{
-    text: "Acme announced a Series B funding round.",
+    text: fixture.observation.whyNow,
     kind: "normalized_non_quote",
-    sourceIds: [publicSource.id],
+    sourceIds: [fixture.trigger.id],
   }, {
-    text: "The fund passed because market timing was early.",
-    kind: "exact_quote",
-    sourceIds: [priorSource.id],
+    text: fixture.observation.previousContext,
+    kind: "normalized_non_quote",
+    sourceIds: [fixture.prior.id],
   }]);
-  assert.equal(matches[0].sources[0].text.status, "normalized_only");
+  assert.equal(
+    matches[0].sources.find((source) => source.id === fixture.trigger.id)?.text
+      .status,
+    "normalized_only",
+  );
 });
 
 test("a Deal-background public_web source cannot satisfy event-side grounding", async () => {
-  const acceptedEventSource = normalizedSourceV2("accepted_event_source", {
-    text: {
-      status: "normalized_only",
-      normalizedStatement: "A regulator published an unrelated filing notice.",
-    },
-  });
+  const fixture = strictBeliefRevisionFixture({ prefix: "background" });
   const backgroundWebSource = normalizedSourceV2("deal_background_web", {
     canonicalUrl: "https://example.com/acme-background",
     text: {
@@ -737,55 +681,30 @@ test("a Deal-background public_web source cannot satisfy event-side grounding", 
       normalizedStatement: "Acme enterprise adoption milestone changed.",
     },
   });
-  const priorSource = priorExactSource(
-    "deal_prior_source",
-    "Acme decision record",
-    "doc_acme_prior",
-    "Acme enterprise adoption was a recorded revisit condition.",
-  );
-  const service = createMatchingService({
-    reason: async () => [{
-      dealId: "deal_acme",
-      whyNow: "Acme enterprise adoption milestone changed.",
-      previousContext:
-        "Acme enterprise adoption was a recorded revisit condition.",
-      positiveImplications: [],
-      negativeImplications: [],
-      nextStep: "Review the evidence.",
-      citedSourceIds: [backgroundWebSource.id, priorSource.id],
-      demoFixtureIds: [],
-      scoreInputs: {
-        eventRelevance: 1,
-        dealRelevance: 1,
-        priorContextStrength: 1,
-        evidenceQuality: 1,
-      },
-      claimSourceIds: {
-        "Acme enterprise adoption milestone changed.": [backgroundWebSource.id],
-        "Acme enterprise adoption was a recorded revisit condition.": [
-          priorSource.id,
-        ],
-      },
-    }],
-  });
+  fixture.observation.whyNow =
+    "Acme enterprise adoption milestone changed.";
+  fixture.observation.positiveImplications = [fixture.observation.whyNow];
+  fixture.observation.claimSourceIds[fixture.observation.whyNow] = [
+    backgroundWebSource.id,
+  ];
+  fixture.input.sources.push(backgroundWebSource);
 
-  const matches = await service.analyze({
-    deals: [{ id: "deal_acme", companyName: "Acme", status: "passed" }],
-    events: [marketEventV2(acceptedEventSource)],
-    memoryContexts: [{
-      dealId: "deal_acme",
-      text: "Acme prior context",
-      sourceIds: [priorSource.id],
-      fixtureIds: [],
-    }],
-    sources: [acceptedEventSource, backgroundWebSource, priorSource],
-  });
+  const [match] = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
 
-  assert.deepEqual(matches, []);
+  assert.equal(match?.outcome, "analysis_unavailable");
+  assert.deepEqual(match?.events, []);
 });
 
-function strictBeliefRevisionFixture() {
-  const trigger = normalizedSourceV2("strict_trigger", {
+function strictBeliefRevisionFixture(options: {
+  prefix?: string;
+  dealId?: string;
+} = {}) {
+  const prefix = options.prefix ?? "strict";
+  const dealId = options.dealId ?? "deal_acme_strict";
+  const trigger = normalizedSourceV2(`${prefix}_trigger`, {
+    canonicalUrl: `https://example.com/${prefix}-trigger`,
     eventAt: "2026-07-23",
     eventAtPrecision: "date",
     publishedAt: "2026-07-23",
@@ -798,8 +717,8 @@ function strictBeliefRevisionFixture() {
         "Acme enterprise adoption milestone is now verified.",
     },
   });
-  const counter = normalizedSourceV2("strict_counter", {
-    canonicalUrl: "https://example.com/acme-counterevidence",
+  const counter = normalizedSourceV2(`${prefix}_counter`, {
+    canonicalUrl: `https://example.com/${prefix}-counterevidence`,
     eventAt: "2026-07-23",
     eventAtPrecision: "date",
     publishedAt: "2026-07-23",
@@ -814,7 +733,7 @@ function strictBeliefRevisionFixture() {
     },
   });
   const interaction = {
-    id: "strict_prior",
+    id: `${prefix}_prior`,
     occurredAt: "2026-01-12T12:00:00.000Z",
     summary: "Sample internal prior context.",
     decisionReason:
@@ -829,7 +748,7 @@ function strictBeliefRevisionFixture() {
   };
   const prior = interactionSourceV2(interaction);
   const event = marketEventV2(trigger, {
-    id: "strict_event",
+    id: `${prefix}_event`,
     eventAt: "2026-07-23",
     eventAtPrecision: "date",
     sources: [trigger, counter],
@@ -838,7 +757,7 @@ function strictBeliefRevisionFixture() {
     ? prior.text.normalizedStatement
     : "";
   const observation: ReasonedMatch = {
-    dealId: "deal_acme_strict",
+    dealId,
     whyNow: "Acme enterprise adoption milestone is now verified.",
     previousContext,
     positiveImplications: [
@@ -869,13 +788,13 @@ function strictBeliefRevisionFixture() {
   };
   const input: MatchingInput = {
     deals: [{
-      id: "deal_acme_strict",
+      id: dealId,
       companyName: "Acme",
       status: "passed",
     }],
     events: [event],
     memoryContexts: [{
-      dealId: "deal_acme_strict",
+      dealId,
       text: previousContext,
       sourceIds: [],
       fixtureIds: [interaction.id],
@@ -893,6 +812,89 @@ function strictBeliefRevisionFixture() {
   };
   return { input, observation, interaction, trigger, counter, prior, event };
 }
+
+test("selected authority does not depend on redundant top-level cited source IDs", async () => {
+  const fixture = strictBeliefRevisionFixture();
+  fixture.observation.citedSourceIds = [fixture.trigger.id];
+
+  const [match] = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.equal(match?.outcome, "belief_revised");
+});
+
+test("an ungrounded why-now claim makes only that Deal analysis unavailable", async () => {
+  const fixture = strictBeliefRevisionFixture();
+  fixture.observation.whyNow = "An unsupported why-now claim.";
+
+  const [match] = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.equal(match?.outcome, "analysis_unavailable");
+});
+
+test("an ungrounded previous-context claim makes only that Deal analysis unavailable", async () => {
+  const fixture = strictBeliefRevisionFixture();
+  fixture.observation.previousContext = "An unsupported prior-context claim.";
+
+  const [match] = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.equal(match?.outcome, "analysis_unavailable");
+});
+
+test("an unknown required revisit citation makes only that Deal analysis unavailable", async () => {
+  const fixture = strictBeliefRevisionFixture();
+  fixture.observation.revisitCitedSourceIds = ["unknown_required_source"];
+
+  const [match] = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.equal(match?.outcome, "analysis_unavailable");
+});
+
+test("counterevidence cannot cross the selected Deal and event authority boundary", async () => {
+  const first = strictBeliefRevisionFixture({
+    prefix: "first",
+    dealId: "deal_first",
+  });
+  const second = strictBeliefRevisionFixture({
+    prefix: "second",
+    dealId: "deal_second",
+  });
+  first.observation.counterevidence = {
+    statement: second.observation.counterevidence!.statement,
+    citedSourceIds: [second.counter.id],
+  };
+  const input: MatchingInput = {
+    deals: [...first.input.deals, ...second.input.deals],
+    events: [...first.input.events, ...second.input.events],
+    memoryContexts: [
+      ...first.input.memoryContexts,
+      ...second.input.memoryContexts,
+    ],
+    sources: [...first.input.sources, ...second.input.sources],
+  };
+
+  const matches = await createMatchingService({
+    reason: async () => [first.observation, second.observation],
+  }).analyze(input);
+  const outcomeByDeal = new Map(
+    matches.map((match) => [match.dealId, match.outcome]),
+  );
+  const secondMatch = matches.find((match) => match.dealId === "deal_second");
+
+  assert.equal(outcomeByDeal.get("deal_first"), "analysis_unavailable");
+  assert.equal(
+    outcomeByDeal.get("deal_second"),
+    "belief_revised",
+    secondMatch?.analysisFailureReason,
+  );
+});
 
 test("strict matching derives and parses a bounded v1 assessment after model output", async () => {
   const fixture = strictBeliefRevisionFixture();
@@ -1087,70 +1089,14 @@ test("matching rejects a stale canonical event before the reasoner is called", a
 });
 
 test("an unknown cited source fails only the affected Deal unavailable", async () => {
-  const service = createMatchingService({
-    reason: async () => [{
-      dealId: "deal_1",
-      whyNow: "AI infrastructure networks funding increased. Unsupported customer claim.",
-      previousContext:
-        "Sample decision record. The fund passed because timing was early.",
-      positiveImplications: [],
-      negativeImplications: [],
-      nextStep: "Review the company.",
-      citedSourceIds: [
-        "market_1",
-        "deal_source_1",
-        "fixture_1",
-        "missing_source",
-      ],
-      demoFixtureIds: ["fixture_1"],
-      scoreInputs: {
-        eventRelevance: 0.9,
-        dealRelevance: 0.8,
-        priorContextStrength: 0.8,
-        evidenceQuality: 0.9,
-      },
-      claimSourceIds: {
-        "AI infrastructure networks funding increased.": ["market_1"],
-        "Unsupported customer claim.": ["missing_source"],
-        "Sample decision record. The fund passed because timing was early.": [
-          "fixture_1",
-        ],
-      },
-    }],
-  });
-
-  const marketSource = publicExactSource(
-    "market_1",
-    "Market source",
-    "https://example.com/market",
-    "AI infrastructure networks funding increased.",
-  );
-  const result = await service.analyze({
-    deals: [{ id: "deal_1", companyName: "Ably", status: "passed" }],
-    events: [marketEventV2(marketSource)],
-    memoryContexts: [{
-      dealId: "deal_1",
-      text: "Deal and fixture context",
-      sourceIds: ["deal_source_1"],
-      fixtureIds: ["fixture_1"],
-    }],
-    sources: [
-      marketSource,
-      priorExactSource(
-        "deal_source_1",
-        "Deal deck",
-        "doc_1",
-        "AI infrastructure networks Deal evidence.",
-      ),
-      priorExactSource(
-        "fixture_1",
-        "Sample decision record",
-        "fixture_doc_1",
-        "The fund passed because timing was early.",
-        "demo_fixture",
-      ),
-    ],
-  });
+  const fixture = strictBeliefRevisionFixture({ prefix: "unknown" });
+  fixture.observation.whyNow += " Unsupported customer claim.";
+  fixture.observation.claimSourceIds["Unsupported customer claim."] = [
+    "missing_source",
+  ];
+  const result = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
 
   assert.equal(result.length, 1);
   const grounded = result[0];
