@@ -13,6 +13,7 @@ import {
 } from "../../lib/matching/hard-gates";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import { createMatchingService } from "../../lib/matching/service";
+import { rankGroundedBeliefRevisionCandidates } from "../../lib/matching/ranking";
 import type { DealStatus } from "../../lib/contracts/domain";
 import { interactionSourceV2 } from "../../lib/matching/context";
 import type {
@@ -893,6 +894,81 @@ test("counterevidence cannot cross the selected Deal and event authority boundar
     outcomeByDeal.get("deal_second"),
     "belief_revised",
     secondMatch?.analysisFailureReason,
+  );
+});
+
+test("valid selected authority with no surviving implications is explicit no material change", async () => {
+  const fixture = strictBeliefRevisionFixture({ prefix: "no_direction" });
+  fixture.observation.positiveImplications = [];
+  fixture.observation.negativeImplications = [];
+
+  const matches = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0]?.outcome, "no_material_change");
+  assert.equal(matches[0]?.beliefAssessment?.direction, "none");
+  assert.equal(matches[0]?.confidence, "low");
+});
+
+test("deterministic zero semantic overlap with valid authority is monitor", async () => {
+  const fixture = strictBeliefRevisionFixture({ prefix: "zero_overlap" });
+  fixture.input.deals[0]!.companyName = "Zeta";
+  fixture.interaction.summary = "Committee record.";
+  fixture.interaction.decisionReason = "Review after committee approval.";
+  fixture.interaction.concerns = ["Committee approval remained pending."];
+  fixture.interaction.revisitConditions = ["Review after committee approval."];
+  const changedPrior = interactionSourceV2(fixture.interaction);
+  const previousContext = changedPrior.text.status === "normalized_only"
+    ? changedPrior.text.normalizedStatement
+    : "";
+  fixture.input.sources = fixture.input.sources.map((source) =>
+    source.id === changedPrior.id ? changedPrior : source
+  );
+  fixture.input.memoryContexts[0]!.text = previousContext;
+  fixture.input.memoryContexts[0]!.interactionCandidates![0]!
+    .revisitConditions = fixture.interaction.revisitConditions;
+  fixture.observation.previousContext = previousContext;
+  fixture.observation.revisitConditionText =
+    fixture.interaction.revisitConditions[0];
+  fixture.observation.claimSourceIds = {
+    [fixture.observation.whyNow]: [fixture.trigger.id],
+    [previousContext]: [changedPrior.id],
+  };
+
+  const matches = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0]?.outcome, "monitor");
+  assert.equal(matches[0]?.beliefAssessment?.direction, "positive");
+});
+
+test("a returned row with missing selected authority remains analysis unavailable", async () => {
+  const fixture = strictBeliefRevisionFixture({ prefix: "missing_authority" });
+  fixture.observation.selectedTriggerEventId = "missing_event";
+
+  const matches = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0]?.outcome, "analysis_unavailable");
+  assert.equal(matches[0]?.beliefAssessment, undefined);
+});
+
+test("valid GroundedMatch ranking uses its dedicated internal entry point", async () => {
+  const fixture = strictBeliefRevisionFixture({ prefix: "grounded_rank" });
+  const grounded = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.deepEqual(
+    rankGroundedBeliefRevisionCandidates(grounded)
+      .map(({ dealId }) => dealId),
+    [fixture.observation.dealId],
   );
 });
 

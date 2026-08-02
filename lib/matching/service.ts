@@ -33,7 +33,7 @@ import {
   buildOpportunityScoreBreakdown,
   type OpportunityScoreInputs,
 } from "./scoring";
-import { rankBeliefRevisionCandidates } from "./ranking";
+import { rankGroundedBeliefRevisionCandidates } from "./ranking";
 
 export interface MatchingDeal {
   id: string;
@@ -371,13 +371,6 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         deal,
         [selectedEvent],
       );
-      if (deterministicRelevance === 0) {
-        return [unavailableMatch(
-          deal,
-          "Analysis unavailable because the selected event and prior authority were not grounded to this Deal.",
-        )];
-      }
-
       const whyNow = groundedText(
         match.whyNow,
         match,
@@ -415,14 +408,6 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       const negativeImplications = match.negativeImplications.filter((claim) =>
         groundedImplications.some((groundedClaim) => groundedClaim.text === claim)
       );
-      if (
-        positiveImplications.length === 0 && negativeImplications.length === 0
-      ) {
-        return [unavailableMatch(
-          deal,
-          "Analysis unavailable because required implication grounding was absent.",
-        )];
-      }
       const selectedAuthorityIds = new Set([
         ...eventSourceIds,
         ...dealSourceIds,
@@ -452,22 +437,24 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       for (const sourceId of match.counterevidence?.citedSourceIds ?? []) {
         usedSourceIds.add(sourceId);
       }
-      const scoreBreakdown = buildOpportunityScoreBreakdown({
-        ...match.scoreInputs,
-        eventRelevance: Math.min(
-          match.scoreInputs.eventRelevance,
-          deterministicRelevance,
-        ),
-        dealRelevance: Math.min(
-          match.scoreInputs.dealRelevance,
-          deterministicRelevance,
-        ),
-      });
       const direction = directionForImplications(
         positiveImplications,
         negativeImplications,
       );
-      if (direction === "none") return [];
+      const scoreableRelevance = direction === "none"
+        ? 0
+        : deterministicRelevance;
+      const scoreBreakdown = buildOpportunityScoreBreakdown({
+        ...match.scoreInputs,
+        eventRelevance: Math.min(
+          match.scoreInputs.eventRelevance,
+          scoreableRelevance,
+        ),
+        dealRelevance: Math.min(
+          match.scoreInputs.dealRelevance,
+          scoreableRelevance,
+        ),
+      });
       const relationship = direction === "positive"
         ? "satisfies" as const
         : direction === "negative"
@@ -573,7 +560,9 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         )];
       }
       const outcome: CompanyAnalysisOutcome =
-        scoreBreakdown.confidence === "low" || !assessment.gates.allPassed
+        direction === "none"
+        ? "no_material_change"
+        : scoreBreakdown.confidence === "low" || !assessment.gates.allPassed
         ? "monitor"
         : "belief_revised";
       return [{
@@ -605,7 +594,7 @@ export function createMatchingService(reasoner: MatchingReasoner) {
     analyze,
     async match(input: MatchingInput): Promise<OpportunityReportItem[]> {
       const grounded = await analyze(input);
-      return rankBeliefRevisionCandidates(grounded).map((match, index) =>
+      return rankGroundedBeliefRevisionCandidates(grounded).map((match, index) =>
         OpportunityReportItemSchema.parse({
           rank: index + 1,
           dealId: match.dealId,

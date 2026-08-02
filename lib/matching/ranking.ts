@@ -3,6 +3,7 @@ import {
   BeliefChangeAssessmentV1Schema,
   CompanyAnalysisSchema,
   type BeliefChangeAssessmentV1,
+  type CompanyAnalysis,
   type CompanyAnalysisConfidence,
   type CompanyAnalysisOutcome,
   type DealStatus,
@@ -11,6 +12,8 @@ import {
   canonicalEvidenceJson,
   MarketEventV2Schema,
   SourceRefV2Schema,
+  type MarketEventV2,
+  type SourceRefV2,
 } from "../contracts/source-evidence";
 import { compareUtf8 } from "../format/canonical-order";
 
@@ -23,14 +26,29 @@ export interface BeliefRevisionRankingCandidate {
   beliefAssessment?: BeliefChangeAssessmentV1;
 }
 
-type GroundedRankingCandidate = BeliefRevisionRankingCandidate & {
-  events: unknown;
-  sources: unknown;
-  demoFixtureIds: unknown;
-};
+export type GroundedBeliefRevisionRankingCandidate =
+  BeliefRevisionRankingCandidate & {
+    events: MarketEventV2[];
+    sources: SourceRefV2[];
+    demoFixtureIds: string[];
+  };
+
+interface RankingOptions {
+  historicalStatusByDeal?: ReadonlyMap<string, DealStatus>;
+  limit?: number;
+}
 
 export function isEligibleBeliefRevision(
-  candidate: BeliefRevisionRankingCandidate,
+  candidate: CompanyAnalysis,
+  historicalStatus?: DealStatus,
+): boolean {
+  const analysis = CompanyAnalysisSchema.safeParse(candidate);
+  if (!analysis.success) return false;
+  return hasEligibleAssessment(analysis.data, historicalStatus);
+}
+
+function isEligibleGroundedBeliefRevision(
+  candidate: GroundedBeliefRevisionRankingCandidate,
   historicalStatus?: DealStatus,
 ): boolean {
   const assessment = BeliefChangeAssessmentV1Schema.safeParse(
@@ -38,7 +56,20 @@ export function isEligibleBeliefRevision(
   );
   if (!assessment.success) return false;
   const value = assessment.data;
-  if (!hasCompleteRankingLineage(candidate, value)) return false;
+  return hasCompleteGroundedRankingLineage(candidate, value)
+    && hasEligibleAssessment(candidate, historicalStatus, value);
+}
+
+function hasEligibleAssessment(
+  candidate: BeliefRevisionRankingCandidate,
+  historicalStatus?: DealStatus,
+  parsedAssessment?: BeliefChangeAssessmentV1,
+): boolean {
+  const assessment = parsedAssessment
+    ? { success: true as const, data: parsedAssessment }
+    : BeliefChangeAssessmentV1Schema.safeParse(candidate.beliefAssessment);
+  if (!assessment.success) return false;
+  const value = assessment.data;
   const materialDirection = value.direction === "positive"
     || value.direction === "mixed"
     || value.direction === "negative";
@@ -53,13 +84,10 @@ export function isEligibleBeliefRevision(
     && (historicalStatus === undefined || historicalStatus === value.dealStatus);
 }
 
-function hasCompleteRankingLineage(
-  candidate: BeliefRevisionRankingCandidate,
+function hasCompleteGroundedRankingLineage(
+  candidate: GroundedBeliefRevisionRankingCandidate,
   assessment: BeliefChangeAssessmentV1,
 ): boolean {
-  if (!isGroundedRankingCandidate(candidate)) {
-    return CompanyAnalysisSchema.safeParse(candidate).success;
-  }
   const sources = SourceRefV2Schema.array().safeParse(candidate.sources);
   const events = MarketEventV2Schema.array().safeParse(candidate.events);
   const fixtureIds = Array.isArray(candidate.demoFixtureIds)
@@ -98,14 +126,6 @@ function hasCompleteRankingLineage(
     && sourceById.has(prior.id);
 }
 
-function isGroundedRankingCandidate(
-  candidate: BeliefRevisionRankingCandidate,
-): candidate is GroundedRankingCandidate {
-  return "events" in candidate
-    && "sources" in candidate
-    && "demoFixtureIds" in candidate;
-}
-
 function sameStringSet(left: readonly string[], right: readonly string[]) {
   return left.length === right.length
     && new Set(left).size === left.length
@@ -113,17 +133,31 @@ function sameStringSet(left: readonly string[], right: readonly string[]) {
 }
 
 export function rankBeliefRevisionCandidates<
-  T extends BeliefRevisionRankingCandidate,
+  T extends CompanyAnalysis,
 >(
   candidates: readonly T[],
-  options: {
-    historicalStatusByDeal?: ReadonlyMap<string, DealStatus>;
-    limit?: number;
-  } = {},
+  options: RankingOptions = {},
+): T[] {
+  return rankCandidates(candidates, isEligibleBeliefRevision, options);
+}
+
+export function rankGroundedBeliefRevisionCandidates<
+  T extends GroundedBeliefRevisionRankingCandidate,
+>(
+  candidates: readonly T[],
+  options: RankingOptions = {},
+): T[] {
+  return rankCandidates(candidates, isEligibleGroundedBeliefRevision, options);
+}
+
+function rankCandidates<T extends BeliefRevisionRankingCandidate>(
+  candidates: readonly T[],
+  isEligible: (candidate: T, historicalStatus?: DealStatus) => boolean,
+  options: RankingOptions,
 ): T[] {
   const limit = options.limit ?? 5;
   return candidates
-    .filter((candidate) => isEligibleBeliefRevision(
+    .filter((candidate) => isEligible(
       candidate,
       options.historicalStatusByDeal?.get(candidate.dealId),
     ))

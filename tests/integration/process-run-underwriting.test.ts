@@ -1286,6 +1286,25 @@ test("complete CompanyAnalysis lineage is required before ranking or underwritin
   assert.deepEqual(runs.inspect().candidates, []);
 });
 
+test("spoofed GroundedMatch fields cannot bypass complete CompanyAnalysis validation", () => {
+  const spoofed = analysis("deal_spoofed_outer_lineage", 0.8);
+  const validEvent = spoofed.marketEvidence.events[0]!;
+  spoofed.marketEvidence = {
+    ...spoofed.marketEvidence,
+    eventIds: ["event_unrelated"],
+    events: [{ ...validEvent, id: "event_unrelated" }],
+  };
+  const candidate = Object.assign(spoofed, {
+    events: [validEvent],
+    sources: [...spoofed.sources],
+    demoFixtureIds: [
+      spoofed.beliefAssessment!.gateContext.priorInteraction.id,
+    ],
+  });
+
+  assert.deepEqual(rankBeliefRevisionCandidates([candidate]), []);
+});
+
 test("reuses the same immutable batch input without creating duplicate candidates", async () => {
   let sequence = 0;
   const runs = createMemoryUnderwritingRunsRepository({
