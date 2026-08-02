@@ -26,7 +26,7 @@
       "expectedNewActions": ["advance_diligence"],
       "minimumConfidence": "medium",
       "qualificationRationale": "The Series A and secondary reporting of two existing customers satisfy the sample trigger while product migration and date conflicts remain visible.",
-      "requiredOpenDiligence": ["Confirm customer deployment depth, retention, revenue, legal identity, and the operational impact of Agent Versioning."],
+      "requiredOpenDiligence": ["Confirm customer deployment depth, retention, revenue, corporate registry and contracting-entity alignment, and the operational impact of Agent Versioning."],
       "invalidatingEvidence": ["Named companies deny production use, or the locking-to-versioning migration materially weakens reliability or customer adoption."]
     },
     {
@@ -35,7 +35,7 @@
       "expectedRelationship": "satisfies_revisit_condition",
       "priorStatus": "invested",
       "direction": "positive",
-      "priorAction": "evaluate_follow_on",
+      "priorAction": "continue_monitoring",
       "expectedNewActions": ["evaluate_follow_on"],
       "minimumConfidence": "medium",
       "qualificationRationale": "Strategic financing and company-reported Kyndryl deployment and resale evidence match the sample portfolio revisit condition without proving channel quality.",

@@ -72,16 +72,38 @@ test("test-only expected outcomes carry the exact four-case matrix and canonical
     companyName: item.companyName,
     priorStatus: item.priorStatus,
     direction: item.direction,
+    priorAction: item.priorAction,
     expectedNewActions: item.expectedNewActions,
   })), [
-    { companyName: "Henry AI", priorStatus: "passed", direction: "positive", expectedNewActions: ["reopen_diligence"] },
-    { companyName: "Smallest.ai", priorStatus: "watchlist", direction: "positive", expectedNewActions: ["advance_diligence"] },
-    { companyName: "Hush Security", priorStatus: "invested", direction: "positive", expectedNewActions: ["evaluate_follow_on"] },
-    { companyName: "Irregular", priorStatus: "invested", direction: "negative", expectedNewActions: ["pause_follow_on", "portfolio_risk_review"] },
+    { companyName: "Henry AI", priorStatus: "passed", direction: "positive", priorAction: "deprioritize", expectedNewActions: ["reopen_diligence"] },
+    { companyName: "Smallest.ai", priorStatus: "watchlist", direction: "positive", priorAction: "continue_monitoring", expectedNewActions: ["advance_diligence"] },
+    { companyName: "Hush Security", priorStatus: "invested", direction: "positive", priorAction: "continue_monitoring", expectedNewActions: ["evaluate_follow_on"] },
+    { companyName: "Irregular", priorStatus: "invested", direction: "negative", priorAction: "evaluate_follow_on", expectedNewActions: ["pause_follow_on", "portfolio_risk_review"] },
   ]);
   assert.deepEqual(
     outcomes.cases.find((item) => item.companyName === "Hush Security")?.requiredOpenDiligence,
     ["Validate Akamai and Kyndryl channel economics, bookings, margins, and sell-through."],
+  );
+  assert.deepEqual(
+    outcomes.cases.find((item) => item.companyName === "Smallest.ai")?.requiredOpenDiligence,
+    ["Confirm customer deployment depth, retention, revenue, corporate registry and contracting-entity alignment, and the operational impact of Agent Versioning."],
+  );
+});
+
+test("test-only cross-check rejects an expected outcome without a new action delta", () => {
+  const manifestInput = manifestCopy();
+  const outcomesInput = outcomesCopy();
+  const hushCase = manifestInput.selectedCases.find((item: JsonObject) => item.profile.brandName.value === "Hush Security");
+  const hushOutcome = outcomesInput.cases.find((item: JsonObject) => item.companyName === "Hush Security");
+  hushCase.priorDecision.priorAction = "evaluate_follow_on";
+  hushOutcome.priorAction = "evaluate_follow_on";
+  hushOutcome.expectedNewActions = ["evaluate_follow_on"];
+  assert.throws(
+    () => crossCheckBeliefReversalExpectedOutcomes(
+      parseBeliefReversalManifest(manifestInput),
+      parseBeliefReversalExpectedOutcomes(outcomesInput),
+    ),
+    /action delta/i,
   );
 });
 
@@ -216,7 +238,7 @@ test("Hush retains company-reported Kyndryl deployment and resale evidence", () 
   assert.match(claim.statement, /deployed.*internally.*resell/i);
 });
 
-test("the machine ledger is auditable and distinguishes qualified-not-selected from rejected", () => {
+test("the machine ledger records accepted and qualified-not-selected dispositions from sourced evidence", () => {
   const researchPackage = productionManifestModule.loadBeliefReversalManifest();
   assert.deepEqual(researchPackage.candidateLedger.map((entry) => ({
     name: entry.companyIdentity.brandName,
@@ -252,6 +274,16 @@ test("the machine ledger is auditable and distinguishes qualified-not-selected f
   assert.equal(chipAgents.companyIdentity.legalName, "Alpha Design AI, Inc.");
   assert.equal(chipAgents.triggeringEvent.status, "resolved");
   assert.match(chipAgents.reason, /four-case|weaker/i);
+  const chipReutersGap = researchPackage.screeningSources.find((source) => source.id === "source_chipagents_reuters_gap_v1");
+  assert.ok(chipReutersGap?.status === "unresolved");
+  assert.match(chipReutersGap.reason, /Reuters-specific.*not used/i);
+  assert.match(chipReutersGap.reason, /amount and stage.*Axios/i);
+  const chipBaseline = researchPackage.screeningSources.find((source) => source.id === "source_chipagents_businesswire_baseline_v1");
+  assert.ok(chipBaseline?.status === "resolved");
+  assert.equal(chipBaseline.canonicalUrl, "https://www.businesswire.com/news/home/20260217568914/en/ChipAgents-Raises-%2474M-to-Scale-an-Agentic-AI-Platform-to-Accelerate-Chip-Design");
+  assert.ok(chipAgents.screeningSourceIds.includes(chipBaseline.id));
+  assert.match(chipAgents.counterevidenceAndLimits.join(" "), /\$74 million.*baseline.*does not conflict.*\$60 million/i);
+  assert.match(chipAgents.counterevidenceAndLimits.join(" "), /\$131 million.*not verified/i);
 });
 
 test("impossible calendar dates fail closed", () => {

@@ -56,6 +56,9 @@ export function crossCheckBeliefReversalExpectedOutcomes(
     if (!selectedCase || selectedCase.profile.brandName.value !== outcome.companyName) {
       throw new Error(`Expected outcome case ${outcome.caseId} does not resolve to the production manifest`);
     }
+    if (outcome.expectedNewActions.includes(outcome.priorAction)) {
+      throw new Error(`${outcome.companyName} expected outcome has no action delta`);
+    }
     const expected = requiredMatrix.get(outcome.companyName);
     if (
       selectedCase.priorDecision.status !== outcome.priorStatus ||

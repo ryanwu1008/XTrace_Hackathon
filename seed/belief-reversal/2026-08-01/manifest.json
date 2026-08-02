@@ -1334,7 +1334,7 @@
         "revisitConditions": [
           "A strategic distributor and enterprise deployment become public."
         ],
-        "priorAction": "evaluate_follow_on"
+        "priorAction": "continue_monitoring"
       },
       "claims": [
         {
@@ -2470,7 +2470,7 @@
       "surfacedUrl": "https://www.reuters.com/business/nvidia-partner-chipagents-raises-60-million-accelerate-chip-design-with-ai-2026-07-29/",
       "retrievedAt": "2026-08-01",
       "candidateId": "candidate_chipagents_v1",
-      "reason": "The surfaced Reuters item was unavailable for exact-span verification; the official newsroom had no matching July round and its February totals conflict with surfaced figures."
+      "reason": "The surfaced Reuters page was unavailable, so Reuters-specific total-funding figures and details are not used; the Series A2 amount and stage are supported solely by Axios."
     },
     {
       "status": "resolved",
@@ -2503,6 +2503,40 @@
         "locator": "ChipAgents funding item",
         "verbatimExcerpt": "ChipAgents, a San Jose, Calif.-based developer of agentic AI platforms for semiconductor design, raised $60m in Series A2 funding",
         "normalizedStatement": "Axios reports that ChipAgents raised $60 million in Series A2 funding.",
+        "referenceId": "candidate_chipagents_v1"
+      }
+    },
+    {
+      "status": "resolved",
+      "id": "source_chipagents_businesswire_baseline_v1",
+      "title": "ChipAgents Raises $74M to Scale an Agentic AI Platform to Accelerate Chip Design",
+      "publisher": "ChipAgents via Business Wire",
+      "canonicalUrl": "https://www.businesswire.com/news/home/20260217568914/en/ChipAgents-Raises-%2474M-to-Scale-an-Agentic-AI-Platform-to-Accelerate-Chip-Design",
+      "sourceClass": "company_official",
+      "sourceAuthority": "primary",
+      "evidenceRole": "counterevidence",
+      "eventAt": "2026-02-17",
+      "publishedAt": "2026-02-17",
+      "publicationTimestamp": null,
+      "retrievedAt": "2026-08-01",
+      "locator": "Opening funding paragraph",
+      "verbatimExcerpt": "closed an oversubscribed $50 million Series A1 funding round, bringing total capital raised to $74 million",
+      "normalizedStatement": "ChipAgents announced a $50 million Series A1 that brought its February 2026 total capital raised to $74 million.",
+      "candidateId": "candidate_chipagents_v1",
+      "fingerprintInputs": {
+        "title": "ChipAgents Raises $74M to Scale an Agentic AI Platform to Accelerate Chip Design",
+        "publisher": "ChipAgents via Business Wire",
+        "canonicalUrl": "https://www.businesswire.com/news/home/20260217568914/en/ChipAgents-Raises-%2474M-to-Scale-an-Agentic-AI-Platform-to-Accelerate-Chip-Design",
+        "sourceClass": "company_official",
+        "sourceAuthority": "primary",
+        "evidenceRole": "counterevidence",
+        "eventAt": "2026-02-17",
+        "publishedAt": "2026-02-17",
+        "publicationTimestamp": null,
+        "retrievedAt": "2026-08-01",
+        "locator": "Opening funding paragraph",
+        "verbatimExcerpt": "closed an oversubscribed $50 million Series A1 funding round, bringing total capital raised to $74 million",
+        "normalizedStatement": "ChipAgents announced a $50 million Series A1 that brought its February 2026 total capital raised to $74 million.",
         "referenceId": "candidate_chipagents_v1"
       }
     },
@@ -2885,13 +2919,14 @@
       "screeningSourceIds": [
         "source_chipagents_axios_v1",
         "source_chipagents_reuters_gap_v1",
+        "source_chipagents_businesswire_baseline_v1",
         "source_chipagents_identity_v1"
       ],
       "missingEvidence": [
         "A company-official announcement for the Series A2 round, use of proceeds, and current independently verified traction."
       ],
       "counterevidenceAndLimits": [
-        "No reviewed source is used to verify a $131 million total-funding figure."
+        "Business Wire's older $74 million total-capital disclosure is a historical baseline and does not conflict with the new $60 million Series A2 itself; a $131 million total-funding figure is not verified."
       ],
       "reason": "Qualified but not selected at the four-case cap because the recent action delta is weaker and the fresh round currently has only an Axios summary."
     },
