@@ -5,12 +5,23 @@ import {
   MarketEventV2Schema,
   SAMPLE_DECISION_RECORD_LABEL,
   SourceRefV2Schema,
+  TemporalValueV2Schema,
   sourceClaimSupportKind,
   sourceTextForRetrieval,
   uniqueByCanonicalId,
   type MarketEventV2,
   type SourceRefV2,
 } from "./source-evidence";
+import {
+  buildOpportunityScoreBreakdown,
+  type OpportunityScoreInputs,
+} from "../matching/scoring";
+import {
+  actionsForDealStatusAndDirection,
+  beliefActionListsEqual,
+  metadataForBeliefActionKind,
+  renderRecommendedNextMove,
+} from "../reports/action-policy";
 
 export const ProvenanceSchema = z.enum([
   "source_document",
@@ -19,10 +30,64 @@ export const ProvenanceSchema = z.enum([
   "model_inference",
 ]);
 
+export const CanonicalDealStatusSchema = z.enum([
+  "screening",
+  "watchlist",
+  "evaluating",
+  "passed",
+  "invested",
+]);
+
 export const DealStatusSchema = z.preprocess(
   (value) => value === "interested" ? "watchlist" : value,
-  z.enum(["screening", "watchlist", "evaluating", "passed", "invested"]),
+  CanonicalDealStatusSchema,
 );
+
+export const BeliefChangeDirectionSchema = z.enum([
+  "positive",
+  "mixed",
+  "negative",
+  "none",
+  "unavailable",
+]);
+
+export const BeliefActionKindSchema = z.enum([
+  "advance_diligence",
+  "continue_monitoring",
+  "deprioritize",
+  "reopen_diligence",
+  "evaluate_follow_on",
+  "pause_follow_on",
+  "portfolio_risk_review",
+  "no_new_action",
+  "review_analysis_failure",
+]);
+export const BeliefActionScopeSchema = z.enum([
+  "deal",
+  "portfolio",
+  "analysis",
+]);
+export const BeliefActionPrioritySchema = z.enum(["high", "standard"]);
+export const BeliefActionVisibilitySchema = z.literal("internal_only");
+
+export const BeliefActionSchema = z.strictObject({
+  kind: BeliefActionKindSchema,
+  scope: BeliefActionScopeSchema,
+  priority: BeliefActionPrioritySchema,
+  visibility: BeliefActionVisibilitySchema,
+}).superRefine((action, context) => {
+  const expected = metadataForBeliefActionKind(action.kind);
+  if (
+    action.scope !== expected.scope
+    || action.priority !== expected.priority
+    || action.visibility !== expected.visibility
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Belief action metadata must be derived from its action kind",
+    });
+  }
+});
 
 export const DEMO_FIXTURE_LABEL = SAMPLE_DECISION_RECORD_LABEL;
 
@@ -172,6 +237,7 @@ export const DealInteractionSchema = z.object({
   decisionReason: z.string().min(1),
   concerns: z.array(z.string()),
   revisitConditions: z.array(z.string()),
+  priorActions: z.array(BeliefActionSchema).min(1).optional(),
   provenance: z.literal("demo_fixture"),
   label: z.literal(DEMO_FIXTURE_LABEL),
 });
@@ -243,6 +309,201 @@ export const CompanyAnalysisConfidenceSchema = z.enum([
   "medium",
   "high",
 ]);
+
+const ScoreDimensionSchema = z.number().min(0).max(1);
+
+export const OpportunityScoreBreakdownSchema = z.strictObject({
+  eventRelevance: ScoreDimensionSchema,
+  dealRelevance: ScoreDimensionSchema,
+  priorContextStrength: ScoreDimensionSchema,
+  evidenceQuality: ScoreDimensionSchema,
+  finalScore: z.number().min(0).max(1),
+  confidence: CompanyAnalysisConfidenceSchema,
+}).superRefine((score, context) => {
+  const input: OpportunityScoreInputs = {
+    eventRelevance: score.eventRelevance,
+    dealRelevance: score.dealRelevance,
+    priorContextStrength: score.priorContextStrength,
+    evidenceQuality: score.evidenceQuality,
+  };
+  const expected = buildOpportunityScoreBreakdown(input);
+  if (score.finalScore !== expected.finalScore) {
+    context.addIssue({
+      code: "custom",
+      message: "Final score must equal the deterministic weighted calculation",
+    });
+  }
+  if (score.confidence !== expected.confidence) {
+    context.addIssue({
+      code: "custom",
+      message: "Score confidence must equal the deterministic score boundary",
+    });
+  }
+});
+
+const GateFailureReasonSchema = z.string().trim().min(1).max(500).nullable();
+
+function validateGateFailureReason(
+  gate: { passed: boolean; failureReason: string | null },
+  context: z.RefinementCtx,
+): void {
+  if (
+    (gate.passed && gate.failureReason !== null)
+    || (!gate.passed && gate.failureReason === null)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Passed gates require no failure reason and failed gates require one",
+    });
+  }
+}
+
+export const ChronologyGateResultSchema = z.strictObject({
+  priorInteractionId: z.string().min(1).nullable(),
+  priorInteractionAt: z.string().datetime().nullable(),
+  triggerEventId: z.string().min(1).nullable(),
+  triggerEventAt: TemporalValueV2Schema.nullable(),
+  passed: z.boolean(),
+  failureReason: GateFailureReasonSchema,
+}).superRefine((gate, context) => {
+  validateGateFailureReason(gate, context);
+  const expectedPassed = gate.priorInteractionId !== null
+    && gate.priorInteractionAt !== null
+    && gate.triggerEventId !== null
+    && gate.triggerEventAt !== null
+    && Date.parse(gate.priorInteractionAt) < Date.parse(gate.triggerEventAt);
+  if (gate.passed !== expectedPassed) {
+    context.addIssue({
+      code: "custom",
+      message: "Chronology pass/fail must be derived from the selected timestamps",
+    });
+  }
+});
+
+export const RevisitConditionMappingGateResultSchema = z.strictObject({
+  priorInteractionId: z.string().min(1).nullable(),
+  revisitConditionIndex: z.number().int().nonnegative().nullable(),
+  revisitConditionText: z.string().min(1).nullable(),
+  triggerEventId: z.string().min(1).nullable(),
+  citedSourceIds: z.array(z.string().min(1)),
+  passed: z.boolean(),
+  failureReason: GateFailureReasonSchema,
+}).superRefine((gate, context) => {
+  validateGateFailureReason(gate, context);
+  if (
+    gate.passed
+    && (
+      gate.priorInteractionId === null
+      || gate.revisitConditionIndex === null
+      || gate.revisitConditionText === null
+      || gate.triggerEventId === null
+      || gate.citedSourceIds.length === 0
+      || new Set(gate.citedSourceIds).size !== gate.citedSourceIds.length
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "A passed revisit gate requires exact unique lineage bindings",
+    });
+  }
+});
+
+export const CounterevidenceGateResultSchema = z.strictObject({
+  statement: z.string().max(2_000),
+  citedSourceIds: z.array(z.string().min(1)),
+  passed: z.boolean(),
+  failureReason: GateFailureReasonSchema,
+}).superRefine((gate, context) => {
+  validateGateFailureReason(gate, context);
+  const words = gate.statement.trim().split(/\s+/u).filter(Boolean);
+  if (
+    gate.passed
+    && (
+      gate.statement.trim().length < 20
+      || words.length < 3
+      || gate.citedSourceIds.length === 0
+      || new Set(gate.citedSourceIds).size !== gate.citedSourceIds.length
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "A passed counterevidence gate requires substantive cited evidence",
+    });
+  }
+});
+
+export const ActionDeltaGateResultSchema = z.strictObject({
+  priorActions: z.array(BeliefActionSchema).min(1),
+  proposedActions: z.array(BeliefActionSchema).min(1),
+  passed: z.boolean(),
+  failureReason: GateFailureReasonSchema,
+}).superRefine(validateGateFailureReason);
+
+export const BeliefRevisionGateResultsSchema = z.strictObject({
+  chronology: ChronologyGateResultSchema,
+  revisitConditionMapping: RevisitConditionMappingGateResultSchema,
+  counterevidence: CounterevidenceGateResultSchema,
+  actionDelta: ActionDeltaGateResultSchema,
+  allPassed: z.boolean(),
+}).superRefine((gates, context) => {
+  const expected = gates.chronology.passed
+    && gates.revisitConditionMapping.passed
+    && gates.counterevidence.passed
+    && gates.actionDelta.passed;
+  if (gates.allPassed !== expected) {
+    context.addIssue({
+      code: "custom",
+      message: "allPassed must be derived from every named hard gate",
+    });
+  }
+});
+
+export const BELIEF_CHANGE_ASSESSMENT_SCHEMA_VERSION =
+  "belief-change-assessment-v1" as const;
+
+export const BeliefChangeAssessmentV1Schema = z.strictObject({
+  schemaVersion: z.literal(BELIEF_CHANGE_ASSESSMENT_SCHEMA_VERSION),
+  dealStatus: CanonicalDealStatusSchema,
+  direction: BeliefChangeDirectionSchema,
+  scoreBreakdown: OpportunityScoreBreakdownSchema,
+  gates: BeliefRevisionGateResultsSchema,
+  actions: z.array(BeliefActionSchema).min(1),
+}).superRefine((assessment, context) => {
+  const expectedActions = actionsForDealStatusAndDirection(
+    assessment.dealStatus,
+    assessment.direction,
+  );
+  if (!beliefActionListsEqual(assessment.actions, expectedActions)) {
+    context.addIssue({
+      code: "custom",
+      message: "Typed actions must equal the deterministic status-direction policy",
+    });
+  }
+  if (
+    !beliefActionListsEqual(
+      assessment.gates.actionDelta.proposedActions,
+      assessment.actions,
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Persisted proposed actions must equal the assessment actions",
+    });
+  }
+  const expectedActionDeltaPassed = beliefActionListsEqual(
+    assessment.gates.actionDelta.proposedActions,
+    expectedActions,
+  ) && !beliefActionListsEqual(
+    assessment.gates.actionDelta.priorActions,
+    expectedActions,
+  );
+  if (assessment.gates.actionDelta.passed !== expectedActionDeltaPassed) {
+    context.addIssue({
+      code: "custom",
+      message: "Action-delta pass/fail must be derived from prior and legal proposed actions",
+    });
+  }
+});
 
 export const EvidenceFieldSchema = z.object({
   label: z.string().min(1),
@@ -443,11 +704,59 @@ export const CompanyAnalysisSchema = z.object({
     negative: z.array(z.string().min(1)),
   }),
   claimSupport: z.array(ClaimSupportV2Schema).optional(),
+  beliefAssessment: BeliefChangeAssessmentV1Schema.optional(),
   recommendedNextMove: z.string().min(1),
   companyBrief: CompanyBriefSchema,
   sources: z.array(EvidenceSourceRefSchema),
   createdAt: z.string().datetime({ offset: true }),
 }).superRefine((analysis, context) => {
+  const assessment = analysis.beliefAssessment;
+  if (assessment) {
+    if (assessment.dealStatus !== analysis.dealStatus) {
+      context.addIssue({
+        code: "custom",
+        message: "Belief assessment status must preserve the historical Deal status",
+      });
+    }
+    if (
+      assessment.scoreBreakdown.finalScore !== analysis.score
+      || assessment.scoreBreakdown.confidence !== analysis.confidence
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Company analysis score and confidence must match its assessment",
+      });
+    }
+    if (
+      analysis.recommendedNextMove
+        !== renderRecommendedNextMove(assessment.actions)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Compatibility next-move text must be rendered from typed actions",
+      });
+    }
+    const materialDirection = assessment.direction === "positive"
+      || assessment.direction === "mixed"
+      || assessment.direction === "negative";
+    const qualifiedConfidence = assessment.scoreBreakdown.confidence === "medium"
+      || assessment.scoreBreakdown.confidence === "high";
+    if (
+      analysis.outcome === "belief_revised"
+      && (
+        !materialDirection
+        || !qualifiedConfidence
+        || !assessment.gates.allPassed
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Belief revisions require material direction, qualified confidence, and every hard gate",
+      });
+    }
+  }
+
   if (
     analysis.outcome === "belief_revised"
     && analysis.confidence === "low"
@@ -606,6 +915,16 @@ export const EvidenceCoverageSchema = z.object({
 
 export type Provenance = z.infer<typeof ProvenanceSchema>;
 export type DealStatus = z.infer<typeof DealStatusSchema>;
+export type BeliefChangeDirection = z.infer<
+  typeof BeliefChangeDirectionSchema
+>;
+export type BeliefActionKind = z.infer<typeof BeliefActionKindSchema>;
+export type BeliefActionScope = z.infer<typeof BeliefActionScopeSchema>;
+export type BeliefActionPriority = z.infer<typeof BeliefActionPrioritySchema>;
+export type BeliefActionVisibility = z.infer<
+  typeof BeliefActionVisibilitySchema
+>;
+export type BeliefAction = z.infer<typeof BeliefActionSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 export type SourceRef = z.infer<typeof SourceRefSchema>;
 export type EvidenceSourceRef = z.infer<typeof EvidenceSourceRefSchema>;
@@ -620,6 +939,27 @@ export type CompanyAnalysisOutcome = z.infer<
 >;
 export type CompanyAnalysisConfidence = z.infer<
   typeof CompanyAnalysisConfidenceSchema
+>;
+export type OpportunityScoreBreakdown = z.infer<
+  typeof OpportunityScoreBreakdownSchema
+>;
+export type ChronologyGateResult = z.infer<
+  typeof ChronologyGateResultSchema
+>;
+export type RevisitConditionMappingGateResult = z.infer<
+  typeof RevisitConditionMappingGateResultSchema
+>;
+export type CounterevidenceGateResult = z.infer<
+  typeof CounterevidenceGateResultSchema
+>;
+export type ActionDeltaGateResult = z.infer<
+  typeof ActionDeltaGateResultSchema
+>;
+export type BeliefRevisionGateResults = z.infer<
+  typeof BeliefRevisionGateResultsSchema
+>;
+export type BeliefChangeAssessmentV1 = z.infer<
+  typeof BeliefChangeAssessmentV1Schema
 >;
 export type EvidenceField = z.infer<typeof EvidenceFieldSchema>;
 export type InvestmentMemorySnapshot = z.infer<

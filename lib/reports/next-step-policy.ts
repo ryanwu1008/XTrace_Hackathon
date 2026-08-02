@@ -1,8 +1,10 @@
 import {
   OpportunityReportItemSchema,
+  type BeliefAction,
   type DealStatus,
   type OpportunityReportItem,
 } from "../contracts/domain";
+import { renderRecommendedNextMove } from "./action-policy";
 
 export const SAFE_REPORT_NEXT_STEP_FALLBACK =
   "Review the cited evidence and decide whether further internal diligence is warranted.";
@@ -42,7 +44,11 @@ export function sanitizeReportNextStep(value: string): string {
 export function sanitizeCompanyAnalysisNextStep(input: {
   outcome: "belief_revised" | "monitor" | "no_material_change" | "analysis_unavailable";
   value: string;
+  actions?: readonly BeliefAction[];
 }): string {
+  if (input.actions) {
+    return renderRecommendedNextMove(input.actions);
+  }
   if (input.outcome === "belief_revised") {
     return sanitizeReportNextStep(input.value);
   }

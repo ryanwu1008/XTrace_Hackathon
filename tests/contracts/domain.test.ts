@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BeliefChangeAssessmentV1Schema,
+  BeliefRevisionGateResultsSchema,
   CompanyAnalysisSchema,
   DealMemoryBundleSchema,
   DealStatusSchema,
@@ -9,7 +11,9 @@ import {
   MarketEventSchema,
   OpportunityReportItemSchema,
   SourceRefSchema,
+  type BeliefAction,
 } from "../../lib/contracts/domain";
+import { renderRecommendedNextMove } from "../../lib/reports/action-policy";
 import {
   MarketEventV2Schema,
   SourceRefV2Schema,
@@ -217,6 +221,84 @@ function companyAnalysisFixture(
     },
     sources: [source, sampleDecisionRecord],
     createdAt: "2026-07-24T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function action(
+  kind:
+    | "advance_diligence"
+    | "continue_monitoring"
+    | "deprioritize"
+    | "reopen_diligence"
+    | "evaluate_follow_on"
+    | "pause_follow_on"
+    | "portfolio_risk_review"
+    | "no_new_action"
+      | "review_analysis_failure",
+): BeliefAction {
+  const scope = kind === "review_analysis_failure"
+    ? "analysis"
+    : [
+        "evaluate_follow_on",
+        "pause_follow_on",
+        "portfolio_risk_review",
+      ].includes(kind)
+    ? "portfolio"
+    : "deal";
+  const priority = ["pause_follow_on", "portfolio_risk_review"].includes(kind)
+    ? "high"
+    : "standard";
+  return { kind, scope, priority, visibility: "internal_only" };
+}
+
+function beliefAssessmentFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: "belief-change-assessment-v1",
+    dealStatus: "passed",
+    direction: "positive",
+    scoreBreakdown: {
+      eventRelevance: 0.8,
+      dealRelevance: 0.8,
+      priorContextStrength: 0.8,
+      evidenceQuality: 0.8,
+      finalScore: 0.8,
+      confidence: "high",
+    },
+    gates: {
+      chronology: {
+        priorInteractionId: "interaction_1",
+        priorInteractionAt: "2026-01-12T12:00:00.000Z",
+        triggerEventId: "event_1",
+        triggerEventAt: "2026-07-23T12:00:00.000Z",
+        passed: true,
+        failureReason: null,
+      },
+      revisitConditionMapping: {
+        priorInteractionId: "interaction_1",
+        revisitConditionIndex: 0,
+        revisitConditionText: "Revisit after measurable enterprise adoption.",
+        triggerEventId: "event_1",
+        citedSourceIds: ["source_1"],
+        passed: true,
+        failureReason: null,
+      },
+      counterevidence: {
+        statement:
+          "The public evidence does not yet establish durable customer retention.",
+        citedSourceIds: ["source_1"],
+        passed: true,
+        failureReason: null,
+      },
+      actionDelta: {
+        priorActions: [action("no_new_action")],
+        proposedActions: [action("reopen_diligence")],
+        passed: true,
+        failureReason: null,
+      },
+      allPassed: true,
+    },
+    actions: [action("reopen_diligence")],
     ...overrides,
   };
 }
@@ -857,6 +939,43 @@ test("Deal facts preserve canonical v2 and reject malformed declared v2", () => 
     facts: [{
       ...bundle.facts[0],
       sources: [{ ...source, providerId: null }],
+    }],
+  }).success, false);
+});
+
+test("Sample decision records can carry canonical typed prior actions while legacy records remain readable", () => {
+  const interaction = {
+    id: "interaction_prior_action_1",
+    occurredAt: "2026-01-12T12:00:00.000Z",
+    summary: "The sample team reviewed the company.",
+    decisionReason: "The milestone had not yet been met.",
+    concerns: ["Enterprise adoption remained unproven."],
+    revisitConditions: ["Revisit after measurable enterprise adoption."],
+    provenance: "demo_fixture",
+    label: "Sample decision record",
+  };
+  const bundle = {
+    dealId: "deal_acme",
+    companyName: "Acme",
+    status: "passed",
+    facts: [],
+    interactions: [interaction],
+  };
+
+  assert.equal(DealMemoryBundleSchema.safeParse(bundle).success, true);
+  const parsed = DealMemoryBundleSchema.parse({
+    ...bundle,
+    interactions: [{
+      ...interaction,
+      priorActions: [action("no_new_action")],
+    }],
+  });
+  assert.deepEqual(parsed.interactions[0].priorActions, [action("no_new_action")]);
+  assert.equal(DealMemoryBundleSchema.safeParse({
+    ...bundle,
+    interactions: [{
+      ...interaction,
+      priorActions: [{ ...action("no_new_action"), visibility: "external" }],
     }],
   }).success, false);
 });
@@ -1614,4 +1733,177 @@ test("rejects market evidence that cites a source outside the analysis lineage",
       sourceIds: ["unknown_source"],
     },
   })));
+});
+
+test("accepts one complete strict versioned belief assessment", () => {
+  const assessment = beliefAssessmentFixture();
+
+  assert.deepEqual(BeliefChangeAssessmentV1Schema.parse(assessment), assessment);
+});
+
+test("rejects incomplete or extensible declared belief assessment v1 payloads", () => {
+  const complete = beliefAssessmentFixture();
+  const missingGates: Record<string, unknown> = { ...complete };
+  delete missingGates.gates;
+
+  assert.equal(
+    BeliefChangeAssessmentV1Schema.safeParse(missingGates).success,
+    false,
+  );
+  assert.equal(
+    BeliefChangeAssessmentV1Schema.safeParse({ ...complete, modelNote: "trust me" })
+      .success,
+    false,
+  );
+});
+
+test("declared belief assessment v1 rejects the legacy interested status alias", () => {
+  const base = beliefAssessmentFixture();
+  const gates = base.gates as Record<string, unknown>;
+  const actionDelta = gates.actionDelta as Record<string, unknown>;
+  const proposedActions = [action("advance_diligence")];
+  assert.equal(BeliefChangeAssessmentV1Schema.safeParse({
+    ...base,
+    dealStatus: "interested",
+    gates: {
+      ...gates,
+      actionDelta: { ...actionDelta, proposedActions },
+    },
+    actions: proposedActions,
+  }).success, false);
+});
+
+test("rejects persisted score and confidence values inconsistent with all four dimensions", () => {
+  const scoreBreakdown = beliefAssessmentFixture().scoreBreakdown as Record<
+    string,
+    unknown
+  >;
+  const cases = [
+    {
+      name: "wrong final score",
+      scoreBreakdown: { ...scoreBreakdown, finalScore: 0.79 },
+    },
+    {
+      name: "wrong confidence",
+      scoreBreakdown: { ...scoreBreakdown, confidence: "medium" },
+    },
+  ];
+
+  for (const { name, scoreBreakdown: invalid } of cases) {
+    assert.equal(
+      BeliefChangeAssessmentV1Schema.safeParse(
+        beliefAssessmentFixture({ scoreBreakdown: invalid }),
+      ).success,
+      false,
+      name,
+    );
+  }
+});
+
+test("rejects persisted allPassed values inconsistent with named hard gates", () => {
+  const gates = beliefAssessmentFixture().gates as Record<string, unknown>;
+  const chronology = gates.chronology as Record<string, unknown>;
+
+  assert.equal(BeliefRevisionGateResultsSchema.safeParse({
+    ...gates,
+    chronology: {
+      ...chronology,
+      priorInteractionAt: "2026-07-23T12:00:00.000Z",
+      passed: false,
+      failureReason: "The prior interaction did not predate the trigger event.",
+    },
+    allPassed: true,
+  }).success, false);
+});
+
+test("rejects an unbounded hard-gate failure reason", () => {
+  const gates = beliefAssessmentFixture().gates as Record<string, unknown>;
+  const chronology = gates.chronology as Record<string, unknown>;
+
+  assert.equal(BeliefRevisionGateResultsSchema.safeParse({
+    ...gates,
+    chronology: {
+      ...chronology,
+      priorInteractionAt: "2026-07-23T12:00:00.000Z",
+      passed: false,
+      failureReason: "x".repeat(501),
+    },
+    allPassed: false,
+  }).success, false);
+});
+
+test("rejects noncanonical action metadata and an action list illegal for status and direction", () => {
+  const assessment = beliefAssessmentFixture();
+  const badMetadata = {
+    ...action("reopen_diligence"),
+    scope: "portfolio",
+  };
+
+  assert.equal(BeliefChangeAssessmentV1Schema.safeParse({
+    ...assessment,
+    actions: [badMetadata],
+  }).success, false);
+  assert.equal(BeliefChangeAssessmentV1Schema.safeParse({
+    ...assessment,
+    actions: [action("deprioritize")],
+  }).success, false);
+});
+
+test("new CompanyAnalysis payloads reject arbitrary compatibility text and cross-field score drift", () => {
+  const beliefAssessment = beliefAssessmentFixture();
+  const actions = beliefAssessment.actions as ReturnType<typeof action>[];
+  const valid = companyAnalysisFixture({
+    outcome: "belief_revised",
+    confidence: "high",
+    score: 0.8,
+    beliefAssessment,
+    recommendedNextMove: renderRecommendedNextMove(actions),
+  });
+
+  assert.equal(CompanyAnalysisSchema.safeParse(valid).success, true);
+  assert.equal(CompanyAnalysisSchema.safeParse({
+    ...valid,
+    recommendedNextMove: "Model-selected founder outreach prose.",
+  }).success, false);
+  assert.equal(CompanyAnalysisSchema.safeParse({
+    ...valid,
+    score: 0.81,
+  }).success, false);
+});
+
+test("none and unavailable directions can never declare a belief revision", () => {
+  for (const direction of ["none", "unavailable"] as const) {
+    const kind = direction === "none"
+      ? "no_new_action"
+      : "review_analysis_failure";
+    const proposedActions = [action(kind)];
+    const base = beliefAssessmentFixture({ direction, actions: proposedActions });
+    const baseGates = base.gates as Record<string, unknown>;
+    const actionDelta = baseGates.actionDelta as Record<string, unknown>;
+    const beliefAssessment = {
+      ...base,
+      gates: {
+        ...baseGates,
+        actionDelta: {
+          ...actionDelta,
+          priorActions: [action("continue_monitoring")],
+          proposedActions,
+        },
+      },
+    };
+    const analysis = companyAnalysisFixture({
+      outcome: "belief_revised",
+      confidence: "high",
+      score: 0.8,
+      beliefAssessment,
+      recommendedNextMove: renderRecommendedNextMove(proposedActions),
+    });
+
+    assert.equal(
+      BeliefChangeAssessmentV1Schema.safeParse(beliefAssessment).success,
+      true,
+      `${direction} assessment fixture must be independently valid`,
+    );
+    assert.equal(CompanyAnalysisSchema.safeParse(analysis).success, false, direction);
+  }
 });

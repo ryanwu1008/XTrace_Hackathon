@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildOpportunityScoreBreakdown,
   confidenceForScore,
   rankQualifiedMatches,
   weightedOpportunityScore,
 } from "../../lib/matching/scoring";
+import {
+  evaluateBeliefRevisionHardGates,
+  type EvaluateBeliefRevisionHardGatesInput,
+} from "../../lib/matching/hard-gates";
+import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import { createMatchingService } from "../../lib/matching/service";
 import type { DealStatus } from "../../lib/contracts/domain";
 import { adaptLegacySourceRef } from "../../lib/contracts/legacy-evidence-adapter";
@@ -169,6 +175,179 @@ test("uses the approved weighted score and confidence boundaries", () => {
   assert.equal(confidenceForScore(0.78), "high");
   assert.equal(confidenceForScore(0.5), "medium");
   assert.equal(confidenceForScore(0.499), "low");
+});
+
+test("builds a persisted score breakdown from all four approved dimensions", () => {
+  assert.deepEqual(buildOpportunityScoreBreakdown({
+    eventRelevance: 0.8,
+    dealRelevance: 0.6,
+    priorContextStrength: 0.7,
+    evidenceQuality: 0.9,
+  }), {
+    eventRelevance: 0.8,
+    dealRelevance: 0.6,
+    priorContextStrength: 0.7,
+    evidenceQuality: 0.9,
+    finalScore: 0.735,
+    confidence: "medium",
+  });
+});
+
+function gateInput(): EvaluateBeliefRevisionHardGatesInput {
+  return {
+    priorInteraction: {
+      id: "interaction_1",
+      occurredAt: "2026-01-12T12:00:00.000Z",
+      revisitConditions: [
+        "Revisit after measurable enterprise adoption.",
+        "Revisit after durable customer retention is demonstrated.",
+      ],
+      provenance: "demo_fixture" as const,
+      label: "Sample decision record" as const,
+      priorActions: actionsForDealStatusAndDirection("passed", "none"),
+    },
+    triggerEvent: {
+      id: "event_1",
+      eventAt: "2026-07-23T12:00:00.000Z",
+      sourceIds: ["trigger_source_1"],
+    },
+    revisitMapping: {
+      priorInteractionId: "interaction_1",
+      revisitConditionIndex: 0,
+      revisitConditionText: "Revisit after measurable enterprise adoption.",
+      triggerEventId: "event_1",
+      citedSourceIds: ["trigger_source_1"],
+    },
+    counterevidence: {
+      statement:
+        "The public evidence does not yet establish durable customer retention.",
+      citedSourceIds: ["counter_source_1"],
+    },
+    resolvableSourceIds: ["trigger_source_1", "counter_source_1"],
+    dealStatus: "passed" as const,
+    direction: "positive" as const,
+    proposedActions: actionsForDealStatusAndDirection("passed", "positive"),
+  };
+}
+
+test("hard gates pass only for chronology, exact Sample revisit binding, cited counterevidence, and changed legal actions", () => {
+  const result = evaluateBeliefRevisionHardGates(gateInput());
+
+  assert.equal(result.chronology.passed, true);
+  assert.equal(result.revisitConditionMapping.passed, true);
+  assert.equal(result.counterevidence.passed, true);
+  assert.equal(result.actionDelta.passed, true);
+  assert.equal(result.allPassed, true);
+});
+
+test("chronology fails when the selected prior interaction does not predate the trigger event", () => {
+  const input = gateInput();
+  const result = evaluateBeliefRevisionHardGates({
+    ...input,
+    priorInteraction: {
+      ...input.priorInteraction,
+      occurredAt: input.triggerEvent.eventAt,
+    },
+  });
+
+  assert.equal(result.chronology.passed, false);
+  assert.match(result.chronology.failureReason ?? "", /predate/i);
+  assert.equal(result.allPassed, false);
+});
+
+test("chronology compares an exact date-only trigger without inventing a timestamp", () => {
+  const input = gateInput();
+  input.triggerEvent.eventAt = "2026-07-23";
+
+  const result = evaluateBeliefRevisionHardGates(input);
+
+  assert.equal(result.chronology.passed, true);
+  assert.equal(result.chronology.triggerEventAt, "2026-07-23");
+});
+
+test("revisit mapping fails for every wrong interaction, index, text, event, or citation binding", () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["interaction", { priorInteractionId: "interaction_other" }],
+    ["index", { revisitConditionIndex: 1 }],
+    ["text", { revisitConditionText: "Revisit after a different milestone." }],
+    ["event", { triggerEventId: "event_other" }],
+    ["citation", { citedSourceIds: ["missing_source"] }],
+  ];
+
+  for (const [name, override] of cases) {
+    const input = gateInput();
+    const result = evaluateBeliefRevisionHardGates({
+      ...input,
+      revisitMapping: { ...input.revisitMapping, ...override },
+    });
+    assert.equal(result.revisitConditionMapping.passed, false, name);
+    assert.equal(result.allPassed, false, name);
+  }
+});
+
+test("counterevidence fails when its statement is missing or any citation is unresolved", () => {
+  const cases = [
+    { statement: "", citedSourceIds: ["counter_source_1"] },
+    {
+      statement: "The public evidence does not yet establish retention.",
+      citedSourceIds: [],
+    },
+    {
+      statement: "The public evidence does not yet establish retention.",
+      citedSourceIds: ["missing_source"],
+    },
+  ];
+
+  for (const counterevidence of cases) {
+    const input = gateInput();
+    const result = evaluateBeliefRevisionHardGates({ ...input, counterevidence });
+    assert.equal(result.counterevidence.passed, false);
+    assert.equal(result.allPassed, false);
+  }
+});
+
+test("action delta fails for unchanged, illegal, incomplete, or reordered proposed actions", () => {
+  const unchanged = gateInput();
+  unchanged.priorInteraction.priorActions = unchanged.proposedActions;
+  const illegal = gateInput();
+  illegal.proposedActions = actionsForDealStatusAndDirection("passed", "negative");
+  const invested = gateInput();
+  invested.dealStatus = "invested";
+  invested.direction = "negative";
+  invested.proposedActions = [
+    ...actionsForDealStatusAndDirection("invested", "negative"),
+  ].reverse();
+  const incomplete = gateInput();
+  incomplete.dealStatus = "invested";
+  incomplete.direction = "negative";
+  incomplete.proposedActions = [
+    actionsForDealStatusAndDirection("invested", "negative")[0]!,
+  ];
+
+  for (const [name, input] of [
+    ["unchanged", unchanged],
+    ["illegal", illegal],
+    ["incomplete", incomplete],
+    ["reordered", invested],
+  ] as const) {
+    const result = evaluateBeliefRevisionHardGates(input);
+    assert.equal(result.actionDelta.passed, false, name);
+    assert.equal(result.allPassed, false, name);
+  }
+});
+
+test("passed-negative cannot reopen diligence through a caller-selected action", () => {
+  const input = gateInput();
+  input.direction = "negative";
+  input.proposedActions = actionsForDealStatusAndDirection("passed", "positive");
+
+  const result = evaluateBeliefRevisionHardGates(input);
+
+  assert.equal(result.actionDelta.passed, false);
+  assert.deepEqual(result.actionDelta.proposedActions.map((item) => item.kind), [
+    "reopen_diligence",
+  ]);
+  assert.equal(result.allPassed, false);
 });
 
 test("analyze retains grounded low-confidence matches for monitoring", async () => {
