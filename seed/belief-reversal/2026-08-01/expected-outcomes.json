@@ -1,35 +1,59 @@
 {
-  "schemaVersion": "belief-reversal-expected-outcomes-v1",
+  "schemaVersion": "belief-reversal-expected-outcomes-v2",
   "packageId": "belief_reversal_2026_08_01",
   "usage": "test_and_review_only",
-  "outcomes": [
+  "cases": [
     {
+      "caseId": "case_henry_ai_v1",
       "companyName": "Henry AI",
+      "expectedRelationship": "satisfies_revisit_condition",
       "priorStatus": "passed",
       "direction": "positive",
+      "priorAction": "deprioritize",
+      "expectedNewActions": ["reopen_diligence"],
       "minimumConfidence": "medium",
-      "expectedActions": ["reopen_diligence"]
+      "qualificationRationale": "The recent financing announcement includes a quantified workflow result that directly addresses the sample decision's observable revisit condition.",
+      "requiredOpenDiligence": ["Validate the reported workflow compression with named customers, retained usage, and output-quality measurements."],
+      "invalidatingEvidence": ["Independent deployment data shows that the reported time reduction does not persist in production or requires hidden manual work."]
     },
     {
+      "caseId": "case_smallest_ai_v1",
       "companyName": "Smallest.ai",
+      "expectedRelationship": "satisfies_revisit_condition",
       "priorStatus": "watchlist",
       "direction": "positive",
+      "priorAction": "continue_monitoring",
+      "expectedNewActions": ["advance_diligence"],
       "minimumConfidence": "medium",
-      "expectedActions": ["advance_diligence"]
+      "qualificationRationale": "The Series A and secondary reporting of two existing customers satisfy the sample trigger while product migration and date conflicts remain visible.",
+      "requiredOpenDiligence": ["Confirm customer deployment depth, retention, revenue, legal identity, and the operational impact of Agent Versioning."],
+      "invalidatingEvidence": ["Named companies deny production use, or the locking-to-versioning migration materially weakens reliability or customer adoption."]
     },
     {
+      "caseId": "case_hush_security_v1",
       "companyName": "Hush Security",
+      "expectedRelationship": "satisfies_revisit_condition",
       "priorStatus": "invested",
       "direction": "positive",
+      "priorAction": "evaluate_follow_on",
+      "expectedNewActions": ["evaluate_follow_on"],
       "minimumConfidence": "medium",
-      "expectedActions": ["evaluate_follow_on", "validate_channel_economics"]
+      "qualificationRationale": "Strategic financing and company-reported Kyndryl deployment and resale evidence match the sample portfolio revisit condition without proving channel quality.",
+      "requiredOpenDiligence": ["Validate Akamai and Kyndryl channel economics, bookings, margins, and sell-through."],
+      "invalidatingEvidence": ["Partner diligence shows no paid deployment, negligible sell-through, or controls that do not cover the relevant agent-risk pathways."]
     },
     {
+      "caseId": "case_irregular_v1",
       "companyName": "Irregular",
+      "expectedRelationship": "contradicts_revisit_condition",
       "priorStatus": "invested",
       "direction": "negative",
-      "minimumConfidence": "medium",
-      "expectedActions": ["pause_follow_on", "portfolio_risk_review"]
+      "priorAction": "evaluate_follow_on",
+      "expectedNewActions": ["pause_follow_on", "portfolio_risk_review"],
+      "minimumConfidence": "high",
+      "qualificationRationale": "Anthropic's official report states that incidents involving Irregular evaluation environments reached unauthorized real systems, directly testing the sample containment premise.",
+      "requiredOpenDiligence": ["Determine responsibility allocation, remediation scope, recurrence testing, insurance impact, and customer notification obligations."],
+      "invalidatingEvidence": ["Verified technical evidence shows Irregular's environment was not implicated, or complete remediation eliminates the identified containment path without recurrence."]
     }
   ]
 }
