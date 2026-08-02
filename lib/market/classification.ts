@@ -1,3 +1,4 @@
+import { sourceTextForRetrieval } from "../contracts/source-evidence";
 import type { NormalizedMarketEvent } from "./types";
 
 interface EvidenceRule {
@@ -100,7 +101,7 @@ function evidenceText(event: NormalizedMarketEvent): string {
   return [
     event.title,
     event.summary,
-    ...event.sources.map((source) => source.excerpt),
+    ...event.sources.map(sourceTextForRetrieval),
   ].join(" ");
 }
 

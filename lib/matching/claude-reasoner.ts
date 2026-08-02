@@ -9,6 +9,10 @@ import type {
   MatchingReasoner,
   ReasonedMatch,
 } from "./service";
+import {
+  serializeMatchingEvidence,
+  stableEvidencePromptJson,
+} from "./prompt-evidence";
 
 // The model occasionally emits numeric scores as strings; coerce instead of
 // rejecting the whole batch of matches.
@@ -57,9 +61,11 @@ export function createClaudeMatchingReasoner(
           "Find overlaps between recent public market events and previously reviewed Deals.",
           "Do not invent company progress, revenue, customers, fundraising, or current status.",
           "Use only the supplied memory context and source catalog.",
-          "Every sentence in whyNow and previousContext, and every implication, must appear verbatim as a key in claimSourceIds.",
-          "Claims are validated mechanically: each claim must be an exact, character-for-character contiguous substring of every cited source's excerpt in the sources catalog. Compose whyNow and previousContext only by copy-pasting sentences out of source excerpts; never write your own sentence, never paraphrase, never merge two excerpts into one sentence.",
-          "memoryContexts text is retrieval output, not quotable evidence: use it to decide which Deals are relevant, then locate the matching entry in the sources catalog and copy from that excerpt instead.",
+          "Every sentence in whyNow and previousContext, and every implication, must appear as a key in claimSourceIds.",
+          "Use verbatimExcerpt only when quoteEligible is true. A normalizedStatement is a non-quote canonical description: it may ground a factual claim only when factEligible is true, and must never be presented or described as a direct quotation.",
+          "Claims are validated mechanically: each claim must be an exact, character-for-character contiguous substring of the cited source's eligible verbatimExcerpt or normalizedStatement. Never merge two evidence strings into one sentence.",
+          "Sources with factEligible false, including legacy_unverified and model_inference text, are retrieval context only and cannot support output claims.",
+          "memoryContexts text is retrieval output, not quotable evidence: use it to decide which Deals are relevant, then locate eligible text in the sources catalog.",
           "Synthetic fixture records are internal demo context, never external company facts.",
           "nextStep must be a human research, review, diligence, or follow-up action; never recommend investing or committing capital.",
           "Report every credible Deal/event overlap you find, including uncertain ones; reflect uncertainty in scoreInputs rather than omitting the match. Downstream deterministic validation drops ungrounded claims, so coverage matters more than filtering here.",
@@ -67,7 +73,8 @@ export function createClaudeMatchingReasoner(
           "Calibrate the other two dimensions the same way: when the recalled decision context explicitly records a revisit condition or concern that the public event directly addresses, priorContextStrength belongs at 0.6 or higher; when the cited public sources are primary official publications (government registers, regulator or agency releases, court filings), evidenceQuality belongs at 0.6 or higher. Reserve values below 0.4 for thin or secondary context.",
           "Return JSON only: an array matching the requested schema. Return [] only when no event plausibly relates to any Deal.",
         ].join(" ");
-      const requestContent = JSON.stringify({
+      const evidence = serializeMatchingEvidence(input);
+      const requestContent = stableEvidencePromptJson({
         task: "Rank credible Deal/event overlaps for human follow-up.",
         outputSchema: {
           dealId: "candidate Deal id",
@@ -86,18 +93,23 @@ export function createClaudeMatchingReasoner(
           },
           scoreInputsNote: "scoreInputs values are JSON numbers between 0 and 1, never strings",
           claimSourceIds: {
-            "exact sentence copied from whyNow": ["valid source IDs"],
+            "claim copied from eligible verbatim or normalized evidence": ["valid source IDs"],
           },
         },
         deals: input.deals,
-        marketEvents: input.events.map(stableJudgmentEvent),
+        marketEvents: evidence.marketEvents,
         memoryContexts: input.memoryContexts,
-        sources: input.sources,
+        sources: evidence.sources,
       });
       const model = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-8";
-      const fingerprint = createHash("sha256")
-        .update(`reasoner-judgment-v1\n${model}\n${system}\n${requestContent}`, "utf8")
-        .digest("hex");
+      const fingerprint = `reasoner-judgment-v2:sha256:${
+        createHash("sha256")
+          .update(
+            `reasoner-judgment-v2\n${model}\n${system}\n${requestContent}`,
+            "utf8",
+          )
+          .digest("hex")
+      }`;
       if (options.judgments && !options.refreshJudgments) {
         const replayed = await replayJudgment(options.judgments, fingerprint, input);
         if (replayed) return replayed;
@@ -142,15 +154,6 @@ export function createClaudeMatchingReasoner(
       return matches;
     },
   };
-}
-
-// retrievedAt is stamped at scan time, so two scans over identical market
-// content would otherwise never share a judgment fingerprint. Every other
-// event field is content-derived and stable.
-function stableJudgmentEvent(event: MatchingInput["events"][number]) {
-  const { retrievedAt, ...stable } = event as { retrievedAt?: string };
-  void retrievedAt;
-  return stable;
 }
 
 async function replayJudgment(

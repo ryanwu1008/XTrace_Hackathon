@@ -117,7 +117,7 @@ function recordingFetch(
   };
 }
 
-test("parses recorded RSS and Atom evidence with bounded native-fetch settings", async () => {
+test("RSS emits normalized-only prose with explicit source provenance", async () => {
   const calls: FetchCall[] = [];
   const fetch = recordingFetch([
     new Response(RECORDED_COMPANY_RSS, {
@@ -136,6 +136,9 @@ test("parses recorded RSS and Atom evidence with bounded native-fetch settings",
     url: "https://acme.example/news/rss.xml",
     publisher: "Acme",
     eventType: "company_announcement",
+    sourceClass: "company_official",
+    sourceAuthority: "primary",
+    evidenceRole: "trigger",
   }, { fetch });
   const sec = createRssMarketProvider({
     id: "sec-public-releases",
@@ -143,6 +146,9 @@ test("parses recorded RSS and Atom evidence with bounded native-fetch settings",
     url: "https://www.sec.gov/news/pressreleases.rss",
     publisher: "U.S. Securities and Exchange Commission",
     eventType: "regulatory",
+    sourceClass: "government_or_regulator",
+    sourceAuthority: "primary",
+    evidenceRole: "trigger",
   }, { fetch });
 
   const [companyItems, secItems] = await Promise.all([
@@ -157,9 +163,12 @@ test("parses recorded RSS and Atom evidence with bounded native-fetch settings",
     title: "Acme closes Series B funding round",
     url: "https://acme.example/news/series-b?utm_source=rss",
     publisher: "Acme",
+    sourceClass: "company_official",
+    sourceAuthority: "primary",
+    evidenceRole: "trigger",
     publishedAt: "2026-07-23T15:00:00.000Z",
     summary: "Acme announced that it closed a Series B funding round.",
-    evidenceExcerpt:
+    normalizedStatement:
       "Acme announced that it closed a Series B funding round.",
     eventType: "company_announcement",
     sectors: [],
@@ -167,6 +176,10 @@ test("parses recorded RSS and Atom evidence with bounded native-fetch settings",
     confidence: "medium",
   });
   assert.equal(secItems[0].externalId, "sec-release-2026-91");
+  assert.equal(secItems[0].sourceClass, "government_or_regulator");
+  assert.equal(secItems[0].sourceAuthority, "primary");
+  assert.equal(secItems[0].evidenceRole, "trigger");
+  assert.equal("evidenceExcerpt" in companyItems[0], false);
   assert.equal(
     secItems[0].url,
     "https://www.sec.gov/newsroom/press-releases/2026-91",
@@ -204,7 +217,7 @@ test("allows a deployer to identify itself with an SEC-compatible contact", asyn
   );
 });
 
-test("queries and parses the recorded Federal Register JSON boundary", async () => {
+test("Federal Register emits normalized-only primary government evidence", async () => {
   const calls: FetchCall[] = [];
   const provider = createFederalRegisterProvider({
     fetch: recordingFetch([
@@ -219,9 +232,13 @@ test("queries and parses the recorded Federal Register JSON boundary", async () 
   assert.equal(items[0].publishedAt, "2026-07-21T00:00:00.000Z");
   assert.equal(items[0].eventType, "regulatory");
   assert.equal(
-    items[0].evidenceExcerpt,
+    items[0].normalizedStatement,
     "The agency requests public comment on health data interoperability.",
   );
+  assert.equal(items[0].sourceClass, "government_or_regulator");
+  assert.equal(items[0].sourceAuthority, "primary");
+  assert.equal(items[0].evidenceRole, "trigger");
+  assert.equal("evidenceExcerpt" in items[0], false);
 
   const requestUrl = new URL(calls[0].url);
   assert.equal(requestUrl.hostname, "www.federalregister.gov");
@@ -399,7 +416,7 @@ test("does not treat an Atom update timestamp as a new publication", async () =>
   );
 });
 
-test("uses the authorized Crunchbase JSON API and validates its response", async () => {
+test("Crunchbase emits synthesized normalized-only secondary database evidence", async () => {
   const calls: FetchCall[] = [];
   const provider = createCrunchbaseProvider("authorized-test-key", {
     fetch: recordingFetch([
@@ -412,8 +429,13 @@ test("uses the authorized Crunchbase JSON API and validates its response", async
   assert.equal(items.length, 1);
   assert.equal(items[0].providerId, "crunchbase");
   assert.equal(items[0].title, "Acme — Series B - Acme");
+  assert.equal(items[0].eventAt, "2026-07-20T00:00:00.000Z");
   assert.equal(items[0].publishedAt, "2026-07-20T00:00:00.000Z");
-  assert.match(items[0].evidenceExcerpt ?? "", /USD 40000000/);
+  assert.match(items[0].normalizedStatement ?? "", /USD 40000000/);
+  assert.equal(items[0].sourceClass, "commercial_database");
+  assert.equal(items[0].sourceAuthority, "secondary");
+  assert.equal(items[0].evidenceRole, "trigger");
+  assert.equal("evidenceExcerpt" in items[0], false);
   assert.deepEqual(items[0].sectors, ["Health Care"]);
   assert.deepEqual(items[0].themes, ["funding", "investor:Example Ventures"]);
 

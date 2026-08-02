@@ -3,6 +3,10 @@ import test from "node:test";
 
 import { MarketEventSchema } from "../../lib/contracts/domain";
 import {
+  MarketEventV2Schema,
+  WritableMarketEventV2Schema,
+} from "../../lib/contracts/source-evidence";
+import {
   canonicalizeUrl,
   dedupeEvents,
   withinWindow,
@@ -24,11 +28,70 @@ import type {
 import { marketScanStage } from "../../worker/stages/market-scan";
 
 const NOW = new Date("2026-07-24T12:00:00.000Z");
+const SHA256_A = `sha256:${"a".repeat(64)}`;
+const SHA256_B = `sha256:${"b".repeat(64)}`;
+
+function sourceV2(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: "source-ref-v2",
+    adaptation: "canonical",
+    id: "source_v2_1",
+    provenance: "public_web",
+    title: "Acme funding announcement",
+    canonicalUrl: "https://acme.example/news/series-b",
+    documentId: null,
+    publisher: "Acme",
+    providerId: "company-feed",
+    eventAt: null,
+    publishedAt: "2026-07-23T15:00:00.000Z",
+    retrievedAt: NOW.toISOString(),
+    updatedAt: null,
+    entityKeys: ["acme"],
+    sourceClass: "company_official",
+    sourceAuthority: "primary",
+    evidenceRole: "trigger",
+    sourceRevisionId: null,
+    locator: null,
+    contentFingerprint: SHA256_A,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "Acme announced a Series B funding round.",
+    },
+    ...overrides,
+  };
+}
+
+function eventV2(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: "market-event-v2",
+    adaptation: "canonical",
+    id: "market_v2_1",
+    title: "Acme closes Series B funding round",
+    eventType: "funding",
+    sectors: ["healthcare"],
+    themes: ["growth"],
+    summary: "Acme announced a Series B funding round.",
+    positiveImplications: [],
+    negativeImplications: [],
+    eventAt: null,
+    publishedAt: "2026-07-23T15:00:00.000Z",
+    retrievedAt: NOW.toISOString(),
+    updatedAt: null,
+    confidence: "medium",
+    canonicalUrl: "https://acme.example/news/series-b",
+    providerId: "company-feed",
+    contentFingerprint: SHA256_B,
+    entityKeys: ["acme"],
+    triggerSourceId: "source_v2_1",
+    sources: [sourceV2()],
+    ...overrides,
+  };
+}
 
 function event(
-  overrides: Partial<NormalizedMarketEvent> = {},
+  overrides: Record<string, unknown> = {},
 ): NormalizedMarketEvent {
-  return {
+  const base = {
     id: "market_1",
     title: "Acme closes Series B funding round",
     eventType: "funding",
@@ -49,12 +112,86 @@ function event(
       excerpt: "Acme announced that it closed a Series B funding round.",
     }],
     canonicalUrl: "https://acme.example/news/series-b",
-    contentChecksum: "checksum-1",
     retrievedAt: "2026-07-24T12:00:00.000Z",
     providerId: "company-feed",
     entityKeys: ["acme"],
-    ...overrides,
   };
+  const overrideSources = Array.isArray(overrides.sources)
+    ? overrides.sources as Array<Record<string, unknown>>
+    : base.sources;
+  const triggerInput = overrideSources[0] ?? base.sources[0];
+  const canonicalUrl = typeof overrides.canonicalUrl === "string"
+    ? overrides.canonicalUrl
+    : typeof triggerInput.url === "string"
+    ? triggerInput.url
+    : base.canonicalUrl;
+  const publishedAt = typeof overrides.publishedAt === "string"
+    ? overrides.publishedAt
+    : typeof triggerInput.publishedAt === "string"
+    ? triggerInput.publishedAt
+    : base.publishedAt;
+  const retrievedAt = typeof overrides.retrievedAt === "string"
+    ? overrides.retrievedAt
+    : base.retrievedAt;
+  const providerId = typeof overrides.providerId === "string"
+    ? overrides.providerId
+    : base.providerId;
+  const entityKeys = Array.isArray(overrides.entityKeys)
+    ? overrides.entityKeys
+    : base.entityKeys;
+  const sources = overrideSources.map((input, index) => {
+    if (input.schemaVersion === "source-ref-v2") return input;
+    const normalizedStatement = typeof input.excerpt === "string"
+      ? input.excerpt
+      : base.sources[0].excerpt;
+    return sourceV2({
+      id: typeof input.id === "string" ? input.id : `source_${index + 1}`,
+      title: typeof input.title === "string" ? input.title : base.title,
+      canonicalUrl: index === 0
+        ? canonicalUrl
+        : typeof input.url === "string"
+        ? input.url
+        : canonicalUrl,
+      publisher: typeof input.publisher === "string"
+        ? input.publisher
+        : "Example Publisher",
+      providerId,
+      eventAt: null,
+      publishedAt: index === 0
+        ? publishedAt
+        : typeof input.publishedAt === "string"
+        ? input.publishedAt
+        : publishedAt,
+      retrievedAt,
+      updatedAt: null,
+      entityKeys,
+      evidenceRole: index === 0 ? "trigger" : "corroborating",
+      text: { status: "normalized_only", normalizedStatement },
+    });
+  });
+  const {
+    contentChecksum: _legacyContentChecksum,
+    sources: _legacySources,
+    ...eventOverrides
+  } = overrides;
+  void _legacyContentChecksum;
+  void _legacySources;
+  return WritableMarketEventV2Schema.parse({
+    schemaVersion: "market-event-v2",
+    adaptation: "canonical",
+    ...base,
+    ...eventOverrides,
+    canonicalUrl,
+    publishedAt,
+    retrievedAt,
+    providerId,
+    contentFingerprint: SHA256_B,
+    eventAt: null,
+    updatedAt: null,
+    entityKeys,
+    triggerSourceId: String(sources[0].id),
+    sources,
+  });
 }
 
 function rawItem(overrides: Partial<RawSourceItem> = {}): RawSourceItem {
@@ -64,9 +201,12 @@ function rawItem(overrides: Partial<RawSourceItem> = {}): RawSourceItem {
     title: "Acme closes Series B funding round",
     url: "https://acme.example/news/series-b?utm_source=email",
     publisher: "Acme",
+    sourceClass: "company_official",
+    sourceAuthority: "primary",
+    evidenceRole: "trigger",
     publishedAt: "2026-07-23T15:00:00.000Z",
     summary: "Acme announced a Series B funding round.",
-    evidenceExcerpt:
+    normalizedStatement:
       "Acme announced that it closed a Series B funding round.",
     eventType: "funding",
     sectors: ["healthcare"],
@@ -146,15 +286,18 @@ test("deduplicates semantically similar titles from the same publication day", (
   assert.equal(dedupeEvents([event(), duplicate]).length, 1);
 
   const nextDay = duplicate.publishedAt.replace("2026-07-23", "2026-07-24");
+  const nextDayRetrieval = "2026-07-24T19:00:00.000Z";
   assert.equal(
     dedupeEvents([
       event(),
       {
         ...duplicate,
         publishedAt: nextDay,
+        retrievedAt: nextDayRetrieval,
         sources: duplicate.sources.map((source) => ({
           ...source,
           publishedAt: nextDay,
+          retrievedAt: nextDayRetrieval,
         })),
       },
     ]).length,
@@ -167,21 +310,112 @@ test("normalizes a source item into a validated, evidence-backed event", async (
     retrievedAt: NOW,
   });
 
-  assert.equal(MarketEventSchema.safeParse(normalized).success, true);
+  assert.equal(MarketEventSchema.safeParse(normalized).success, false);
+  assert.equal(WritableMarketEventV2Schema.safeParse(normalized).success, true);
   assert.equal(
     normalized.canonicalUrl,
     "https://acme.example/news/series-b",
   );
-  assert.match(normalized.contentChecksum, /^[a-f0-9]{64}$/);
+  assert.match(normalized.contentFingerprint, /^sha256:[a-f0-9]{64}$/);
   assert.match(normalized.id, /^market_[a-f0-9]{24}$/);
   assert.equal(normalized.retrievedAt, NOW.toISOString());
   assert.equal(
-    normalized.sources[0].excerpt,
+    normalized.sources[0].text.normalizedStatement,
     "Acme announced that it closed a Series B funding round.",
   );
 });
 
-test("content checksums identify content independently of its source URL", async () => {
+test("normalizes provider prose as non-quote v2 evidence", async () => {
+  const normalized = await normalizeMarketItem({
+    ...rawItem(),
+    normalizedStatement: "Acme announced that it closed a Series B funding round.",
+  }, { retrievedAt: NOW });
+
+  assert.equal(WritableMarketEventV2Schema.safeParse(normalized).success, true);
+  assert.equal(MarketEventV2Schema.safeParse(normalized).success, true);
+  assert.equal(normalized.adaptation, "canonical");
+  assert.equal(normalized.eventAt, null);
+  assert.equal(normalized.sources[0].text.status, "normalized_only");
+  assert.equal("verbatimExcerpt" in normalized.sources[0].text, false);
+  assert.equal(normalized.sources[0].sourceClass, "company_official");
+  assert.equal(normalized.sources[0].sourceAuthority, "primary");
+  assert.equal(normalized.sources[0].evidenceRole, "trigger");
+});
+
+test("missing event date stays null and updatedAt never becomes publishedAt", async () => {
+  const normalized = await normalizeMarketItem(rawItem({
+    eventAt: undefined,
+    updatedAt: "2026-07-23T16:00:00.000Z",
+  }), { retrievedAt: NOW });
+
+  assert.equal(normalized.eventAt, null);
+  assert.equal(normalized.publishedAt, "2026-07-23T15:00:00.000Z");
+  assert.equal(normalized.updatedAt, "2026-07-23T16:00:00.000Z");
+  await assert.rejects(
+    normalizeMarketItem(rawItem({
+      publishedAt: undefined,
+      updatedAt: "2026-07-23T16:00:00.000Z",
+    }), { retrievedAt: NOW }),
+    /publication time/i,
+  );
+});
+
+test("normalization rejects malformed class authority role entity and event date", async () => {
+  const invalidCases: Array<[string, Partial<RawSourceItem>]> = [
+    ["class", { sourceClass: "blog" as never }],
+    ["authority", { sourceAuthority: "official" as never }],
+    ["role", { evidenceRole: "citation" as never }],
+    ["entity", { entities: ["Acme Incorporated"] }],
+    ["event date", { eventAt: "not-a-date" }],
+  ];
+  for (const [label, overrides] of invalidCases) {
+    await assert.rejects(
+      normalizeMarketItem(rawItem(overrides), { retrievedAt: NOW }),
+      undefined,
+      label,
+    );
+  }
+});
+
+test("same source or event ID with conflicting canonical payload throws", () => {
+  assert.throws(() => dedupeEvents([
+    eventV2(),
+    eventV2({ title: "Conflicting title for the same event ID" }),
+  ] as never), /conflicting market event id/i);
+
+  assert.throws(() => dedupeEvents([
+    eventV2(),
+    eventV2({
+      id: "market_v2_2",
+      sources: [sourceV2({ title: "Conflicting source revision" })],
+    }),
+  ] as never), /conflicting source id/i);
+});
+
+test("a rolling URL with different event or publication dates is not merged", () => {
+  const laterPublishedAt = "2026-07-24T15:00:00.000Z";
+  const laterRetrievedAt = "2026-07-24T16:00:00.000Z";
+  const result = dedupeEvents([
+    eventV2(),
+    eventV2({
+      id: "market_v2_2",
+      eventAt: "2026-07-24T14:00:00.000Z",
+      publishedAt: laterPublishedAt,
+      retrievedAt: laterRetrievedAt,
+      sources: [sourceV2({
+        id: "source_v2_2",
+        eventAt: "2026-07-24T14:00:00.000Z",
+        publishedAt: laterPublishedAt,
+        retrievedAt: laterRetrievedAt,
+      })],
+      triggerSourceId: "source_v2_2",
+    }),
+  ] as never);
+
+  assert.equal(result.length, 2);
+});
+
+test("normalized source content fingerprints identify text independently of URL", async () => {
   const first = await normalizeMarketItem(rawItem(), { retrievedAt: NOW });
   const syndicated = await normalizeMarketItem(rawItem({
     providerId: "publisher-feed",
@@ -190,7 +424,11 @@ test("content checksums identify content independently of its source URL", async
     publisher: "Publisher",
   }), { retrievedAt: NOW });
 
-  assert.equal(first.contentChecksum, syndicated.contentChecksum);
+  assert.equal(
+    first.sources[0].contentFingerprint,
+    syndicated.sources[0].contentFingerprint,
+  );
+  assert.notEqual(first.id, syndicated.id);
 });
 
 test("preserves the original retrieval time when cached evidence is reused", async () => {
@@ -464,11 +702,11 @@ test("rejects undated or evidence-free source items", async () => {
   await assert.rejects(
     normalizeMarketItem(rawItem({
       summary: undefined,
-      evidenceExcerpt: undefined,
+      normalizedStatement: undefined,
     }), {
       retrievedAt: NOW,
     }),
-    /evidence excerpt/i,
+    /normalized evidence statement/i,
   );
 });
 
@@ -496,7 +734,7 @@ test("scans providers independently, filters by publication date, and persists d
           externalId: "no-evidence",
           title: "Unverifiable announcement",
           url: "https://acme.example/news/no-evidence",
-          evidenceExcerpt: undefined,
+          normalizedStatement: undefined,
           summary: undefined,
         }),
       ];

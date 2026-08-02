@@ -1,19 +1,18 @@
 import { ClaudeReasonedMatchesSchema } from "./schemas";
 import type { ClaudeClient } from "./client";
 import type { MatchingInput, ReasonedMatch } from "../matching/service";
+import {
+  serializeMatchingEvidence,
+  stableEvidencePromptJson,
+} from "../matching/prompt-evidence";
 
 function evidencePrompt(input: MatchingInput) {
-  return JSON.stringify({
+  const evidence = serializeMatchingEvidence(input);
+  return stableEvidencePromptJson({
     deals: input.deals,
-    events: input.events,
+    events: evidence.marketEvents,
     memoryContexts: input.memoryContexts,
-    sources: input.sources.map((source) => ({
-      id: source.id,
-      provenance: source.provenance,
-      title: source.title,
-      excerpt: source.excerpt,
-      publishedAt: source.publishedAt,
-    })),
+    sources: evidence.sources,
   });
 }
 
@@ -30,6 +29,9 @@ export function createClaudeReasoner(client: ClaudeClient) {
         "Use only the supplied evidence.",
         "Separate external facts from Demo fixture decision context.",
         "Every factual sentence must have source IDs in claimSourceIds.",
+        "Use verbatimExcerpt only when quoteEligible is true.",
+        "normalizedStatement is non-quote evidence and must never be represented as a direct quotation.",
+        "Sources with factEligible false are retrieval context only and cannot support output facts.",
         "Return JSON only. Return [] when evidence is insufficient.",
       ].join(" ");
       const prompt = `Assess which historical Deals deserve review.\n${evidencePrompt(input)}`;

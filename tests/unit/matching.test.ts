@@ -8,6 +8,56 @@ import {
 } from "../../lib/matching/scoring";
 import { createMatchingService } from "../../lib/matching/service";
 import type { DealStatus } from "../../lib/contracts/domain";
+import { adaptLegacySourceRef } from "../../lib/contracts/legacy-evidence-adapter";
+import {
+  exactSourceV2,
+  marketEventV2,
+  normalizedSourceV2,
+  TEST_SHA256_A,
+} from "../helpers/source-evidence-v2";
+
+function publicExactSource(
+  id: string,
+  title: string,
+  canonicalUrl: string,
+  verbatimExcerpt: string,
+) {
+  return exactSourceV2(id, {
+    title,
+    canonicalUrl,
+    publisher: "Example Publisher",
+    providerId: "example-feed",
+    entityKeys: [],
+    text: { status: "verified_exact", verbatimExcerpt },
+  });
+}
+
+function priorExactSource(
+  id: string,
+  title: string,
+  documentId: string,
+  verbatimExcerpt: string,
+  provenance: "source_document" | "demo_fixture" = "source_document",
+) {
+  return exactSourceV2(id, {
+    provenance,
+    title,
+    canonicalUrl: null,
+    documentId,
+    publisher: "Internal Deal Registry",
+    providerId: "deal-registry",
+    eventAt: null,
+    publishedAt: "2026-07-01T00:00:00.000Z",
+    retrievedAt: "2026-07-02T00:00:00.000Z",
+    updatedAt: null,
+    entityKeys: [],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    locator: { kind: "document_page", page: 1 },
+    text: { status: "verified_exact", verbatimExcerpt },
+  });
+}
 
 async function matchWithReasonerNextStep(
   nextStep: string,
@@ -48,20 +98,18 @@ async function matchWithReasonerNextStep(
       fixtureIds: [],
     }],
     sources: [
-      {
-        id: "market_1",
-        provenance: "public_web",
-        title: "Infrastructure funding",
-        url: "https://example.com/market",
-        excerpt: "AI infrastructure networks funding increased.",
-      },
-      {
-        id: "deal_source_1",
-        provenance: "source_document",
-        title: "Example deck",
-        documentId: "doc_1",
-        excerpt: "The fund passed because infrastructure networks timing was early.",
-      },
+      publicExactSource(
+        "market_1",
+        "Infrastructure funding",
+        "https://example.com/market",
+        "AI infrastructure networks funding increased.",
+      ),
+      priorExactSource(
+        "deal_source_1",
+        "Example deck",
+        "doc_1",
+        "The fund passed because infrastructure networks timing was early.",
+      ),
     ],
   });
 }
@@ -132,21 +180,18 @@ test("analyze retains grounded low-confidence matches for monitoring", async () 
       fixtureIds: [],
     }],
     sources: [
-      {
-        id: "market_1",
-        provenance: "public_web" as const,
-        title: "Infrastructure funding",
-        url: "https://example.com/market",
-        excerpt: "AI infrastructure networks funding increased.",
-      },
-      {
-        id: "deal_source_1",
-        provenance: "source_document" as const,
-        title: "Example deck",
-        documentId: "doc_1",
-        excerpt:
-          "The fund passed because infrastructure networks timing was early.",
-      },
+      publicExactSource(
+        "market_1",
+        "Infrastructure funding",
+        "https://example.com/market",
+        "AI infrastructure networks funding increased.",
+      ),
+      priorExactSource(
+        "deal_source_1",
+        "Example deck",
+        "doc_1",
+        "The fund passed because infrastructure networks timing was early.",
+      ),
     ],
   };
 
@@ -219,6 +264,150 @@ test("uses one safe application-owned next-step template for every Deal status",
   }
 });
 
+test("normalized support stays non-quote while legacy and model text cannot support output facts", async () => {
+  const publicSource = normalizedSourceV2("market_normalized", {
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "Acme announced a Series B funding round.",
+    },
+  });
+  const priorSource = exactSourceV2("prior_exact", {
+    provenance: "source_document",
+    title: "Investment record",
+    canonicalUrl: null,
+    documentId: "document_prior_1",
+    publisher: "Internal Deal Registry",
+    providerId: "deal-registry",
+    eventAt: null,
+    publishedAt: "2026-01-10T12:00:00.000Z",
+    retrievedAt: "2026-01-10T13:00:00.000Z",
+    entityKeys: ["acme"],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: "The fund passed because market timing was early.",
+    },
+  });
+  const legacySource = adaptLegacySourceRef({
+    id: "legacy_unverified",
+    provenance: "public_web",
+    title: "Legacy article",
+    url: "https://legacy.example/article",
+    excerpt: "Legacy customer adoption increased.",
+  });
+  const modelSource = exactSourceV2("model_inference", {
+    provenance: "model_inference",
+    title: "Model inference",
+    canonicalUrl: null,
+    documentId: null,
+    publisher: "Anthropic",
+    providerId: "anthropic",
+    eventAt: null,
+    publishedAt: null,
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    entityKeys: ["acme"],
+    sourceClass: "model_output",
+    sourceAuthority: "not_applicable",
+    evidenceRole: "context",
+    sourceRevisionId: null,
+    locator: null,
+    text: {
+      status: "model_inference",
+      normalizedStatement: "The financing guarantees product-market fit.",
+      model: {
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        generatedAt: "2026-07-24T12:00:00.000Z",
+        inputFingerprint: TEST_SHA256_A,
+      },
+    },
+  });
+  const service = createMatchingService({
+    reason: async () => [{
+      dealId: "deal_1",
+      whyNow: "Acme announced a Series B funding round.",
+      previousContext: "The fund passed because market timing was early.",
+      positiveImplications: [
+        "Legacy customer adoption increased.",
+        "The financing guarantees product-market fit.",
+      ],
+      negativeImplications: [],
+      nextStep: "Review the evidence.",
+      citedSourceIds: [
+        publicSource.id,
+        priorSource.id,
+        legacySource.id,
+        modelSource.id,
+      ],
+      demoFixtureIds: [],
+      scoreInputs: {
+        eventRelevance: 0.9,
+        dealRelevance: 0.9,
+        priorContextStrength: 0.9,
+        evidenceQuality: 0.9,
+      },
+      claimSourceIds: {
+        "Acme announced a Series B funding round.": [publicSource.id],
+        "The fund passed because market timing was early.": [priorSource.id],
+        "Legacy customer adoption increased.": [legacySource.id],
+        "The financing guarantees product-market fit.": [modelSource.id],
+      },
+    }],
+  });
+
+  const matches = await service.analyze({
+    deals: [{ id: "deal_1", companyName: "Acme", status: "passed" }],
+    events: [marketEventV2(publicSource)],
+    memoryContexts: [{
+      dealId: "deal_1",
+      text: "Prior context",
+      sourceIds: [priorSource.id],
+      fixtureIds: [],
+    }],
+    sources: [publicSource, priorSource, legacySource, modelSource],
+  });
+
+  assert.equal(matches.length, 1);
+  assert.deepEqual(matches[0].implications.positive, []);
+  assert.deepEqual(matches[0].claimSupport, [{
+    text: "Acme announced a Series B funding round.",
+    kind: "normalized_non_quote",
+    sourceIds: [publicSource.id],
+  }, {
+    text: "The fund passed because market timing was early.",
+    kind: "exact_quote",
+    sourceIds: [priorSource.id],
+  }]);
+  assert.equal(matches[0].sources[0].text.status, "normalized_only");
+});
+
+test("matching source ID conflicts throw before the reasoner is called", async () => {
+  let reasonerCalls = 0;
+  const first = normalizedSourceV2("conflicting_source");
+  const conflicting = normalizedSourceV2("conflicting_source", {
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "A different statement under the same source ID.",
+    },
+  });
+  const service = createMatchingService({
+    async reason() {
+      reasonerCalls += 1;
+      return [];
+    },
+  });
+
+  await assert.rejects(service.analyze({
+    deals: [{ id: "deal_1", companyName: "Acme", status: "passed" }],
+    events: [marketEventV2(first)],
+    memoryContexts: [],
+    sources: [first, conflicting],
+  }), /conflicting source id/i);
+  assert.equal(reasonerCalls, 0);
+});
+
 test("drops unsupported claims and retains explicit fixture lineage", async () => {
   const service = createMatchingService({
     reason: async () => [{
@@ -261,26 +450,25 @@ test("drops unsupported claims and retains explicit fixture lineage", async () =
       fixtureIds: ["fixture_1"],
     }],
     sources: [
-      {
-        id: "market_1",
-        provenance: "public_web",
-        title: "Market source",
-        url: "https://example.com/market",
-        excerpt: "AI infrastructure networks funding increased.",
-      },
-      {
-        id: "deal_source_1",
-        provenance: "source_document",
-        title: "Deal deck",
-        documentId: "doc_1",
-        excerpt: "AI infrastructure networks Deal evidence.",
-      },
-      {
-        id: "fixture_1",
-        provenance: "demo_fixture",
-        title: "Sample decision record",
-        excerpt: "The fund passed because timing was early.",
-      },
+      publicExactSource(
+        "market_1",
+        "Market source",
+        "https://example.com/market",
+        "AI infrastructure networks funding increased. Market timing improved. Competition increased.",
+      ),
+      priorExactSource(
+        "deal_source_1",
+        "Deal deck",
+        "doc_1",
+        "AI infrastructure networks Deal evidence. Market timing improved.",
+      ),
+      priorExactSource(
+        "fixture_1",
+        "Sample decision record",
+        "fixture_doc_1",
+        "The fund passed because timing was early.",
+        "demo_fixture",
+      ),
     ],
   });
 
@@ -290,7 +478,22 @@ test("drops unsupported claims and retains explicit fixture lineage", async () =
   assert.deepEqual(result[0].sources.map((source) => source.id), [
     "market_1",
     "fixture_1",
+    "deal_source_1",
   ]);
+  assert.deepEqual(result[0].implications, {
+    positive: ["Market timing improved."],
+    negative: ["Competition increased."],
+  });
+  assert.deepEqual(
+    result[0].claimSupport.find((support) =>
+      support.text === "Market timing improved."
+    ),
+    {
+      text: "Market timing improved.",
+      kind: "exact_quote",
+      sourceIds: ["market_1", "deal_source_1"],
+    },
+  );
 });
 
 test("rejects a match with no Deal-linked evidence and sanitizes unsafe actions", async () => {
@@ -326,13 +529,12 @@ test("rejects a match with no Deal-linked evidence and sanitizes unsafe actions"
       sourceIds: ["deal_source_1"],
       fixtureIds: [],
     }],
-    sources: [{
-      id: "market_1",
-      provenance: "public_web",
-      title: "Robotics event",
-      url: "https://example.com/robotics",
-      excerpt: "A robotics event occurred.",
-    }],
+    sources: [publicExactSource(
+      "market_1",
+      "Robotics event",
+      "https://example.com/robotics",
+      "A robotics event occurred.",
+    )],
   });
 
   assert.deepEqual(result, []);
@@ -373,20 +575,18 @@ test("rejects fabricated matching claims even when every cited source id exists"
       fixtureIds: [],
     }],
     sources: [
-      {
-        id: "market_1",
-        provenance: "public_web",
-        title: "Unrelated filing notice",
-        url: "https://example.com/filing",
-        excerpt: "The filing deadline is next week.",
-      },
-      {
-        id: "deal_source_1",
-        provenance: "source_document",
-        title: "Example deck",
-        documentId: "doc_1",
-        excerpt: "The company makes infrastructure software.",
-      },
+      publicExactSource(
+        "market_1",
+        "Unrelated filing notice",
+        "https://example.com/filing",
+        "The filing deadline is next week.",
+      ),
+      priorExactSource(
+        "deal_source_1",
+        "Example deck",
+        "doc_1",
+        "The company makes infrastructure software.",
+      ),
     ],
   });
 
@@ -427,20 +627,18 @@ test("rejects a quoted but unrelated event-to-Deal pairing", async () => {
       fixtureIds: [],
     }],
     sources: [
-      {
-        id: "market_ai",
-        provenance: "public_web",
-        title: "AI regulation",
-        url: "https://example.com/ai",
-        excerpt: "A new AI regulation was announced.",
-      },
-      {
-        id: "deal_cannabis",
-        provenance: "source_document",
-        title: "1906 deck",
-        documentId: "doc_1906",
-        excerpt: "Controlled-dose cannabis products.",
-      },
+      publicExactSource(
+        "market_ai",
+        "AI regulation",
+        "https://example.com/ai",
+        "A new AI regulation was announced.",
+      ),
+      priorExactSource(
+        "deal_cannabis",
+        "1906 deck",
+        "doc_1906",
+        "Controlled-dose cannabis products.",
+      ),
     ],
   });
 
@@ -481,20 +679,18 @@ test("does not treat the generic token AI as sufficient Deal/event overlap", asy
       fixtureIds: [],
     }],
     sources: [
-      {
-        id: "market_ai",
-        provenance: "public_web",
-        title: "AI regulation",
-        url: "https://example.com/ai",
-        excerpt: "AI regulation changed.",
-      },
-      {
-        id: "deal_ai",
-        provenance: "source_document",
-        title: "7bridges deck",
-        documentId: "doc_7bridges",
-        excerpt: "AI logistics platform.",
-      },
+      publicExactSource(
+        "market_ai",
+        "AI regulation",
+        "https://example.com/ai",
+        "AI regulation changed.",
+      ),
+      priorExactSource(
+        "deal_ai",
+        "7bridges deck",
+        "doc_7bridges",
+        "AI logistics platform.",
+      ),
     ],
   });
 
@@ -539,20 +735,18 @@ test("does not surface an unrelated match from one shared enterprise token", asy
       fixtureIds: [],
     }],
     sources: [
-      {
-        id: "market_tax",
-        provenance: "public_web",
-        title: "Tax filing update",
-        url: "https://example.com/tax",
-        excerpt: "Enterprise tax filing deadline changed.",
-      },
-      {
-        id: "deal_logistics_source",
-        provenance: "source_document",
-        title: "Logistics deck",
-        documentId: "doc_logistics",
-        excerpt: "Enterprise logistics software.",
-      },
+      publicExactSource(
+        "market_tax",
+        "Tax filing update",
+        "https://example.com/tax",
+        "Enterprise tax filing deadline changed.",
+      ),
+      priorExactSource(
+        "deal_logistics_source",
+        "Logistics deck",
+        "doc_logistics",
+        "Enterprise logistics software.",
+      ),
     ],
   });
 

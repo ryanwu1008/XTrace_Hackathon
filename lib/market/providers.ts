@@ -47,6 +47,9 @@ export interface RssMarketProviderConfig {
   sectors?: string[];
   themes?: string[];
   confidence?: "low" | "medium" | "high";
+  sourceClass?: RawSourceItem["sourceClass"];
+  sourceAuthority?: RawSourceItem["sourceAuthority"];
+  evidenceRole?: RawSourceItem["evidenceRole"];
 }
 
 export interface DefaultMarketProviderOptions {
@@ -64,6 +67,24 @@ const RssMarketProviderConfigSchema = z.object({
   sectors: z.array(z.string().min(1)).optional(),
   themes: z.array(z.string().min(1)).optional(),
   confidence: z.enum(["low", "medium", "high"]).optional(),
+  sourceClass: z.enum([
+    "company_official",
+    "government_or_regulator",
+    "court_or_public_filing",
+    "customer_or_partner_official",
+    "investor_official",
+    "funding_publication",
+    "industry_publication",
+    "commercial_database",
+    "founder_social",
+  ]).optional(),
+  sourceAuthority: z.enum(["primary", "secondary"]).optional(),
+  evidenceRole: z.enum([
+    "trigger",
+    "corroborating",
+    "counterevidence",
+    "context",
+  ]).optional(),
 });
 
 const FederalRegisterResponseSchema = z.object({
@@ -316,7 +337,7 @@ function parseRssItems(
       "summary",
       "content",
     ]);
-    const evidenceExcerpt = excerpt(rawEvidence);
+    const normalizedStatement = excerpt(rawEvidence);
     const externalId = excerpt(firstTag(block, ["guid", "id"])) ?? url;
     const publishedAt = normalizedDate(firstTag(block, [
       "pubDate",
@@ -324,6 +345,7 @@ function parseRssItems(
       "dc:date",
     ]));
     const updatedAt = normalizedDate(firstTag(block, ["updated"]));
+    if (!normalizedStatement) return [];
 
     return [{
       providerId: config.id,
@@ -331,10 +353,13 @@ function parseRssItems(
       title,
       url,
       publisher: config.publisher,
+      sourceClass: config.sourceClass ?? "industry_publication",
+      sourceAuthority: config.sourceAuthority ?? "secondary",
+      evidenceRole: config.evidenceRole ?? "trigger",
       ...(publishedAt ? { publishedAt } : {}),
       ...(updatedAt ? { updatedAt } : {}),
-      summary: evidenceExcerpt,
-      evidenceExcerpt,
+      summary: normalizedStatement,
+      normalizedStatement,
       eventType: config.eventType ?? "announcement",
       sectors: [...(config.sectors ?? [])],
       themes: [...(config.themes ?? [])],
@@ -407,22 +432,26 @@ export function createFederalRegisterProvider(
         );
         fetchedCount += payload.results.length;
 
-        items.push(...payload.results.map((document): RawSourceItem => {
-          const evidenceExcerpt = excerpt(document.abstract ?? undefined);
-          return {
+        items.push(...payload.results.flatMap((document): RawSourceItem[] => {
+          const normalizedStatement = excerpt(document.abstract ?? undefined);
+          if (!normalizedStatement) return [];
+          return [{
             providerId: "federal-register",
             externalId: document.document_number,
             title: cleanXmlText(document.title),
             url: document.html_url,
             publisher: "Federal Register",
+            sourceClass: "government_or_regulator",
+            sourceAuthority: "primary",
+            evidenceRole: "trigger",
             publishedAt: normalizedDate(document.publication_date),
-            summary: evidenceExcerpt,
-            evidenceExcerpt,
+            summary: normalizedStatement,
+            normalizedStatement,
             eventType: "regulatory",
             sectors: [],
             themes: ["regulation"],
             confidence: "high",
-          };
+          }];
         }));
 
         const hasMore = payload.count === undefined
@@ -498,7 +527,7 @@ function crunchbaseItem(entity: CrunchbaseEntity): RawSourceItem[] {
   const additionalFacts = evidenceFacts.length > 0
     ? `; ${evidenceFacts.join("; ")}`
     : "";
-  const evidenceExcerpt =
+  const normalizedStatement =
     `Crunchbase records ${roundName} for ${organization}, announced `
     + `${announcedOn.slice(0, 10)}${additionalFacts}.`;
 
@@ -509,11 +538,16 @@ function crunchbaseItem(entity: CrunchbaseEntity): RawSourceItem[] {
     url:
       `https://www.crunchbase.com/funding_round/${encodeURIComponent(roundPermalink)}`,
     publisher: "Crunchbase",
+    sourceClass: "commercial_database",
+    sourceAuthority: "secondary",
+    evidenceRole: "trigger",
+    eventAt: announcedOn,
     publishedAt: announcedOn,
-    summary: evidenceExcerpt,
-    evidenceExcerpt,
+    summary: normalizedStatement,
+    normalizedStatement,
     eventType: "funding",
-    entities: [organization],
+    entities: [organization.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")].filter(Boolean),
     sectors: categories,
     themes: [
       "funding",
@@ -629,6 +663,9 @@ export function createDefaultMarketProviders(
       sectors: ["healthcare"],
       themes: ["regulation"],
       confidence: "high",
+      sourceClass: "government_or_regulator",
+      sourceAuthority: "primary",
+      evidenceRole: "trigger",
     }, runtime),
     createRssMarketProvider({
       id: "sec-public-releases",
@@ -638,6 +675,9 @@ export function createDefaultMarketProviders(
       eventType: "regulatory",
       themes: ["regulation"],
       confidence: "high",
+      sourceClass: "government_or_regulator",
+      sourceAuthority: "primary",
+      evidenceRole: "trigger",
     }, runtime),
     createRssMarketProvider({
       id: "ftc-press-releases",
@@ -647,6 +687,9 @@ export function createDefaultMarketProviders(
       eventType: "regulatory",
       themes: ["competition", "consumer-protection", "regulation"],
       confidence: "high",
+      sourceClass: "government_or_regulator",
+      sourceAuthority: "primary",
+      evidenceRole: "trigger",
     }, runtime),
     createRssMarketProvider({
       id: "techcrunch-venture",
@@ -656,12 +699,25 @@ export function createDefaultMarketProviders(
       eventType: "venture_news",
       themes: ["venture-capital"],
       confidence: "medium",
+      sourceClass: "industry_publication",
+      sourceAuthority: "secondary",
+      evidenceRole: "trigger",
     }, runtime),
     ...(options.officialAnnouncementFeeds ?? []).map((feed) => (
-      createRssMarketProvider(feed, runtime)
+      createRssMarketProvider({
+        sourceClass: "company_official",
+        sourceAuthority: "primary",
+        evidenceRole: "trigger",
+        ...feed,
+      }, runtime)
     )),
     ...(options.stablePublisherFeeds ?? []).map((feed) => (
-      createRssMarketProvider(feed, runtime)
+      createRssMarketProvider({
+        sourceClass: "industry_publication",
+        sourceAuthority: "secondary",
+        evidenceRole: "trigger",
+        ...feed,
+      }, runtime)
     )),
   ];
 

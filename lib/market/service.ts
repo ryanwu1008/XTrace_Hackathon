@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-import { MarketEventSchema } from "../contracts/domain";
 import { canonicalizeUrl, dedupeEvents, withinPublicationWindow } from "./dedupe";
+import { reidentifyMarketEvent } from "./identity";
 import type {
   MarketProvider,
   MarketProviderReport,
@@ -12,19 +12,40 @@ import type {
   RawSourceItem,
 } from "./types";
 
-const RawSourceItemSchema = z.object({
+const RawSourceItemSchema = z.strictObject({
   providerId: z.string().min(1),
   externalId: z.string().min(1).optional(),
   title: z.string().min(1),
   url: z.string().url(),
   publisher: z.string().min(1),
+  sourceClass: z.enum([
+    "company_official",
+    "government_or_regulator",
+    "court_or_public_filing",
+    "customer_or_partner_official",
+    "investor_official",
+    "funding_publication",
+    "industry_publication",
+    "commercial_database",
+    "founder_social",
+  ]),
+  sourceAuthority: z.enum(["primary", "secondary"]),
+  evidenceRole: z.enum([
+    "trigger",
+    "corroborating",
+    "counterevidence",
+    "context",
+  ]),
+  eventAt: z.string().optional(),
   publishedAt: z.string().optional(),
   retrievedAt: z.string().optional(),
   updatedAt: z.string().optional(),
   summary: z.string().min(1).optional(),
-  evidenceExcerpt: z.string().min(1).optional(),
+  normalizedStatement: z.string().min(1),
   eventType: z.string().min(1).optional(),
-  entities: z.array(z.string().min(1)).optional(),
+  entities: z.array(z.string().regex(
+    /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/,
+  )).optional(),
   sectors: z.array(z.string().min(1)).optional(),
   themes: z.array(z.string().min(1)).optional(),
   positiveImplications: z.array(z.string().min(1)).optional(),
@@ -85,8 +106,23 @@ export async function normalizeMarketItem(
   input: RawSourceItem,
   options: NormalizeMarketItemOptions = {},
 ): Promise<NormalizedMarketEvent> {
-  const item = RawSourceItemSchema.parse(input);
+  const parsedItem = RawSourceItemSchema.safeParse(input);
+  if (!parsedItem.success) {
+    if (
+      !("normalizedStatement" in (input as object))
+      || !(input as { normalizedStatement?: unknown }).normalizedStatement
+    ) {
+      throw new TypeError(
+        "Market source item requires a normalized evidence statement.",
+      );
+    }
+    throw parsedItem.error;
+  }
+  const item = parsedItem.data;
   const publishedAt = validDate(item.publishedAt, "publication time");
+  const eventAt = item.eventAt
+    ? validDate(item.eventAt, "event time").toISOString()
+    : null;
   const retrievedAt = item.retrievedAt
     ? validDate(item.retrievedAt, "retrieval time")
     : options.retrievedAt ?? new Date();
@@ -94,13 +130,15 @@ export async function normalizeMarketItem(
     throw new TypeError("Market source item has an invalid retrieval time.");
   }
 
-  const evidence = cleanText(item.evidenceExcerpt ?? item.summary ?? "");
-  if (!evidence) {
-    throw new TypeError("Market source item requires an evidence excerpt.");
+  const normalizedStatement = cleanText(item.normalizedStatement);
+  if (!normalizedStatement) {
+    throw new TypeError(
+      "Market source item requires a normalized evidence statement.",
+    );
   }
 
   const title = cleanText(item.title);
-  const summary = cleanText(item.summary ?? evidence);
+  const summary = cleanText(item.summary ?? normalizedStatement);
   const publisher = cleanText(item.publisher);
   if (!title || !summary || !publisher) {
     throw new TypeError("Market source item contains empty required text.");
@@ -110,24 +148,57 @@ export async function normalizeMarketItem(
   const normalizedPublicationTime = publishedAt.toISOString();
   const updatedAt = item.updatedAt
     ? validDate(item.updatedAt, "update time").toISOString()
-    : undefined;
-  const checksumInput = JSON.stringify({
-    evidence,
-    publishedAt: normalizedPublicationTime,
-    summary,
-    title,
-  });
-  const contentChecksum = await sha256(checksumInput);
+    : null;
+  const retrievedAtValue = retrievedAt.toISOString();
+  const entityKeys = [...new Set(item.entities ?? [])];
+  const sourceContentFingerprint = `sha256:${await sha256(normalizedStatement)}`;
   const sourceChecksum = await sha256(JSON.stringify({
     canonicalUrl,
+    contentFingerprint: sourceContentFingerprint,
+    entityKeys,
+    eventAt,
+    evidenceRole: item.evidenceRole,
     externalId: item.externalId ?? "",
+    normalizedStatement,
     providerId: item.providerId,
     publishedAt: normalizedPublicationTime,
+    publisher,
+    retrievedAt: retrievedAtValue,
+    sourceAuthority: item.sourceAuthority,
+    sourceClass: item.sourceClass,
+    title,
+    updatedAt,
   }));
   const sourceId = `source_${sourceChecksum.slice(0, 24)}`;
-
-  const validated = MarketEventSchema.parse({
-    id: `market_${contentChecksum.slice(0, 24)}`,
+  const source = {
+    schemaVersion: "source-ref-v2" as const,
+    adaptation: "canonical" as const,
+    id: sourceId,
+    provenance: "public_web" as const,
+    title,
+    canonicalUrl,
+    documentId: null,
+    publisher,
+    providerId: item.providerId,
+    eventAt,
+    publishedAt: normalizedPublicationTime,
+    retrievedAt: retrievedAtValue,
+    updatedAt,
+    entityKeys,
+    sourceClass: item.sourceClass,
+    sourceAuthority: item.sourceAuthority,
+    evidenceRole: item.evidenceRole,
+    sourceRevisionId: null,
+    locator: null,
+    contentFingerprint: sourceContentFingerprint,
+    text: {
+      status: "normalized_only" as const,
+      normalizedStatement,
+    },
+  };
+  const eventPayload = {
+    schemaVersion: "market-event-v2" as const,
+    adaptation: "canonical" as const,
     title,
     eventType: cleanText(item.eventType ?? "announcement"),
     sectors: item.sectors?.map(cleanText).filter(Boolean) ?? [],
@@ -137,32 +208,18 @@ export async function normalizeMarketItem(
       item.positiveImplications?.map(cleanText).filter(Boolean) ?? [],
     negativeImplications:
       item.negativeImplications?.map(cleanText).filter(Boolean) ?? [],
+    eventAt,
     publishedAt: normalizedPublicationTime,
+    retrievedAt: retrievedAtValue,
+    updatedAt,
     confidence: item.confidence ?? "low",
-    sources: [{
-      id: sourceId,
-      provenance: "public_web",
-      title,
-      url: canonicalUrl,
-      publisher,
-      publishedAt: normalizedPublicationTime,
-      excerpt: evidence,
-    }],
-  });
-
-  return {
-    ...validated,
     canonicalUrl,
-    contentChecksum,
-    retrievedAt: retrievedAt.toISOString(),
-    ...(updatedAt ? { updatedAt } : {}),
     providerId: item.providerId,
-    entityKeys: [...new Set(
-      (item.entities ?? [])
-        .map((entity) => cleanText(entity).toLocaleLowerCase())
-        .filter(Boolean),
-    )],
+    entityKeys,
+    triggerSourceId: sourceId,
+    sources: [source],
   };
+  return reidentifyMarketEvent(eventPayload);
 }
 
 function errorMessage(error: unknown): string {

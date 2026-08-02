@@ -1,6 +1,12 @@
-import type { MarketEvent } from "../contracts/domain";
+import type {
+  EvidenceRoleV2,
+  MarketEventV2,
+  SourceAuthorityV2,
+  SourceClassV2,
+  WritableMarketEventV2,
+} from "../contracts/source-evidence";
 
-export type MarketConfidence = MarketEvent["confidence"];
+export type MarketConfidence = MarketEventV2["confidence"];
 
 export interface MarketFetchWindow {
   from: Date;
@@ -13,11 +19,15 @@ export interface RawSourceItem {
   title: string;
   url: string;
   publisher: string;
+  sourceClass: Exclude<SourceClassV2, "unknown_legacy" | "model_output" | "internal_decision_record">;
+  sourceAuthority: Extract<SourceAuthorityV2, "primary" | "secondary">;
+  evidenceRole: Exclude<EvidenceRoleV2, "unknown_legacy">;
+  eventAt?: string;
   publishedAt?: string;
   retrievedAt?: string;
   updatedAt?: string;
   summary?: string;
-  evidenceExcerpt?: string;
+  normalizedStatement?: string;
   eventType?: string;
   entities?: string[];
   sectors?: string[];
@@ -33,14 +43,7 @@ export interface MarketProvider {
   fetch(window: MarketFetchWindow): Promise<RawSourceItem[]>;
 }
 
-export interface NormalizedMarketEvent extends MarketEvent {
-  canonicalUrl: string;
-  contentChecksum: string;
-  retrievedAt: string;
-  updatedAt?: string;
-  providerId: string;
-  entityKeys?: string[];
-}
+export type NormalizedMarketEvent = WritableMarketEventV2;
 
 export interface MarketProviderReport {
   providerId: string;

@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  MarketEventV2Schema,
+  SourceRefV2Schema,
+  type MarketEventV2,
+  type SourceRefV2,
+} from "./source-evidence";
+
 export const ProvenanceSchema = z.enum([
   "source_document",
   "public_web",
@@ -33,6 +40,34 @@ export const SourceRefSchema = z.object({
   publishedAt: z.string().datetime().optional(),
   excerpt: z.string().min(1),
   sourceRevisionId: z.string().min(1).optional(),
+});
+
+function declaresSchemaVersion(value: unknown): boolean {
+  return typeof value === "object"
+    && value !== null
+    && "schemaVersion" in value;
+}
+
+export const EvidenceSourceRefSchema = z.unknown().transform(
+  (value, context): SourceRefV2 | z.infer<typeof SourceRefSchema> => {
+    const parsed = declaresSchemaVersion(value)
+      ? SourceRefV2Schema.safeParse(value)
+      : SourceRefSchema.safeParse(value);
+    if (!parsed.success) {
+      context.addIssue({
+        code: "custom",
+        message: "Evidence source does not satisfy its declared schema version",
+      });
+      return z.NEVER;
+    }
+    return parsed.data;
+  },
+);
+
+export const ClaimSupportV2Schema = z.strictObject({
+  text: z.string().min(1),
+  kind: z.enum(["exact_quote", "normalized_non_quote"]),
+  sourceIds: z.array(z.string().min(1)).min(1),
 });
 
 export const DealFactSchema = z.object({
@@ -85,8 +120,9 @@ export const OpportunityReportItemSchema = z.object({
     negative: z.array(z.string()),
   }),
   nextStep: z.string().min(1),
-  sources: z.array(SourceRefSchema).min(1),
+  sources: z.array(EvidenceSourceRefSchema).min(1),
   demoFixtureIds: z.array(z.string()),
+  claimSupport: z.array(ClaimSupportV2Schema).optional(),
 });
 
 export const CompanyAnalysisOutcomeSchema = z.enum([
@@ -147,13 +183,33 @@ export const InvestmentMemorySnapshotSchema = z.object({
   fixtureIds: z.array(z.string().min(1)),
 });
 
-export const CompanyMarketEvidenceEventSchema = z.object({
+const LegacyCompanyMarketEvidenceEventSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   eventType: z.string().min(1),
   publishedAt: z.string().datetime(),
   sourceIds: z.array(z.string().min(1)).min(1),
 });
+
+export const CompanyMarketEvidenceEventSchema = z.unknown().transform(
+  (
+    value,
+    context,
+  ): MarketEventV2 | z.infer<typeof LegacyCompanyMarketEvidenceEventSchema> => {
+    const parsed = declaresSchemaVersion(value)
+      ? MarketEventV2Schema.safeParse(value)
+      : LegacyCompanyMarketEvidenceEventSchema.safeParse(value);
+    if (!parsed.success) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Market evidence event does not satisfy its declared schema version",
+      });
+      return z.NEVER;
+    }
+    return parsed.data;
+  },
+);
 
 export const CompanyMarketEvidenceSchema = z.object({
   relationship: z.enum([
@@ -179,7 +235,11 @@ export const CompanyMarketEvidenceSchema = z.object({
     });
   }
 
-  const eventSourceIds = evidence.events.flatMap((event) => event.sourceIds);
+  const eventSourceIds = evidence.events.flatMap((event) => (
+    "schemaVersion" in event
+      ? event.sources.map((source) => source.id)
+      : event.sourceIds
+  ));
   if (eventSourceIds.some((sourceId) => !evidence.sourceIds.includes(sourceId))) {
     context.addIssue({
       code: "custom",
@@ -221,7 +281,7 @@ export const CompanyBriefSchema = z.object({
     summary: z.string().min(1),
     sourceIds: z.array(z.string().min(1)).min(1),
   })),
-  sourceLineage: z.array(SourceRefSchema),
+  sourceLineage: z.array(EvidenceSourceRefSchema),
 });
 
 export const CompanyAnalysisSchema = z.object({
@@ -243,7 +303,7 @@ export const CompanyAnalysisSchema = z.object({
   }),
   recommendedNextMove: z.string().min(1),
   companyBrief: CompanyBriefSchema,
-  sources: z.array(SourceRefSchema),
+  sources: z.array(EvidenceSourceRefSchema),
   createdAt: z.string().datetime({ offset: true }),
 }).superRefine((analysis, context) => {
   if (
@@ -334,6 +394,8 @@ export type Provenance = z.infer<typeof ProvenanceSchema>;
 export type DealStatus = z.infer<typeof DealStatusSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 export type SourceRef = z.infer<typeof SourceRefSchema>;
+export type EvidenceSourceRef = z.infer<typeof EvidenceSourceRefSchema>;
+export type ClaimSupportV2 = z.infer<typeof ClaimSupportV2Schema>;
 export type DealFact = z.infer<typeof DealFactSchema>;
 export type DealInteraction = z.infer<typeof DealInteractionSchema>;
 export type DealMemoryBundle = z.infer<typeof DealMemoryBundleSchema>;

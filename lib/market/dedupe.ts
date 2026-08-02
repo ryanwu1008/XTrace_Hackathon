@@ -1,3 +1,14 @@
+import { createHash } from "node:crypto";
+
+import {
+  canonicalEvidenceJson,
+  MarketEventV2Schema,
+  uniqueByCanonicalId,
+  WritableMarketEventV2Schema,
+  type MarketEventV2,
+} from "../contracts/source-evidence";
+import { parseMarketEventV2Read } from "../contracts/legacy-evidence-adapter";
+import { reidentifyMarketEvent } from "./identity";
 import type {
   MarketConfidence,
   NormalizedMarketEvent,
@@ -101,33 +112,48 @@ function titleSimilarity(left: string, right: string): number {
   return intersection / new Set([...leftTokens, ...rightTokens]).size;
 }
 
-function publicationDay(event: NormalizedMarketEvent): string {
-  return event.publishedAt.slice(0, 10);
+function publicationDay(event: MarketEventV2): string | null {
+  return event.publishedAt?.slice(0, 10) ?? null;
 }
 
 function sharesEntity(
-  left: NormalizedMarketEvent,
-  right: NormalizedMarketEvent,
+  left: MarketEventV2,
+  right: MarketEventV2,
 ): boolean {
-  const rightEntities = new Set(right.entityKeys ?? []);
-  return (left.entityKeys ?? []).some((entity) => rightEntities.has(entity));
+  const rightEntities = new Set(right.entityKeys);
+  return left.entityKeys.some((entity) => rightEntities.has(entity));
 }
 
 function eventsMatch(
-  left: NormalizedMarketEvent,
-  right: NormalizedMarketEvent,
+  left: MarketEventV2,
+  right: MarketEventV2,
 ): boolean {
-  if (canonicalizeUrl(left.canonicalUrl) === canonicalizeUrl(right.canonicalUrl)) {
+  // A legacy read projection cannot be promoted by merging it into canonical
+  // evidence. Keep both records and let a writer reject the legacy payload.
+  if (left.adaptation !== right.adaptation) return false;
+  const sameDates = left.eventAt === right.eventAt
+    && left.publishedAt !== null
+    && left.publishedAt === right.publishedAt;
+  if (
+    sameDates
+    && left.canonicalUrl !== null
+    && right.canonicalUrl !== null
+    && canonicalizeUrl(left.canonicalUrl) === canonicalizeUrl(right.canonicalUrl)
+  ) {
     return true;
   }
   if (
-    left.contentChecksum.length > 0
-    && left.contentChecksum === right.contentChecksum
+    sameDates
+    && left.contentFingerprint !== null
+    && left.contentFingerprint.length > 0
+    && left.contentFingerprint === right.contentFingerprint
   ) {
     return true;
   }
 
-  if (publicationDay(left) !== publicationDay(right)) {
+  const leftDay = publicationDay(left);
+  const rightDay = publicationDay(right);
+  if (leftDay === null || rightDay === null || leftDay !== rightDay) {
     return false;
   }
 
@@ -145,9 +171,9 @@ function unique(values: string[]): string[] {
 }
 
 function preferredEvent(
-  left: NormalizedMarketEvent,
-  right: NormalizedMarketEvent,
-): NormalizedMarketEvent {
+  left: MarketEventV2,
+  right: MarketEventV2,
+): MarketEventV2 {
   if (CONFIDENCE_RANK[right.confidence] !== CONFIDENCE_RANK[left.confidence]) {
     return CONFIDENCE_RANK[right.confidence] > CONFIDENCE_RANK[left.confidence]
       ? right
@@ -156,25 +182,32 @@ function preferredEvent(
   if (right.sources.length !== left.sources.length) {
     return right.sources.length > left.sources.length ? right : left;
   }
-  return Date.parse(right.retrievedAt) > Date.parse(left.retrievedAt)
+  const leftRetrievedAt = left.retrievedAt === null
+    ? Number.NEGATIVE_INFINITY
+    : Date.parse(left.retrievedAt);
+  const rightRetrievedAt = right.retrievedAt === null
+    ? Number.NEGATIVE_INFINITY
+    : Date.parse(right.retrievedAt);
+  return rightRetrievedAt > leftRetrievedAt
     ? right
     : left;
 }
 
 function mergeEvents(
-  left: NormalizedMarketEvent,
-  right: NormalizedMarketEvent,
-): NormalizedMarketEvent {
+  left: MarketEventV2,
+  right: MarketEventV2,
+): MarketEventV2 {
   const preferred = preferredEvent(left, right);
-  const sources = [...left.sources, ...right.sources].filter(
-    (source, index, all) => all.findIndex((candidate) => (
-      candidate.id === source.id
-    )) === index,
+  const sources = uniqueByCanonicalId(
+    [...left.sources, ...right.sources],
+    "source",
   );
 
-  return {
+  const merged = {
     ...preferred,
-    canonicalUrl: canonicalizeUrl(preferred.canonicalUrl),
+    canonicalUrl: preferred.canonicalUrl === null
+      ? null
+      : canonicalizeUrl(preferred.canonicalUrl),
     sectors: unique([...left.sectors, ...right.sectors]),
     themes: unique([...left.themes, ...right.themes]),
     positiveImplications: unique([
@@ -186,23 +219,62 @@ function mergeEvents(
       ...right.negativeImplications,
     ]),
     entityKeys: unique([
-      ...(left.entityKeys ?? []),
-      ...(right.entityKeys ?? []),
+      ...left.entityKeys,
+      ...right.entityKeys,
     ]),
     sources,
   };
+  if (preferred.adaptation === "canonical") {
+    return reidentifyMarketEvent(merged);
+  }
+  const identityPayload = { ...merged };
+  delete (identityPayload as Partial<MarketEventV2>).id;
+  delete (identityPayload as Partial<MarketEventV2>).contentFingerprint;
+  const digest = createHash("sha256")
+    .update(canonicalEvidenceJson(identityPayload), "utf8")
+    .digest("hex");
+  const mergedWithIdentity = {
+    ...merged,
+    id: `market_${digest.slice(0, 24)}`,
+    contentFingerprint: `sha256:${digest}`,
+  };
+  return MarketEventV2Schema.parse(mergedWithIdentity);
 }
 
 export function dedupeEvents(
-  events: NormalizedMarketEvent[],
-): NormalizedMarketEvent[] {
-  const deduplicated: NormalizedMarketEvent[] = [];
+  events: readonly NormalizedMarketEvent[],
+): NormalizedMarketEvent[];
+export function dedupeEvents(
+  events: readonly unknown[],
+): MarketEventV2[];
+export function dedupeEvents(events: readonly unknown[]): MarketEventV2[] {
+  const parsedEvents = events.map(parseMarketEventV2Read);
+  const collisionCheckedEvents = uniqueByCanonicalId(
+    parsedEvents,
+    "market event",
+  );
+  uniqueByCanonicalId(
+    collisionCheckedEvents.flatMap((event) => event.sources),
+    "source",
+  );
+  const deduplicated: MarketEventV2[] = [];
 
-  for (const event of events) {
-    const canonicalEvent = {
+  for (const event of collisionCheckedEvents) {
+    const normalizedUrlEvent = {
       ...event,
-      canonicalUrl: canonicalizeUrl(event.canonicalUrl),
+      canonicalUrl: event.canonicalUrl === null
+        ? null
+        : canonicalizeUrl(event.canonicalUrl),
+      sources: event.sources.map((source) => ({
+        ...source,
+        canonicalUrl: source.canonicalUrl === null
+          ? null
+          : canonicalizeUrl(source.canonicalUrl),
+      })),
     };
+    const canonicalEvent = event.adaptation === "canonical"
+      ? WritableMarketEventV2Schema.parse(normalizedUrlEvent)
+      : MarketEventV2Schema.parse(normalizedUrlEvent);
     const matchIndex = deduplicated.findIndex((candidate) => (
       eventsMatch(candidate, canonicalEvent)
     ));
