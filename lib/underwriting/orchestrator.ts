@@ -12,6 +12,8 @@ import type {
   IntelligenceReportRecord,
 } from "../../db/repositories/intelligence";
 import type { CompanyAnalysis } from "../contracts/domain";
+import { compareUtf8 } from "../format/canonical-order";
+import { rankBeliefRevisionCandidates } from "../matching/ranking";
 import type { EvidencePack } from "../contracts/evidence";
 import type {
   CandidateRun,
@@ -451,7 +453,10 @@ export function createUnderwritingOrchestrator(options: {
             rerunOfId: ordinaryBatch.id,
           })
         : ordinaryBatch;
-      const qualified = qualifiedCandidates(input.analyses);
+      const qualified = qualifiedCandidates(
+        input.analyses,
+        new Map(input.eligibleDeals.map((deal) => [deal.id, deal.status])),
+      );
       const ranked = qualified.slice(0, MAX_AUTOMATIC_CANDIDATES);
       const truncatedDealIds = new Set(
         qualified.slice(MAX_AUTOMATIC_CANDIDATES)
@@ -1072,17 +1077,12 @@ function classifyFrameworkCatalogError(
 
 function qualifiedCandidates(
   analyses: CompanyAnalysis[],
+  historicalStatusByDeal: ReadonlyMap<string, RegisteredDeal["status"]>,
 ): CompanyAnalysis[] {
-  return analyses
-    .filter((analysis) =>
-      analysis.outcome === "belief_revised"
-      && (analysis.confidence === "medium"
-        || analysis.confidence === "high")
-    )
-    .sort((left, right) =>
-      right.score - left.score
-      || compareUtf8(left.dealId, right.dealId)
-    );
+  return rankBeliefRevisionCandidates(analyses, {
+    historicalStatusByDeal,
+    limit: Number.MAX_SAFE_INTEGER,
+  });
 }
 
 function createOrchestrationFingerprint(
@@ -1157,10 +1157,6 @@ function assertAlignedInput(
       "Every eligible Deal must retain exactly one CompanyAnalysis before underwriting selection.",
     );
   }
-}
-
-function compareUtf8(left: string, right: string): number {
-  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
 function positiveInteger(value: number, label: string): number {

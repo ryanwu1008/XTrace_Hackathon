@@ -41,10 +41,12 @@ export function buildCompanyAnalyses(input: {
   return input.bundles.map((bundle) => {
     const contexts = input.contextsByDeal.get(bundle.dealId);
     const recallFailed = input.recallFailures.has(bundle.dealId);
+    const match = groundedByDeal.get(bundle.dealId);
     const usesStructuredImageFallback =
       input.structuredImageFallbackDealIds?.has(bundle.dealId) === true;
     if (
       recallFailed
+      || match?.outcome === "analysis_unavailable"
       || (
         (!contexts || contexts.length === 0)
         && !usesStructuredImageFallback
@@ -64,7 +66,7 @@ export function buildCompanyAnalyses(input: {
       createdAt: input.createdAt,
       bundle,
       contexts: contexts ?? [],
-      match: groundedByDeal.get(bundle.dealId),
+      match,
     });
   });
 }
@@ -97,7 +99,13 @@ function completeAnalysis(input: {
   match?: GroundedMatch;
 }): CompanyAnalysis {
   const { bundle, contexts, match } = input;
-  const interaction = latestInteraction(bundle);
+  const selectedPriorInteractionId = match?.beliefAssessment?.gateContext
+    .priorInteraction.id;
+  const interaction = selectedPriorInteractionId
+    ? bundle.interactions.find((candidate) =>
+      candidate.id === selectedPriorInteractionId
+    )
+    : latestInteraction(bundle);
   const localSources = bundleSources(bundle);
   const sampleDecisionSources = localSources.filter((source) =>
     source.adaptation === "canonical"
@@ -112,7 +120,7 @@ function completeAnalysis(input: {
     ...matchedEventSources,
   ]);
   const outcome = match
-    ? match.confidence === "low" ? "monitor" : "belief_revised"
+    ? match.beliefAssessment ? match.outcome : "monitor"
     : "no_material_change";
   const confidence = match?.confidence ?? "low";
   const marketEvidence = match
@@ -153,12 +161,14 @@ function completeAnalysis(input: {
       memoryIds: unique(contexts.map((context) => context.memoryId)),
       sourceIds: unique(sampleDecisionSources.map((source) => source.id)),
       fixtureIds: unique(sampleDecisionSources.map((source) => source.id)),
+      priorActions: interaction?.priorActions,
     },
     marketEvidence,
     implications: match?.implications ?? { positive: [], negative: [] },
     claimSupport: match?.claimSupport ?? [],
-    recommendedNextMove: outcome === "belief_revised"
-      ? match!.nextStep
+    beliefAssessment: match?.beliefAssessment,
+    recommendedNextMove: match?.beliefAssessment
+      ? match.nextStep
       : CONTINUE_MONITORING,
     companyBrief: buildCompanyBrief(bundle, sources),
     sources,

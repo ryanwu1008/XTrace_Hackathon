@@ -5,6 +5,7 @@ import type {
 } from "../contracts/domain";
 import { sanitizeReportNextStep } from "./next-step-policy";
 import { safeExternalHttpUrl } from "../security/safe-url";
+import { rankBeliefRevisionCandidates } from "../matching/ranking";
 
 export interface InternalReportDraft {
   subject: string;
@@ -28,13 +29,9 @@ export function buildInternalReportDraft(
 ): InternalReportDraft {
   const origin = input.appOrigin.replace(/\/+$/, "");
   const reportDate = input.report.createdAt.slice(0, 10);
-  const recommendedAnalyses = (input.report.companyAnalyses ?? [])
-    .filter((analysis) =>
-      analysis.outcome === "belief_revised"
-      && analysis.confidence !== "low"
-    )
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 5);
+  const recommendedAnalyses = rankBeliefRevisionCandidates(
+    input.report.companyAnalyses ?? [],
+  );
   const opportunities = input.report.opportunities.slice(0, 5);
   const bodySections = recommendedAnalyses.length > 0
     ? recommendedAnalyses.map((analysis, index) =>

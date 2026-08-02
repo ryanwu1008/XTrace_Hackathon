@@ -1,3 +1,5 @@
+import { compareUtf8 } from "../format/canonical-order";
+
 export interface OpportunityScoreInputs {
   eventRelevance: number;
   dealRelevance: number;
@@ -65,6 +67,16 @@ export function rankQualifiedMatches<T extends { score: number }>(matches: T[]) 
       confidence: confidenceForScore(match.score),
     }))
     .filter((match) => match.confidence !== "low")
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) =>
+      b.score - a.score
+      || compareUtf8(
+        rankingId(a as T & { dealId?: string; id?: string }),
+        rankingId(b as T & { dealId?: string; id?: string }),
+      )
+    )
     .slice(0, 5) as Array<T & { confidence: Exclude<OpportunityConfidence, "low"> }>;
+}
+
+function rankingId(value: { dealId?: string; id?: string }): string {
+  return value.dealId ?? value.id ?? "";
 }

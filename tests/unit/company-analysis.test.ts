@@ -69,6 +69,8 @@ function groundedMatch(
     : 0.42;
   return {
     dealId: bundle.dealId,
+    dealStatus: bundle.status,
+    outcome: confidence === "low" ? "monitor" : "belief_revised",
     confidence,
     score,
     whyNow: marketSource.text.normalizedStatement,
@@ -144,7 +146,7 @@ test("projects qualified and low grounded matches without inventing fields", () 
     analysis,
   ]));
 
-  assert.equal(byDeal.get("deal_ably")?.outcome, "belief_revised");
+  assert.equal(byDeal.get("deal_ably")?.outcome, "monitor");
   assert.equal(byDeal.get("deal_100plus")?.outcome, "monitor");
   assert.equal(
     byDeal.get("deal_ably")?.companyBrief.traction[0].value,
@@ -154,6 +156,21 @@ test("projects qualified and low grounded matches without inventing fields", () 
     byDeal.get("deal_ably")?.companyBrief.traction[0].unavailableReason,
     "Not available in current evidence",
   );
+});
+
+test("a high-score match without a current hard-gate assessment cannot become a belief revision", () => {
+  const input = baseInput();
+  const bundle = input.bundles.find((candidate) =>
+    candidate.dealId === "deal_ably"
+  )!;
+
+  const analysis = buildCompanyAnalyses({
+    ...input,
+    groundedMatches: [groundedMatch(bundle, "high")],
+  }).find((candidate) => candidate.dealId === bundle.dealId)!;
+
+  assert.equal(analysis.outcome, "monitor");
+  assert.equal(analysis.beliefAssessment, undefined);
 });
 
 test("market evidence lineage contains exactly embedded event sources and excludes unrelated local public facts", () => {

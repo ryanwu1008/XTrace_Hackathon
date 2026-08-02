@@ -1,44 +1,20 @@
 import { createHash } from "node:crypto";
 
-import { z } from "zod";
-
 import type { ReasonerJudgmentsRepository } from "../../db/repositories/reasoner-judgments";
 import type { ClaudeClient } from "../claude/client";
+import {
+  ClaudeReasonedMatchesSchema,
+  type ClaudeReasonedMatch,
+} from "../claude/schemas";
 import type {
   MatchingInput,
   MatchingReasoner,
   ReasonedMatch,
 } from "./service";
 import {
-  serializeMatchingEvidence,
+  serializeMatchingPromptInput,
   stableEvidencePromptJson,
 } from "./prompt-evidence";
-
-// The model occasionally emits numeric scores as strings; coerce instead of
-// rejecting the whole batch of matches.
-const BoundedScoreSchema = z.coerce.number().min(0).max(1);
-
-const ScoreInputsSchema = z.object({
-  eventRelevance: BoundedScoreSchema,
-  dealRelevance: BoundedScoreSchema,
-  priorContextStrength: BoundedScoreSchema,
-  evidenceQuality: BoundedScoreSchema,
-});
-
-const ReasonedMatchSchema = z.object({
-  dealId: z.string().min(1),
-  whyNow: z.string().min(1),
-  previousContext: z.string().min(1),
-  positiveImplications: z.array(z.string()),
-  negativeImplications: z.array(z.string()),
-  nextStep: z.string().min(1),
-  citedSourceIds: z.array(z.string()),
-  demoFixtureIds: z.array(z.string()),
-  scoreInputs: ScoreInputsSchema,
-  claimSourceIds: z.record(z.string(), z.array(z.string())),
-});
-
-const ReasonedMatchesSchema = z.array(ReasonedMatchSchema).max(20);
 
 export type ClaudeMatchingReasonerOptions = {
   // Persisted judgment replay. Opus 4.8 exposes no sampling controls, so the
@@ -67,13 +43,15 @@ export function createClaudeMatchingReasoner(
           "Sources with factEligible false, including legacy_unverified and model_inference text, are retrieval context only and cannot support output claims.",
           "memoryContexts text is retrieval output, not quotable evidence: use it to decide which Deals are relevant, then locate eligible text in the sources catalog.",
           "Synthetic fixture records are internal demo context, never external company facts.",
-          "nextStep must be a human research, review, diligence, or follow-up action; never recommend investing or committing capital.",
+          "Return observations only. Never choose direction, Deal status, actions, scope, priority, visibility, gate values, outcome, formal decision, rank, or a recommended next move.",
+          "Select exactly one supplied trigger event and one supplied same-Deal Sample decision record candidate, plus the exact revisit-condition index and text.",
+          "Provide a substantive counterevidence statement supported by canonical counterevidence-role source IDs.",
           "Report every credible Deal/event overlap you find, including uncertain ones; reflect uncertainty in scoreInputs rather than omitting the match. Downstream deterministic validation drops ungrounded claims, so coverage matters more than filtering here.",
           "Score each dimension honestly on its own merits, not uniformly low: when a public event directly addresses a Deal's sector, decision reason, or a recorded revisit condition (for example a reimbursement rule change for a remote patient monitoring company), eventRelevance and dealRelevance belong at 0.7 or higher; reserve scores below 0.4 for tangential links. Do not down-score a well-evidenced direct overlap merely to be cautious.",
           "Calibrate the other two dimensions the same way: when the recalled decision context explicitly records a revisit condition or concern that the public event directly addresses, priorContextStrength belongs at 0.6 or higher; when the cited public sources are primary official publications (government registers, regulator or agency releases, court filings), evidenceQuality belongs at 0.6 or higher. Reserve values below 0.4 for thin or secondary context.",
           "Return JSON only: an array matching the requested schema. Return [] only when no event plausibly relates to any Deal.",
         ].join(" ");
-      const evidence = serializeMatchingEvidence(input);
+      const evidence = serializeMatchingPromptInput(input);
       const requestContent = stableEvidencePromptJson({
         task: "Rank credible Deal/event overlaps for human follow-up.",
         outputSchema: {
@@ -82,9 +60,16 @@ export function createClaudeMatchingReasoner(
           previousContext: "prior local context, clearly identifying synthetic records",
           positiveImplications: ["bounded implications"],
           negativeImplications: ["bounded implications"],
-          nextStep: "human review action, not an investment decision",
+          selectedTriggerEventId: "one supplied accepted event ID",
+          selectedPriorInteractionId: "one same-Deal Sample decision record ID",
+          revisitConditionIndex: 0,
+          revisitConditionText: "exact selected revisit-condition text",
+          revisitCitedSourceIds: ["selected event source IDs only"],
+          counterevidence: {
+            statement: "complete supported counterevidence statement",
+            citedSourceIds: ["canonical counterevidence-role source IDs"],
+          },
           citedSourceIds: ["valid source IDs only"],
-          demoFixtureIds: ["fixture IDs used"],
           scoreInputs: {
             eventRelevance: 0.55,
             dealRelevance: 0.55,
@@ -96,16 +81,16 @@ export function createClaudeMatchingReasoner(
             "complete claim equal to one eligible verbatim or normalized evidence unit": ["valid source IDs"],
           },
         },
-        deals: input.deals,
+        deals: evidence.deals,
         marketEvents: evidence.marketEvents,
-        memoryContexts: input.memoryContexts,
+        memoryContexts: evidence.memoryContexts,
         sources: evidence.sources,
       });
       const model = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-8";
-      const fingerprint = `reasoner-judgment-v2:sha256:${
+      const fingerprint = `reasoner-judgment-v3:sha256:${
         createHash("sha256")
           .update(
-            `reasoner-judgment-v2\n${model}\n${system}\n${requestContent}`,
+            `reasoner-judgment-v3\n${model}\n${system}\n${requestContent}`,
             "utf8",
           )
           .digest("hex")
@@ -124,7 +109,7 @@ export function createClaudeMatchingReasoner(
       });
       let parsed;
       try {
-        parsed = ReasonedMatchesSchema.parse(parseJson(response));
+        parsed = ClaudeReasonedMatchesSchema.parse(parseJson(response));
       } catch {
         response = await client.complete({
           system,
@@ -139,7 +124,7 @@ export function createClaudeMatchingReasoner(
           }],
           maxTokens: 6_000,
         });
-        parsed = ReasonedMatchesSchema.parse(parseJson(response));
+        parsed = ClaudeReasonedMatchesSchema.parse(parseJson(response));
       }
       const matches = normalizeMatches(parsed, input);
       if (options.judgments) {
@@ -164,7 +149,7 @@ async function replayJudgment(
   try {
     const record = await judgments.find(fingerprint);
     if (!record) return null;
-    return normalizeMatches(ReasonedMatchesSchema.parse(record.payload), input);
+    return normalizeMatches(ClaudeReasonedMatchesSchema.parse(record.payload), input);
   } catch (error) {
     // An unreadable stored judgment falls through to a live model call.
     warnJudgmentPersistence(error);
@@ -185,22 +170,24 @@ function warnJudgmentPersistence(error: unknown) {
 }
 
 function normalizeMatches(
-  parsed: z.infer<typeof ReasonedMatchesSchema>,
+  parsed: ClaudeReasonedMatch[],
   input: MatchingInput,
 ): ReasonedMatch[] {
   const allowedDeals = new Set(input.deals.map((deal) => deal.id));
-  const allowedSources = new Set(input.sources.map((source) => source.id));
   return parsed
     .filter((match) => allowedDeals.has(match.dealId))
     .map((match) => ({
       ...match,
-      citedSourceIds: unique(match.citedSourceIds)
-        .filter((sourceId) => allowedSources.has(sourceId)),
-      demoFixtureIds: unique(match.demoFixtureIds),
+      citedSourceIds: unique(match.citedSourceIds),
+      revisitCitedSourceIds: unique(match.revisitCitedSourceIds),
+      counterevidence: {
+        ...match.counterevidence,
+        citedSourceIds: unique(match.counterevidence.citedSourceIds),
+      },
       claimSourceIds: Object.fromEntries(
         Object.entries(match.claimSourceIds).map(([claim, sourceIds]) => [
           claim,
-          unique(sourceIds).filter((sourceId) => allowedSources.has(sourceId)),
+          unique(sourceIds),
         ]),
       ),
     }));

@@ -1,24 +1,36 @@
 import { z } from "zod";
 
-export const ClaudeReasonedMatchSchema = z.object({
+const BoundedObservationScoreSchema = z.coerce.number().min(0).max(1);
+
+export const ClaudeReasonedMatchSchema = z.strictObject({
   dealId: z.string().min(1),
   whyNow: z.string().min(1),
   previousContext: z.string().min(1),
   positiveImplications: z.array(z.string()),
   negativeImplications: z.array(z.string()),
-  nextStep: z.string().min(1),
+  selectedTriggerEventId: z.string().min(1),
+  selectedPriorInteractionId: z.string().min(1),
+  revisitConditionIndex: z.number().int().nonnegative(),
+  revisitConditionText: z.string().min(1),
+  revisitCitedSourceIds: z.array(z.string().min(1)).min(1),
+  counterevidence: z.strictObject({
+    statement: z.string().min(1),
+    citedSourceIds: z.array(z.string().min(1)).min(1),
+  }),
   citedSourceIds: z.array(z.string()).min(1),
-  demoFixtureIds: z.array(z.string()),
-  scoreInputs: z.object({
-    eventRelevance: z.number().min(0).max(1),
-    dealRelevance: z.number().min(0).max(1),
-    priorContextStrength: z.number().min(0).max(1),
-    evidenceQuality: z.number().min(0).max(1),
+  scoreInputs: z.strictObject({
+    eventRelevance: BoundedObservationScoreSchema,
+    dealRelevance: BoundedObservationScoreSchema,
+    priorContextStrength: BoundedObservationScoreSchema,
+    evidenceQuality: BoundedObservationScoreSchema,
   }),
   claimSourceIds: z.record(z.string(), z.array(z.string()).min(1)),
 });
 
-export const ClaudeReasonedMatchesSchema = z.array(ClaudeReasonedMatchSchema);
+export const ClaudeReasonedMatchesSchema = z.array(ClaudeReasonedMatchSchema)
+  .max(20);
+
+export type ClaudeReasonedMatch = z.infer<typeof ClaudeReasonedMatchSchema>;
 
 export const ClaudeChatClaimSchema = z.object({
   text: z.string().min(1),

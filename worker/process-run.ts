@@ -19,6 +19,7 @@ import {
 import type { ProductInputGate } from "../lib/corpus/import-readiness";
 import { parseSourceRefV2Read } from "../lib/contracts/legacy-evidence-adapter";
 import { sourceTextForRetrieval } from "../lib/contracts/source-evidence";
+import { rankBeliefRevisionCandidates } from "../lib/matching/ranking";
 import { DEMO_MARKET_REPORT_EVIDENCE } from "../lib/corpus/market-evidence";
 import {
   buildMatchingSources,
@@ -527,6 +528,9 @@ function matchingMemoryContexts(
   return bundles.flatMap((bundle) => {
     const contexts = contextsByDeal.get(bundle.dealId) ?? [];
     if (contexts.length === 0) return [];
+    const fixtureIds = uniqueStrings(
+      contexts.flatMap((context) => context.fixtureIds),
+    );
     return [{
       dealId: bundle.dealId,
       text: contexts
@@ -536,23 +540,28 @@ function matchingMemoryContexts(
       sourceIds: uniqueStrings(
         contexts.flatMap((context) => context.sourceIds),
       ),
-      fixtureIds: uniqueStrings(
-        contexts.flatMap((context) => context.fixtureIds),
-      ),
+      fixtureIds,
+      interactionCandidates: bundle.interactions
+        .filter((interaction) => fixtureIds.includes(interaction.id))
+        .map((interaction) => ({
+          id: interaction.id,
+          occurredAt: interaction.occurredAt,
+          sourceIds: [interaction.id],
+          revisitConditions: [...interaction.revisitConditions],
+          provenance: interaction.provenance,
+          label: interaction.label,
+          priorActions: interaction.priorActions
+            ? structuredClone(interaction.priorActions)
+            : undefined,
+        })),
     }];
   });
 }
 
-function projectRecommendedOpportunities(
+export function projectRecommendedOpportunities(
   analyses: readonly CompanyAnalysis[],
 ): OpportunityReportItem[] {
-  return analyses
-    .filter((analysis) =>
-      analysis.outcome === "belief_revised"
-      && analysis.confidence !== "low"
-    )
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 5)
+  return rankBeliefRevisionCandidates(analyses)
     .map((analysis, index) => OpportunityReportItemSchema.parse({
       rank: index + 1,
       dealId: analysis.dealId,

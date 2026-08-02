@@ -1,7 +1,13 @@
 import {
+  BELIEF_CHANGE_ASSESSMENT_SCHEMA_VERSION,
+  BeliefChangeAssessmentV1Schema,
   ClaimSupportV2Schema,
   OpportunityReportItemSchema,
+  type BeliefAction,
+  type BeliefChangeAssessmentV1,
+  type BeliefChangeDirection,
   type ClaimSupportV2,
+  type CompanyAnalysisOutcome,
   type DealStatus,
   type OpportunityReportItem,
 } from "../contracts/domain";
@@ -18,13 +24,16 @@ import {
   parseMarketEventV2Read,
   parseSourceRefV2Read,
 } from "../contracts/legacy-evidence-adapter";
-import { nextStepForDealStatus } from "../reports/next-step-policy";
 import {
-  confidenceForScore,
-  rankQualifiedMatches,
-  weightedOpportunityScore,
+  actionsForDealStatusAndDirection,
+  renderRecommendedNextMove,
+} from "../reports/action-policy";
+import { evaluateBeliefRevisionHardGates } from "./hard-gates";
+import {
+  buildOpportunityScoreBreakdown,
   type OpportunityScoreInputs,
 } from "./scoring";
+import { rankBeliefRevisionCandidates } from "./ranking";
 
 export interface MatchingDeal {
   id: string;
@@ -37,6 +46,17 @@ export interface MatchingMemoryContext {
   text: string;
   sourceIds: string[];
   fixtureIds: string[];
+  interactionCandidates?: MatchingPriorInteractionCandidate[];
+}
+
+export interface MatchingPriorInteractionCandidate {
+  id: string;
+  occurredAt: string;
+  sourceIds: string[];
+  revisitConditions: string[];
+  provenance: "demo_fixture";
+  label: "Sample decision record";
+  priorActions?: BeliefAction[];
 }
 
 export interface ReasonedMatch {
@@ -45,11 +65,44 @@ export interface ReasonedMatch {
   previousContext: string;
   positiveImplications: string[];
   negativeImplications: string[];
-  nextStep: string;
+  selectedTriggerEventId?: string;
+  selectedPriorInteractionId?: string;
+  revisitConditionIndex?: number;
+  revisitConditionText?: string;
+  revisitCitedSourceIds?: string[];
+  counterevidence?: {
+    statement: string;
+    citedSourceIds: string[];
+  };
+  nextStep?: string;
   citedSourceIds: string[];
-  demoFixtureIds: string[];
+  /** @deprecated Current matching derives fixture lineage from the selected prior interaction. */
+  demoFixtureIds?: string[];
   scoreInputs: OpportunityScoreInputs;
   claimSourceIds: Record<string, string[]>;
+}
+
+type CurrentReasonedMatch = ReasonedMatch & {
+  selectedTriggerEventId: string;
+  selectedPriorInteractionId: string;
+  revisitConditionIndex: number;
+  revisitConditionText: string;
+  revisitCitedSourceIds: string[];
+  counterevidence: {
+    statement: string;
+    citedSourceIds: string[];
+  };
+};
+
+function hasCurrentSelection(match: ReasonedMatch): match is CurrentReasonedMatch {
+  return Boolean(
+    match.selectedTriggerEventId
+      && match.selectedPriorInteractionId
+      && match.revisitConditionIndex !== undefined
+      && match.revisitConditionText !== undefined
+      && match.revisitCitedSourceIds
+      && match.counterevidence,
+  );
 }
 
 export interface MatchingInput {
@@ -65,6 +118,8 @@ export interface MatchingReasoner {
 
 export interface GroundedMatch {
   dealId: string;
+  dealStatus: DealStatus;
+  outcome: CompanyAnalysisOutcome;
   confidence: "low" | "medium" | "high";
   score: number;
   whyNow: string;
@@ -79,6 +134,8 @@ export interface GroundedMatch {
   sources: SourceRefV2[];
   demoFixtureIds: string[];
   claimSupport: ClaimSupportV2[];
+  beliefAssessment?: BeliefChangeAssessmentV1;
+  analysisFailureReason?: string;
 }
 
 interface GroundedText {
@@ -194,10 +251,10 @@ function overlapStrength(
   if (overlapCount < 2 && !explicitCompanyMatch && !explicitMetadataMatch) {
     return 0;
   }
-  return Math.min(
+  return Number(Math.min(
     0.9,
     0.6 + Math.min(Math.max(overlapCount - 2, 0), 2) * 0.15,
-  );
+  ).toFixed(4));
 }
 
 function uniqueClaimSupport(supports: ClaimSupportV2[]): ClaimSupportV2[] {
@@ -231,15 +288,24 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       sources,
     };
     const sourceById = new Map(sources.map((source) => [source.id, source]));
-    const contextByDeal = new Map(input.memoryContexts.map((context) => [
-      context.dealId,
-      context,
-    ]));
+    const contextGroups = Map.groupBy(
+      input.memoryContexts,
+      (context) => context.dealId,
+    );
     const raw = await reasoner.reason(validatedInput);
-    const grounded = raw.flatMap((match) => {
-      const context = contextByDeal.get(match.dealId);
-      const deal = input.deals.find((candidate) => candidate.id === match.dealId);
-      if (!context || !deal) return [];
+    const rawGroups = Map.groupBy(raw, (match) => match.dealId);
+    const grounded = input.deals.flatMap((deal) => {
+      const rows = rawGroups.get(deal.id) ?? [];
+      if (rows.length === 0) return [];
+      const contexts = contextGroups.get(deal.id) ?? [];
+      if (rows.length !== 1 || contexts.length !== 1) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because matching returned ambiguous Deal lineage.",
+        )];
+      }
+      const match = rows[0]!;
+      const context = contexts[0]!;
       const dealLineageIds = new Set([
         ...context.sourceIds,
         ...context.fixtureIds,
@@ -247,11 +313,60 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       const validSourceIds = new Set(
         match.citedSourceIds.filter((sourceId) => sourceById.has(sourceId)),
       );
-      const publicSourceIds = [...validSourceIds].filter((sourceId) =>
-        sourceById.get(sourceId)?.provenance === "public_web"
+      const referencedIds = unique([
+        ...match.citedSourceIds,
+        ...Object.values(match.claimSourceIds).flat(),
+        ...(match.revisitCitedSourceIds ?? []),
+        ...(match.counterevidence?.citedSourceIds ?? []),
+      ]);
+      if (referencedIds.some((sourceId) => !sourceById.has(sourceId))) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because matching cited an unknown canonical source.",
+        )];
+      }
+
+      const selectedEvent = match.selectedTriggerEventId
+        ? events.find((event) => event.id === match.selectedTriggerEventId)
+        : events.find((event) =>
+          event.sources.some((source) => validSourceIds.has(source.id))
+        );
+      if (match.selectedTriggerEventId && !selectedEvent) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because the selected trigger event did not resolve to the supplied event set.",
+        )];
+      }
+      if (!selectedEvent) return [];
+      const eventSourceIds = new Set(
+        selectedEvent.sources.map((source) => source.id),
       );
-      const dealSourceIds = [...validSourceIds].filter((sourceId) =>
-        dealLineageIds.has(sourceId)
+      const selectedPrior = match.selectedPriorInteractionId
+        ? (context.interactionCandidates ?? []).find(
+          (candidate) => candidate.id === match.selectedPriorInteractionId,
+        )
+        : undefined;
+      if (
+        selectedPrior
+        && (
+          selectedPrior.sourceIds.length !== 1
+          || selectedPrior.sourceIds[0] !== selectedPrior.id
+          || selectedPrior.sourceIds.some((sourceId) =>
+            eventSourceIds.has(sourceId)
+          )
+        )
+      ) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because event and prior-memory source membership crossed.",
+        )];
+      }
+      const dealSourceIds = selectedPrior
+        ? selectedPrior.sourceIds.filter((sourceId) => validSourceIds.has(sourceId))
+        : [...validSourceIds].filter((sourceId) => dealLineageIds.has(sourceId));
+      const publicSourceIds = [...validSourceIds].filter((sourceId) =>
+        eventSourceIds.has(sourceId)
+        && sourceById.get(sourceId)?.provenance === "public_web"
       );
       if (!publicSourceIds.length || !dealSourceIds.length) return [];
       const deterministicRelevance = overlapStrength(
@@ -259,21 +374,21 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         dealSourceIds,
         sourceById,
         deal,
-        events,
+        [selectedEvent],
       );
       if (deterministicRelevance === 0) return [];
 
       const whyNow = groundedText(
         match.whyNow,
         match,
-        new Set(publicSourceIds),
+        eventSourceIds,
         sourceById,
         "public_fact",
       );
       const previousContext = groundedText(
         match.previousContext,
         match,
-        dealLineageIds,
+        new Set(dealSourceIds),
         sourceById,
         "prior_context",
       );
@@ -285,9 +400,9 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       ].map((claim) => groundedText(
         claim,
         match,
-        validSourceIds,
+        eventSourceIds,
         sourceById,
-        "any_fact",
+        "public_fact",
       ));
       const positiveImplications = match.positiveImplications.filter((claim) =>
         groundedImplications.some((groundedClaim) => groundedClaim.text === claim)
@@ -300,19 +415,14 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         ...previousContext.sourceIds,
         ...groundedImplications.flatMap((claim) => claim.sourceIds),
       ]);
-      const matchedEvents = events.filter((event) =>
-        event.sources.some((source) => usedSourceIds.has(source.id))
-      );
-      for (const event of matchedEvents) {
-        for (const source of event.sources) usedSourceIds.add(source.id);
+      for (const source of selectedEvent.sources) usedSourceIds.add(source.id);
+      if (selectedPrior) {
+        for (const sourceId of selectedPrior.sourceIds) usedSourceIds.add(sourceId);
       }
-      const demoFixtureIds = [...new Set(context.fixtureIds)].filter((fixtureId) => {
-        const source = sourceById.get(fixtureId);
-        return usedSourceIds.has(fixtureId)
-          && source?.adaptation === "canonical"
-          && source.provenance === "demo_fixture";
-      });
-      const score = weightedOpportunityScore({
+      for (const sourceId of match.counterevidence?.citedSourceIds ?? []) {
+        usedSourceIds.add(sourceId);
+      }
+      const scoreBreakdown = buildOpportunityScoreBreakdown({
         ...match.scoreInputs,
         eventRelevance: Math.min(
           match.scoreInputs.eventRelevance,
@@ -323,12 +433,14 @@ export function createMatchingService(reasoner: MatchingReasoner) {
           deterministicRelevance,
         ),
       });
-      const confidence = confidenceForScore(score);
-      const relationship = positiveImplications.length > 0
-        && negativeImplications.length === 0
+      const direction = directionForImplications(
+        positiveImplications,
+        negativeImplications,
+      );
+      if (direction === "none") return [];
+      const relationship = direction === "positive"
         ? "satisfies" as const
-        : negativeImplications.length > 0
-          && positiveImplications.length === 0
+        : direction === "negative"
         ? "contradicts" as const
         : "related" as const;
       const claimSupport = uniqueClaimSupport([
@@ -336,22 +448,154 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         ...previousContext.supports,
         ...groundedImplications.flatMap((claim) => claim.supports),
       ]);
+      if (!hasCurrentSelection(match)) {
+        const legacyFixtureIds = dealSourceIds.filter((sourceId) => {
+          const source = sourceById.get(sourceId);
+          return source?.adaptation === "canonical"
+            && source.provenance === "demo_fixture";
+        });
+        return [{
+          dealId: match.dealId,
+          dealStatus: deal.status,
+          outcome: "analysis_unavailable" as const,
+          confidence: scoreBreakdown.confidence,
+          score: scoreBreakdown.finalScore,
+          whyNow: whyNow.text,
+          previousContext: previousContext.text,
+          implications: {
+            positive: positiveImplications,
+            negative: negativeImplications,
+          },
+          nextStep: renderRecommendedNextMove(
+            actionsForDealStatusAndDirection(deal.status, "unavailable"),
+          ),
+          relationship,
+          events: [],
+          demoFixtureIds: legacyFixtureIds,
+          sources: [...usedSourceIds].flatMap((sourceId) => {
+            const source = sourceById.get(sourceId);
+            return source ? [source] : [];
+          }),
+          claimSupport,
+        }];
+      }
+      if (
+        selectedEvent.adaptation !== "canonical"
+        || selectedEvent.eventAt === null
+        || !selectedPrior
+        || !selectedPrior.priorActions
+        || selectedPrior.sourceIds.length !== 1
+        || selectedPrior.sourceIds[0] !== selectedPrior.id
+        || selectedPrior.provenance !== "demo_fixture"
+        || selectedPrior.label !== "Sample decision record"
+        || selectedPrior.sourceIds.some((sourceId) => eventSourceIds.has(sourceId))
+      ) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because selected event and prior-memory authority did not resolve independently.",
+        )];
+      }
+      const priorSource = sourceById.get(selectedPrior.id);
+      if (
+        !priorSource
+        || priorSource.adaptation !== "canonical"
+        || priorSource.provenance !== "demo_fixture"
+        || priorSource.title !== "Sample decision record"
+        || priorSource.eventAt !== selectedPrior.occurredAt
+      ) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because the selected Sample decision record payload conflicted with canonical lineage.",
+        )];
+      }
+      const gateSources = uniqueByCanonicalId<SourceRefV2>([
+        ...selectedEvent.sources,
+        priorSource,
+        ...match.counterevidence.citedSourceIds.map(
+          (sourceId) => sourceById.get(sourceId)!,
+        ),
+      ], "source");
+      if (gateSources.some((source) => source.adaptation !== "canonical")) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because the hard-gate catalog was not canonical.",
+        )];
+      }
+      const actions = actionsForDealStatusAndDirection(deal.status, direction);
+      let assessment: BeliefChangeAssessmentV1;
+      try {
+        const gates = evaluateBeliefRevisionHardGates({
+          priorInteraction: {
+            ...selectedPrior,
+            priorActions: selectedPrior.priorActions,
+          },
+          triggerEvent: {
+            id: selectedEvent.id,
+            eventAt: selectedEvent.eventAt,
+            sourceIds: selectedEvent.sources.map((source) => source.id),
+          },
+          revisitMapping: {
+            priorInteractionId: match.selectedPriorInteractionId,
+            revisitConditionIndex: match.revisitConditionIndex,
+            revisitConditionText: match.revisitConditionText,
+            triggerEventId: match.selectedTriggerEventId,
+            citedSourceIds: match.revisitCitedSourceIds,
+          },
+          counterevidence: match.counterevidence,
+          sources: gateSources,
+          dealStatus: deal.status,
+          direction,
+          proposedActions: actions,
+        });
+        assessment = BeliefChangeAssessmentV1Schema.parse({
+          schemaVersion: BELIEF_CHANGE_ASSESSMENT_SCHEMA_VERSION,
+          dealStatus: deal.status,
+          direction,
+          scoreBreakdown,
+          gateContext: {
+            priorInteraction: {
+              ...selectedPrior,
+              priorActions: selectedPrior.priorActions,
+            },
+            triggerEvent: {
+              id: selectedEvent.id,
+              eventAt: selectedEvent.eventAt,
+              sourceIds: selectedEvent.sources.map((source) => source.id),
+            },
+            sources: gateSources,
+          },
+          gates,
+          actions,
+        });
+      } catch {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because deterministic hard-gate evaluation failed.",
+        )];
+      }
+      const outcome: CompanyAnalysisOutcome =
+        scoreBreakdown.confidence === "low" || !assessment.gates.allPassed
+        ? "monitor"
+        : "belief_revised";
       return [{
         dealId: match.dealId,
-        confidence,
-        score,
+        dealStatus: deal.status,
+        outcome,
+        confidence: scoreBreakdown.confidence,
+        score: scoreBreakdown.finalScore,
         whyNow: whyNow.text,
         previousContext: previousContext.text,
         implications: {
           positive: positiveImplications,
           negative: negativeImplications,
         },
-        nextStep: nextStepForDealStatus(deal.status),
+        nextStep: renderRecommendedNextMove(actions),
         relationship,
-        events: matchedEvents,
-        demoFixtureIds,
+        events: [selectedEvent],
+        demoFixtureIds: [selectedPrior.id],
         sources: [...usedSourceIds].map((sourceId) => sourceById.get(sourceId)!),
         claimSupport,
+        beliefAssessment: assessment,
       }];
     });
 
@@ -362,7 +606,7 @@ export function createMatchingService(reasoner: MatchingReasoner) {
     analyze,
     async match(input: MatchingInput): Promise<OpportunityReportItem[]> {
       const grounded = await analyze(input);
-      return rankQualifiedMatches(grounded).map((match, index) =>
+      return rankBeliefRevisionCandidates(grounded).map((match, index) =>
         OpportunityReportItemSchema.parse({
           rank: index + 1,
           dealId: match.dealId,
@@ -379,4 +623,43 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       );
     },
   };
+}
+
+function directionForImplications(
+  positive: readonly string[],
+  negative: readonly string[],
+): Exclude<BeliefChangeDirection, "unavailable"> {
+  if (positive.length > 0 && negative.length === 0) return "positive";
+  if (negative.length > 0 && positive.length === 0) return "negative";
+  if (positive.length > 0 && negative.length > 0) return "mixed";
+  return "none";
+}
+
+function unavailableMatch(
+  deal: MatchingDeal,
+  reason: string,
+): GroundedMatch {
+  return {
+    dealId: deal.id,
+    dealStatus: deal.status,
+    outcome: "analysis_unavailable",
+    confidence: "low",
+    score: 0,
+    whyNow: reason,
+    previousContext: reason,
+    implications: { positive: [], negative: [] },
+    nextStep: renderRecommendedNextMove(
+      actionsForDealStatusAndDirection(deal.status, "unavailable"),
+    ),
+    relationship: "related",
+    events: [],
+    sources: [],
+    demoFixtureIds: [],
+    claimSupport: [],
+    analysisFailureReason: reason,
+  };
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }

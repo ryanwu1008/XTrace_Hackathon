@@ -38,6 +38,12 @@ const bundle: DealMemoryBundle = {
     decisionReason: "The synthetic team passed pending stronger adoption evidence.",
     concerns: ["Timing"],
     revisitConditions: ["Relevant market change"],
+    priorActions: [{
+      kind: "no_new_action",
+      scope: "deal",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
     provenance: "demo_fixture",
     label: "Sample decision record",
   }],
@@ -107,9 +113,16 @@ test("Claude matching reasoner parses JSON and rejects Deals outside the candida
           "previousContext": "The synthetic record says the fund passed.",
           "positiveImplications": ["The event overlaps the supplied company description."],
           "negativeImplications": [],
-          "nextStep": "Review the cited source and decide whether to follow up.",
+          "selectedTriggerEventId": "event_1",
+          "selectedPriorInteractionId": "fixture_ably",
+          "revisitConditionIndex": 0,
+          "revisitConditionText": "Relevant market change",
+          "revisitCitedSourceIds": ["market_source"],
+          "counterevidence": {
+            "statement": "The supplied evidence does not establish durable customer retention.",
+            "citedSourceIds": ["market_source"]
+          },
           "citedSourceIds": ["market_source", "deal_source"],
-          "demoFixtureIds": ["fixture_ably"],
           "scoreInputs": {
             "eventRelevance": 0.8,
             "dealRelevance": 0.8,
@@ -126,9 +139,16 @@ test("Claude matching reasoner parses JSON and rejects Deals outside the candida
           "previousContext": "Unknown.",
           "positiveImplications": [],
           "negativeImplications": [],
-          "nextStep": "None.",
+          "selectedTriggerEventId": "event_1",
+          "selectedPriorInteractionId": "fixture_ably",
+          "revisitConditionIndex": 0,
+          "revisitConditionText": "Relevant market change",
+          "revisitCitedSourceIds": ["market_source"],
+          "counterevidence": {
+            "statement": "The supplied evidence does not establish durable customer retention.",
+            "citedSourceIds": ["market_source"]
+          },
           "citedSourceIds": ["market_source"],
-          "demoFixtureIds": [],
           "scoreInputs": {
             "eventRelevance": 1,
             "dealRelevance": 1,
@@ -205,9 +225,23 @@ test("both Claude prompt paths separate normalized text from quote eligibility",
     },
   });
   const input = {
-    deals: [{ id: "deal_ably", companyName: "Ably", status: "passed" as const }],
-    events: [marketEventV2(normalized)],
-    memoryContexts: [],
+    deals: [{
+      id: "deal_ably",
+      companyName: "Ably",
+      status: "passed" as const,
+      expectedDirection: "CANARY_DEAL_EXPECTED_DIRECTION",
+    }],
+    events: [{
+      ...marketEventV2(normalized),
+      expectedOutcome: "CANARY_EVENT_EXPECTED_OUTCOME",
+    }],
+    memoryContexts: [{
+      dealId: "deal_ably",
+      text: "Prior context",
+      sourceIds: [],
+      fixtureIds: [],
+      expectedNewActions: ["CANARY_CONTEXT_EXPECTED_ACTION"],
+    }],
     sources: [normalized, exact],
   };
 
@@ -235,10 +269,55 @@ test("both Claude prompt paths separate normalized text from quote eligibility",
     assert.match(calls[0], /qualifier|negation/i);
     assert.doesNotMatch(calls[0], /contiguous substring/i);
     assert.doesNotMatch(calls[0], /every cited source's excerpt/i);
+    assert.doesNotMatch(calls[0], /CANARY_DEAL_EXPECTED_DIRECTION/);
+    assert.doesNotMatch(calls[0], /CANARY_EVENT_EXPECTED_OUTCOME/);
+    assert.doesNotMatch(calls[0], /CANARY_CONTEXT_EXPECTED_ACTION/);
   }
 });
 
-test("a legacy v1 judgment cannot replay for v2 evidence", async () => {
+test("both Claude paths reject model attempts to choose direction, actions, gates, rank, or next step", async () => {
+  const policyChoosingCompletion = JSON.stringify([{
+    dealId: "deal_ably",
+    whyNow: "The announcement concerns realtime infrastructure.",
+    previousContext: "The prior record concerned realtime infrastructure.",
+    positiveImplications: [],
+    negativeImplications: [],
+    nextStep: "Invest now.",
+    direction: "positive",
+    actions: [{ kind: "reopen_diligence" }],
+    gates: { allPassed: true },
+    rank: 1,
+    citedSourceIds: ["market_source", "fixture_ably"],
+    demoFixtureIds: ["fixture_ably"],
+    scoreInputs: {
+      eventRelevance: 0.8,
+      dealRelevance: 0.8,
+      priorContextStrength: 0.8,
+      evidenceQuality: 0.8,
+    },
+    claimSourceIds: {
+      "The announcement concerns realtime infrastructure.": ["market_source"],
+    },
+  }]);
+
+  for (const reasonerFactory of [createClaudeMatchingReasoner, createClaudeReasoner]) {
+    let calls = 0;
+    const reasoner = reasonerFactory({
+      async complete() {
+        calls += 1;
+        return policyChoosingCompletion;
+      },
+    } as never);
+
+    await assert.rejects(
+      reasoner.reason(replayInput()),
+      /validation|unrecognized|invalid|schema/i,
+    );
+    assert.equal(calls, 2, "one repair attempt must still reject policy fields");
+  }
+});
+
+test("a reasoner v2 judgment cannot replay under the strict v3 schema", async () => {
   const normalized = normalizedSourceV2("normalized_replay_source");
   let modelCalls = 0;
   const requestedFingerprints: string[] = [];
@@ -273,7 +352,7 @@ test("a legacy v1 judgment cannot replay for v2 evidence", async () => {
   assert.equal(modelCalls, 1);
   assert.match(
     requestedFingerprints[0],
-    /^reasoner-judgment-v2:sha256:[0-9a-f]{64}$/,
+    /^reasoner-judgment-v3:sha256:[0-9a-f]{64}$/,
   );
 });
 
@@ -284,9 +363,16 @@ test("matching reasoner coerces numeric score strings from the model", async () 
     previousContext: "Prior context.",
     positiveImplications: [],
     negativeImplications: [],
-    nextStep: "Review the cited evidence.",
+    selectedTriggerEventId: "event_x",
+    selectedPriorInteractionId: "fixture_x",
+    revisitConditionIndex: 0,
+    revisitConditionText: "Revisit after a material event.",
+    revisitCitedSourceIds: ["source_x"],
+    counterevidence: {
+      statement: "The supplied evidence does not establish durable customer retention.",
+      citedSourceIds: ["source_x"],
+    },
     citedSourceIds: ["source_x"],
-    demoFixtureIds: [],
     scoreInputs: {
       eventRelevance: "0.7",
       dealRelevance: "0.6",
@@ -326,9 +412,16 @@ const REPLAY_COMPLETION = `[
     "previousContext": "The synthetic record says the fund passed.",
     "positiveImplications": [],
     "negativeImplications": [],
-    "nextStep": "Review the cited source and decide whether to follow up.",
+    "selectedTriggerEventId": "event_1",
+    "selectedPriorInteractionId": "fixture_ably",
+    "revisitConditionIndex": 0,
+    "revisitConditionText": "Relevant market change",
+    "revisitCitedSourceIds": ["market_source"],
+    "counterevidence": {
+      "statement": "The supplied evidence does not establish durable customer retention.",
+      "citedSourceIds": ["market_source"]
+    },
     "citedSourceIds": ["market_source", "deal_source"],
-    "demoFixtureIds": ["fixture_ably"],
     "scoreInputs": {
       "eventRelevance": 0.8,
       "dealRelevance": 0.8,

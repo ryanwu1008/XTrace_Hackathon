@@ -66,6 +66,17 @@ export function buildStructuredMemoryContexts(
       fact.sources.map((source) => source.id)
     )),
     fixtureIds: unique(bundle.interactions.map((interaction) => interaction.id)),
+    interactionCandidates: bundle.interactions.map((interaction) => ({
+      id: interaction.id,
+      occurredAt: interaction.occurredAt,
+      sourceIds: [interaction.id],
+      revisitConditions: [...interaction.revisitConditions],
+      provenance: interaction.provenance,
+      label: interaction.label,
+      priorActions: interaction.priorActions
+        ? structuredClone(interaction.priorActions)
+        : undefined,
+    })),
     text: [
       `${bundle.companyName} is currently recorded as ${bundle.status}.`,
       ...bundle.facts.map((fact) => `Source-backed fact: ${fact.text}`),

@@ -14,6 +14,11 @@ import {
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import { createMatchingService } from "../../lib/matching/service";
 import type { DealStatus } from "../../lib/contracts/domain";
+import { interactionSourceV2 } from "../../lib/matching/context";
+import type {
+  MatchingInput,
+  ReasonedMatch,
+} from "../../lib/matching/service";
 import { adaptLegacySourceRef } from "../../lib/contracts/legacy-evidence-adapter";
 import {
   exactSourceV2,
@@ -103,7 +108,9 @@ async function matchWithReasonerNextStep(
       dealId: "deal_1",
       whyNow: "AI infrastructure networks funding increased.",
       previousContext: "The fund passed because infrastructure networks timing was early.",
-      positiveImplications: [],
+      positiveImplications: [
+        "AI infrastructure networks funding increased.",
+      ],
       negativeImplications: [],
       nextStep,
       citedSourceIds: ["market_1", "deal_source_1"],
@@ -123,9 +130,15 @@ async function matchWithReasonerNextStep(
     }],
   });
 
-  return service.match({
+  const marketSource = publicExactSource(
+    "market_1",
+    "Infrastructure funding",
+    "https://example.com/market",
+    "AI infrastructure networks funding increased.",
+  );
+  return service.analyze({
     deals: [{ id: "deal_1", companyName: "Example", status }],
-    events: [],
+    events: [marketEventV2(marketSource)],
     memoryContexts: [{
       dealId: "deal_1",
       text: "Infrastructure context",
@@ -133,12 +146,7 @@ async function matchWithReasonerNextStep(
       fixtureIds: [],
     }],
     sources: [
-      publicExactSource(
-        "market_1",
-        "Infrastructure funding",
-        "https://example.com/market",
-        "AI infrastructure networks funding increased.",
-      ),
+      marketSource,
       priorExactSource(
         "deal_source_1",
         "Example deck",
@@ -165,6 +173,21 @@ test("keeps at most five medium-or-high confidence matches", () => {
   assert.equal(result.some((item) => item.id === "b"), false);
   assert.deepEqual(result.map((item) => item.score), [0.9, 0.8, 0.7, 0.6, 0.59]);
   assert.equal(result[0].confidence, "high");
+});
+
+test("equal-score ranking is UTF-8 deterministic before the five-item cap", () => {
+  const matches = ["deal_é", "deal_z", "deal_a", "deal_β", "deal_b", "deal_Ä"]
+    .map((dealId) => ({ dealId, score: 0.8 }));
+
+  const expected = ["deal_a", "deal_b", "deal_z", "deal_Ä", "deal_é"];
+  assert.deepEqual(
+    rankQualifiedMatches(matches).map(({ dealId }) => dealId),
+    expected,
+  );
+  assert.deepEqual(
+    rankQualifiedMatches([...matches].reverse()).map(({ dealId }) => dealId),
+    expected,
+  );
 });
 
 test("uses the approved weighted score and confidence boundaries", () => {
@@ -473,7 +496,9 @@ test("analyze retains grounded low-confidence matches for monitoring", async () 
       whyNow: "AI infrastructure networks funding increased.",
       previousContext:
         "The fund passed because infrastructure networks timing was early.",
-      positiveImplications: [],
+      positiveImplications: [
+        "AI infrastructure networks funding increased.",
+      ],
       negativeImplications: [],
       nextStep: "Review the evidence.",
       citedSourceIds: ["market_1", "deal_source_1"],
@@ -492,9 +517,15 @@ test("analyze retains grounded low-confidence matches for monitoring", async () 
       },
     }],
   });
+  const marketSource = publicExactSource(
+    "market_1",
+    "Infrastructure funding",
+    "https://example.com/market",
+    "AI infrastructure networks funding increased.",
+  );
   const input = {
     deals: [{ id: "deal_1", companyName: "Example", status: "passed" as const }],
-    events: [],
+    events: [marketEventV2(marketSource)],
     memoryContexts: [{
       dealId: "deal_1",
       text: "Infrastructure context",
@@ -502,12 +533,7 @@ test("analyze retains grounded low-confidence matches for monitoring", async () 
       fixtureIds: [],
     }],
     sources: [
-      publicExactSource(
-        "market_1",
-        "Infrastructure funding",
-        "https://example.com/market",
-        "AI infrastructure networks funding increased.",
-      ),
+      marketSource,
       priorExactSource(
         "deal_source_1",
         "Example deck",
@@ -533,7 +559,7 @@ test("ignores malicious reasoner instructions when producing a next step", async
   assert.equal(result.length, 1);
   assert.equal(
     result[0].nextStep,
-    "Review the cited evidence and decide whether to reopen internal diligence.",
+    "Review the analysis failure before relying on this company analysis.",
   );
 });
 
@@ -545,33 +571,21 @@ test("uses the application-owned next-step template for normal reasoner text", a
   assert.equal(result.length, 1);
   assert.equal(
     result[0].nextStep,
-    "Review the cited evidence and decide whether to reopen internal diligence.",
+    "Review the analysis failure before relying on this company analysis.",
   );
 });
 
 test("uses one safe application-owned next-step template for every Deal status", async () => {
   const cases: Array<[DealStatus, string]> = [
-    [
-      "screening",
-      "Review the cited evidence and decide whether to continue internal screening.",
-    ],
-    [
-      "watchlist",
-      "Review the cited evidence and decide whether to update the watchlist status.",
-    ],
-    [
-      "evaluating",
-      "Review the cited evidence and decide whether to update ongoing internal diligence.",
-    ],
-    [
-      "passed",
-      "Review the cited evidence and decide whether to reopen internal diligence.",
-    ],
-    [
-      "invested",
-      "Review the cited evidence and decide whether to update portfolio monitoring.",
-    ],
-  ];
+    "screening",
+    "watchlist",
+    "evaluating",
+    "passed",
+    "invested",
+  ].map((status) => [
+    status as DealStatus,
+    "Review the analysis failure before relying on this company analysis.",
+  ]);
   const prohibited =
     /https?:|www\.|@|contact|email|upload|credential|password|api[\s-]?key|send|share|transfer|wire|reconnect|schedule/i;
 
@@ -653,6 +667,7 @@ test("normalized support stays non-quote while legacy and model text cannot supp
       whyNow: "Acme announced a Series B funding round.",
       previousContext: "The fund passed because market timing was early.",
       positiveImplications: [
+        "Acme announced a Series B funding round.",
         "Legacy customer adoption increased.",
         "The financing guarantees product-market fit.",
       ],
@@ -693,7 +708,9 @@ test("normalized support stays non-quote while legacy and model text cannot supp
   });
 
   assert.equal(matches.length, 1);
-  assert.deepEqual(matches[0].implications.positive, []);
+  assert.deepEqual(matches[0].implications.positive, [
+    "Acme announced a Series B funding round.",
+  ]);
   assert.deepEqual(matches[0].claimSupport, [{
     text: "Acme announced a Series B funding round.",
     kind: "normalized_non_quote",
@@ -704,6 +721,294 @@ test("normalized support stays non-quote while legacy and model text cannot supp
     sourceIds: [priorSource.id],
   }]);
   assert.equal(matches[0].sources[0].text.status, "normalized_only");
+});
+
+test("a Deal-background public_web source cannot satisfy event-side grounding", async () => {
+  const acceptedEventSource = normalizedSourceV2("accepted_event_source", {
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "A regulator published an unrelated filing notice.",
+    },
+  });
+  const backgroundWebSource = normalizedSourceV2("deal_background_web", {
+    canonicalUrl: "https://example.com/acme-background",
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "Acme enterprise adoption milestone changed.",
+    },
+  });
+  const priorSource = priorExactSource(
+    "deal_prior_source",
+    "Acme decision record",
+    "doc_acme_prior",
+    "Acme enterprise adoption was a recorded revisit condition.",
+  );
+  const service = createMatchingService({
+    reason: async () => [{
+      dealId: "deal_acme",
+      whyNow: "Acme enterprise adoption milestone changed.",
+      previousContext:
+        "Acme enterprise adoption was a recorded revisit condition.",
+      positiveImplications: [],
+      negativeImplications: [],
+      nextStep: "Review the evidence.",
+      citedSourceIds: [backgroundWebSource.id, priorSource.id],
+      demoFixtureIds: [],
+      scoreInputs: {
+        eventRelevance: 1,
+        dealRelevance: 1,
+        priorContextStrength: 1,
+        evidenceQuality: 1,
+      },
+      claimSourceIds: {
+        "Acme enterprise adoption milestone changed.": [backgroundWebSource.id],
+        "Acme enterprise adoption was a recorded revisit condition.": [
+          priorSource.id,
+        ],
+      },
+    }],
+  });
+
+  const matches = await service.analyze({
+    deals: [{ id: "deal_acme", companyName: "Acme", status: "passed" }],
+    events: [marketEventV2(acceptedEventSource)],
+    memoryContexts: [{
+      dealId: "deal_acme",
+      text: "Acme prior context",
+      sourceIds: [priorSource.id],
+      fixtureIds: [],
+    }],
+    sources: [acceptedEventSource, backgroundWebSource, priorSource],
+  });
+
+  assert.deepEqual(matches, []);
+});
+
+function strictBeliefRevisionFixture() {
+  const trigger = normalizedSourceV2("strict_trigger", {
+    eventAt: "2026-07-23",
+    eventAtPrecision: "date",
+    publishedAt: "2026-07-23",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Acme enterprise adoption milestone is now verified.",
+    },
+  });
+  const counter = normalizedSourceV2("strict_counter", {
+    canonicalUrl: "https://example.com/acme-counterevidence",
+    eventAt: "2026-07-23",
+    eventAtPrecision: "date",
+    publishedAt: "2026-07-23",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    evidenceRole: "counterevidence",
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Public evidence does not establish durable customer retention for Acme.",
+    },
+  });
+  const interaction = {
+    id: "strict_prior",
+    occurredAt: "2026-01-12T12:00:00.000Z",
+    summary: "Sample internal prior context.",
+    decisionReason:
+      "Acme enterprise adoption was the recorded revisit condition.",
+    concerns: ["Durable customer retention remained unverified."],
+    revisitConditions: [
+      "Revisit after measurable enterprise adoption.",
+    ],
+    priorActions: actionsForDealStatusAndDirection("passed", "none"),
+    provenance: "demo_fixture" as const,
+    label: "Sample decision record" as const,
+  };
+  const prior = interactionSourceV2(interaction);
+  const event = marketEventV2(trigger, {
+    id: "strict_event",
+    eventAt: "2026-07-23",
+    eventAtPrecision: "date",
+    sources: [trigger, counter],
+  });
+  const previousContext = prior.text.status === "normalized_only"
+    ? prior.text.normalizedStatement
+    : "";
+  const observation: ReasonedMatch = {
+    dealId: "deal_acme_strict",
+    whyNow: "Acme enterprise adoption milestone is now verified.",
+    previousContext,
+    positiveImplications: [
+      "Acme enterprise adoption milestone is now verified.",
+    ],
+    negativeImplications: [],
+    selectedTriggerEventId: event.id,
+    selectedPriorInteractionId: interaction.id,
+    revisitConditionIndex: 0,
+    revisitConditionText: interaction.revisitConditions[0],
+    revisitCitedSourceIds: [trigger.id],
+    counterevidence: {
+      statement:
+        "Public evidence does not establish durable customer retention for Acme.",
+      citedSourceIds: [counter.id],
+    },
+    citedSourceIds: [trigger.id, counter.id, prior.id],
+    scoreInputs: {
+      eventRelevance: 1,
+      dealRelevance: 1,
+      priorContextStrength: 1,
+      evidenceQuality: 1,
+    },
+    claimSourceIds: {
+      "Acme enterprise adoption milestone is now verified.": [trigger.id],
+      [previousContext]: [prior.id],
+    },
+  };
+  const input: MatchingInput = {
+    deals: [{
+      id: "deal_acme_strict",
+      companyName: "Acme",
+      status: "passed",
+    }],
+    events: [event],
+    memoryContexts: [{
+      dealId: "deal_acme_strict",
+      text: previousContext,
+      sourceIds: [],
+      fixtureIds: [interaction.id],
+      interactionCandidates: [{
+        id: interaction.id,
+        occurredAt: interaction.occurredAt,
+        sourceIds: [interaction.id],
+        revisitConditions: interaction.revisitConditions,
+        provenance: interaction.provenance,
+        label: interaction.label,
+        priorActions: interaction.priorActions,
+      }],
+    }],
+    sources: [trigger, counter, prior],
+  };
+  return { input, observation, interaction, trigger, counter, prior, event };
+}
+
+test("strict matching derives and parses a bounded v1 assessment after model output", async () => {
+  const fixture = strictBeliefRevisionFixture();
+  fixture.observation.scoreInputs = {
+    eventRelevance: 2,
+    dealRelevance: 2,
+    priorContextStrength: -1,
+    evidenceQuality: 2,
+  };
+  const matches = await createMatchingService({
+    reason: async () => [fixture.observation],
+  }).analyze(fixture.input);
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].outcome, "belief_revised");
+  assert.equal(matches[0].beliefAssessment?.direction, "positive");
+  assert.deepEqual(matches[0].beliefAssessment?.scoreBreakdown, {
+    eventRelevance: 0.9,
+    dealRelevance: 0.9,
+    priorContextStrength: 0,
+    evidenceQuality: 1,
+    finalScore: 0.735,
+    confidence: "medium",
+  });
+  assert.equal(matches[0].beliefAssessment?.gates.allPassed, true);
+  assert.deepEqual(
+    matches[0].beliefAssessment?.actions.map(({ kind }) => kind),
+    ["reopen_diligence"],
+  );
+});
+
+test("each determinable hard-gate failure stays monitor even at raw score one", async () => {
+  const cases = [
+    ["chronology", (fixture: ReturnType<typeof strictBeliefRevisionFixture>) => {
+      fixture.interaction.occurredAt = "2026-07-24T12:00:00.000Z";
+      fixture.input.memoryContexts[0]!.interactionCandidates![0]!.occurredAt =
+        fixture.interaction.occurredAt;
+      const changedPrior = interactionSourceV2(fixture.interaction);
+      fixture.input.sources = fixture.input.sources.map((source) =>
+        source.id === changedPrior.id ? changedPrior : source
+      );
+    }],
+    ["revisit", (fixture: ReturnType<typeof strictBeliefRevisionFixture>) => {
+      fixture.observation.revisitConditionText =
+        "Revisit after a different milestone.";
+    }],
+    ["counterevidence", (fixture: ReturnType<typeof strictBeliefRevisionFixture>) => {
+      fixture.observation.counterevidence = {
+        statement: "This unsupported counterevidence statement is substantive.",
+        citedSourceIds: [fixture.counter.id],
+      };
+    }],
+    ["action delta", (fixture: ReturnType<typeof strictBeliefRevisionFixture>) => {
+      const priorActions = actionsForDealStatusAndDirection("passed", "positive");
+      fixture.interaction.priorActions = priorActions;
+      fixture.input.memoryContexts[0]!.interactionCandidates![0]!.priorActions =
+        priorActions;
+    }],
+  ] as const;
+
+  for (const [name, mutate] of cases) {
+    const fixture = strictBeliefRevisionFixture();
+    mutate(fixture);
+    const [match] = await createMatchingService({
+      reason: async () => [fixture.observation],
+    }).analyze(fixture.input);
+    assert.equal(match?.score, 0.935, name);
+    assert.equal(match?.outcome, "monitor", name);
+    assert.equal(match?.beliefAssessment?.gates.allPassed, false, name);
+  }
+});
+
+test("missing selected event, crossed event/prior IDs, and missing priorActions fail the affected Deal unavailable", async () => {
+  const cases = [
+    ["event", (fixture: ReturnType<typeof strictBeliefRevisionFixture>) => {
+      fixture.observation.selectedTriggerEventId = "missing_event";
+    }],
+    ["crossed lineage", (fixture: ReturnType<typeof strictBeliefRevisionFixture>) => {
+      const candidate = fixture.input.memoryContexts[0]!
+        .interactionCandidates![0]!;
+      candidate.sourceIds = [fixture.trigger.id];
+      fixture.observation.previousContext =
+        "Acme enterprise adoption milestone is now verified.";
+    }],
+    ["prior actions", (fixture: ReturnType<typeof strictBeliefRevisionFixture>) => {
+      delete fixture.input.memoryContexts[0]!.interactionCandidates![0]!
+        .priorActions;
+    }],
+  ] as const;
+
+  for (const [name, mutate] of cases) {
+    const fixture = strictBeliefRevisionFixture();
+    mutate(fixture);
+    const [match] = await createMatchingService({
+      reason: async () => [fixture.observation],
+    }).analyze(fixture.input);
+    assert.equal(match?.outcome, "analysis_unavailable", name);
+  }
+});
+
+test("no model candidate and a global reasoner failure remain distinct dispositions", async () => {
+  const fixture = strictBeliefRevisionFixture();
+  assert.deepEqual(
+    await createMatchingService({ reason: async () => [] }).analyze(
+      fixture.input,
+    ),
+    [],
+  );
+  await assert.rejects(
+    createMatchingService({
+      reason: async () => {
+        throw new Error("global model failure");
+      },
+    }).analyze(fixture.input),
+    /global model failure/,
+  );
 });
 
 test("matching source ID conflicts throw before the reasoner is called", async () => {
@@ -781,7 +1086,7 @@ test("matching rejects a stale canonical event before the reasoner is called", a
   assert.equal(reasonerCalls, 0);
 });
 
-test("drops unsupported claims and retains explicit fixture lineage", async () => {
+test("an unknown cited source fails only the affected Deal unavailable", async () => {
   const service = createMatchingService({
     reason: async () => [{
       dealId: "deal_1",
@@ -814,9 +1119,15 @@ test("drops unsupported claims and retains explicit fixture lineage", async () =
     }],
   });
 
-  const result = await service.match({
+  const marketSource = publicExactSource(
+    "market_1",
+    "Market source",
+    "https://example.com/market",
+    "AI infrastructure networks funding increased.",
+  );
+  const result = await service.analyze({
     deals: [{ id: "deal_1", companyName: "Ably", status: "passed" }],
-    events: [],
+    events: [marketEventV2(marketSource)],
     memoryContexts: [{
       dealId: "deal_1",
       text: "Deal and fixture context",
@@ -824,12 +1135,7 @@ test("drops unsupported claims and retains explicit fixture lineage", async () =
       fixtureIds: ["fixture_1"],
     }],
     sources: [
-      publicExactSource(
-        "market_1",
-        "Market source",
-        "https://example.com/market",
-        "AI infrastructure networks funding increased.",
-      ),
+      marketSource,
       priorExactSource(
         "deal_source_1",
         "Deal deck",
@@ -849,16 +1155,8 @@ test("drops unsupported claims and retains explicit fixture lineage", async () =
   assert.equal(result.length, 1);
   const grounded = result[0];
   assert.ok(grounded);
-  assert.equal(grounded.whyNow, "AI infrastructure networks funding increased.");
-  assert.deepEqual(grounded.demoFixtureIds, ["fixture_1"]);
-  assert.deepEqual(grounded.sources.map((source) => source.id), [
-    "market_1",
-    "fixture_1",
-  ]);
-  assert.deepEqual(grounded.implications, {
-    positive: [],
-    negative: [],
-  });
+  assert.equal(grounded.outcome, "analysis_unavailable");
+  assert.match(grounded.whyNow, /unknown canonical source/i);
 });
 
 test("rejects a match with no Deal-linked evidence and sanitizes unsafe actions", async () => {

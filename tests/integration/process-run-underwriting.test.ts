@@ -28,12 +28,19 @@ import {
   createMemoryUnderwritingRunsRepository,
   type CandidateFinalization,
 } from "../../db/repositories/underwriting-runs";
-import type {
-  CompanyAnalysis,
-  DealInteraction,
+import {
+  BeliefChangeAssessmentV1Schema,
+  type CompanyAnalysis,
+  type DealInteraction,
 } from "../../lib/contracts/domain";
 import { sourceTextForRetrieval } from "../../lib/contracts/source-evidence";
 import { interactionSourceV2 } from "../../lib/matching/context";
+import { buildOpportunityScoreBreakdown } from "../../lib/matching/scoring";
+import { evaluateBeliefRevisionHardGates } from "../../lib/matching/hard-gates";
+import {
+  actionsForDealStatusAndDirection,
+  renderRecommendedNextMove,
+} from "../../lib/reports/action-policy";
 import {
   ScenarioInputFieldSchema,
   type FundPolicySnapshot,
@@ -71,7 +78,12 @@ import type {
   ClaudeCompleteInput,
 } from "../../lib/claude/client";
 import { BALANCED_POLICY_VALUES } from "../../seed/underwriting/balanced-policy-v1";
-import { processClaimedRun } from "../../worker/process-run";
+import {
+  processClaimedRun,
+  projectRecommendedOpportunities,
+} from "../../worker/process-run";
+import { rankBeliefRevisionCandidates } from "../../lib/matching/ranking";
+import { buildInternalReportDraft } from "../../lib/reports/draft";
 import type { NormalizedMarketEvent } from "../../lib/market/types";
 import {
   exactSourceV2,
@@ -92,6 +104,7 @@ const IMAGE_INTERACTION = {
   revisitConditions: [
     "Revisit after a verified enterprise deployment.",
   ],
+  priorActions: actionsForDealStatusAndDirection("passed", "none"),
   provenance: "demo_fixture",
   label: "Sample decision record",
 } satisfies DealInteraction;
@@ -117,8 +130,8 @@ function underwritingMarketEvent(input: {
     canonicalUrl: input.canonicalUrl,
     publisher: "Official source",
     providerId: "official",
-    eventAt: null,
-    eventAtPrecision: null,
+    eventAt: "2026-07-28T00:00:00.000Z",
+    eventAtPrecision: "timestamp",
     publishedAt: "2026-07-28T00:00:00.000Z",
     publishedAtPrecision: "timestamp",
     retrievedAt: NOW.toISOString(),
@@ -129,6 +142,27 @@ function underwritingMarketEvent(input: {
     text: {
       status: "normalized_only",
       normalizedStatement: input.statement,
+    },
+  });
+  const counter = normalizedSourceV2(`${input.sourceId}_counter`, {
+    title: `${input.title} counterevidence`,
+    canonicalUrl: `${input.canonicalUrl}/counterevidence`,
+    publisher: "Official source",
+    providerId: "official",
+    eventAt: "2026-07-28T00:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: "2026-07-28T00:00:00.000Z",
+    publishedAtPrecision: "timestamp",
+    retrievedAt: NOW.toISOString(),
+    retrievedAtPrecision: "timestamp",
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: input.entityKeys,
+    evidenceRole: "counterevidence",
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        `The public evidence does not establish durable customer retention for ${input.title}.`,
     },
   });
   return marketEventV2(source, {
@@ -142,6 +176,7 @@ function underwritingMarketEvent(input: {
     negativeImplications: [],
     confidence: "high",
     entityKeys: input.entityKeys,
+    sources: [source, counter],
   }) as NormalizedMarketEvent;
 }
 
@@ -215,6 +250,99 @@ function analysis(
   >> = {},
 ): CompanyAnalysis {
   const sourceId = `source_${dealId}`;
+  const priorInteraction = {
+    id: `fixture_${dealId}`,
+    occurredAt: "2026-01-01T00:00:00.000Z",
+    summary: "Prior meeting",
+    decisionReason: "The market was too early.",
+    concerns: [],
+    revisitConditions: ["Revisit after a market change."],
+    priorActions: actionsForDealStatusAndDirection("passed", "none"),
+    provenance: "demo_fixture" as const,
+    label: "Sample decision record" as const,
+  };
+  const priorSource = interactionSourceV2(priorInteraction);
+  const triggerSource = exactSourceV2(`trigger_${dealId}`, {
+    eventAt: "2026-07-28",
+    eventAtPrecision: "date",
+    publishedAt: "2026-07-28",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-07-29T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    evidenceRole: "trigger",
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt: "A source-grounded market change was detected.",
+    },
+  });
+  const counterSource = exactSourceV2(`counter_${dealId}`, {
+    canonicalUrl: `https://example.com/${encodeURIComponent(dealId)}/counterevidence`,
+    eventAt: "2026-07-28",
+    eventAtPrecision: "date",
+    publishedAt: "2026-07-28",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-07-29T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    evidenceRole: "counterevidence",
+    text: {
+      status: "verified_exact",
+      verbatimExcerpt:
+        "The public evidence does not establish durable customer retention.",
+    },
+  });
+  const scoreBreakdown = buildOpportunityScoreBreakdown({
+    eventRelevance: score,
+    dealRelevance: score,
+    priorContextStrength: score,
+    evidenceQuality: score,
+  });
+  const actions = actionsForDealStatusAndDirection("passed", "positive");
+  const gateContext = {
+    priorInteraction: {
+      id: priorInteraction.id,
+      occurredAt: priorInteraction.occurredAt,
+      sourceIds: [priorInteraction.id],
+      revisitConditions: priorInteraction.revisitConditions,
+      priorActions: priorInteraction.priorActions,
+      provenance: priorInteraction.provenance,
+      label: priorInteraction.label,
+    },
+    triggerEvent: {
+      id: `event_${dealId}`,
+      eventAt: "2026-07-28",
+      sourceIds: [triggerSource.id, counterSource.id],
+    },
+    sources: [triggerSource, counterSource, priorSource],
+  };
+  const gates = evaluateBeliefRevisionHardGates({
+    priorInteraction: gateContext.priorInteraction,
+    triggerEvent: gateContext.triggerEvent,
+    revisitMapping: {
+      priorInteractionId: priorInteraction.id,
+      revisitConditionIndex: 0,
+      revisitConditionText: priorInteraction.revisitConditions[0],
+      triggerEventId: gateContext.triggerEvent.id,
+      citedSourceIds: [triggerSource.id],
+    },
+    counterevidence: {
+      statement:
+        "The public evidence does not establish durable customer retention.",
+      citedSourceIds: [counterSource.id],
+    },
+    sources: gateContext.sources,
+    dealStatus: "passed",
+    direction: "positive",
+    proposedActions: actions,
+  });
+  const beliefAssessment = BeliefChangeAssessmentV1Schema.parse({
+    schemaVersion: "belief-change-assessment-v1",
+    dealStatus: "passed",
+    direction: "positive",
+    scoreBreakdown,
+    gateContext,
+    gates,
+    actions,
+  });
   return {
     id: `analysis_${dealId}`,
     reportId: "report_1",
@@ -223,7 +351,7 @@ function analysis(
     companyName: `Company ${dealId}`,
     dealStatus: "passed",
     outcome: input.outcome ?? "belief_revised",
-    confidence: input.confidence ?? "high",
+    confidence: input.confidence ?? scoreBreakdown.confidence,
     score,
     verifiedSourceCount: 1,
     investmentMemory: {
@@ -235,6 +363,7 @@ function analysis(
       memoryIds: [],
       sourceIds: [sourceId],
       fixtureIds: [],
+      priorActions: priorInteraction.priorActions,
     },
     marketEvidence: {
       relationship: "satisfies",
@@ -253,7 +382,8 @@ function analysis(
       positive: ["The market may now support adoption."],
       negative: [],
     },
-    recommendedNextMove: "Review the saved evidence.",
+    beliefAssessment,
+    recommendedNextMove: renderRecommendedNextMove(actions),
     companyBrief: {
       icSnapshot: [],
       traction: [],
@@ -924,7 +1054,7 @@ function imageMarketScan() {
   };
 }
 
-function imageReasonedMatch() {
+function imageReasonedMatch(eventId = "market_image") {
   return {
     dealId: "deal_image",
     whyNow: "Image Acme won a new enterprise deployment.",
@@ -933,12 +1063,21 @@ function imageReasonedMatch() {
       "Image Acme won a new enterprise deployment.",
     ],
     negativeImplications: [],
-    nextStep: "Review the structured image evidence and deployment source.",
+    selectedTriggerEventId: eventId,
+    selectedPriorInteractionId: "fixture_image",
+    revisitConditionIndex: 0,
+    revisitConditionText: "Revisit after a verified enterprise deployment.",
+    revisitCitedSourceIds: ["market_source_image"],
+    counterevidence: {
+      statement:
+        "The public evidence does not establish durable customer retention for Image Acme wins enterprise deployment.",
+      citedSourceIds: ["market_source_image_counter"],
+    },
     citedSourceIds: [
       "market_source_image",
+      "market_source_image_counter",
       "fixture_image",
     ],
-    demoFixtureIds: ["fixture_image"],
     scoreInputs: {
       eventRelevance: 0.9,
       dealRelevance: 0.9,
@@ -1020,6 +1159,113 @@ test("selects at most five medium/high belief revisions and records every eligib
     /truncation warning/i,
     "the candidate cap is a visible warning, not negative evidence",
   );
+});
+
+test("underwriting rejects a legacy belief_revised label without a current hard-gate assessment", async () => {
+  let sequence = 0;
+  const runs = createMemoryUnderwritingRunsRepository({
+    now: () => NOW,
+    idGenerator: (kind) => `${kind}_${++sequence}`,
+  });
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    autoProcessCandidates: false,
+  });
+  const legacy = analysis("deal_legacy_label", 1);
+  legacy.beliefAssessment = undefined;
+
+  await orchestrator.createBatchAndSelections({
+    scanRun,
+    report: report([legacy]),
+    analyses: [legacy],
+    eligibleDeals: [deal(legacy.dealId)],
+    forceRefresh: false,
+  });
+
+  assert.deepEqual(runs.inspect().candidates, []);
+  assert.equal(runs.inspect().selections[0]?.status, "not_selected");
+});
+
+test("matching policy, Worker report, internal draft, and underwriting share one UTF-8 Top-5 tie order", async () => {
+  const analyses = ["deal_é", "deal_z", "deal_a", "deal_β", "deal_b", "deal_Ä"]
+    .map((dealId) => analysis(dealId, 0.8));
+  const expected = ["deal_a", "deal_b", "deal_z", "deal_Ä", "deal_é"];
+
+  assert.deepEqual(
+    rankBeliefRevisionCandidates(analyses).map(({ dealId }) => dealId),
+    expected,
+  );
+  assert.deepEqual(
+    projectRecommendedOpportunities([...analyses].reverse())
+      .map(({ dealId }) => dealId),
+    expected,
+  );
+  const draft = buildInternalReportDraft({
+    report: {
+      id: "report_tie_order",
+      createdAt: NOW.toISOString(),
+      marketSummary: "Tie-order regression.",
+      opportunities: [],
+      companyAnalyses: [analyses[2]!, analyses[5]!, analyses[0]!, analyses[3]!, analyses[1]!, analyses[4]!],
+    },
+    companyNames: {},
+    appOrigin: "https://app.example.com",
+  });
+  assert.deepEqual(
+    [...draft.bodyText.matchAll(/^#\d+ · COMPANY (\S+)/gmu)]
+      .map((match) => match[1]!),
+    expected.map((dealId) => dealId.toLocaleUpperCase()),
+  );
+
+  let sequence = 0;
+  const runs = createMemoryUnderwritingRunsRepository({
+    now: () => NOW,
+    idGenerator: (kind) => `${kind}_${++sequence}`,
+  });
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    autoProcessCandidates: false,
+  });
+  await orchestrator.createBatchAndSelections({
+    scanRun,
+    report: report(analyses),
+    analyses: [analyses[3]!, analyses[1]!, analyses[5]!, analyses[0]!, analyses[4]!, analyses[2]!],
+    eligibleDeals: [...analyses].reverse().map(({ dealId }) => deal(dealId)),
+    forceRefresh: false,
+  });
+  assert.deepEqual(
+    runs.inspect().selections
+      .filter(({ status }) => status === "selected")
+      .sort((left, right) => left.rank! - right.rank!)
+      .map(({ dealId }) => dealId),
+    expected,
+  );
+});
+
+test("outer, assessment, and registry status mismatches cannot enter underwriting", async () => {
+  const outerMismatch = analysis("deal_outer_mismatch", 0.9);
+  outerMismatch.dealStatus = "invested";
+  const registryMismatch = analysis("deal_registry_mismatch", 0.9);
+  const runs = createMemoryUnderwritingRunsRepository({ now: () => NOW });
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    autoProcessCandidates: false,
+  });
+  await orchestrator.createBatchAndSelections({
+    scanRun,
+    report: report([outerMismatch, registryMismatch]),
+    analyses: [outerMismatch, registryMismatch],
+    eligibleDeals: [
+      { ...deal(outerMismatch.dealId), status: "invested" },
+      { ...deal(registryMismatch.dealId), status: "invested" },
+    ],
+    forceRefresh: false,
+  });
+
+  assert.deepEqual(runs.inspect().candidates, []);
 });
 
 test("reuses the same immutable batch input without creating duplicate candidates", async () => {
@@ -2917,41 +3163,7 @@ test("processes a confirmed uploaded Deal from the authoritative registry before
     },
     reasoner: {
       async reason() {
-        return [{
-          dealId: "deal_uploaded",
-          whyNow:
-            "Uploaded Acme raised funding to expand clinical workflow automation for health systems.",
-          previousContext:
-            "Uploaded Acme provides clinical workflow automation for health systems.",
-          positiveImplications: [
-            "The expansion may satisfy the saved revisit condition.",
-          ],
-          negativeImplications: [],
-          nextStep: "Review the uploaded source and market expansion.",
-          citedSourceIds: [
-            "market_source_uploaded",
-            "source_uploaded",
-          ],
-          demoFixtureIds: [],
-          scoreInputs: {
-            eventRelevance: 0.9,
-            dealRelevance: 0.9,
-            priorContextStrength: 0.8,
-            evidenceQuality: 0.9,
-          },
-          claimSourceIds: {
-            "Uploaded Acme raised funding to expand clinical workflow automation for health systems.": [
-              "market_source_uploaded",
-            ],
-            "Uploaded Acme provides clinical workflow automation for health systems.": [
-              "source_uploaded",
-            ],
-            "The expansion may satisfy the saved revisit condition.": [
-              "market_source_uploaded",
-              "source_uploaded",
-            ],
-          },
-        }];
+        return [];
       },
     },
     underwriting: {
@@ -2977,7 +3189,10 @@ test("processes a confirmed uploaded Deal from the authoritative registry before
 
   assert.equal(result.report.companyAnalyses.length, 1);
   assert.equal(result.report.companyAnalyses[0]?.dealId, "deal_uploaded");
-  assert.equal(result.report.companyAnalyses[0]?.outcome, "belief_revised");
+  assert.equal(
+    result.report.companyAnalyses[0]?.outcome,
+    "no_material_change",
+  );
   assert.deepEqual(
     underwritingInput?.eligibleDeals.map(({ id }) => id),
     ["deal_uploaded"],
@@ -3027,7 +3242,7 @@ test("structured mode matches an image-only Deal into the ranked opportunity rep
             : null,
           structuredText,
         );
-        return [imageReasonedMatch()];
+        return [imageReasonedMatch(input.events[0]!.id)];
       },
     },
     underwriting: {
@@ -3050,8 +3265,8 @@ test("structured mode matches an image-only Deal into the ranked opportunity rep
     now: () => NOW,
   });
 
-  assert.equal(result.report.opportunities[0]?.dealId, "deal_image");
   assert.equal(result.report.companyAnalyses[0]?.outcome, "belief_revised");
+  assert.equal(result.report.opportunities[0]?.dealId, "deal_image");
   assert.equal(
     result.report.companyAnalyses[0]?.sources.some(
       (source) => source.provenance === "model_inference",
@@ -3087,7 +3302,7 @@ test("XTrace mode uses a partial structured fallback only for an image-only Deal
       async reason(input) {
         assert.deepEqual(input.deals.map(({ id }) => id), ["deal_image"]);
         assert.equal(input.memoryContexts[0]?.text.includes(structuredText), true);
-        return [imageReasonedMatch()];
+        return [imageReasonedMatch(input.events[0]!.id)];
       },
     },
     xtrace: {
@@ -3126,8 +3341,8 @@ test("XTrace mode uses a partial structured fallback only for an image-only Deal
   const imageAnalysis = result.report.companyAnalyses[0];
   assert.equal(result.run.status, "partial");
   assert.equal(result.report.analysisStatus, "incomplete");
-  assert.equal(result.report.opportunities[0]?.dealId, "deal_image");
   assert.equal(imageAnalysis?.outcome, "belief_revised");
+  assert.equal(result.report.opportunities[0]?.dealId, "deal_image");
   assert.deepEqual(imageAnalysis?.investmentMemory.memoryIds, []);
   assert.equal(result.report.evidenceCoverage.recalledDealCount, 0);
   assert.equal(result.report.evidenceCoverage.unavailableDealCount, 0);

@@ -2,16 +2,16 @@ import { ClaudeReasonedMatchesSchema } from "./schemas";
 import type { ClaudeClient } from "./client";
 import type { MatchingInput, ReasonedMatch } from "../matching/service";
 import {
-  serializeMatchingEvidence,
+  serializeMatchingPromptInput,
   stableEvidencePromptJson,
 } from "../matching/prompt-evidence";
 
 function evidencePrompt(input: MatchingInput) {
-  const evidence = serializeMatchingEvidence(input);
+  const evidence = serializeMatchingPromptInput(input);
   return stableEvidencePromptJson({
-    deals: input.deals,
+    deals: evidence.deals,
     events: evidence.marketEvents,
-    memoryContexts: input.memoryContexts,
+    memoryContexts: evidence.memoryContexts,
     sources: evidence.sources,
   });
 }
@@ -33,6 +33,8 @@ export function createClaudeReasoner(client: ClaudeClient) {
         "normalizedStatement is non-quote evidence and must never be represented as a direct quotation.",
         "Each claim must equal one complete eligible evidence unit, character for character. Never shorten an evidence unit or remove a qualifier or negation.",
         "Sources with factEligible false are retrieval context only and cannot support output facts.",
+        "Return observations only. Never choose direction, status, actions, gates, outcome, rank, formal decision, or a recommended next move.",
+        "Select one supplied accepted trigger event and one same-Deal Sample decision record with its exact revisit-condition index and text.",
         "Return JSON only. Return [] when evidence is insufficient.",
       ].join(" ");
       const prompt = `Assess which historical Deals deserve review.\n${evidencePrompt(input)}`;
