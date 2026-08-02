@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "belief-reversal-expected-outcomes-v1",
+  "packageId": "belief_reversal_2026_08_01",
+  "usage": "test_and_review_only",
+  "outcomes": [
+    {
+      "companyName": "Henry AI",
+      "priorStatus": "passed",
+      "direction": "positive",
+      "minimumConfidence": "medium",
+      "expectedActions": ["reopen_diligence"]
+    },
+    {
+      "companyName": "Smallest.ai",
+      "priorStatus": "watchlist",
+      "direction": "positive",
+      "minimumConfidence": "medium",
+      "expectedActions": ["advance_diligence"]
+    },
+    {
+      "companyName": "Hush Security",
+      "priorStatus": "invested",
+      "direction": "positive",
+      "minimumConfidence": "medium",
+      "expectedActions": ["evaluate_follow_on", "validate_channel_economics"]
+    },
+    {
+      "companyName": "Irregular",
+      "priorStatus": "invested",
+      "direction": "negative",
+      "minimumConfidence": "medium",
+      "expectedActions": ["pause_follow_on", "portfolio_risk_review"]
+    }
+  ]
+}

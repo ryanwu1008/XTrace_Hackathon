@@ -1,0 +1,800 @@
+{
+  "schemaVersion": "belief-reversal-research-v1",
+  "packageId": "belief_reversal_2026_08_01",
+  "version": "1.0.0",
+  "retrievalDate": "2026-08-01",
+  "historicalCutoffDate": "2026-07-18",
+  "evidenceWindow": {
+    "startAt": "2026-07-19T00:00:00-07:00",
+    "endAt": "2026-08-01T23:59:59-07:00",
+    "timezone": "America/Los_Angeles",
+    "displayLabel": "Demo evidence snapshot as of 2026-08-01"
+  },
+  "selectedCases": [
+    {
+      "id": "case_henry_ai_v1",
+      "companyId": "company_henry_ai_v1",
+      "dealId": "deal_henry_ai_v1",
+      "companyName": "Henry AI",
+      "identityName": "Henry AI Inc.",
+      "officialDomain": "https://www.henry.ai",
+      "founders": ["Sammy Greenwall", "Adam Pratt"],
+      "stage": "series_a",
+      "geography": "us",
+      "businessModel": "enterprise_ai",
+      "foundingDate": {
+        "status": "unavailable",
+        "reason": "The reviewed primary sources do not disclose an exact founding date."
+      },
+      "sourceDateConflicts": [],
+      "priorDecision": {
+        "id": "fixture_henry_ai_passed_v1",
+        "occurredAt": "2026-06-30T10:00:00-07:00",
+        "provenance": "demo_fixture",
+        "label": "Sample decision record",
+        "status": "passed",
+        "meetingSummary": "Sample internal note: the fund passed pending stronger proof that Henry could expand beyond one-off document generation into a durable workflow product.",
+        "decisionReason": "The sample team lacked enough evidence of institutional workflow adoption to reopen diligence.",
+        "concerns": [
+          "Workflow breadth and repeat usage were not sufficiently evidenced.",
+          "Reported company performance required customer verification."
+        ],
+        "revisitConditions": [
+          "A current institutional financing plus concrete, attributable workflow evidence.",
+          "Evidence that the product extends beyond a single document-generation task."
+        ],
+        "priorActions": ["remain_passed"]
+      },
+      "direction": "positive",
+      "proposedActions": ["reopen_diligence"],
+      "claims": [
+        {
+          "id": "claim_henry_series_a_v1",
+          "classification": "fact",
+          "statement": "Henry announced a $16.5 million Series A led by FirstMark Capital on 2026-07-29.",
+          "reportingBasis": "company_reported"
+        },
+        {
+          "id": "claim_henry_workflow_time_v1",
+          "classification": "fact",
+          "statement": "Henry reported that work previously estimated at 15 hours per deliverable takes about 30 minutes of human review.",
+          "reportingBasis": "company_reported"
+        },
+        {
+          "id": "claim_henry_output_caveat_v1",
+          "classification": "fact",
+          "statement": "Henry's terms state that outputs may not always be accurate or complete.",
+          "reportingBasis": "official_legal_terms"
+        }
+      ],
+      "sources": [
+        {
+          "id": "source_henry_prnewswire_series_a_v1",
+          "title": "Henry AI Raises $16.5M Series A and Launches Henry Deal",
+          "publisher": "Henry AI via PR Newswire",
+          "canonicalUrl": "https://www.prnewswire.com/news-releases/henry-ai-raises-16-5m-series-a-and-launches-henry-deal-302837784.html",
+          "sourceClass": "company_press_release",
+          "sourceAuthority": "primary",
+          "evidenceRole": "trigger",
+          "eventAt": "2026-07-29",
+          "publishedAt": "2026-07-29",
+          "publicationTimestamp": "2026-07-29T09:00:00-04:00",
+          "retrievedAt": "2026-08-01",
+          "locator": "Opening announcement paragraph",
+          "verbatimExcerpt": "today announced a $16.5 million Series A led by FirstMark Capital",
+          "normalizedStatement": "Company announcement identifies the round amount, stage, date, and lead investor.",
+          "claimIds": ["claim_henry_series_a_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.prnewswire.com/news-releases/henry-ai-raises-16-5m-series-a-and-launches-henry-deal-302837784.html",
+            "eventAt": "2026-07-29",
+            "publishedAt": "2026-07-29",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "today announced a $16.5 million Series A led by FirstMark Capital"
+          }
+        },
+        {
+          "id": "source_henry_prnewswire_workflow_v1",
+          "title": "Henry AI Raises $16.5M Series A and Launches Henry Deal",
+          "publisher": "Henry AI via PR Newswire",
+          "canonicalUrl": "https://www.prnewswire.com/news-releases/henry-ai-raises-16-5m-series-a-and-launches-henry-deal-302837784.html",
+          "sourceClass": "company_press_release",
+          "sourceAuthority": "primary",
+          "evidenceRole": "corroborating",
+          "eventAt": "2026-07-29",
+          "publishedAt": "2026-07-29",
+          "publicationTimestamp": "2026-07-29T09:00:00-04:00",
+          "retrievedAt": "2026-08-01",
+          "locator": "Company-reported customer impact paragraph",
+          "verbatimExcerpt": "work previously estimated at 15 hours per deliverable now takes about 30 minutes of human review",
+          "normalizedStatement": "Henry reports a substantial reduction in review time; this remains a company-reported metric requiring diligence.",
+          "claimIds": ["claim_henry_workflow_time_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.prnewswire.com/news-releases/henry-ai-raises-16-5m-series-a-and-launches-henry-deal-302837784.html",
+            "eventAt": "2026-07-29",
+            "publishedAt": "2026-07-29",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "work previously estimated at 15 hours per deliverable now takes about 30 minutes of human review"
+          }
+        },
+        {
+          "id": "source_henry_terms_accuracy_v1",
+          "title": "Standard Terms to Henry Service Agreement",
+          "publisher": "Henry AI",
+          "canonicalUrl": "https://www.henry.ai/standard-terms",
+          "sourceClass": "legal_terms",
+          "sourceAuthority": "primary",
+          "evidenceRole": "counterevidence",
+          "eventAt": "2026-04-22",
+          "publishedAt": "2026-04-22",
+          "retrievedAt": "2026-08-01",
+          "locator": "Data Integrity section; last modified date",
+          "verbatimExcerpt": "the Outputs may not always be accurate or complete",
+          "normalizedStatement": "Official terms require human verification and qualify any inference that workflow speed alone proves output reliability.",
+          "claimIds": ["claim_henry_output_caveat_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.henry.ai/standard-terms",
+            "eventAt": "2026-04-22",
+            "publishedAt": "2026-04-22",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "the Outputs may not always be accurate or complete"
+          }
+        }
+      ],
+      "counterevidenceSourceIds": ["source_henry_terms_accuracy_v1"],
+      "unknowns": [
+        "The reviewed sources do not disclose valuation, ARR, retention, or an exact customer count.",
+        "Burn and runway are not disclosed in the reviewed sources.",
+        "Company-reported time savings require customer-reference verification."
+      ],
+      "metrics": {
+        "valuation": { "availability": "unavailable", "reason": "No valuation was disclosed in the reviewed sources." },
+        "arr": { "availability": "unavailable", "reason": "No ARR was disclosed in the reviewed sources." },
+        "retention": { "availability": "unavailable", "reason": "No retention metric was disclosed in the reviewed sources." },
+        "customerCount": { "availability": "unavailable", "reason": "No exact customer count was disclosed in the reviewed sources." }
+      },
+      "assumptions": [],
+      "calculations": [],
+      "frameworkViewpoints": [],
+      "inferences": [
+        {
+          "id": "inference_henry_reopen_v1",
+          "classification": "inference",
+          "statement": "The financing and company-reported workflow evidence justify reopening diligence, while reliability and commercial metrics remain open.",
+          "inputIds": ["fixture_henry_ai_passed_v1", "claim_henry_series_a_v1", "claim_henry_workflow_time_v1", "claim_henry_output_caveat_v1"]
+        }
+      ],
+      "hiddenChainOfThought": false
+    },
+    {
+      "id": "case_smallest_ai_v1",
+      "companyId": "company_smallest_ai_v1",
+      "dealId": "deal_smallest_ai_v1",
+      "companyName": "Smallest.ai",
+      "identityName": "Smallest Inc.",
+      "officialDomain": "https://smallest.ai",
+      "founders": ["Sudarshan Kamath", "Akshat Mandloi"],
+      "stage": "series_a",
+      "geography": "global",
+      "businessModel": "enterprise_ai",
+      "foundingDate": {
+        "status": "conflicting",
+        "observations": [
+          { "value": "2023", "sourceId": "source_smallest_tracxn_profile_v1" },
+          { "value": "late 2024", "sourceId": "source_smallest_techcrunch_series_a_v1" }
+        ]
+      },
+      "sourceDateConflicts": [
+        {
+          "description": "The article page displays July 31, 2026 while the blog index/related listing displays July 30, 2026.",
+          "values": ["2026-07-30", "2026-07-31"],
+          "sourceIds": ["source_smallest_official_series_a_v1"]
+        }
+      ],
+      "priorDecision": {
+        "id": "fixture_smallest_ai_watchlist_v1",
+        "occurredAt": "2026-06-25T11:00:00-07:00",
+        "provenance": "demo_fixture",
+        "label": "Sample decision record",
+        "status": "watchlist",
+        "meetingSummary": "Sample internal note: the fund kept Smallest.ai on the watchlist pending current financing and evidence that its production surface was maturing.",
+        "decisionReason": "The sample team wanted technical-release evidence before advancing, while commercial proof remained an open diligence item.",
+        "concerns": [
+          "Production migration risk could offset claimed latency advantages.",
+          "Named-customer references were not independently verified."
+        ],
+        "revisitConditions": [
+          "A current institutional round and dated production-surface evidence.",
+          "Commercial proof must remain open until customer references are independently verified."
+        ],
+        "priorActions": ["remain_watchlist"]
+      },
+      "direction": "positive",
+      "proposedActions": ["advance_diligence"],
+      "claims": [
+        {
+          "id": "claim_smallest_series_a_v1",
+          "classification": "fact",
+          "statement": "Smallest.ai's official announcement reports a $13 million Series A led by Seligman Ventures and more than $21 million total funding.",
+          "reportingBasis": "company_reported"
+        },
+        {
+          "id": "claim_smallest_customer_reporting_v1",
+          "classification": "fact",
+          "statement": "TechCrunch reports RingCentral and Truecaller as existing customers; this is secondary reporting, not independently verified customer traction.",
+          "reportingBasis": "publisher_reported"
+        },
+        {
+          "id": "claim_smallest_founded_2024_v1",
+          "classification": "fact",
+          "statement": "TechCrunch describes Smallest.ai as founded in late 2024.",
+          "reportingBasis": "publisher_reported"
+        },
+        {
+          "id": "claim_smallest_founded_2023_v1",
+          "classification": "fact",
+          "statement": "Tracxn describes Smallest.ai as founded in 2023.",
+          "reportingBasis": "third_party_profile"
+        },
+        {
+          "id": "claim_smallest_agent_versioning_v1",
+          "classification": "fact",
+          "statement": "The official changelog retires Agent Locking and the isLocked field in favor of Agent Versioning.",
+          "reportingBasis": "company_reported"
+        }
+      ],
+      "sources": [
+        {
+          "id": "source_smallest_official_series_a_v1",
+          "title": "Announcing our Series A funding",
+          "publisher": "Smallest.ai",
+          "canonicalUrl": "https://smallest.ai/blog/series-a-funding-13m-next-generation-voice-ai",
+          "sourceClass": "official_company_site",
+          "sourceAuthority": "primary",
+          "evidenceRole": "trigger",
+          "eventAt": "2026-07-31",
+          "publishedAt": "2026-07-31",
+          "retrievedAt": "2026-08-01",
+          "locator": "Article date and opening funding paragraph; related-post index date differs",
+          "verbatimExcerpt": "Smallest AI has raised $13M in a Series A round led by Seligman Ventures",
+          "normalizedStatement": "The official article states the amount, stage, and lead; the page and index disagree by one day on publication date.",
+          "claimIds": ["claim_smallest_series_a_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://smallest.ai/blog/series-a-funding-13m-next-generation-voice-ai",
+            "eventAt": "2026-07-31",
+            "publishedAt": "2026-07-31",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "Smallest AI has raised $13M in a Series A round led by Seligman Ventures"
+          }
+        },
+        {
+          "id": "source_smallest_techcrunch_series_a_v1",
+          "title": "Smallest.ai raises $13M to build ultra-fast voice AI that sounds genuinely human",
+          "publisher": "TechCrunch",
+          "canonicalUrl": "https://techcrunch.com/2026/07/31/smallest-ai-raises-13m-to-build-ultra-fast-voice-ai-that-sounds-genuinely-human/",
+          "sourceClass": "news_report",
+          "sourceAuthority": "secondary",
+          "evidenceRole": "corroborating",
+          "eventAt": "2026-07-31",
+          "publishedAt": "2026-07-31",
+          "retrievedAt": "2026-08-01",
+          "locator": "Opening and customer paragraphs",
+          "verbatimExcerpt": "a startup founded in late 2024",
+          "normalizedStatement": "TechCrunch gives a late-2024 founding description and separately reports named customers; both remain secondary reporting.",
+          "claimIds": ["claim_smallest_founded_2024_v1", "claim_smallest_customer_reporting_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://techcrunch.com/2026/07/31/smallest-ai-raises-13m-to-build-ultra-fast-voice-ai-that-sounds-genuinely-human/",
+            "eventAt": "2026-07-31",
+            "publishedAt": "2026-07-31",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "a startup founded in late 2024"
+          }
+        },
+        {
+          "id": "source_smallest_tracxn_profile_v1",
+          "title": "Smallest.ai company profile",
+          "publisher": "Tracxn",
+          "canonicalUrl": "https://tracxn.com/d/companies/smallestai/__M_bkNG86V8a7CnAiGLw2oCkEQHuMuRhd0YAMsTbEeGU",
+          "sourceClass": "company_profile",
+          "sourceAuthority": "secondary",
+          "evidenceRole": "conflict",
+          "eventAt": "2024-06-08",
+          "publishedAt": "2024-06-08",
+          "retrievedAt": "2026-08-01",
+          "locator": "FAQ structured data; page modified 2026-08-01",
+          "verbatimExcerpt": "Smallest.ai was founded in 2023",
+          "normalizedStatement": "The profile reports a 2023 founding year, conflicting with TechCrunch's late-2024 description.",
+          "claimIds": ["claim_smallest_founded_2023_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://tracxn.com/d/companies/smallestai/__M_bkNG86V8a7CnAiGLw2oCkEQHuMuRhd0YAMsTbEeGU",
+            "eventAt": "2024-06-08",
+            "publishedAt": "2024-06-08",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "Smallest.ai was founded in 2023"
+          }
+        },
+        {
+          "id": "source_smallest_agent_changelog_v1",
+          "title": "Smallest AI Models General Changelog",
+          "publisher": "Smallest.ai",
+          "canonicalUrl": "https://docs.smallest.ai/models/changelog/general/2026/7/21",
+          "sourceClass": "official_documentation",
+          "sourceAuthority": "primary",
+          "evidenceRole": "counterevidence",
+          "eventAt": "2026-07-21",
+          "publishedAt": "2026-07-21",
+          "retrievedAt": "2026-08-01",
+          "locator": "July 21, 2026 changelog entry",
+          "verbatimExcerpt": "Agent Locking is now retired in favor of Agent Versioning",
+          "normalizedStatement": "The dated product migration is evidence of active production change but also creates deprecation and migration risk for diligence.",
+          "claimIds": ["claim_smallest_agent_versioning_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://docs.smallest.ai/models/changelog/general/2026/7/21",
+            "eventAt": "2026-07-21",
+            "publishedAt": "2026-07-21",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "Agent Locking is now retired in favor of Agent Versioning"
+          }
+        }
+      ],
+      "counterevidenceSourceIds": ["source_smallest_agent_changelog_v1"],
+      "unknowns": [
+        "Commercial proof remains open because named-customer references are secondary reporting rather than independently verified traction.",
+        "The exact founding date is unresolved between 2023 and late 2024.",
+        "The official funding article and related-post listing differ by one day.",
+        "Valuation, ARR, retention, and exact customer count are undisclosed."
+      ],
+      "metrics": {
+        "valuation": { "availability": "unavailable", "reason": "No valuation was disclosed in the reviewed sources." },
+        "arr": { "availability": "unavailable", "reason": "No ARR was disclosed in the reviewed sources." },
+        "retention": { "availability": "unavailable", "reason": "No retention metric was disclosed in the reviewed sources." },
+        "customerCount": { "availability": "unavailable", "reason": "Named customers were reported, but no exact customer count was disclosed." }
+      },
+      "assumptions": [],
+      "calculations": [],
+      "frameworkViewpoints": [],
+      "inferences": [
+        {
+          "id": "inference_smallest_advance_v1",
+          "classification": "inference",
+          "statement": "The financing and dated production changes justify technical and commercial diligence, not a conclusion that commercial proof is complete.",
+          "inputIds": ["fixture_smallest_ai_watchlist_v1", "claim_smallest_series_a_v1", "claim_smallest_agent_versioning_v1"]
+        }
+      ],
+      "hiddenChainOfThought": false
+    },
+    {
+      "id": "case_hush_security_v1",
+      "companyId": "company_hush_security_v1",
+      "dealId": "deal_hush_security_v1",
+      "companyName": "Hush Security",
+      "identityName": "Hush Security",
+      "officialDomain": "https://www.hush.security",
+      "founders": ["Micha Rave", "Chen Nisnkorn", "Shmulik Ladkani", "Alon Horowitz"],
+      "stage": "series_a",
+      "geography": "global",
+      "businessModel": "b2b_saas",
+      "foundingDate": {
+        "status": "unavailable",
+        "reason": "The reviewed primary sources do not disclose an exact founding date."
+      },
+      "sourceDateConflicts": [],
+      "priorDecision": {
+        "id": "fixture_hush_security_invested_v1",
+        "occurredAt": "2026-06-20T09:30:00-07:00",
+        "provenance": "demo_fixture",
+        "label": "Sample decision record",
+        "status": "invested",
+        "meetingSummary": "Sample internal note: the fund invested on the thesis that identity-centered control would become critical as non-human workloads expanded.",
+        "decisionReason": "The sample portfolio thesis expected enterprise demand but required evidence of agent-specific urgency and strategic distribution.",
+        "concerns": [
+          "Agent governance demand and channel leverage were not yet sufficiently evidenced.",
+          "Identity controls might address only part of evaluation-environment risk."
+        ],
+        "revisitConditions": [
+          "A public agent-control incident demonstrating urgency.",
+          "New strategic financing or distribution evidence, followed by channel-economics validation."
+        ],
+        "priorActions": ["hold_existing_position"]
+      },
+      "direction": "positive",
+      "proposedActions": ["evaluate_follow_on", "validate_channel_economics"],
+      "claims": [
+        {
+          "id": "claim_hush_series_a_v1",
+          "classification": "fact",
+          "statement": "Hush announced a $30 million Series A with Akamai joining as a strategic investor on 2026-07-28.",
+          "reportingBasis": "company_reported"
+        },
+        {
+          "id": "claim_hush_control_scope_v1",
+          "classification": "fact",
+          "statement": "Hush says its platform gives agents scoped just-in-time access with governed, logged, and revocable actions.",
+          "reportingBasis": "company_reported"
+        },
+        {
+          "id": "claim_hush_openai_incident_v1",
+          "classification": "fact",
+          "statement": "OpenAI published an official report titled Hugging Face model evaluation security incident on 2026-07-21.",
+          "reportingBasis": "official_incident_report"
+        },
+        {
+          "id": "claim_hush_defense_in_depth_v1",
+          "classification": "fact",
+          "statement": "Anthropic's related review says validation of internet paths and real-time monitoring could have reduced incident likelihood.",
+          "reportingBasis": "official_incident_report"
+        }
+      ],
+      "sources": [
+        {
+          "id": "source_hush_prnewswire_series_a_v1",
+          "title": "Hush Security Raises $30M to Close the AI Agent Governance Gap",
+          "publisher": "Hush Security via PR Newswire",
+          "canonicalUrl": "https://www.prnewswire.com/il/news-releases/hush-security-raises-30m-to-close-the-ai-agent-governance-gap-with-akamai-joining-as-strategic-investor-302836307.html",
+          "sourceClass": "company_press_release",
+          "sourceAuthority": "primary",
+          "evidenceRole": "trigger",
+          "eventAt": "2026-07-28",
+          "publishedAt": "2026-07-28",
+          "publicationTimestamp": "2026-07-28T13:00:00+03:00",
+          "retrievedAt": "2026-08-01",
+          "locator": "Opening announcement paragraph",
+          "verbatimExcerpt": "announced a $30 million Series A funding round, with Akamai Technologies joining as a strategic investor",
+          "normalizedStatement": "The company announcement identifies the amount, stage, and new strategic investor.",
+          "claimIds": ["claim_hush_series_a_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.prnewswire.com/il/news-releases/hush-security-raises-30m-to-close-the-ai-agent-governance-gap-with-akamai-joining-as-strategic-investor-302836307.html",
+            "eventAt": "2026-07-28",
+            "publishedAt": "2026-07-28",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "announced a $30 million Series A funding round, with Akamai Technologies joining as a strategic investor"
+          }
+        },
+        {
+          "id": "source_hush_prnewswire_controls_v1",
+          "title": "Hush Security Raises $30M to Close the AI Agent Governance Gap",
+          "publisher": "Hush Security via PR Newswire",
+          "canonicalUrl": "https://www.prnewswire.com/il/news-releases/hush-security-raises-30m-to-close-the-ai-agent-governance-gap-with-akamai-joining-as-strategic-investor-302836307.html",
+          "sourceClass": "company_press_release",
+          "sourceAuthority": "primary",
+          "evidenceRole": "corroborating",
+          "eventAt": "2026-07-28",
+          "publishedAt": "2026-07-28",
+          "publicationTimestamp": "2026-07-28T13:00:00+03:00",
+          "retrievedAt": "2026-08-01",
+          "locator": "Product description",
+          "verbatimExcerpt": "scoped, just in time access, every action governed, logged and revocable from one place",
+          "normalizedStatement": "Hush describes identity-centered, revocable controls; efficacy and channel economics are not established by this statement.",
+          "claimIds": ["claim_hush_control_scope_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.prnewswire.com/il/news-releases/hush-security-raises-30m-to-close-the-ai-agent-governance-gap-with-akamai-joining-as-strategic-investor-302836307.html",
+            "eventAt": "2026-07-28",
+            "publishedAt": "2026-07-28",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "scoped, just in time access, every action governed, logged and revocable from one place"
+          }
+        },
+        {
+          "id": "source_hush_openai_incident_v1",
+          "title": "Hugging Face model evaluation security incident",
+          "publisher": "OpenAI",
+          "canonicalUrl": "https://openai.com/index/hugging-face-model-evaluation-security-incident/",
+          "sourceClass": "incident_report",
+          "sourceAuthority": "primary",
+          "evidenceRole": "trigger",
+          "eventAt": "2026-07-21",
+          "publishedAt": "2026-07-21",
+          "retrievedAt": "2026-08-01",
+          "locator": "Article title",
+          "verbatimExcerpt": "Hugging Face model evaluation security incident",
+          "normalizedStatement": "The official incident title establishes an agent-evaluation security event; it does not claim Hush involvement or product efficacy.",
+          "claimIds": ["claim_hush_openai_incident_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://openai.com/index/hugging-face-model-evaluation-security-incident/",
+            "eventAt": "2026-07-21",
+            "publishedAt": "2026-07-21",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "Hugging Face model evaluation security incident"
+          }
+        },
+        {
+          "id": "source_hush_anthropic_controls_v1",
+          "title": "Investigating three real-world incidents in our cybersecurity evaluations",
+          "publisher": "Anthropic",
+          "canonicalUrl": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals",
+          "sourceClass": "incident_report",
+          "sourceAuthority": "primary",
+          "evidenceRole": "counterevidence",
+          "eventAt": "2026-07-30",
+          "publishedAt": "2026-07-30",
+          "retrievedAt": "2026-08-01",
+          "locator": "What happened analysis",
+          "verbatimExcerpt": "Careful validation of all internet access paths before evaluations began and real-time monitoring of the evaluation logs would have helped",
+          "normalizedStatement": "The incident review identifies validation and monitoring controls beyond identity, so the event does not alone validate Hush's product coverage.",
+          "claimIds": ["claim_hush_defense_in_depth_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals",
+            "eventAt": "2026-07-30",
+            "publishedAt": "2026-07-30",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "Careful validation of all internet access paths before evaluations began and real-time monitoring of the evaluation logs would have helped"
+          }
+        }
+      ],
+      "counterevidenceSourceIds": ["source_hush_anthropic_controls_v1"],
+      "unknowns": [
+        "The reviewed sources do not establish how much of Hush's demand is attributable to the cited incidents.",
+        "Akamai channel economics and sourced pipeline are not disclosed.",
+        "Valuation, ARR, retention, and exact customer count are undisclosed."
+      ],
+      "metrics": {
+        "valuation": { "availability": "unavailable", "reason": "No valuation was disclosed in the reviewed sources." },
+        "arr": { "availability": "unavailable", "reason": "No ARR was disclosed in the reviewed sources." },
+        "retention": { "availability": "unavailable", "reason": "No retention metric was disclosed in the reviewed sources." },
+        "customerCount": { "availability": "unavailable", "reason": "No exact customer count was disclosed in the reviewed sources." }
+      },
+      "assumptions": [],
+      "calculations": [],
+      "frameworkViewpoints": [],
+      "inferences": [
+        {
+          "id": "inference_hush_follow_on_v1",
+          "classification": "inference",
+          "statement": "Agent-security incidents and strategic financing strengthen the sample thesis enough to evaluate follow-on, subject to product-scope and channel-economics validation.",
+          "inputIds": ["fixture_hush_security_invested_v1", "claim_hush_series_a_v1", "claim_hush_openai_incident_v1", "claim_hush_defense_in_depth_v1"]
+        }
+      ],
+      "hiddenChainOfThought": false
+    },
+    {
+      "id": "case_irregular_v1",
+      "companyId": "company_irregular_v1",
+      "dealId": "deal_irregular_v1",
+      "companyName": "Irregular",
+      "identityName": "Irregular (formerly Pattern Labs)",
+      "officialDomain": "https://www.irregular.com",
+      "founders": ["Dan Lahav", "Omer Nevo"],
+      "stage": "series_a",
+      "geography": "global",
+      "businessModel": "enterprise_ai",
+      "foundingDate": {
+        "status": "unavailable",
+        "reason": "The reviewed primary sources do not disclose an exact founding date."
+      },
+      "sourceDateConflicts": [],
+      "priorDecision": {
+        "id": "fixture_irregular_invested_v1",
+        "occurredAt": "2026-06-15T14:00:00-07:00",
+        "provenance": "demo_fixture",
+        "label": "Sample decision record",
+        "status": "invested",
+        "meetingSummary": "Sample internal note: the fund invested on the belief that third-party cyber evaluations could be safely contained and independently operated.",
+        "decisionReason": "The sample portfolio thesis depended on evaluation containment and operating controls scaling with model capability.",
+        "concerns": [
+          "A containment failure could turn evaluation infrastructure into a source of real-world harm.",
+          "Responsibility could be shared across the model lab and evaluation partner."
+        ],
+        "revisitConditions": [
+          "Any verified incident in which an Irregular evaluation environment reaches unauthorized real systems.",
+          "Evidence clarifying whether the incident was isolated, remediated, and attributable to shared controls."
+        ],
+        "priorActions": ["consider_follow_on_when_available"]
+      },
+      "direction": "negative",
+      "proposedActions": ["pause_follow_on", "portfolio_risk_review"],
+      "claims": [
+        {
+          "id": "claim_irregular_incidents_v1",
+          "classification": "fact",
+          "statement": "Anthropic says three incidents involved models accessing the internet through or while interacting with Irregular evaluation environments and reaching real systems.",
+          "reportingBasis": "official_incident_report"
+        },
+        {
+          "id": "claim_irregular_shared_response_v1",
+          "classification": "fact",
+          "statement": "Anthropic says it reviewed the events with Irregular and characterizes them as closer to harness and operational failure than alignment failure.",
+          "reportingBasis": "official_incident_report"
+        },
+        {
+          "id": "claim_irregular_positioning_v1",
+          "classification": "fact",
+          "statement": "Irregular describes itself as formerly Pattern Labs and as a frontier security lab.",
+          "reportingBasis": "company_reported"
+        },
+        {
+          "id": "claim_irregular_funding_v1",
+          "classification": "fact",
+          "statement": "TechCrunch reported an $80 million funding round for Irregular on 2025-09-17.",
+          "reportingBasis": "publisher_reported"
+        }
+      ],
+      "sources": [
+        {
+          "id": "source_irregular_anthropic_incident_v1",
+          "title": "Investigating three real-world incidents in our cybersecurity evaluations",
+          "publisher": "Anthropic",
+          "canonicalUrl": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals",
+          "sourceClass": "incident_report",
+          "sourceAuthority": "primary",
+          "evidenceRole": "trigger",
+          "eventAt": "2026-07-30",
+          "publishedAt": "2026-07-30",
+          "retrievedAt": "2026-08-01",
+          "locator": "Opening incident review",
+          "verbatimExcerpt": "we identified three incidents in which a model accessed the internet from within or while interacting with the evaluation environment of Irregular",
+          "normalizedStatement": "Anthropic directly identifies Irregular's evaluation environment in three reviewed incidents involving unauthorized access to real systems.",
+          "claimIds": ["claim_irregular_incidents_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals",
+            "eventAt": "2026-07-30",
+            "publishedAt": "2026-07-30",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "we identified three incidents in which a model accessed the internet from within or while interacting with the evaluation environment of Irregular"
+          }
+        },
+        {
+          "id": "source_irregular_anthropic_counterevidence_v1",
+          "title": "Investigating three real-world incidents in our cybersecurity evaluations",
+          "publisher": "Anthropic",
+          "canonicalUrl": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals",
+          "sourceClass": "incident_report",
+          "sourceAuthority": "primary",
+          "evidenceRole": "counterevidence",
+          "eventAt": "2026-07-30",
+          "publishedAt": "2026-07-30",
+          "retrievedAt": "2026-08-01",
+          "locator": "Collaboration and comparison sections",
+          "verbatimExcerpt": "closer to a harness and operational failure than a model alignment failure",
+          "normalizedStatement": "Anthropic presents a shared operational explanation and continued collaboration, qualifying any inference of sole responsibility or permanent thesis break.",
+          "claimIds": ["claim_irregular_shared_response_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals",
+            "eventAt": "2026-07-30",
+            "publishedAt": "2026-07-30",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "closer to a harness and operational failure than a model alignment failure"
+          }
+        },
+        {
+          "id": "source_irregular_official_background_v1",
+          "title": "Introducing Frontier AI Security",
+          "publisher": "Irregular",
+          "canonicalUrl": "https://www.irregular.com/news/introducing-frontier-ai-security",
+          "sourceClass": "official_company_site",
+          "sourceAuthority": "primary",
+          "evidenceRole": "background",
+          "eventAt": "2025-09-17",
+          "publishedAt": "2025-09-17",
+          "retrievedAt": "2026-08-01",
+          "locator": "Opening company description",
+          "verbatimExcerpt": "Irregular (formerly Pattern Labs) is the first frontier security lab",
+          "normalizedStatement": "The company identifies the Irregular and former Pattern Labs names and positions itself in frontier AI security.",
+          "claimIds": ["claim_irregular_positioning_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://www.irregular.com/news/introducing-frontier-ai-security",
+            "eventAt": "2025-09-17",
+            "publishedAt": "2025-09-17",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "Irregular (formerly Pattern Labs) is the first frontier security lab"
+          }
+        },
+        {
+          "id": "source_irregular_techcrunch_funding_v1",
+          "title": "Irregular raises $80 million to secure frontier AI models",
+          "publisher": "TechCrunch",
+          "canonicalUrl": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models/",
+          "sourceClass": "news_report",
+          "sourceAuthority": "secondary",
+          "evidenceRole": "corroborating",
+          "eventAt": "2025-09-17",
+          "publishedAt": "2025-09-17",
+          "retrievedAt": "2026-08-01",
+          "locator": "Article title",
+          "verbatimExcerpt": "Irregular raises $80 million to secure frontier AI models",
+          "normalizedStatement": "TechCrunch reports the funding amount; current valuation and operating metrics remain unavailable.",
+          "claimIds": ["claim_irregular_funding_v1"],
+          "fingerprintInputs": {
+            "canonicalUrl": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models/",
+            "eventAt": "2025-09-17",
+            "publishedAt": "2025-09-17",
+            "retrievedAt": "2026-08-01",
+            "verbatimExcerpt": "Irregular raises $80 million to secure frontier AI models"
+          }
+        }
+      ],
+      "counterevidenceSourceIds": ["source_irregular_anthropic_counterevidence_v1"],
+      "unknowns": [
+        "The reviewed public record does not allocate responsibility between Anthropic and Irregular.",
+        "The durability and effectiveness of remediation are not yet independently verified.",
+        "Valuation, ARR, retention, and exact customer count are undisclosed."
+      ],
+      "metrics": {
+        "valuation": { "availability": "unavailable", "reason": "No valuation was disclosed in the reviewed sources." },
+        "arr": { "availability": "unavailable", "reason": "The package does not convert broad company-reported revenue wording into ARR." },
+        "retention": { "availability": "unavailable", "reason": "No retention metric was disclosed in the reviewed sources." },
+        "customerCount": { "availability": "unavailable", "reason": "No exact customer count was disclosed in the reviewed sources." }
+      },
+      "assumptions": [],
+      "calculations": [],
+      "frameworkViewpoints": [],
+      "inferences": [
+        {
+          "id": "inference_irregular_pause_v1",
+          "classification": "inference",
+          "statement": "The verified containment incident directly contradicts the sample revisit condition, supporting a pause and risk review while shared responsibility and remediation remain unresolved.",
+          "inputIds": ["fixture_irregular_invested_v1", "claim_irregular_incidents_v1", "claim_irregular_shared_response_v1"]
+        }
+      ],
+      "hiddenChainOfThought": false
+    }
+  ],
+  "candidateLedger": [
+    {
+      "id": "candidate_henry_ai_v1",
+      "companyName": "Henry AI",
+      "disposition": "accepted",
+      "reason": "Accepted for a passed-to-positive case: the current financing and workflow evidence map to a specific sample revisit condition."
+    },
+    {
+      "id": "candidate_smallest_ai_v1",
+      "companyName": "Smallest.ai",
+      "disposition": "accepted",
+      "reason": "Accepted for a watchlist-to-positive case: financing and dated product-change evidence support technical and commercial diligence while commercial proof stays open."
+    },
+    {
+      "id": "candidate_hush_security_v1",
+      "companyName": "Hush Security",
+      "disposition": "accepted",
+      "reason": "Accepted for an invested-positive case: recent incident context and strategic financing strengthen urgency while preserving product-scope counterevidence."
+    },
+    {
+      "id": "candidate_irregular_v1",
+      "companyName": "Irregular",
+      "disposition": "accepted",
+      "reason": "Accepted for an invested-negative case: Anthropic's incident report directly contradicts the sample containment condition and supports a distinct portfolio action."
+    },
+    {
+      "id": "candidate_centralize_v1",
+      "companyName": "Centralize",
+      "disposition": "rejected",
+      "reason": "Rejected at the four-case cap because its evidence produced a weaker and less distinct action delta than the selected matrix.",
+      "supersededReason": "The earlier screen rejected Centralize because the $19m total funding announcement was thought not to disclose the current round stage.",
+      "supersededBy": "Centralize's official site now states that NEA led our Series A, so stage uncertainty is no longer a valid rejection reason."
+    },
+    {
+      "id": "candidate_chipagents_v1",
+      "companyName": "ChipAgents",
+      "disposition": "rejected",
+      "reason": "Rejected because the screened evidence did not fit the currently supported enterprise-software underwriting context without an unplanned context extension."
+    },
+    {
+      "id": "candidate_sent_v1",
+      "companyName": "Sent",
+      "disposition": "rejected",
+      "reason": "Rejected because the pinned-window sources did not establish enough independently corroborated proof-of-use and counterevidence for a medium-confidence action delta."
+    },
+    {
+      "id": "candidate_cascade_v1",
+      "companyName": "Cascade",
+      "disposition": "rejected",
+      "reason": "Rejected because the event-first screen could not resolve company identity and source lineage unambiguously enough for a fail-closed package."
+    },
+    {
+      "id": "candidate_cordant_v1",
+      "companyName": "Cordant",
+      "disposition": "rejected",
+      "reason": "Rejected because available recent evidence did not map directly to a specific prior decision reason or observable revisit condition."
+    },
+    {
+      "id": "candidate_empirical_security_v1",
+      "companyName": "Empirical Security",
+      "disposition": "rejected",
+      "reason": "Rejected because the screen did not yield enough bounded public traction evidence and counterevidence to support the required action change."
+    },
+    {
+      "id": "candidate_freight_hero_v1",
+      "companyName": "Freight Hero",
+      "disposition": "rejected",
+      "reason": "Rejected because the reviewed sources were insufficient to establish a supported stage, complete source lineage, and a medium-confidence belief reversal."
+    }
+  ]
+}
