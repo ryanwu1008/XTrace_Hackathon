@@ -77,7 +77,7 @@ test("test-only expected outcomes carry the exact four-case matrix and canonical
   })), [
     { companyName: "Henry AI", priorStatus: "passed", direction: "positive", priorAction: "deprioritize", expectedNewActions: ["reopen_diligence"] },
     { companyName: "Smallest.ai", priorStatus: "watchlist", direction: "positive", priorAction: "continue_monitoring", expectedNewActions: ["advance_diligence"] },
-    { companyName: "Hush Security", priorStatus: "invested", direction: "positive", priorAction: "continue_monitoring", expectedNewActions: ["evaluate_follow_on"] },
+    { companyName: "Hush Security", priorStatus: "invested", direction: "positive", priorAction: "continue_monitoring", expectedNewActions: ["evaluate_follow_on", "validate_channel_economics"] },
     { companyName: "Irregular", priorStatus: "invested", direction: "negative", priorAction: "evaluate_follow_on", expectedNewActions: ["pause_follow_on", "portfolio_risk_review"] },
   ]);
   assert.deepEqual(
@@ -284,6 +284,143 @@ test("the machine ledger records accepted and qualified-not-selected disposition
   assert.ok(chipAgents.screeningSourceIds.includes(chipBaseline.id));
   assert.match(chipAgents.counterevidenceAndLimits.join(" "), /\$74 million.*baseline.*does not conflict.*\$60 million/i);
   assert.match(chipAgents.counterevidenceAndLimits.join(" "), /\$131 million.*not verified/i);
+});
+
+test("Sent identity metadata follows the final official Privacy Notice", () => {
+  const researchPackage = productionManifestModule.loadBeliefReversalManifest();
+  const sent = researchPackage.candidateLedger.find((entry) => entry.companyIdentity.brandName === "Sent");
+  const source = researchPackage.screeningSources.find((item) => item.id === "source_sent_identity_v1");
+  assert.ok(sent);
+  assert.ok(source?.status === "resolved");
+  assert.equal(source.title, "Privacy Notice");
+  assert.equal(source.canonicalUrl, "https://www.sent.dm/en/legal/privacy-policy");
+  assert.equal(source.publishedAt, "2026-03-03");
+  assert.equal(source.fingerprintInputs.title, "Privacy Notice");
+  assert.equal(source.fingerprintInputs.canonicalUrl, "https://www.sent.dm/en/legal/privacy-policy");
+  assert.equal(source.fingerprintInputs.publishedAt, "2026-03-03");
+  assert.equal(source.verbatimExcerpt, "Sent, Inc. (“Sent,” “we,” “us,” or “our”) respects your privacy.");
+  assert.match(sent.companyIdentity.identityNote, /official privacy notice.*brand.*legal entity.*domain/i);
+  assert.match(sent.companyIdentity.identityNote, /financing.*trigger source/i);
+
+  const cascade = researchPackage.candidateLedger.find((entry) => entry.companyIdentity.brandName === "Cascade");
+  assert.ok(cascade);
+  assert.match(cascade.companyIdentity.identityNote, /official privacy page.*brand.*legal entity.*domain/i);
+  assert.match(cascade.companyIdentity.identityNote, /financing.*trigger source/i);
+});
+
+test("partial candidate identities do not assert domains absent from exact source spans", () => {
+  const ledger = productionManifestModule.loadBeliefReversalManifest().candidateLedger;
+  const empirical = ledger.find((entry) => entry.companyIdentity.brandName === "Empirical Security");
+  const freightHero = ledger.find((entry) => entry.companyIdentity.brandName === "Freight Hero");
+  assert.ok(empirical);
+  assert.ok(freightHero);
+  if (empirical.companyIdentity.status !== "partially_resolved") assert.fail("Empirical identity must remain partial");
+  if (freightHero.companyIdentity.status !== "partially_resolved") assert.fail("Freight Hero identity must remain partial");
+  assert.equal(empirical.companyIdentity.officialDomain, null);
+  assert.equal(freightHero.companyIdentity.officialDomain, null);
+  assert.deepEqual(empirical.companyIdentity.unresolvedFields, ["legal_name", "official_domain"]);
+  assert.deepEqual(freightHero.companyIdentity.unresolvedFields, ["legal_name", "official_domain"]);
+  assert.match(empirical.companyIdentity.identityNote, /official domain.*unresolved/i);
+  assert.match(freightHero.companyIdentity.identityNote, /official domain.*unresolved/i);
+  assert.match(empirical.missingEvidence.join(" "), /official domain/i);
+  assert.match(freightHero.missingEvidence.join(" "), /official domain/i);
+});
+
+test("Centralize keeps company-provided Series A corroboration without adopting a floating total", () => {
+  const researchPackage = productionManifestModule.loadBeliefReversalManifest();
+  const centralize = researchPackage.candidateLedger.find((entry) => entry.companyIdentity.brandName === "Centralize");
+  const source = researchPackage.screeningSources.find((item) => item.id === "source_centralize_job_board_v1");
+  assert.ok(centralize);
+  assert.ok(source?.status === "resolved");
+  assert.equal(source.canonicalUrl, "https://jobs.ashbyhq.com/centralize/8debce91-6f36-482a-91be-e5c91ffe79e2");
+  assert.equal(source.verbatimExcerpt, "We just raised a Series A led by NEA");
+  assert.equal(source.publishedAt, null);
+  assert.equal(source.evidenceRole, "corroborating");
+  assert.equal(source.sourceAuthority, "primary");
+  assert.ok(centralize.screeningSourceIds.includes(source.id));
+  assert.match(centralize.counterevidenceAndLimits.join(" "), /job board.*Series A.*NEA/i);
+  assert.doesNotMatch(source.normalizedStatement, /total/i);
+});
+
+test("resolved candidate triggers must be included in screeningSourceIds", () => {
+  assertManifestRejected((input) => {
+    const sent = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Sent");
+    sent.screeningSourceIds = sent.screeningSourceIds.filter((sourceId: string) => sourceId !== sent.triggeringEvent.sourceId);
+  }, /trigger.*screeningSourceIds|screening.*trigger/i);
+});
+
+test("resolved candidate triggers must reference resolved trigger-role evidence", () => {
+  assertManifestRejected((input) => {
+    const source = input.screeningSources.find((item: JsonObject) => item.id === "source_sent_globenewswire_v1");
+    source.evidenceRole = "corroborating";
+    source.fingerprintInputs.evidenceRole = "corroborating";
+  }, /trigger.*evidenceRole|trigger-role/i);
+});
+
+test("resolved candidate trigger fields must exactly match their source", () => {
+  const mutations: Array<[string, string]> = [
+    ["canonicalUrl", "https://example.com/mismatched-trigger"],
+    ["eventAt", "2026-07-27"],
+    ["publishedAt", "2026-07-27"],
+    ["retrievedAt", "2026-07-31"],
+  ];
+  for (const [field, value] of mutations) {
+    assertManifestRejected((input) => {
+      const sent = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Sent");
+      sent.triggeringEvent[field] = value;
+    }, /triggering event.*match|trigger.*provenance/i);
+  }
+});
+
+test("identitySourceIds must be included in screeningSourceIds", () => {
+  assertManifestRejected((input) => {
+    const sent = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Sent");
+    sent.screeningSourceIds = sent.screeningSourceIds.filter((sourceId: string) => !sent.companyIdentity.identitySourceIds.includes(sourceId));
+  }, /identity.*screeningSourceIds|screening.*identity/i);
+});
+
+test("identitySourceIds must reference resolved owned evidence", () => {
+  assertManifestRejected((input) => {
+    const chipAgents = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "ChipAgents");
+    chipAgents.companyIdentity.identitySourceIds = ["source_chipagents_reuters_gap_v1"];
+  }, /identity.*resolved/i);
+});
+
+test("candidate identity resolution status must match field completeness", () => {
+  assertManifestRejected((input) => {
+    const sent = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Sent");
+    sent.companyIdentity.legalName = null;
+  }, /resolved identity.*legalName.*officialDomain|identity.*complete|expected string/i);
+  assertManifestRejected((input) => {
+    const cordant = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Cordant");
+    cordant.companyIdentity.legalName = "Cordant, Inc.";
+  }, /partially.resolved.*incomplete|identity.*status|unresolvedFields.*null identity fields/i);
+  assertManifestRejected((input) => {
+    const cordant = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Cordant");
+    cordant.companyIdentity.unresolvedFields = ["official_domain"];
+  }, /unresolvedFields.*match|null.*field/i);
+  assertManifestRejected((input) => {
+    const sent = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Sent");
+    sent.companyIdentity.unresolvedFields = ["legal_name"];
+  }, /unrecognized key|unresolvedFields/i);
+});
+
+test("accepted candidate case IDs must be a one-to-one set match", () => {
+  assertManifestRejected((input) => {
+    const accepted = input.candidateLedger.filter((entry: JsonObject) => entry.disposition === "accepted");
+    accepted[0].caseId = accepted[1].caseId;
+  }, /accepted.*one-to-one|exactly link/i);
+});
+
+test("accepted candidate links must match selected brand and domain", () => {
+  assertManifestRejected((input) => {
+    const henry = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Henry AI");
+    henry.companyIdentity.brandName = "Wrong company";
+  }, /accepted.*brand|accepted.*domain|company identity/i);
+  assertManifestRejected((input) => {
+    const henry = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Henry AI");
+    henry.companyIdentity.officialDomain = "https://wrong.example.com";
+  }, /accepted.*brand|accepted.*domain|company identity/i);
 });
 
 test("impossible calendar dates fail closed", () => {

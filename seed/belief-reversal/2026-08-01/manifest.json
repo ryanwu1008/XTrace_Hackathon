@@ -2363,34 +2363,34 @@
     {
       "status": "resolved",
       "id": "source_sent_identity_v1",
-      "title": "Privacy Policy",
+      "title": "Privacy Notice",
       "publisher": "Sent",
-      "canonicalUrl": "https://www.sent.dm/legal/privacy-policy",
+      "canonicalUrl": "https://www.sent.dm/en/legal/privacy-policy",
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "corroborating",
       "eventAt": null,
-      "publishedAt": "2026-03-08",
+      "publishedAt": "2026-03-03",
       "publicationTimestamp": null,
       "retrievedAt": "2026-08-01",
-      "locator": "Entity identification",
-      "verbatimExcerpt": "Sent, Inc. (Sent, we, us, or our) respects your privacy.",
-      "normalizedStatement": "Sent’s privacy policy identifies Sent, Inc.",
+      "locator": "H1, last-updated line, and opening paragraph",
+      "verbatimExcerpt": "Sent, Inc. (“Sent,” “we,” “us,” or “our”) respects your privacy.",
+      "normalizedStatement": "Sent’s privacy notice identifies Sent, Inc.",
       "candidateId": "candidate_sent_v1",
       "fingerprintInputs": {
-        "title": "Privacy Policy",
+        "title": "Privacy Notice",
         "publisher": "Sent",
-        "canonicalUrl": "https://www.sent.dm/legal/privacy-policy",
+        "canonicalUrl": "https://www.sent.dm/en/legal/privacy-policy",
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "corroborating",
         "eventAt": null,
-        "publishedAt": "2026-03-08",
+        "publishedAt": "2026-03-03",
         "publicationTimestamp": null,
         "retrievedAt": "2026-08-01",
-        "locator": "Entity identification",
-        "verbatimExcerpt": "Sent, Inc. (Sent, we, us, or our) respects your privacy.",
-        "normalizedStatement": "Sent’s privacy policy identifies Sent, Inc.",
+        "locator": "H1, last-updated line, and opening paragraph",
+        "verbatimExcerpt": "Sent, Inc. (“Sent,” “we,” “us,” or “our”) respects your privacy.",
+        "normalizedStatement": "Sent’s privacy notice identifies Sent, Inc.",
         "referenceId": "candidate_sent_v1"
       }
     },
@@ -2459,6 +2459,40 @@
         "locator": "Centralize funding item",
         "verbatimExcerpt": "Centralize, a relationship intelligence platform for enterprise revenue teams, raised $19m. NEA led",
         "normalizedStatement": "Axios reports that Centralize raised $19 million and that NEA led the financing.",
+        "referenceId": "candidate_centralize_v1"
+      }
+    },
+    {
+      "status": "resolved",
+      "id": "source_centralize_job_board_v1",
+      "title": "Founding Designer @ Centralize",
+      "publisher": "Centralize via Ashby",
+      "canonicalUrl": "https://jobs.ashbyhq.com/centralize/8debce91-6f36-482a-91be-e5c91ffe79e2",
+      "sourceClass": "company_official",
+      "sourceAuthority": "primary",
+      "evidenceRole": "corroborating",
+      "eventAt": null,
+      "publishedAt": null,
+      "publicationTimestamp": null,
+      "retrievedAt": "2026-08-01",
+      "locator": "Company overview",
+      "verbatimExcerpt": "We just raised a Series A led by NEA",
+      "normalizedStatement": "Centralize's company-provided job board says it raised a Series A led by NEA.",
+      "candidateId": "candidate_centralize_v1",
+      "fingerprintInputs": {
+        "title": "Founding Designer @ Centralize",
+        "publisher": "Centralize via Ashby",
+        "canonicalUrl": "https://jobs.ashbyhq.com/centralize/8debce91-6f36-482a-91be-e5c91ffe79e2",
+        "sourceClass": "company_official",
+        "sourceAuthority": "primary",
+        "evidenceRole": "corroborating",
+        "eventAt": null,
+        "publishedAt": null,
+        "publicationTimestamp": null,
+        "retrievedAt": "2026-08-01",
+        "locator": "Company overview",
+        "verbatimExcerpt": "We just raised a Series A led by NEA",
+        "normalizedStatement": "Centralize's company-provided job board says it raised a Series A led by NEA.",
         "referenceId": "candidate_centralize_v1"
       }
     },
@@ -2739,7 +2773,8 @@
       "screeningSourceIds": [
         "source_henry_series_a_v1",
         "source_henry_workflow_v1",
-        "source_henry_legal_name_v1"
+        "source_henry_legal_name_v1",
+        "source_henry_yc_domain_v1"
       ],
       "missingEvidence": [
         "Independent customer validation and operating metrics."
@@ -2776,7 +2811,8 @@
       "screeningSourceIds": [
         "source_smallest_official_series_a_v1",
         "source_smallest_techcrunch_customers_v1",
-        "source_smallest_legal_name_v1"
+        "source_smallest_legal_name_v1",
+        "source_smallest_author_v1"
       ],
       "missingEvidence": [
         "Revenue, retention, and independent deployment depth."
@@ -2813,7 +2849,8 @@
       "screeningSourceIds": [
         "source_hush_series_a_v1",
         "source_hush_kyndryl_v1",
-        "source_hush_legal_name_v1"
+        "source_hush_legal_name_v1",
+        "source_hush_about_v1"
       ],
       "missingEvidence": [
         "Channel bookings, margins, and sell-through."
@@ -2833,6 +2870,9 @@
         "identityNote": "Official and publication sources resolve brand, former name, domain, founders, and business; legal name and headquarters remain unavailable.",
         "identitySourceIds": [
           "source_irregular_official_background_v1"
+        ],
+        "unresolvedFields": [
+          "legal_name"
         ]
       },
       "caseId": "case_irregular_v1",
@@ -2848,7 +2888,8 @@
       },
       "screeningSourceIds": [
         "source_irregular_anthropic_incident_v1",
-        "source_irregular_anthropic_counter_v1"
+        "source_irregular_anthropic_counter_v1",
+        "source_irregular_official_background_v1"
       ],
       "missingEvidence": [
         "Legal entity name, remediation durability, and responsibility allocation."
@@ -2883,13 +2924,15 @@
       },
       "screeningSourceIds": [
         "source_centralize_axios_v1",
-        "source_centralize_identity_v1"
+        "source_centralize_identity_v1",
+        "source_centralize_job_board_v1"
       ],
       "missingEvidence": [
         "Independent proof of use and a distinct recent action delta."
       ],
       "counterevidenceAndLimits": [
-        "Axios reports $19 million raised; it is not represented as total funding."
+        "Axios reports $19 million raised; it is not represented as total funding.",
+        "The company-provided job board corroborates a Series A led by NEA without supporting any total-funding figure."
       ],
       "reason": "Qualified but not selected at the four-case cap because the recent evidence produced a weaker and less distinct action delta."
     },
@@ -2937,7 +2980,7 @@
         "brandName": "Sent",
         "legalName": "Sent, Inc.",
         "officialDomain": "https://sent.dm",
-        "identityNote": "The issuer-supplied release resolves the messaging company and financing event.",
+        "identityNote": "The official privacy notice resolves the Sent brand, legal entity, and domain; financing is supported separately by the trigger source.",
         "identitySourceIds": [
           "source_sent_identity_v1"
         ]
@@ -2972,7 +3015,7 @@
         "brandName": "Cascade",
         "legalName": "Cascade Intelligence Inc.",
         "officialDomain": "https://usecascade.ai",
-        "identityNote": "The company announcement resolves the AEC pursuit platform and financing.",
+        "identityNote": "The official privacy page resolves the Cascade brand, legal entity, and domain; financing is supported separately by the trigger source.",
         "identitySourceIds": [
           "source_cascade_identity_v1"
         ]
@@ -3010,6 +3053,9 @@
         "identityNote": "Official newsroom resolves the Cordant brand and domain; a probable legal-entity match is not treated as authoritative.",
         "identitySourceIds": [
           "source_cordant_newsroom_v1"
+        ],
+        "unresolvedFields": [
+          "legal_name"
         ]
       },
       "caseId": null,
@@ -3040,10 +3086,14 @@
         "status": "partially_resolved",
         "brandName": "Empirical Security",
         "legalName": null,
-        "officialDomain": "https://empiricalsecurity.com",
-        "identityNote": "Funding coverage resolves the Empirical Security brand and financing; the legal entity name is not asserted from that source.",
+        "officialDomain": null,
+        "identityNote": "Funding coverage resolves the Empirical Security brand and financing; the legal entity and official domain remain unresolved because the exact span supports neither.",
         "identitySourceIds": [
           "source_empirical_finsmes_v1"
+        ],
+        "unresolvedFields": [
+          "legal_name",
+          "official_domain"
         ]
       },
       "caseId": null,
@@ -3061,7 +3111,7 @@
         "source_empirical_finsmes_v1"
       ],
       "missingEvidence": [
-        "Named customers and new post-cutoff predictive-performance evidence."
+        "Official domain, legal entity, named customers, and new post-cutoff predictive-performance evidence."
       ],
       "counterevidenceAndLimits": [
         "Technical benchmark evidence predates the July 18 cutoff; the recent event is principally financing."
@@ -3074,10 +3124,14 @@
         "status": "partially_resolved",
         "brandName": "Freight Hero",
         "legalName": null,
-        "officialDomain": "https://freighthero.ai",
-        "identityNote": "Axios resolves the Freight Hero brand and financing; a probable legal-entity match is not treated as authoritative.",
+        "officialDomain": null,
+        "identityNote": "Axios resolves the Freight Hero brand and financing; the legal entity and official domain remain unresolved because the exact span supports neither.",
         "identitySourceIds": [
           "source_freight_hero_axios_v1"
+        ],
+        "unresolvedFields": [
+          "legal_name",
+          "official_domain"
         ]
       },
       "caseId": null,
@@ -3095,7 +3149,7 @@
         "source_freight_hero_axios_v1"
       ],
       "missingEvidence": [
-        "Service gross margins, automation mix, and security-sector fit."
+        "Official domain, legal entity, service gross margins, automation mix, and security-sector fit."
       ],
       "counterevidenceAndLimits": [
         "The offering combines AI with human managed services rather than pure software."

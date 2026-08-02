@@ -47,7 +47,7 @@ export function crossCheckBeliefReversalExpectedOutcomes(
   const requiredMatrix = new Map<string, { status: "passed" | "watchlist" | "invested"; direction: "positive" | "negative"; actions: readonly string[] }>([
     ["Henry AI", { status: "passed", direction: "positive", actions: ["reopen_diligence"] }],
     ["Smallest.ai", { status: "watchlist", direction: "positive", actions: ["advance_diligence"] }],
-    ["Hush Security", { status: "invested", direction: "positive", actions: ["evaluate_follow_on"] }],
+    ["Hush Security", { status: "invested", direction: "positive", actions: ["evaluate_follow_on", "validate_channel_economics"] }],
     ["Irregular", { status: "invested", direction: "negative", actions: ["pause_follow_on", "portfolio_risk_review"] }],
   ]);
   const manifestCases = new Map(researchPackage.selectedCases.map((item) => [item.id, item]));

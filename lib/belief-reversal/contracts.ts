@@ -27,6 +27,7 @@ export const CanonicalActionKindSchema = z.enum([
   "continue_monitoring",
   "deprioritize",
   "evaluate_follow_on",
+  "validate_channel_economics",
   "pause_follow_on",
   "portfolio_risk_review",
   "review_analysis_failure",
@@ -278,13 +279,33 @@ const ScreeningSourceSchema = z.discriminatedUnion("status", [
   UnresolvedScreeningSourceSchema,
 ]);
 
-const CandidateIdentitySchema = z.strictObject({
-  status: z.enum(["resolved", "partially_resolved"]),
-  brandName: NonEmptyStringSchema,
-  legalName: NonEmptyStringSchema.nullable(),
-  officialDomain: z.string().url().nullable(),
-  identityNote: NonEmptyStringSchema,
-  identitySourceIds: z.array(StableIdSchema).min(1),
+const CandidateIdentitySchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("resolved"),
+    brandName: NonEmptyStringSchema,
+    legalName: NonEmptyStringSchema,
+    officialDomain: z.string().url(),
+    identityNote: NonEmptyStringSchema,
+    identitySourceIds: z.array(StableIdSchema).min(1),
+  }),
+  z.strictObject({
+    status: z.literal("partially_resolved"),
+    brandName: NonEmptyStringSchema,
+    legalName: NonEmptyStringSchema.nullable(),
+    officialDomain: z.string().url().nullable(),
+    identityNote: NonEmptyStringSchema,
+    identitySourceIds: z.array(StableIdSchema).min(1),
+    unresolvedFields: z.array(z.enum(["legal_name", "official_domain"])).min(1).max(2),
+  }),
+]).superRefine((identity, context) => {
+  if (identity.status !== "partially_resolved") return;
+  const expected = [
+    ...(identity.legalName === null ? ["legal_name" as const] : []),
+    ...(identity.officialDomain === null ? ["official_domain" as const] : []),
+  ];
+  if (JSON.stringify(identity.unresolvedFields) !== JSON.stringify(expected)) {
+    context.addIssue({ code: "custom", message: "unresolvedFields must exactly match null identity fields" });
+  }
 });
 const CandidateTriggerSchema = z.discriminatedUnion("status", [
   z.strictObject({
@@ -473,7 +494,9 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
     for (const sourceId of entry.companyIdentity.identitySourceIds) {
       const screeningSource = screeningSources.get(sourceId);
       const selectedOwner = selectedSourceOwners.get(sourceId);
+      if (!entry.screeningSourceIds.includes(sourceId)) issue(`${entry.id} identity source must be included in screeningSourceIds`);
       if (!screeningSource && !selectedOwner) issue(`${entry.id} has unknown identity source ${sourceId}`);
+      if (screeningSource?.status === "unresolved") issue(`${entry.id} identity source must reference resolved evidence`);
       if (screeningSource && screeningSource.candidateId !== entry.id) issue(`${entry.id} cannot borrow another candidate's identity source`);
       if (selectedOwner && selectedOwner !== entry.caseId) issue(`${entry.id} cannot borrow another selected case's identity source`);
     }
@@ -488,9 +511,14 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
       const resolvedTriggerSource = screeningTriggerSource?.status === "resolved"
         ? screeningTriggerSource
         : selectedTriggerSource;
+      if (!entry.screeningSourceIds.includes(entry.triggeringEvent.sourceId)) {
+        issue(`${entry.id} resolved trigger source must be included in screeningSourceIds`);
+      }
       if (!resolvedTriggerSource) issue(`${entry.id} resolved trigger requires a resolved source`);
+      else if (resolvedTriggerSource.evidenceRole !== "trigger") issue(`${entry.id} resolved trigger source must have trigger evidenceRole`);
       else if (
         entry.triggeringEvent.canonicalUrl !== resolvedTriggerSource.canonicalUrl ||
+        entry.triggeringEvent.eventAt !== resolvedTriggerSource.eventAt ||
         entry.triggeringEvent.publishedAt !== resolvedTriggerSource.publishedAt ||
         entry.triggeringEvent.retrievedAt !== resolvedTriggerSource.retrievedAt
       ) issue(`${entry.id} triggering event does not match its source`);
@@ -500,11 +528,28 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
   }
   if (new Set(allIds).size !== allIds.length) issue("All package, event, screening, and ledger IDs must be globally unique");
 
-  const acceptedCaseIds = researchPackage.candidateLedger
-    .filter((entry) => entry.disposition === "accepted")
-    .map((entry) => entry.caseId);
-  if (acceptedCaseIds.length !== 4 || acceptedCaseIds.some((id) => id === null || !selectedCases.has(id))) {
-    issue("Accepted ledger entries must exactly link the four selected cases");
+  const acceptedEntries = researchPackage.candidateLedger.filter((entry) => entry.disposition === "accepted");
+  const acceptedCaseIds = acceptedEntries.map((entry) => entry.caseId);
+  const acceptedCaseIdSet = new Set(acceptedCaseIds);
+  if (
+    acceptedEntries.length !== selectedCases.size ||
+    acceptedCaseIdSet.size !== selectedCases.size ||
+    acceptedCaseIds.some((id) => id === null || !selectedCases.has(id)) ||
+    [...selectedCases.keys()].some((id) => !acceptedCaseIdSet.has(id))
+  ) {
+    issue("Accepted ledger case IDs must be a one-to-one set match with selected cases");
+  }
+  for (const entry of acceptedEntries) {
+    if (entry.caseId === null) continue;
+    const selectedCase = selectedCases.get(entry.caseId);
+    if (
+      selectedCase && (
+        entry.companyIdentity.brandName !== selectedCase.profile.brandName.value ||
+        entry.companyIdentity.officialDomain !== selectedCase.profile.officialDomain.value
+      )
+    ) {
+      issue(`${entry.id} accepted company identity must match its selected case brand and domain`);
+    }
   }
   const centralize = researchPackage.candidateLedger.find((entry) => entry.companyIdentity.brandName === "Centralize");
   if (centralize?.disposition !== "qualified_not_selected") issue("Centralize must be qualified_not_selected");

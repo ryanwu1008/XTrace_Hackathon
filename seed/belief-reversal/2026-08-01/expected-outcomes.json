@@ -36,7 +36,7 @@
       "priorStatus": "invested",
       "direction": "positive",
       "priorAction": "continue_monitoring",
-      "expectedNewActions": ["evaluate_follow_on"],
+      "expectedNewActions": ["evaluate_follow_on", "validate_channel_economics"],
       "minimumConfidence": "medium",
       "qualificationRationale": "Strategic financing and company-reported Kyndryl deployment and resale evidence match the sample portfolio revisit condition without proving channel quality.",
       "requiredOpenDiligence": ["Validate Akamai and Kyndryl channel economics, bookings, margins, and sell-through."],
