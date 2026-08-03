@@ -603,6 +603,74 @@ function report(analyses: CompanyAnalysis[]): IntelligenceReportRecord {
   };
 }
 
+test("current underwriting rejects a report from another evidence frame before batch creation", async () => {
+  const baseRuns = createMemoryUnderwritingRunsRepository({ now: () => NOW });
+  let createCalls = 0;
+  const runs = {
+    ...baseRuns,
+    async createOrReuseBatch(input: Parameters<typeof baseRuns.createOrReuseBatch>[0]) {
+      createCalls += 1;
+      return baseRuns.createOrReuseBatch(input);
+    },
+  };
+  const currentRun: RunRecord = {
+    ...scanRun,
+    evidenceContext: {
+      state: "current",
+      schemaVersion: "run-evidence-context-v1",
+      evidenceMode: "live",
+      windowDays: 14,
+      anchorAt: "2026-07-29T12:00:00.000Z",
+      windowStartAt: "2026-07-15T12:00:00.000Z",
+      windowEndAt: "2026-07-29T12:00:00.000Z",
+      windowTimezone: "America/Los_Angeles",
+      snapshotId: null,
+      snapshotFingerprint: null,
+      contextFingerprint: `sha256:${"1".repeat(64)}`,
+    },
+  };
+  if (currentRun.evidenceContext.state !== "current") {
+    throw new Error("Expected current evidence context.");
+  }
+  const currentContext = currentRun.evidenceContext;
+  const mismatchedReport: IntelligenceReportRecord = {
+    ...report([]),
+    evidenceContext: {
+      ...currentContext,
+      contextFingerprint: `sha256:${"2".repeat(64)}`,
+      displayLabel: "Live evidence window ending 2026-07-29T12:00:00.000Z",
+      eventCount: 0,
+      eventSetFingerprint: `sha256:${"3".repeat(64)}`,
+      bindingFingerprint: `sha256:${"4".repeat(64)}`,
+    },
+  };
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    autoProcessCandidates: false,
+  });
+
+  await assert.rejects(
+    orchestrator.createBatchAndSelections({
+      scanRun: currentRun,
+      report: mismatchedReport,
+      analyses: [],
+      eligibleDeals: [],
+      forceRefresh: false,
+      evidenceFrame: {
+        schemaVersion: "underwriting-evidence-frame-v1",
+        evidenceMode: "live",
+        contextFingerprint: `sha256:${"1".repeat(64)}`,
+        eventSetFingerprint: `sha256:${"3".repeat(64)}`,
+        bindingFingerprint: `sha256:${"4".repeat(64)}`,
+        snapshotFingerprint: null,
+      },
+    }),
+    /evidence frame/i,
+  );
+  assert.equal(createCalls, 0);
+});
+
 function finalization(input: {
   candidateRunId: string;
   dealId: string;

@@ -90,16 +90,27 @@ export function createClaudeMatchingReasoner(
         sources: evidence.sources,
       });
       const model = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-8";
+      const scope = requireCurrentEvidenceScope(input);
       const fingerprint = `reasoner-judgment-v3:sha256:${
         createHash("sha256")
           .update(
-            `reasoner-judgment-v3\n${model}\n${system}\n${requestContent}`,
+            `reasoner-judgment-v3\n${model}\n${system}\n${requestContent}\n${stableEvidencePromptJson({
+              schemaVersion: scope.schemaVersion,
+              evidenceMode: scope.evidenceMode,
+              contextFingerprint: scope.contextFingerprint,
+              eventSetFingerprint: scope.eventSetFingerprint,
+              snapshotFingerprint: scope.snapshotFingerprint,
+            })}`,
             "utf8",
           )
           .digest("hex")
       }`;
       if (options.judgments && !options.refreshJudgments) {
-        const replayed = await replayJudgment(options.judgments, fingerprint, input);
+        const replayed = await replayJudgment(
+          options.judgments,
+          fingerprint,
+          input,
+        );
         if (replayed) return replayed;
       }
       let response = await client.complete({
@@ -131,7 +142,13 @@ export function createClaudeMatchingReasoner(
       }
       const matches = normalizeMatches(parsed, input);
       if (options.judgments) {
-        const stored = await options.judgments.save({ fingerprint, model, payload: matches });
+        const stored = await options.judgments.save({
+          fingerprint,
+          model,
+          payload: matches,
+          evidenceContextFingerprint: scope.contextFingerprint,
+          evidenceBindingFingerprint: scope.bindingFingerprint,
+        });
         return normalizeMatches(
           ClaudeReasonedMatchesSchema.parse(stored.payload),
           input,
@@ -149,7 +166,35 @@ async function replayJudgment(
 ): Promise<ReasonedMatch[] | null> {
   const record = await judgments.find(fingerprint);
   if (!record) return null;
+  if (
+    record.state !== "current"
+    || record.evidenceContextFingerprint
+      !== input.evidenceScope!.contextFingerprint
+    || (
+      input.evidenceScope!.evidenceMode === "live"
+      && record.evidenceBindingFingerprint
+        !== input.evidenceScope!.bindingFingerprint
+    )
+  ) return null;
   return normalizeMatches(ClaudeReasonedMatchesSchema.parse(record.payload), input);
+}
+
+function requireCurrentEvidenceScope(
+  input: MatchingInput,
+): NonNullable<MatchingInput["evidenceScope"]> {
+  const scope = input.evidenceScope;
+  const sha256 = /^sha256:[0-9a-f]{64}$/u;
+  if (
+    scope?.schemaVersion !== "matching-evidence-scope-v1"
+    || !["live", "pinned"].includes(scope.evidenceMode)
+    || !sha256.test(scope.contextFingerprint)
+    || !sha256.test(scope.eventSetFingerprint)
+    || !sha256.test(scope.bindingFingerprint)
+    || (scope.snapshotFingerprint !== null
+      && !sha256.test(scope.snapshotFingerprint))
+    || (scope.evidenceMode === "live") !== (scope.snapshotFingerprint === null)
+  ) throw new Error("Matching requires a complete current evidence scope.");
+  return scope!;
 }
 
 function normalizeMatches(

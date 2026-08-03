@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createMemoryDealRegistry } from "../../db/repositories/deal-registry";
 import { createMemoryEvidencePacksRepository } from "../../db/repositories/evidence-packs";
 import { createMemorySourceRegistry } from "../../db/repositories/source-registry";
+import { createMemoryMarketEvidenceSnapshotsRepository } from "../../db/repositories/market-evidence-snapshots";
 import { getProductInputReadiness } from "../../lib/corpus/import-readiness";
 import { DEMO_DEAL_EVIDENCE } from "../../lib/corpus/evidence";
 import { DEMO_FIXTURES } from "../../lib/corpus/fixtures";
@@ -45,6 +46,7 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
   const sourceRegistry = createMemorySourceRegistry();
   const dealRegistry = createMemoryDealRegistry({ sourceRegistry });
   const evidencePacks = createMemoryEvidencePacksRepository();
+  const marketEvidenceSnapshots = createMemoryMarketEvidenceSnapshotsRepository();
   const originalDependencies = {
     dataStore,
     objectStorage,
@@ -64,6 +66,7 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     sourceRegistry,
     dealRegistry,
     evidencePacks,
+    marketEvidenceSnapshots,
   };
   const first = await runBeliefReversalDemoSeed(dependencies);
   const second = await runBeliefReversalDemoSeed(dependencies);

@@ -106,11 +106,25 @@ function hasCurrentSelection(match: ReasonedMatch): match is CurrentReasonedMatc
 }
 
 export interface MatchingInput {
+  // Current Worker paths always provide this typed scope. It remains optional
+  // only for the legacy pure matching-service seam, which has no replay.
+  evidenceScope?: MatchingEvidenceScopeV1;
   deals: MatchingDeal[];
   events: MarketEventV2[];
   memoryContexts: MatchingMemoryContext[];
   sources: SourceRefV2[];
 }
+
+type Sha256Fingerprint = `sha256:${string}`;
+
+export type MatchingEvidenceScopeV1 = {
+  schemaVersion: "matching-evidence-scope-v1";
+  evidenceMode: "live" | "pinned";
+  contextFingerprint: Sha256Fingerprint;
+  eventSetFingerprint: Sha256Fingerprint;
+  bindingFingerprint: Sha256Fingerprint;
+  snapshotFingerprint: Sha256Fingerprint | null;
+};
 
 export interface MatchingReasoner {
   reason(input: MatchingInput): Promise<ReasonedMatch[]>;

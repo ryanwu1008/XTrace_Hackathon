@@ -21,6 +21,7 @@ import type {
 import { evidenceSourceText } from "../lib/contracts/domain";
 import { formatTemporalForDisplay } from "../lib/format/temporal";
 import { safeExternalHttpUrl } from "../lib/security/safe-url";
+import type { ReportEvidenceContext } from "../lib/contracts/evidence-context";
 
 export interface IntelligenceReportView {
   id: string;
@@ -33,6 +34,7 @@ export interface IntelligenceReportView {
   counts: CompanyAnalysisCounts;
   priorityDealId: string | null;
   companyAnalyses: CompanyAnalysis[];
+  evidenceContext?: ReportEvidenceContext;
 }
 
 type BriefTab =

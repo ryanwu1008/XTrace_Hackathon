@@ -27,6 +27,7 @@ import {
   createReferenceCatalogSnapshot,
   createCandidateAnalysisFingerprint,
   type ReferenceDefinitionRef,
+  type UnderwritingEvidenceFrameV1,
   type UnderwritingReferenceCatalogSnapshot,
 } from "./fingerprints";
 import {
@@ -171,6 +172,7 @@ export interface UnderwritingOrchestrator {
     analyses: CompanyAnalysis[];
     eligibleDeals: RegisteredDeal[];
     forceRefresh: boolean;
+    evidenceFrame?: UnderwritingEvidenceFrameV1;
   }): Promise<UnderwritingBatch>;
   processCandidate(candidateRunId: string): Promise<CandidateRun>;
 }
@@ -1095,10 +1097,12 @@ function createOrchestrationFingerprint(
     executionBudget: CandidateExecutionBudget;
     candidateExecutionFingerprint: string;
     referenceCatalog: UnderwritingReferenceCatalogSnapshot;
+    evidenceFrame?: UnderwritingEvidenceFrameV1;
   },
 ): string {
   const value = canonicalJson({
     kind: "underwriting-orchestration-v2",
+    evidenceFrame: input.evidenceFrame ?? null,
     scan: {
       id: input.scanRun.id,
       workspaceId: input.scanRun.workspaceId,
@@ -1131,6 +1135,7 @@ function assertAlignedInput(
     report: IntelligenceReportRecord;
     analyses: CompanyAnalysis[];
     eligibleDeals: RegisteredDeal[];
+    evidenceFrame?: UnderwritingEvidenceFrameV1;
   },
   policy: FundPolicySnapshot,
 ): void {
@@ -1145,6 +1150,7 @@ function assertAlignedInput(
       "Underwriting batch inputs must share one workspace and scan run.",
     );
   }
+  assertAlignedEvidenceFrame(input);
   const analysisIds = input.analyses.map(({ dealId }) => dealId);
   const eligibleIds = input.eligibleDeals.map(({ id }) => id);
   if (
@@ -1156,6 +1162,42 @@ function assertAlignedInput(
     throw new Error(
       "Every eligible Deal must retain exactly one CompanyAnalysis before underwriting selection.",
     );
+  }
+}
+
+function assertAlignedEvidenceFrame(input: {
+  scanRun: RunRecord;
+  report: IntelligenceReportRecord;
+  evidenceFrame?: UnderwritingEvidenceFrameV1;
+}): void {
+  const run = input.scanRun.evidenceContext;
+  const report = input.report.evidenceContext ?? { state: "legacy_unbound" as const };
+  if (run.state === "legacy_unbound" && report.state === "legacy_unbound") {
+    if (input.evidenceFrame !== undefined) {
+      throw new Error("A legacy underwriting batch cannot declare a current evidence frame.");
+    }
+    return;
+  }
+  const frame = input.evidenceFrame;
+  if (
+    run.state !== "current"
+    || report.state !== "current"
+    || frame === undefined
+    || frame.schemaVersion !== "underwriting-evidence-frame-v1"
+    || frame.evidenceMode !== run.evidenceMode
+    || frame.evidenceMode !== report.evidenceMode
+    || frame.contextFingerprint !== run.contextFingerprint
+    || frame.contextFingerprint !== report.contextFingerprint
+    || frame.eventSetFingerprint !== report.eventSetFingerprint
+    || frame.bindingFingerprint !== report.bindingFingerprint
+    || frame.snapshotFingerprint !== run.snapshotFingerprint
+    || frame.snapshotFingerprint !== report.snapshotFingerprint
+    || run.anchorAt !== report.anchorAt
+    || run.windowStartAt !== report.windowStartAt
+    || run.windowEndAt !== report.windowEndAt
+    || run.windowTimezone !== report.windowTimezone
+  ) {
+    throw new Error("Underwriting report, run, and exact evidence frame do not align.");
   }
 }
 

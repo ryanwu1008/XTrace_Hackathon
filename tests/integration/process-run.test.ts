@@ -9,14 +9,16 @@ import {
   type RegisteredDeal,
 } from "../../db/repositories/deal-registry";
 import { createMemoryIntelligenceRepository } from "../../db/repositories/intelligence";
+import { createMemoryMarketEvidenceSnapshotsRepository } from "../../db/repositories/market-evidence-snapshots";
 import { createRunsRepository } from "../../db/repositories/runs";
 import type { DealMemoryBundle } from "../../lib/contracts/domain";
 import type { RunEvidenceBindingV1 } from "../../lib/contracts/evidence-context";
+import { WritableMarketEventV2Schema } from "../../lib/contracts/source-evidence";
 import { buildPreloadedDealMemoryBundles } from "../../lib/corpus/service";
-import { classifyMarketEventForAnalysis } from "../../lib/market/classification";
 import { refingerprintMarketEvent } from "../../lib/market/identity";
 import type { NormalizedMarketEvent } from "../../lib/market/types";
 import { processClaimedRun } from "../../worker/process-run";
+import { toPublicReport } from "../../lib/reports/public";
 import {
   exactSourceV2,
   marketEventV2,
@@ -120,32 +122,11 @@ function observeCurrentEvidenceSeams(
       runId: string,
       events: readonly unknown[],
     ) {
-      const run = await baseRuns.get(workspaceId, runId);
-      assert.ok(run);
-      assert.equal(run.evidenceContext.state, "current");
-      if (run.evidenceContext.state !== "current") {
-        throw new Error("A current run is required by this test seam.");
-      }
-      binding = {
-        schemaVersion: "run-evidence-binding-v1",
+      binding = await baseRuns.bindLiveMarketEvents(
         workspaceId,
         runId,
-        evidenceMode: "live",
-        windowDays: 14,
-        anchorAt: run.evidenceContext.anchorAt,
-        windowStartAt: run.evidenceContext.windowStartAt,
-        windowEndAt: run.evidenceContext.windowEndAt,
-        windowTimezone: run.evidenceContext.windowTimezone,
-        snapshotId: null,
-        snapshotFingerprint: null,
-        contextFingerprint: run.evidenceContext.contextFingerprint,
-        eventCount: events.length,
-        eventSetFingerprint: `sha256:${"e".repeat(64)}`,
-        bindingFingerprint: `sha256:${"b".repeat(64)}`,
-        displayLabel: `Live evidence window ending ${run.evidenceContext.windowEndAt}`,
-        boundAt: "2026-07-24T12:00:00.000Z",
-        events: structuredClone(events) as RunEvidenceBindingV1["events"],
-      };
+        structuredClone(events) as RunEvidenceBindingV1["events"],
+      );
       return structuredClone(binding);
     },
     async getEvidenceBinding(workspaceId: string, runId: string) {
@@ -474,7 +455,9 @@ test("a delayed current-live claim scans the persisted anchor while recording ac
 });
 
 test("a current live Worker seals the exact selected events before saving its report", async () => {
-  const baseRuns = createRunsRepository(createMemoryDataClient());
+  const baseRuns = createRunsRepository(createMemoryDataClient({
+    now: () => new Date("2026-07-23T12:00:00.000Z"),
+  }));
   const intelligenceBase = createTestIntelligenceRepository();
   const observed = observeCurrentEvidenceSeams(baseRuns, intelligenceBase);
   const { runs, intelligence } = observed;
@@ -710,6 +693,113 @@ test("a current live Worker persists an explicit empty binding when no event is 
   assert.equal(result.report.counts.noMaterialChange, 19);
   assert.equal(result.report.priorityDealId, null);
   assert.match(result.report.marketSummary, /1 item lacked a bounded market-change signal/i);
+});
+
+test("a pinned Worker binds and reloads the exact snapshot without live provider or catalog work", async () => {
+  const snapshots = createMemoryMarketEvidenceSnapshotsRepository({
+    now: () => new Date("2026-08-01T12:00:00.000Z"),
+  });
+  const pinnedEvent = WritableMarketEventV2Schema.parse(marketEventV2(exactSourceV2("source_pinned_event", {
+    title: "Reviewed pinned evidence",
+    canonicalUrl: "https://example.com/pinned-evidence",
+    publishedAt: "2026-07-29T15:00:00.000Z",
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+    sourceRevisionId: "revision_source_pinned_event",
+  }), {
+    id: "event_pinned_reviewed",
+    title: "Reviewed pinned event",
+  }));
+  const snapshot = await snapshots.create({
+    schemaVersion: "market-evidence-snapshot-v1",
+    workspaceId: "workspace_demo",
+    id: "belief_reversal_2026_08_01",
+    snapshotAsOfDate: "2026-08-01",
+    windowDays: 14,
+    anchorAt: "2026-08-01T23:59:59.999Z",
+    windowStartAt: "2026-07-18T00:00:00.000Z",
+    windowEndAt: "2026-08-01T23:59:59.999Z",
+    windowTimezone: "America/Los_Angeles",
+    events: [pinnedEvent],
+  });
+  const baseRuns = createRunsRepository(createMemoryDataClient({
+    now: () => new Date("2026-08-03T12:00:00.000Z"),
+    getEvidenceSnapshot: (workspaceId, snapshotId) =>
+      snapshots.get(workspaceId, snapshotId),
+  }));
+  await baseRuns.create({
+    workspaceId: "workspace_demo",
+    mode: "structured",
+    windowDays: 14,
+    evidenceRequest: {
+      schemaVersion: "run-evidence-request-v1",
+      evidenceMode: "pinned",
+      snapshotId: snapshot.id,
+    },
+  });
+  const run = await baseRuns.claimNext("test-worker");
+  assert.ok(run);
+  const intelligenceBase = createTestIntelligenceRepository();
+  let marketProviderCalls = 0;
+  let liveCatalogWrites = 0;
+  let matchingEvents: unknown[] = [];
+
+  const result = await processClaimedRun(run, {
+    runs: baseRuns,
+    intelligence: {
+      ...intelligenceBase,
+      async saveMarketEvents() {
+        liveCatalogWrites += 1;
+        throw new Error("Pinned execution must not write the live Market catalog.");
+      },
+    },
+    ...authoritativeDeals(buildPreloadedDealMemoryBundles()),
+    importGate: READY_IMPORT_GATE,
+    market: {
+      async scanMarketWindow() {
+        marketProviderCalls += 1;
+        throw new Error("Pinned execution must not call a Market provider.");
+      },
+    },
+    reasoner: {
+      async reason(input) {
+        matchingEvents = structuredClone(input.events);
+        return [];
+      },
+    },
+    now: () => new Date("2026-08-03T12:00:00.000Z"),
+  });
+
+  assert.equal(result.run.status, "completed");
+  assert.equal(marketProviderCalls, 0);
+  assert.equal(liveCatalogWrites, 0);
+  assert.deepEqual(matchingEvents, snapshot.events);
+  assert.deepEqual(
+    (await baseRuns.getEvidenceBinding("workspace_demo", run.id))?.events,
+    snapshot.events,
+  );
+  const binding = await baseRuns.getEvidenceBinding("workspace_demo", run.id);
+  assert.ok(binding);
+  assert.deepEqual(result.report.evidenceContext, {
+    state: "current",
+    schemaVersion: "run-evidence-context-v1",
+    evidenceMode: "pinned",
+    windowDays: 14,
+    anchorAt: snapshot.anchorAt,
+    windowStartAt: snapshot.windowStartAt,
+    windowEndAt: snapshot.windowEndAt,
+    windowTimezone: snapshot.windowTimezone,
+    snapshotId: snapshot.id,
+    snapshotFingerprint: snapshot.snapshotFingerprint,
+    contextFingerprint: binding.contextFingerprint,
+    displayLabel: "Demo evidence snapshot as of 2026-08-01",
+    eventCount: 1,
+    eventSetFingerprint: binding.eventSetFingerprint,
+    bindingFingerprint: binding.bindingFingerprint,
+  });
+  assert.deepEqual(
+    toPublicReport(result.report).evidenceContext,
+    result.report.evidenceContext,
+  );
 });
 
 test("XTrace recall failure never falls back to structured memory and marks the run partial", async () => {
@@ -969,8 +1059,8 @@ test("bounds market evidence before XTrace and Claude while preserving all event
 
   assert.deepEqual(
     reasonerEventIds,
-    fetchedEvents.slice().reverse().slice(0, 20).map((event) =>
-      classifyMarketEventForAnalysis(event)?.id
+    (await runs.getEvidenceBinding("workspace_demo", run.id))?.events.map(
+      (event) => event.id,
     ),
   );
   assert.equal(recallQueries.length, 19);

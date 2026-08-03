@@ -1,0 +1,72 @@
+# Task 8 report: live/pinned separation and evidence-scoped Reports/Chat
+
+## Outcome
+
+Implemented one current evidence runtime with disjoint `live` and `pinned`
+branches. The approved sandbox replay uses immutable snapshot
+`belief_reversal_2026_08_01`; product remains live-only and public demo remains
+read-only. Matching, report persistence, underwriting, Search, Chat, and UI now
+carry or resolve the authoritative evidence frame instead of consulting a
+workspace-wide mixture.
+
+## Runtime and API
+
+- Run creation defaults an omitted request to typed live evidence. Product
+  rejects pinned requests; public sandbox accepts only the approved snapshot;
+  authorization happens before readiness and run creation.
+- The local belief-reversal seed creates the reviewed four-event snapshot from
+  manifest-selected canonical sources and source revisions. Re-seeding is
+  idempotent and returns the same snapshot fingerprint.
+- Worker execution rejects `legacy_unbound` runs. Live scans/classifies/writes
+  the live catalog, while pinned binds the snapshot without provider,
+  classification, or live-catalog calls. Both reload and verify workspace,
+  run, window, context, snapshot, event count, event-set fingerprint, binding
+  fingerprint, and canonical payload before downstream analysis.
+- `memory_ingest_sync` remains skipped; Task 7 exact ingest is unchanged.
+- Reports persist and publicly expose the exact binding-derived context. The
+  Worker re-reads and validates that report before underwriting.
+
+## Replay, underwriting, and read isolation
+
+- Matching receives a typed evidence scope. Judgment identity binds canonical
+  prompt evidence plus mode/context/event-set/snapshot. Current records persist
+  context and binding identity; legacy judgments cannot replay. Identical
+  pinned evidence may replay across run-specific binding fingerprints.
+- Underwriting batch identity includes the typed evidence frame. Current
+  run/report/frame mismatches stop before batch creation.
+- The shared resolver implements `latest_terminal` and exact `report` scopes,
+  requires terminal completed/partial runs, checks workspace/report/run and
+  optional Deal membership, and restricts candidate artifacts to the resolved
+  underwriting batch.
+- Search rejects partial exact scope, returns typed 404 when no terminal scope
+  exists, and searches only allowed candidate runs.
+- Chat defaults to the latest terminal report, or uses an exact report/run
+  scope. It derives event evidence only from that report's nested lineage and
+  never reads the global Market catalog. Product filters fixtures; sandbox may
+  retain canonical, permanently labeled Sample records. XTrace is one-Deal
+  exact recall with run, evidence-context, and active-parent fingerprints.
+- Public demo keeps its static read-only fallback. A product Chat with no
+  terminal report returns insufficient evidence rather than using workspace-
+  wide evidence.
+
+## UI
+
+- Runs and reports render the exact `LIVE EVIDENCE`, `PINNED DEMO REPLAY`, and
+  `LEGACY REPORT` labels.
+- Pinned reports display `Historical evidence snapshot—not current news.`
+- `RUN PINNED DEMO REPLAY` is rendered only in public sandbox.
+- `ASK THIS REPORT` carries exact report/run IDs; entering Chat from main
+  navigation clears that scope.
+
+## Verification
+
+- `npm run typecheck`
+- Focused Task 8 and related regression group: 76 passed, 0 failed.
+- Separate scope/UI group: 5 passed, 0 failed.
+- Covered request authorization/defaults, exact seed, live/pinned Worker split,
+  report context, matching replay, underwriting fingerprint/alignment, shared
+  resolver, no-global-catalog Chat, typed Search no-terminal behavior, and UI
+  evidence labels.
+
+No production migration execution, deployment, remote provider execution,
+localization, or arbitrary snapshot administration was performed.

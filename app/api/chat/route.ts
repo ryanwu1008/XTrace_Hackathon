@@ -6,8 +6,12 @@ import {
 import { rateLimitRequest, requirePermission } from "../../../lib/api/safety";
 import {
   getIntelligenceRepository,
-  type IntelligenceRepository,
+  type IntelligenceReportRecord,
 } from "../../../db/repositories/intelligence";
+import { getDataClient } from "../../../db/client";
+import { createRunsRepository } from "../../../db/repositories/runs";
+import { getUnderwritingRunsRepository } from "../../../db/repositories/underwriting-runs";
+import { getDealRegistry } from "../../../db/repositories/deal-registry";
 import {
   createGroundedChatService,
   type ChatEvidence,
@@ -20,6 +24,7 @@ import {
   evidenceSourceText,
   type EvidenceSourceRef,
 } from "../../../lib/contracts/domain";
+import type { MarketEventV2 } from "../../../lib/contracts/source-evidence";
 import {
   validateEvidenceSourceCatalog,
 } from "../../../lib/contracts/evidence-catalog";
@@ -41,6 +46,10 @@ import {
   isDurableWorkspaceMode,
   type DeploymentMode,
 } from "../../../lib/auth/request-context";
+import {
+  ReportScopeNotFoundError,
+  resolveReportEvidenceScope,
+} from "../../../lib/reports/evidence-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -80,27 +89,30 @@ function allDemoSources() {
   return new Map(sources.map((source) => [source.id, source]));
 }
 
-async function searchRuntimeIntelligence(
+export async function searchRuntimeIntelligence(
   question: string,
-  workspaceId: string,
-  repository: IntelligenceRepository,
+  report: IntelligenceReportRecord | null,
   mode: DeploymentMode,
+  dealId: string | null = null,
 ): Promise<ChatEvidence[]> {
   const tokens = evidenceQueryTokens(question);
-  if (!tokens.length) return [];
-  const [events, reports] = await Promise.all([
-    repository.listMarketEvents(workspaceId),
-    repository.listReports(workspaceId),
-  ]);
+  if (!tokens.length || report === null) return [];
+  const scopedAnalyses = report.companyAnalyses.filter((analysis) =>
+    dealId === null || analysis.dealId === dealId
+  );
+  const scopedReport = { ...report, companyAnalyses: scopedAnalyses };
+  const events = scopedAnalyses.flatMap((analysis) =>
+    analysis.marketEvidence.events
+  ).filter((event): event is MarketEventV2 =>
+    "schemaVersion" in event && "sources" in event
+  );
   validateEvidenceSourceCatalog([
     ...events.flatMap((event): EvidenceSourceRef[] => [...event.sources]),
-    ...reports.flatMap((report) => [
-      ...report.opportunities.flatMap((opportunity) => opportunity.sources),
-      ...report.companyAnalyses.flatMap((analysis) => analysis.sources),
-    ]),
+    ...scopedReport.opportunities.flatMap((opportunity) => opportunity.sources),
+    ...scopedAnalyses.flatMap((analysis) => analysis.sources),
   ], "runtime Chat authority source");
   const eventEvidence = events.flatMap((event) => {
-    const sources = isDurableWorkspaceMode(mode)
+    const sources = mode === "product"
       ? event.sources.filter((source) =>
         source.provenance !== "demo_fixture"
       )
@@ -120,22 +132,22 @@ async function searchRuntimeIntelligence(
       sources,
     }];
   });
-  const companyByDeal = isDurableWorkspaceMode(mode)
+  const companyByDeal = mode === "product"
     ? new Map<string, string>()
     : new Map(
         buildDemoViewModel().deals.map((deal) => [deal.id, deal.companyName]),
       )
-  const searchableReports = isDurableWorkspaceMode(mode)
-    ? reports.map((report) => ({
-        ...report,
-        opportunities: report.opportunities.filter(
+  const searchableReports = mode === "product"
+    ? [{
+        ...scopedReport,
+        opportunities: scopedReport.opportunities.filter(
           isProductOpportunityEvidence,
         ),
-        companyAnalyses: report.companyAnalyses.filter(
+        companyAnalyses: scopedAnalyses.filter(
           isProductCompanyAnalysisEvidence,
         ),
-      }))
-    : reports;
+      }]
+    : [scopedReport];
   const reportEvidence = buildPersistedReportEvidence({
     question,
     reports: searchableReports,
@@ -174,18 +186,18 @@ function isProductCompanyAnalysisEvidence(
 }
 
 async function productMemoryScope(
-  workspaceId: string,
-  repository: IntelligenceRepository,
+  report: IntelligenceReportRecord,
+  dealId: string,
+  mode: DeploymentMode,
 ): Promise<{
   sourceById: Map<string, EvidenceSourceRef>;
   candidateDealIds: string[];
 }> {
-  const reports = await repository.listReports(workspaceId);
   validateEvidenceSourceCatalog(
-    reports.flatMap((report) => [
+    [
       ...report.opportunities.flatMap((opportunity) => opportunity.sources),
       ...report.companyAnalyses.flatMap((analysis) => analysis.sources),
-    ]),
+    ],
     "Chat memory authority source",
   );
   const durableSourceCandidates: EvidenceSourceRef[] = [];
@@ -201,15 +213,15 @@ async function productMemoryScope(
     dealIds.add(dealId);
     durableSourceCandidates.push(...durableSources);
   };
-  for (const report of reports) {
-    for (const opportunity of report.opportunities) {
-      if (!isProductOpportunityEvidence(opportunity)) continue;
+  for (const opportunity of report.opportunities) {
+      if (opportunity.dealId !== dealId) continue;
+      if (mode === "product" && !isProductOpportunityEvidence(opportunity)) continue;
       addDurableDealSources(opportunity.dealId, opportunity.sources);
-    }
-    for (const analysis of report.companyAnalyses) {
-      if (!isProductCompanyAnalysisEvidence(analysis)) continue;
+  }
+  for (const analysis of report.companyAnalyses) {
+      if (analysis.dealId !== dealId) continue;
+      if (mode === "product" && !isProductCompanyAnalysisEvidence(analysis)) continue;
       addDurableDealSources(analysis.dealId, analysis.sources);
-    }
   }
   const durableSources = validateEvidenceSourceCatalog(
     durableSourceCandidates,
@@ -225,11 +237,20 @@ async function recallExistingMemory(
   question: string,
   workspaceId: string,
   mode: DeploymentMode,
-  repository: IntelligenceRepository,
+  report: IntelligenceReportRecord | null,
+  runId: string | null,
+  dealId: string | null,
+  evidenceContextFingerprint: string | null,
+  activeParentFingerprint: string | null,
 ): Promise<MemoryRecallOutcome> {
-  if (!isXTraceConfigured()) return { status: "unavailable" };
-  const scope = isDurableWorkspaceMode(mode)
-    ? await productMemoryScope(workspaceId, repository)
+  if (!isXTraceConfigured()) {
+    return { status: "unavailable" };
+  }
+  if (mode !== "public_demo" && (!report || !runId || !dealId)) {
+    return { status: "unavailable" };
+  }
+  const scope = isDurableWorkspaceMode(mode) && report && dealId
+    ? await productMemoryScope(report, dealId, mode)
     : {
         sourceById: allDemoSources(),
         candidateDealIds: buildDemoViewModel().deals.map((deal) => deal.id),
@@ -244,9 +265,14 @@ async function recallExistingMemory(
   try {
     const contexts = await service.recallDealContext({
       workspaceId,
+      runId: runId ?? undefined,
       query: question,
-      candidateDealIds: scope.candidateDealIds,
+      candidateDealIds: dealId === null
+        ? scope.candidateDealIds
+        : [dealId],
       limit: 8,
+      evidenceContextFingerprint: evidenceContextFingerprint ?? undefined,
+      activeParentFingerprint: activeParentFingerprint ?? undefined,
     });
     const evidence = contexts.flatMap((context) => {
       if (
@@ -330,6 +356,40 @@ export async function POST(
     const claude = process.env.ANTHROPIC_API_KEY ? createClaudeClient() : null;
     const repository =
       dependencies.intelligence ?? getIntelligenceRepository();
+    const resolvedScope = isDurableWorkspaceMode(context.mode)
+      ? await resolveReportEvidenceScope({
+          workspaceId: context.workspaceId,
+          request: input.reportId === undefined
+            ? { kind: "latest_terminal" }
+            : {
+                kind: "report",
+                reportId: input.reportId,
+                runId: input.runId!,
+                ...(input.dealId === undefined ? {} : { dealId: input.dealId }),
+              },
+          intelligence: repository,
+          runs: dependencies.runs ?? createRunsRepository(getDataClient()),
+          underwritingRuns: dependencies.underwritingRuns
+            ?? getUnderwritingRunsRepository(),
+        }).catch((error) => {
+          if (
+            input.reportId === undefined
+            && error instanceof ReportScopeNotFoundError
+          ) return null;
+          throw error;
+        })
+      : null;
+    const scopedReport = resolvedScope?.report ?? null;
+    const scopedDealId = resolvedScope?.dealId ?? null;
+    const scopedContextFingerprint = scopedReport?.evidenceContext?.state === "current"
+      ? scopedReport.evidenceContext.contextFingerprint
+      : null;
+    const scopedDeal = scopedDealId === null
+      ? null
+      : await (dependencies.dealRegistry ?? getDealRegistry()).findForWorkspace({
+          workspaceId: context.workspaceId,
+          dealId: scopedDealId,
+        });
     const service = createGroundedChatService({
       async searchExistingData({ question }) {
         return [
@@ -338,9 +398,9 @@ export async function POST(
             : []),
           ...await searchRuntimeIntelligence(
             question,
-            context.workspaceId,
-            repository,
+            scopedReport,
             context.mode,
+            scopedDealId,
           ),
         ];
       },
@@ -349,7 +409,11 @@ export async function POST(
           question,
           context.workspaceId,
           context.mode,
-          repository,
+          scopedReport,
+          resolvedScope?.run.id ?? null,
+          scopedDealId,
+          scopedContextFingerprint,
+          scopedDeal?.activeSourceRevisionFingerprint ?? null,
         );
       },
       async complete({ system, prompt }) {
@@ -361,11 +425,23 @@ export async function POST(
         });
       },
     });
-    return jsonOk(await service.answer({
+    const answer = await service.answer({
       workspaceId: context.workspaceId,
       question: input.question,
       xtraceEnabled: input.xtraceEnabled,
-    }));
+    });
+    return jsonOk({
+      ...answer,
+      scope: resolvedScope === null
+        ? null
+        : {
+            reportId: resolvedScope.report.id,
+            runId: resolvedScope.run.id,
+            dealId: resolvedScope.dealId,
+            evidenceContext: resolvedScope.report.evidenceContext
+              ?? { state: "legacy_unbound" },
+          },
+    });
   } catch (error) {
     return errorResponse(error);
   }

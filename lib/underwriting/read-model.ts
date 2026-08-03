@@ -342,13 +342,20 @@ export async function searchPersistedUnderwriting(input: {
   workspaceId: string;
   query: string;
   artifacts: UnderwritingArtifactsRepository;
+  candidateRunIds?: readonly string[];
 }): Promise<UnderwritingSearchResult[]> {
   const tokens = evidenceQueryTokens(input.query);
   if (tokens.length === 0) return [];
   const bundles = await input.artifacts.listFinalizedForWorkspace({
     workspaceId: input.workspaceId,
   });
+  const allowedCandidates = input.candidateRunIds === undefined
+    ? null
+    : new Set(input.candidateRunIds);
   return bundles
+    .filter((bundle) =>
+      allowedCandidates === null || allowedCandidates.has(bundle.candidateRunId)
+    )
     .flatMap(searchItemsForBundle)
     .filter((item) => {
       const searchable = new Set(evidenceQueryTokens(item.text));

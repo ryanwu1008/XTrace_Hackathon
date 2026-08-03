@@ -788,6 +788,14 @@ function strictBeliefRevisionFixture(options: {
     },
   };
   const input: MatchingInput = {
+    evidenceScope: {
+      schemaVersion: "matching-evidence-scope-v1",
+      evidenceMode: "live",
+      contextFingerprint: `sha256:${"a".repeat(64)}`,
+      eventSetFingerprint: `sha256:${"b".repeat(64)}`,
+      bindingFingerprint: `sha256:${"c".repeat(64)}`,
+      snapshotFingerprint: null,
+    },
     deals: [{
       id: dealId,
       companyName: "Acme",
@@ -872,6 +880,7 @@ test("counterevidence cannot cross the selected Deal and event authority boundar
     citedSourceIds: [second.counter.id],
   };
   const input: MatchingInput = {
+    evidenceScope: first.input.evidenceScope,
     deals: [...first.input.deals, ...second.input.deals],
     events: [...first.input.events, ...second.input.events],
     memoryContexts: [

@@ -32,6 +32,7 @@ export interface UnderwritingReferenceCatalogSnapshot {
 
 export interface BatchFingerprintInput {
   workspaceId: string;
+  evidenceFrame: UnderwritingEvidenceFrameV1;
   window: {
     days: 14;
     startsAt: string;
@@ -63,6 +64,15 @@ export interface BatchFingerprintInput {
   routerVersion: string;
   decisionPolicy: VersionedRef;
   referenceCatalog: UnderwritingReferenceCatalogSnapshot;
+}
+
+export interface UnderwritingEvidenceFrameV1 {
+  schemaVersion: "underwriting-evidence-frame-v1";
+  evidenceMode: "live" | "pinned";
+  contextFingerprint: string;
+  eventSetFingerprint: string;
+  bindingFingerprint: string;
+  snapshotFingerprint: string | null;
 }
 
 export interface CandidateFingerprintInput {
@@ -118,6 +128,7 @@ export function createBatchInputFingerprint(
   return fingerprint({
     kind: "underwriting-batch-input-v1",
     workspaceId: required(input.workspaceId, "workspaceId"),
+    evidenceFrame: normalizedEvidenceFrame(input.evidenceFrame),
     window: {
       days: input.window.days,
       startsAt: required(input.window.startsAt, "window.startsAt"),
@@ -159,6 +170,40 @@ export function createBatchInputFingerprint(
     decisionPolicy: normalizedVersionedRef(input.decisionPolicy),
     referenceCatalog: normalizedReferenceCatalog(input.referenceCatalog),
   });
+}
+
+function normalizedEvidenceFrame(
+  value: BatchFingerprintInput["evidenceFrame"],
+) {
+  const pinned = value.evidenceMode === "pinned";
+  if (!pinned && value.evidenceMode !== "live") {
+    throw new Error("Unsupported underwriting evidence mode.");
+  }
+  if (pinned !== (value.snapshotFingerprint !== null)) {
+    throw new Error("Underwriting evidence snapshot identity is incomplete.");
+  }
+  return {
+    schemaVersion: value.schemaVersion,
+    evidenceMode: value.evidenceMode,
+    contextFingerprint: requiredFingerprint(
+      value.contextFingerprint,
+      "Evidence context fingerprint",
+    ),
+    eventSetFingerprint: requiredFingerprint(
+      value.eventSetFingerprint,
+      "Evidence event-set fingerprint",
+    ),
+    bindingFingerprint: requiredFingerprint(
+      value.bindingFingerprint,
+      "Evidence binding fingerprint",
+    ),
+    snapshotFingerprint: value.snapshotFingerprint === null
+      ? null
+      : requiredFingerprint(
+          value.snapshotFingerprint,
+          "Evidence snapshot fingerprint",
+        ),
+  };
 }
 
 export function createCandidateAnalysisFingerprint(

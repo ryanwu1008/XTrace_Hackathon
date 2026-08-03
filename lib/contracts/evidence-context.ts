@@ -30,6 +30,9 @@ const IanaTimezoneSchema = z.string().min(1).refine((value) => {
 export const RunEvidenceModeSchema = z.enum(["live", "pinned"]);
 export type RunEvidenceMode = z.infer<typeof RunEvidenceModeSchema>;
 
+export const APPROVED_PINNED_DEMO_SNAPSHOT_ID =
+  "belief_reversal_2026_08_01" as const;
+
 export const RunEvidenceRequestV1Schema = z.discriminatedUnion("evidenceMode", [
   z.strictObject({
     schemaVersion: z.literal("run-evidence-request-v1"),
@@ -257,6 +260,32 @@ export const CurrentReportEvidenceContextV1Schema =
 export type ReportEvidenceContext =
   | z.infer<typeof LegacyUnboundEvidenceContextSchema>
   | z.infer<typeof CurrentReportEvidenceContextV1Schema>;
+
+export type CurrentReportEvidenceContextV1 = z.infer<
+  typeof CurrentReportEvidenceContextV1Schema
+>;
+
+export function reportEvidenceContextFromBinding(
+  binding: RunEvidenceBindingV1,
+): CurrentReportEvidenceContextV1 {
+  return CurrentReportEvidenceContextV1Schema.parse({
+    state: "current",
+    schemaVersion: "run-evidence-context-v1",
+    evidenceMode: binding.evidenceMode,
+    windowDays: binding.windowDays,
+    anchorAt: binding.anchorAt,
+    windowStartAt: binding.windowStartAt,
+    windowEndAt: binding.windowEndAt,
+    windowTimezone: binding.windowTimezone,
+    snapshotId: binding.snapshotId,
+    snapshotFingerprint: binding.snapshotFingerprint,
+    contextFingerprint: binding.contextFingerprint,
+    displayLabel: binding.displayLabel,
+    eventCount: binding.eventCount,
+    eventSetFingerprint: binding.eventSetFingerprint,
+    bindingFingerprint: binding.bindingFingerprint,
+  });
+}
 
 const REPORT_EVIDENCE_ROW_FIELDS = [
   "evidence_context_version", "evidence_mode", "evidence_window_days",

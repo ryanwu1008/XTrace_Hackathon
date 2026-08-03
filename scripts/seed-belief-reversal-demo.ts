@@ -15,6 +15,10 @@ import {
   getSourceRegistry,
   type SourceRegistry,
 } from "../db/repositories/source-registry";
+import {
+  getMarketEvidenceSnapshotsRepository,
+  type MarketEvidenceSnapshotsRepository,
+} from "../db/repositories/market-evidence-snapshots";
 import { loadBeliefReversalManifest } from "../lib/belief-reversal/manifest";
 import { buildSampleDecisionSourceRef } from "../lib/belief-reversal/sample-decision-source";
 import type { BeliefReversalResearchPackage } from "../lib/belief-reversal/contracts";
@@ -25,9 +29,14 @@ import {
   type DealMemoryBundle,
 } from "../lib/contracts/domain";
 import {
+  APPROVED_PINNED_DEMO_SNAPSHOT_ID,
+} from "../lib/contracts/evidence-context";
+import {
   WritableSourceRefV2Schema,
   type WritableSourceRefV2,
+  type WritableMarketEventV2,
 } from "../lib/contracts/source-evidence";
+import { refingerprintMarketEvent } from "../lib/market/identity";
 import { metadataForBeliefActionKind } from "../lib/reports/action-policy";
 import {
   createDefaultDemoDataStore,
@@ -53,6 +62,7 @@ export interface BeliefReversalSeedDependencies {
   sourceRegistry: SourceRegistry;
   dealRegistry: DealRegistry;
   evidencePacks: EvidencePacksRepository;
+  marketEvidenceSnapshots: MarketEvidenceSnapshotsRepository;
 }
 
 export interface BeliefReversalSeedResult {
@@ -111,6 +121,7 @@ interface PlannedCase {
   sampleInteraction: SampleDecisionInteractionRecord;
   memoryBundle: DealMemoryBundle;
   memoryLineage: DealMemoryLineage;
+  marketEvents: WritableMarketEventV2[];
 }
 
 interface BeliefReversalSeedPlan {
@@ -217,6 +228,19 @@ export async function runBeliefReversalDemoSeed(
     );
   }
 
+  await dependencies.marketEvidenceSnapshots.create({
+    schemaVersion: "market-evidence-snapshot-v1",
+    workspaceId: WORKSPACE_ID,
+    id: APPROVED_PINNED_DEMO_SNAPSHOT_ID,
+    snapshotAsOfDate: "2026-08-01",
+    windowDays: 14,
+    anchorAt: "2026-08-01T23:59:59.999-07:00",
+    windowStartAt: "2026-07-18T00:00:00.000-07:00",
+    windowEndAt: "2026-08-01T23:59:59.999-07:00",
+    windowTimezone: "America/Los_Angeles",
+    events: plan.cases.flatMap(({ marketEvents }) => marketEvents),
+  });
+
   return {
     created,
     totals: {
@@ -240,6 +264,7 @@ export async function runDefaultBeliefReversalDemoSeed(input: {
     sourceRegistry: getSourceRegistry(),
     dealRegistry: getDealRegistry(),
     evidencePacks: getEvidencePacksRepository(),
+    marketEvidenceSnapshots: getMarketEvidenceSnapshotsRepository(),
   }));
   return runBeliefReversalDemoSeed(createDependencies());
 }
@@ -330,6 +355,54 @@ function buildSeedPlan(
       source.document.id,
       source,
     ]));
+    const sourceRefById = new Map(selectedCase.sources.map((researchSource) => {
+      const source = sourceById.get(researchSource.id);
+      if (!source) throw new Error(`Approved source ${researchSource.id} was not planned.`);
+      return [researchSource.id, publicSourceRef(
+        manifest,
+        selectedCase.entityKeys,
+        researchSource,
+        source.revision.id,
+        source.revision.contentHash,
+      )] as const;
+    }));
+    const marketEvents = selectedCase.events.map((event) => {
+      const sources = event.sourceIds.map((sourceId) => {
+        const source = sourceRefById.get(sourceId);
+        if (!source) throw new Error(`Event ${event.id} has an unplanned source.`);
+        return source;
+      });
+      const trigger = sourceRefById.get(event.triggerSourceId);
+      if (!trigger) throw new Error(`Event ${event.id} has an unplanned trigger source.`);
+      return refingerprintMarketEvent({
+        schemaVersion: "market-event-v2",
+        adaptation: "canonical",
+        id: event.id,
+        title: event.title,
+        eventType: event.eventType,
+        sectors: [...event.sectors],
+        themes: [...event.themes],
+        summary: event.summary,
+        positiveImplications: [...event.positiveImplications],
+        negativeImplications: [...event.negativeImplications],
+        eventAt: trigger.eventAt ?? trigger.publishedAt!,
+        eventAtPrecision: trigger.eventAtPrecision
+          ?? trigger.publishedAtPrecision!,
+        publishedAt: trigger.publishedAt!,
+        publishedAtPrecision: trigger.publishedAtPrecision!,
+        retrievedAt: trigger.retrievedAt!,
+        retrievedAtPrecision: trigger.retrievedAtPrecision!,
+        updatedAt: trigger.updatedAt,
+        updatedAtPrecision: trigger.updatedAtPrecision,
+        confidence: event.confidence,
+        canonicalUrl: trigger.canonicalUrl!,
+        providerId: trigger.providerId!,
+        contentFingerprint: `sha256:${"0".repeat(64)}`,
+        entityKeys: [...selectedCase.entityKeys],
+        triggerSourceId: trigger.id,
+        sources,
+      });
+    });
     const semanticFieldsBySource = semanticFieldsForCase(selectedCase);
     const evidence = selectedCase.claims.map((claim): SourceEvidenceInput => {
       const researchSource = selectedCase.sources.find((source) =>
@@ -475,6 +548,7 @@ function buildSeedPlan(
       sampleInteraction,
       memoryBundle,
       memoryLineage,
+      marketEvents,
     };
   });
   const sources = cases.flatMap((item) => item.sources);

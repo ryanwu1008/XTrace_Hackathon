@@ -18,6 +18,7 @@ import { isXTraceConfigured } from "../../../lib/xtrace/client";
 import { toPublicRun } from "../../../lib/runs/public";
 import { isDurableWorkspaceMode } from "../../../lib/auth/request-context";
 import { getTestGenerationRepository } from "../../../db/repositories/test-generations";
+import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from "../../../lib/contracts/evidence-context";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +52,15 @@ export async function POST(
     const context = await resolveRouteRequestContext(request, dependencies);
     requirePermission(context, "readWorkspace");
     if (!isDurableWorkspaceMode(context.mode)) throw new Error("FORBIDDEN");
+    const parsed = CreateRunRequestSchema.parse(await request.json());
+    if (
+      parsed.evidenceRequest.evidenceMode === "pinned"
+      && (
+        context.mode !== "public_sandbox"
+        || parsed.evidenceRequest.snapshotId
+          !== APPROVED_PINNED_DEMO_SNAPSHOT_ID
+      )
+    ) throw new Error("FORBIDDEN");
     if (
       process.env.NODE_ENV === "production" &&
       (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY)
@@ -77,7 +87,6 @@ export async function POST(
         true,
       );
     }
-    const parsed = CreateRunRequestSchema.parse(await request.json());
     const runs = createRunsRepository(getDataClient());
     let workerReady = false;
     try {
@@ -124,6 +133,7 @@ export async function POST(
       workspaceId: context.workspaceId,
       mode: parsed.xtraceEnabled ? "xtrace" : "structured",
       windowDays: 14,
+      evidenceRequest: parsed.evidenceRequest,
     });
     return jsonCreated(toPublicRun(run));
   } catch (error) {

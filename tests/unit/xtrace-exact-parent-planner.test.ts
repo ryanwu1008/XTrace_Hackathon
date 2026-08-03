@@ -5,6 +5,7 @@ import test from "node:test";
 import { createMemoryDealRegistry } from "../../db/repositories/deal-registry";
 import { createMemoryEvidencePacksRepository } from "../../db/repositories/evidence-packs";
 import { createMemorySourceRegistry } from "../../db/repositories/source-registry";
+import { createMemoryMarketEvidenceSnapshotsRepository } from "../../db/repositories/market-evidence-snapshots";
 import {
   createExactParentPlanner,
 } from "../../lib/xtrace/exact-parent-planner";
@@ -35,6 +36,7 @@ test("plans the accepted fixture as 23 Deals and 60 exact immutable parents", as
     sourceRegistry,
     dealRegistry,
     evidencePacks: createMemoryEvidencePacksRepository(),
+    marketEvidenceSnapshots: createMemoryMarketEvidenceSnapshotsRepository(),
   });
 
   const plan = await createExactParentPlanner({
@@ -74,6 +76,7 @@ test("each planned Sample parent preserves its permanent marker and typed policy
     sourceRegistry,
     dealRegistry,
     evidencePacks: createMemoryEvidencePacksRepository(),
+    marketEvidenceSnapshots: createMemoryMarketEvidenceSnapshotsRepository(),
   });
 
   const plan = await createExactParentPlanner({ dealRegistry, sourceRegistry })

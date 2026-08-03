@@ -68,6 +68,7 @@ interface IntelligenceReportIdentity {
 export interface IntelligenceReportWrite extends IntelligenceReportIdentity {
   opportunities: OpportunityReportItem[];
   evidenceBindingFingerprint?: string;
+  evidenceContext?: ReportEvidenceContext;
   // Internal write-time snapshot. It validates that every Deal selected by the
   // authoritative registry received an analysis, but is not added to legacy
   // report response shapes.
@@ -623,6 +624,9 @@ function projectReportRead(
       )?.dealId
       ?? null,
     companyAnalyses,
+    evidenceContext: cloned.evidenceContext === undefined
+      ? { state: "legacy_unbound" }
+      : structuredClone(cloned.evidenceContext),
   };
 }
 

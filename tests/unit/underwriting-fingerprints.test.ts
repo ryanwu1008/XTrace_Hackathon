@@ -12,6 +12,14 @@ import {
 function batchInput(): BatchFingerprintInput {
   return {
     workspaceId: "workspace_1",
+    evidenceFrame: {
+      schemaVersion: "underwriting-evidence-frame-v1",
+      evidenceMode: "pinned",
+      contextFingerprint: `sha256:${"a".repeat(64)}`,
+      eventSetFingerprint: `sha256:${"b".repeat(64)}`,
+      bindingFingerprint: `sha256:${"c".repeat(64)}`,
+      snapshotFingerprint: `sha256:${"d".repeat(64)}`,
+    },
     window: {
       days: 14,
       startsAt: "2026-07-15T00:00:00.000Z",
@@ -212,6 +220,22 @@ test("batch fingerprint changes for every required execution dimension", () => {
     },
   ];
 
+  for (const mutate of mutations) {
+    const input = batchInput();
+    mutate(input);
+    assert.notEqual(createBatchInputFingerprint(input), baseline);
+  }
+});
+
+test("batch fingerprint binds every field of the exact evidence frame", () => {
+  const baseline = createBatchInputFingerprint(batchInput());
+  const mutations: Array<(input: BatchFingerprintInput) => void> = [
+    (input) => { input.evidenceFrame.evidenceMode = "live"; input.evidenceFrame.snapshotFingerprint = null; },
+    (input) => { input.evidenceFrame.contextFingerprint = `sha256:${"1".repeat(64)}`; },
+    (input) => { input.evidenceFrame.eventSetFingerprint = `sha256:${"2".repeat(64)}`; },
+    (input) => { input.evidenceFrame.bindingFingerprint = `sha256:${"3".repeat(64)}`; },
+    (input) => { input.evidenceFrame.snapshotFingerprint = `sha256:${"4".repeat(64)}`; },
+  ];
   for (const mutate of mutations) {
     const input = batchInput();
     mutate(input);

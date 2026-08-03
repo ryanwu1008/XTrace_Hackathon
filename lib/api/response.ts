@@ -1,6 +1,10 @@
 import { ZodError } from "zod";
 import type { ApiErrorCode } from "../contracts/http";
 import { IntegrationTransportError } from "./errors";
+import {
+  ReportScopeMismatchError,
+  ReportScopeNotFoundError,
+} from "../reports/evidence-scope";
 
 function privateNoStoreHeaders(headers?: HeadersInit): Headers {
   const result = new Headers(headers);
@@ -41,6 +45,12 @@ export function jsonError(
 export function errorResponse(error: unknown) {
   if (error instanceof ZodError) {
     return jsonError("VALIDATION_ERROR", error.issues[0]?.message ?? "Invalid request", 400);
+  }
+  if (error instanceof ReportScopeNotFoundError) {
+    return jsonError("NOT_FOUND", error.message, 404);
+  }
+  if (error instanceof ReportScopeMismatchError) {
+    return jsonError("VALIDATION_ERROR", error.message, 400);
   }
   if (error instanceof Error && error.message === "UNAUTHENTICATED") {
     return jsonError("UNAUTHENTICATED", "Authentication required", 401);

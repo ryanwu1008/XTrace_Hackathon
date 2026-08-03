@@ -24,6 +24,11 @@ import type { ConfirmUpload } from "../lib/contracts/http";
 import type { EvidenceSourceRef } from "../lib/contracts/domain";
 import type { MarketEventV2 } from "../lib/contracts/source-evidence";
 import type {
+  ReportEvidenceContext,
+  RunEvidenceContext,
+  RunEvidenceRequestV1,
+} from "../lib/contracts/evidence-context";
+import type {
   UploadRecoveryDto,
   UploadRecoveryDetailDto,
 } from "../lib/uploads/confirmation";
@@ -115,6 +120,7 @@ interface Run {
   warnings: string[];
   createdAt: string;
   completedAt: string | null;
+  evidenceContext: RunEvidenceContext;
 }
 
 interface LegacyUiSource {
@@ -175,6 +181,31 @@ interface ChatMessage {
   text: string;
   citations?: Source[];
   memoryStatus?: ChatMemoryStatus;
+}
+
+interface ChatReportScope {
+  reportId: string;
+  runId: string;
+}
+
+export function evidenceContextLabel(
+  context: ReportEvidenceContext | RunEvidenceContext | undefined,
+): string {
+  if (!context || context.state === "legacy_unbound") {
+    return "LEGACY REPORT · Evidence context unavailable";
+  }
+  if (context.evidenceMode === "pinned") {
+    return "displayLabel" in context
+      ? `PINNED DEMO REPLAY · ${context.displayLabel}`
+      : `PINNED DEMO REPLAY · ${context.snapshotId}`;
+  }
+  return `LIVE EVIDENCE · Live evidence window ending ${context.windowEndAt}`;
+}
+
+export function canRunPinnedDemo(
+  deploymentMode: UiSession["deploymentMode"],
+): boolean {
+  return deploymentMode === "public_sandbox";
 }
 
 const nav: Array<{ view: View; label: string; icon: string }> = [
@@ -259,6 +290,7 @@ export default function Home() {
   const [reportDraft, setReportDraft] = useState<InternalReportDraft | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatScope, setChatScope] = useState<ChatReportScope | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -481,6 +513,7 @@ export default function Home() {
   );
 
   function navigate(nextView: View) {
+    if (nextView === "chat") setChatScope(null);
     setView(nextView);
     setFocusedReportId(null);
     const url = new URL(window.location.href);
@@ -490,7 +523,10 @@ export default function Home() {
     window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
   }
 
-  async function runScan() {
+  async function runScan(evidenceRequest: RunEvidenceRequestV1 = {
+    schemaVersion: "run-evidence-request-v1",
+    evidenceMode: "live",
+  }) {
     if (!uiSession.capabilities.runScans) {
       setError(
         "Market scans are disabled in this read-only public demo.",
@@ -507,7 +543,7 @@ export default function Home() {
     try {
       const run = await api<Run>("/api/runs", {
         method: "POST",
-        body: JSON.stringify({ xtraceEnabled }),
+        body: JSON.stringify({ xtraceEnabled, evidenceRequest }),
       });
       setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
       setActiveRunId(run.id);
@@ -718,10 +754,16 @@ export default function Home() {
     setError("");
     try {
       if (isDurableWorkspaceUiMode(uiSession.deploymentMode)) {
+        const searchUrl = new URL("/api/search", window.location.origin);
+        searchUrl.searchParams.set("q", question);
+        if (chatScope) {
+          searchUrl.searchParams.set("reportId", chatScope.reportId);
+          searchUrl.searchParams.set("runId", chatScope.runId);
+        }
         const search = await api<{
           query: string;
           results: UnderwritingSearchResult[];
-        }>(`/api/search?q=${encodeURIComponent(question)}`);
+        }>(`${searchUrl.pathname}${searchUrl.search}`);
         const message = toProductSearchMessage(search.results);
         setChatMessages((current) => [
           ...current,
@@ -829,7 +871,7 @@ export default function Home() {
             </button>
             <button
               className="vsee-run"
-              onClick={runScan}
+              onClick={() => void runScan()}
               disabled={busy === "scan" || !scanReady}
               aria-label={scanReady
                 ? "Run a 14-day market scan"
@@ -844,6 +886,19 @@ export default function Home() {
             >
               {busy === "scan" ? "QUEUING…" : "WAKE AGENT & SCAN MARKET"} <span>→</span>
             </button>
+            {canRunPinnedDemo(uiSession.deploymentMode) && (
+              <button
+                className="vsee-run"
+                onClick={() => void runScan({
+                  schemaVersion: "run-evidence-request-v1",
+                  evidenceMode: "pinned",
+                  snapshotId: "belief_reversal_2026_08_01",
+                })}
+                disabled={busy === "scan" || !scanReady}
+              >
+                RUN PINNED DEMO REPLAY <span>→</span>
+              </button>
+            )}
           </div>
         </header>
 
@@ -920,6 +975,11 @@ export default function Home() {
                 canSaveActionDrafts={
                   uiSession.capabilities.saveActionDrafts
                 }
+                onAsk={(report) => {
+                  if (!report.runId) return;
+                  setChatScope({ reportId: report.id, runId: report.runId });
+                  setView("chat");
+                }}
               />
             )}
             {view === "chat" && (
@@ -931,6 +991,7 @@ export default function Home() {
                 busy={busy === "chat"}
                 xtraceEnabled={xtraceEnabled}
                 deploymentMode={uiSession.deploymentMode}
+                reportScope={chatScope}
               />
             )}
             {view === "settings" && <SettingsView health={health} runs={runs} />}
@@ -1535,7 +1596,7 @@ function SourcesView({
 function MarketView({ events }: { events: MarketEvent[] }) {
   return (
     <div className="vsee-content">
-      <SectionTitle eyebrow="PUBLIC EVIDENCE" title="What changed in the last 14 days?" copy="Each event is deduplicated, dated, confidence-rated, and linked to the public evidence that supports it." />
+      <SectionTitle eyebrow="LIVE MARKET ONLY · PUBLIC EVIDENCE" title="What changed in the last 14 days?" copy="Pinned demo snapshots never appear here. Each live event is deduplicated, dated, confidence-rated, and linked to its public evidence." />
       {!events.length ? <Empty title="No scan results yet" copy="Run the 14-day scan. The app will still write a market summary even if no event meets the opportunity threshold." /> : (
         <div className="vsee-event-list">
           {events.map((event) => (
@@ -1560,6 +1621,7 @@ export function ReportsView({
   focusedReportId,
   deploymentMode,
   canSaveActionDrafts,
+  onAsk,
 }: {
   reports: Report[];
   deals: Deal[];
@@ -1567,6 +1629,7 @@ export function ReportsView({
   focusedReportId: string | null;
   deploymentMode: UiSession["deploymentMode"];
   canSaveActionDrafts: boolean;
+  onAsk?(report: Report): void;
 }) {
   const companyByDeal = new Map(deals.map((deal) => [deal.id, deal.companyName]));
   // Default to the newest report; a shared permalink (?report=<id>) still
@@ -1578,19 +1641,30 @@ export function ReportsView({
       {!report ? (
         <Empty title="No intelligence report yet" copy="Complete a scan to generate the first evidence-linked report." />
       ) : report.companyAnalyses.length ? (
-        <CompanyIntelligenceReport
-          report={report}
-          focused={focusedReportId === report.id}
-          allowDraft
-          onDraft={onDraft}
-          showDemoProfiles={deploymentMode === "public_demo"}
-          underwritingEnabled={isDurableWorkspaceUiMode(deploymentMode)}
-          canSaveActionDrafts={canSaveActionDrafts}
-          companyNames={Object.fromEntries(
-            deals.map((deal) => [deal.id, deal.companyName]),
-          )}
-          key={report.id}
-        />
+        <>
+          <div className="vsee-banner" role="status">
+            <strong>{evidenceContextLabel(report.evidenceContext)}</strong>
+            {report.evidenceContext?.state === "current"
+              && report.evidenceContext.evidenceMode === "pinned"
+              && <span> · Historical evidence snapshot—not current news.</span>}
+            {report.runId && onAsk && (
+              <button onClick={() => onAsk(report)}>ASK THIS REPORT</button>
+            )}
+          </div>
+          <CompanyIntelligenceReport
+            report={report}
+            focused={focusedReportId === report.id}
+            allowDraft
+            onDraft={onDraft}
+            showDemoProfiles={deploymentMode === "public_demo"}
+            underwritingEnabled={isDurableWorkspaceUiMode(deploymentMode)}
+            canSaveActionDrafts={canSaveActionDrafts}
+            companyNames={Object.fromEntries(
+              deals.map((deal) => [deal.id, deal.companyName]),
+            )}
+            key={report.id}
+          />
+        </>
       ) : (
         <article
           className={`vsee-report ${focusedReportId === report.id ? "focused" : ""}`}
@@ -1599,7 +1673,7 @@ export function ReportsView({
           key={report.id}
         >
           <header>
-            <div><span>LEGACY REPORT {shortDate(report.createdAt)}</span><p>{report.marketSummary}</p></div>
+            <div><span>{evidenceContextLabel(report.evidenceContext)} · {shortDate(report.createdAt)}</span><p>{report.marketSummary}</p></div>
             <button onClick={() => onDraft(report)}>DRAFT THIS REPORT →</button>
           </header>
           {report.opportunities.length ? report.opportunities.map((item) => (
@@ -1644,7 +1718,7 @@ function RunsView({
           {runs.map((run) => (
             <article key={run.id}>
               <span className={`vsee-run-state ${run.status}`}>{run.status}</span>
-              <div><strong>{run.mode === "xtrace" ? "XTrace memory mode" : "Structured fallback mode"}</strong><small>{run.id}</small></div>
+              <div><strong>{evidenceContextLabel(run.evidenceContext)}</strong><small>{run.mode === "xtrace" ? "XTrace memory mode" : "Structured fallback mode"} · {run.id}</small></div>
               <div>
                 <b>{run.currentStage ?? "Awaiting worker"}</b>
                 <small>{shortDate(run.createdAt)} · {run.warningCount} warnings</small>
@@ -1668,6 +1742,7 @@ export function ChatView({
   busy,
   xtraceEnabled,
   deploymentMode = "public_demo",
+  reportScope = null,
 }: {
   messages: ChatMessage[];
   question: string;
@@ -1676,6 +1751,7 @@ export function ChatView({
   busy: boolean;
   xtraceEnabled: boolean;
   deploymentMode?: UiSession["deploymentMode"];
+  reportScope?: ChatReportScope | null;
 }) {
   return (
     <div className="vsee-content vsee-chat-page">
@@ -1690,6 +1766,11 @@ export function ChatView({
               xtraceEnabled ? "enabled" : "disabled"
             } for this query.`}
       />
+      {reportScope && (
+        <div className="vsee-banner" role="status">
+          ASKING REPORT · {reportScope.reportId} · RUN {reportScope.runId}
+        </div>
+      )}
       <div className="vsee-chat-log" aria-live="polite" aria-label="Evidence chat messages">
         {!messages.length && (
           <Empty

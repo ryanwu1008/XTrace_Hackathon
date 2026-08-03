@@ -16,6 +16,7 @@ import type {
 import type {
   IntelligenceRepository,
 } from "../../db/repositories/intelligence";
+import type { createRunsRepository } from "../../db/repositories/runs";
 import {
   resolveRequestContext,
   type AuthorizedRequestContext,
@@ -39,6 +40,7 @@ export interface RouteDependencies {
   underwritingRuns?: UnderwritingRunsRepository;
   underwritingArtifacts?: UnderwritingArtifactsRepository;
   intelligence?: IntelligenceRepository;
+  runs?: ReturnType<typeof createRunsRepository>;
   now?: () => number;
 }
 

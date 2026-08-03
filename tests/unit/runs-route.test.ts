@@ -7,6 +7,7 @@ import {
   POST as createRun,
 } from "../../app/api/runs/route";
 import type { RouteDependencies } from "../../lib/api/route-dependencies";
+import { CreateRunRequestSchema } from "../../lib/contracts/http";
 
 const productPartner: RouteDependencies = {
   async resolveRequestContext() {
@@ -28,6 +29,68 @@ const productPartner: RouteDependencies = {
     };
   },
 };
+
+const publicSandbox: RouteDependencies = {
+  async resolveRequestContext() {
+    return {
+      mode: "public_sandbox",
+      principal: { userId: "system:public-sandbox", email: "sandbox@invalid.local" },
+      workspaceId: "workspace_demo",
+      role: "sandbox",
+      permissions: {
+        readWorkspace: true,
+        readPrivateSources: true,
+        mutateSources: true,
+        managePolicy: true,
+        administerFrameworks: false,
+      },
+    };
+  },
+};
+
+test("omitted run evidence request defaults to the typed live request", () => {
+  assert.deepEqual(CreateRunRequestSchema.parse({ xtraceEnabled: false }), {
+    xtraceEnabled: false,
+    evidenceRequest: {
+      schemaVersion: "run-evidence-request-v1",
+      evidenceMode: "live",
+    },
+  });
+});
+
+test("product rejects pinned evidence before readiness or run creation", async () => {
+  const response = await createRun(new Request("http://localhost/api/runs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      xtraceEnabled: false,
+      evidenceRequest: {
+        schemaVersion: "run-evidence-request-v1",
+        evidenceMode: "pinned",
+        snapshotId: "belief_reversal_2026_08_01",
+      },
+    }),
+  }), undefined, productPartner);
+
+  assert.equal(response.status, 403);
+});
+
+test("public sandbox rejects every unapproved pinned snapshot before readiness", async () => {
+  const response = await createRun(new Request("http://localhost/api/runs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      xtraceEnabled: false,
+      evidenceRequest: {
+        schemaVersion: "run-evidence-request-v1",
+        evidenceMode: "pinned",
+        snapshotId: "arbitrary_snapshot",
+      },
+    }),
+  }), undefined, publicSandbox);
+
+  assert.equal(response.status, 403);
+});
 
 test("scan creation fails closed when no worker heartbeat is ready", async () => {
   const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;

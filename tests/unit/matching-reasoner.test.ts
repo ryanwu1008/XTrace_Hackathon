@@ -73,6 +73,15 @@ const event = marketEventV2(eventSource, {
   confidence: "medium",
 });
 
+const TEST_LIVE_SCOPE = {
+  schemaVersion: "matching-evidence-scope-v1" as const,
+  evidenceMode: "live" as const,
+  contextFingerprint: `sha256:${"a".repeat(64)}` as const,
+  eventSetFingerprint: `sha256:${"b".repeat(64)}` as const,
+  bindingFingerprint: `sha256:${"c".repeat(64)}` as const,
+  snapshotFingerprint: null,
+};
+
 test("structured matching context preserves source and synthetic-fixture lineage", () => {
   const contexts = buildStructuredMemoryContexts([bundle]);
   assert.deepEqual(contexts[0].sourceIds, ["deal_source"]);
@@ -164,6 +173,7 @@ test("Claude matching reasoner parses JSON and rejects Deals outside the candida
   });
 
   const result = await reasoner.reason({
+    evidenceScope: TEST_LIVE_SCOPE,
     deals: [{ id: "deal_ably", companyName: "Ably", status: "passed" }],
     events: [event],
     memoryContexts: buildStructuredMemoryContexts([bundle]),
@@ -185,6 +195,7 @@ test("matching reasoner asks for coverage-first reporting", async () => {
   } as never);
 
   await reasoner.reason({
+    evidenceScope: TEST_LIVE_SCOPE,
     deals: [{ id: "deal_x", companyName: "X", status: "passed" }],
     events: [event],
     memoryContexts: [],
@@ -225,6 +236,7 @@ test("both Claude prompt paths separate normalized text from quote eligibility",
     },
   });
   const input = {
+    evidenceScope: TEST_LIVE_SCOPE,
     deals: [{
       id: "deal_ably",
       companyName: "Ably",
@@ -356,6 +368,7 @@ test("a reasoner v2 judgment cannot replay under the strict v3 schema", async ()
   });
 
   await reasoner.reason({
+    evidenceScope: TEST_LIVE_SCOPE,
     deals: [{ id: "deal_ably", companyName: "Ably", status: "passed" }],
     events: [marketEventV2(normalized)],
     memoryContexts: [],
@@ -408,6 +421,7 @@ test("matching reasoner coerces numeric score strings from the model", async () 
   });
 
   const result = await reasoner.reason({
+    evidenceScope: TEST_LIVE_SCOPE,
     deals: [{ id: "deal_x", companyName: "X", status: "passed" }],
     events: [marketEventV2(source, { id: "event_x", title: "Event X" })],
     memoryContexts: [],
@@ -447,14 +461,55 @@ const REPLAY_COMPLETION = `[
   }
 ]`;
 
-function replayInput() {
+function replayInput(overrides: Record<string, unknown> = {}) {
   return {
+    evidenceScope: TEST_LIVE_SCOPE,
     deals: [{ id: "deal_ably", companyName: "Ably", status: "passed" as const }],
     events: [event],
     memoryContexts: buildStructuredMemoryContexts([bundle]),
     sources: buildMatchingSources([bundle], [event]),
+    ...overrides,
   };
 }
+
+test("judgment replay is scoped to evidence context while identical pinned evidence ignores run binding identity", async () => {
+  const { createMemoryReasonerJudgmentsRepository } = await import(
+    "../../db/repositories/reasoner-judgments"
+  );
+  const judgments = createMemoryReasonerJudgmentsRepository();
+  let modelCalls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      modelCalls += 1;
+      return REPLAY_COMPLETION;
+    },
+  }, { judgments });
+  const pinnedScope = {
+    schemaVersion: "matching-evidence-scope-v1" as const,
+    evidenceMode: "pinned" as const,
+    contextFingerprint: `sha256:${"1".repeat(64)}`,
+    eventSetFingerprint: `sha256:${"2".repeat(64)}`,
+    bindingFingerprint: `sha256:${"3".repeat(64)}`,
+    snapshotFingerprint: `sha256:${"4".repeat(64)}`,
+  };
+
+  await reasoner.reason(replayInput({ evidenceScope: pinnedScope }));
+  await reasoner.reason(replayInput({
+    evidenceScope: {
+      ...pinnedScope,
+      bindingFingerprint: `sha256:${"5".repeat(64)}`,
+    },
+  }));
+  await reasoner.reason(replayInput({
+    evidenceScope: {
+      ...pinnedScope,
+      contextFingerprint: `sha256:${"6".repeat(64)}`,
+      bindingFingerprint: `sha256:${"7".repeat(64)}`,
+    },
+  }));
+
+  assert.equal(modelCalls, 2);
+});
 
 test("identical evidence replays the stored judgment without a new model call", async () => {
   const { createMemoryReasonerJudgmentsRepository } = await import(

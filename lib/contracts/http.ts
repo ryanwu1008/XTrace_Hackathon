@@ -4,6 +4,7 @@ import { DealStatusSchema, RunStatusSchema } from "./domain";
 import {
   CurrentRunEvidenceContextV1Schema,
   LegacyUnboundEvidenceContextSchema,
+  RunEvidenceRequestV1Schema,
 } from "./evidence-context";
 
 export const ConfirmUploadSchema = z.strictObject({
@@ -22,6 +23,10 @@ export const ConfirmUploadSchema = z.strictObject({
 
 export const CreateRunRequestSchema = z.strictObject({
   xtraceEnabled: z.boolean().default(true),
+  evidenceRequest: RunEvidenceRequestV1Schema.default({
+    schemaVersion: "run-evidence-request-v1",
+    evidenceMode: "live",
+  }),
 });
 
 export const RunSummarySchema = z.object({
@@ -41,6 +46,16 @@ export const RunSummarySchema = z.object({
 export const ChatRequestSchema = z.object({
   question: z.string().trim().min(2).max(2_000),
   xtraceEnabled: z.boolean().default(true),
+  reportId: z.string().trim().min(1).optional(),
+  runId: z.string().trim().min(1).optional(),
+  dealId: z.string().trim().min(1).optional(),
+}).superRefine((value, refinement) => {
+  if ((value.reportId === undefined) !== (value.runId === undefined)) {
+    refinement.addIssue({ code: "custom", message: "reportId and runId must be supplied together." });
+  }
+  if (value.dealId !== undefined && value.reportId === undefined) {
+    refinement.addIssue({ code: "custom", message: "dealId requires an explicit report scope." });
+  }
 });
 
 export const ReplaceActionDraftBodySchema = z.strictObject({

@@ -81,5 +81,8 @@ export function toPublicReport(
       ? report.priorityDealId ?? null
       : null,
     companyAnalyses,
+    evidenceContext: "evidenceContext" in report && report.evidenceContext
+      ? structuredClone(report.evidenceContext)
+      : { state: "legacy_unbound" as const },
   };
 }

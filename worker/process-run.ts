@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { RunRecord } from "../db/client";
 import type {
   IntelligenceReportRecord,
@@ -52,6 +54,12 @@ import type {
   UnderwritingOrchestrator,
 } from "../lib/underwriting/orchestrator";
 import { recallAllDealContexts } from "./recall-deal-contexts";
+import type {
+  CurrentRunEvidenceContextV1,
+  RunEvidenceBindingV1,
+} from "../lib/contracts/evidence-context";
+import { reportEvidenceContextFromBinding } from "../lib/contracts/evidence-context";
+import type { MarketScanResult } from "../lib/market/types";
 
 type RunsRepository = ReturnType<typeof createRunsRepository>;
 
@@ -88,6 +96,21 @@ export interface ProcessRunDependencies {
   };
   now?: () => Date;
 }
+
+type ResolvedRunEvidenceRuntime = {
+  context: CurrentRunEvidenceContextV1;
+  binding: RunEvidenceBindingV1;
+  events: RunEvidenceBindingV1["events"];
+  selection: MarketEventSelection;
+  contextFingerprint: string;
+  eventSetFingerprint: string;
+  bindingFingerprint: string;
+  snapshotId: string | null;
+  snapshotFingerprint: string | null;
+} & (
+  | { evidenceMode: "live"; providerResult: MarketScanResult }
+  | { evidenceMode: "pinned"; providerResult: null }
+);
 
 export async function processClaimedRun(
   claimedRun: RunRecord,
@@ -181,31 +204,6 @@ export async function processClaimedRun(
       throw error;
     }
 
-    await updateStage("market_scan", "running");
-    const retrievedAt = now();
-    const scanAnchorAt = claimedRun.evidenceContext.state === "current"
-        && claimedRun.evidenceContext.evidenceMode === "live"
-      ? new Date(claimedRun.evidenceContext.anchorAt)
-      : retrievedAt;
-    const scannedMarket = await dependencies.market.scanMarketWindow({
-      days: 14,
-      now: scanAnchorAt,
-      retrievedAt,
-    });
-    // Classification changes canonical sectors/themes and therefore identity.
-    // Normalize it once before the first durable write, then reuse that exact
-    // payload for selection, matching, reports, and underwriting.
-    const market = {
-      ...scannedMarket,
-      events: scannedMarket.events.map((event) =>
-        classifyMarketEventForAnalysis(event) ?? event
-      ),
-    };
-    const persistedMarketEvents = await dependencies.intelligence.saveMarketEvents(
-      market.events,
-      claimedRun.workspaceId,
-    );
-    market.events = persistedMarketEvents;
     const portfolioTexts = new Map(bundles.map(
       (bundle) => [bundle.dealId, [
         bundle.companyName,
@@ -218,49 +216,35 @@ export async function processClaimedRun(
         ]),
       ]],
     ));
-    const marketSelection = selectMarketEventsForAnalysis(
-      market.events,
-      undefined,
-      portfolioTexts,
-    );
-    const analysisEvents = marketSelection.events;
-    if (claimedRun.evidenceContext.state === "current") {
-      if (claimedRun.evidenceContext.evidenceMode !== "live") {
-        throw new Error(
-          "Pinned demo replay Worker processing is deferred to the pinned-runtime task.",
-        );
-      }
-      await dependencies.runs.bindLiveMarketEvents(
-        claimedRun.workspaceId,
-        claimedRun.id,
-        analysisEvents,
-      );
-      const binding = await dependencies.runs.getEvidenceBinding(
-        claimedRun.workspaceId,
-        claimedRun.id,
-      );
-      const expectedEvents = [...analysisEvents].sort((left, right) =>
-        compareUtf8(left.id, right.id)
-      );
-      if (
-        binding === null
-        || binding.evidenceMode !== "live"
-        || binding.contextFingerprint
-          !== claimedRun.evidenceContext.contextFingerprint
-        || binding.eventCount !== expectedEvents.length
-        || binding.events.some((event, index) =>
-          canonicalEvidenceJson(event)
-            !== canonicalEvidenceJson(expectedEvents[index])
-        )
-      ) {
-        throw new Error(
-          "The current run evidence binding did not reload as the exact sealed event set.",
-        );
-      }
-      evidenceBindingFingerprint = binding.bindingFingerprint;
+    if (claimedRun.evidenceContext.state !== "current") {
+      throw new Error("Legacy-unbound runs cannot execute Worker analysis.");
     }
+    await updateStage("market_scan", "running");
+    const evidenceRuntime: ResolvedRunEvidenceRuntime =
+      claimedRun.evidenceContext.evidenceMode === "pinned"
+        ? await resolvePinnedEvidenceRuntime(claimedRun, dependencies.runs)
+        : await resolveLiveEvidenceRuntime({
+            claimedRun,
+            context: claimedRun.evidenceContext,
+            dependencies,
+            portfolioTexts,
+            retrievedAt: now(),
+          });
+    const analysisEvents = evidenceRuntime.events;
+    evidenceBindingFingerprint = evidenceRuntime.bindingFingerprint;
+    const marketSelection = evidenceRuntime.selection;
+    const market: MarketScanResult = evidenceRuntime.providerResult ?? {
+      status: "completed",
+      window: {
+        from: evidenceRuntime.context.windowStartAt,
+        to: evidenceRuntime.context.windowEndAt,
+        days: 14,
+      },
+      events: analysisEvents,
+      providers: [],
+    };
     const marketWarnings: string[] = [];
-    if (market.status !== "completed") {
+    if (evidenceRuntime.evidenceMode === "live" && market.status !== "completed") {
       const warning = market.status === "failed"
         ? "All configured market providers failed; the report contains no fresh market evidence."
         : "Some market providers failed; the report is based on the successful sources only.";
@@ -387,6 +371,14 @@ export async function processClaimedRun(
     try {
       groundedMatches = await createMatchingService(dependencies.reasoner)
         .analyze({
+          evidenceScope: {
+            schemaVersion: "matching-evidence-scope-v1",
+            evidenceMode: evidenceRuntime.evidenceMode,
+            contextFingerprint: evidenceRuntime.contextFingerprint as `sha256:${string}`,
+            eventSetFingerprint: evidenceRuntime.eventSetFingerprint as `sha256:${string}`,
+            bindingFingerprint: evidenceRuntime.bindingFingerprint as `sha256:${string}`,
+            snapshotFingerprint: evidenceRuntime.snapshotFingerprint as `sha256:${string}` | null,
+          },
           deals,
           events: analysisEvents,
           memoryContexts,
@@ -421,9 +413,12 @@ export async function processClaimedRun(
       workspaceId: claimedRun.workspaceId,
       runId: claimedRun.id,
       createdAt,
-      marketSummary: buildMarketSummary(market, marketSelection),
+      marketSummary: evidenceRuntime.evidenceMode === "pinned"
+        ? `${evidenceRuntime.binding.displayLabel}. Historical evidence snapshot—not current news. The immutable replay contains ${analysisEvents.length} source-backed market ${analysisEvents.length === 1 ? "event" : "events"}.`
+        : buildMarketSummary(market, marketSelection),
       opportunities,
       evidenceBindingFingerprint,
+      evidenceContext: reportEvidenceContextFromBinding(evidenceRuntime.binding),
       analysisStatus:
         counts.analysisUnavailable > 0
           || structuredImageFallbackDealIds.size > 0
@@ -449,7 +444,16 @@ export async function processClaimedRun(
       eligibleSnapshotFingerprint,
       companyAnalyses,
     };
-    const storedReport = await dependencies.intelligence.saveReport(report);
+    await dependencies.intelligence.saveReport(report);
+    const storedReport = requireExactReloadedReport({
+      run: claimedRun,
+      binding: evidenceRuntime.binding,
+      report: await dependencies.intelligence.getReport(
+        claimedRun.workspaceId,
+        report.id,
+      ),
+      expectedAnalyses: companyAnalyses,
+    });
     await updateStage("report", "completed");
     await updateStage("underwriting", "running");
     try {
@@ -459,6 +463,14 @@ export async function processClaimedRun(
         analyses: companyAnalyses,
         eligibleDeals,
         forceRefresh: false,
+        evidenceFrame: {
+          schemaVersion: "underwriting-evidence-frame-v1",
+          evidenceMode: evidenceRuntime.evidenceMode,
+          contextFingerprint: evidenceRuntime.contextFingerprint,
+          eventSetFingerprint: evidenceRuntime.eventSetFingerprint,
+          bindingFingerprint: evidenceRuntime.bindingFingerprint,
+          snapshotFingerprint: evidenceRuntime.snapshotFingerprint,
+        },
       });
       await updateStage("underwriting", "completed");
     } catch {
@@ -497,6 +509,189 @@ export async function processClaimedRun(
     });
     throw error;
   }
+}
+
+async function resolvePinnedEvidenceRuntime(
+  claimedRun: RunRecord,
+  runs: RunsRepository,
+): Promise<ResolvedRunEvidenceRuntime> {
+  if (
+    claimedRun.evidenceContext.state !== "current"
+    || claimedRun.evidenceContext.evidenceMode !== "pinned"
+  ) throw new Error("Pinned evidence resolution requires a pinned current run.");
+  await runs.bindPinnedMarketEvents(claimedRun.workspaceId, claimedRun.id);
+  const binding = requireExactReloadedBinding({
+    run: claimedRun,
+    context: claimedRun.evidenceContext,
+    binding: await runs.getEvidenceBinding(
+      claimedRun.workspaceId,
+      claimedRun.id,
+    ),
+  });
+  return {
+    evidenceMode: "pinned",
+    context: claimedRun.evidenceContext,
+    binding,
+    events: binding.events,
+    selection: {
+      events: binding.events,
+      totalCount: binding.events.length,
+      eligibleCount: binding.events.length,
+      ineligibleCount: 0,
+      droppedCount: 0,
+    },
+    contextFingerprint: binding.contextFingerprint,
+    eventSetFingerprint: binding.eventSetFingerprint,
+    bindingFingerprint: binding.bindingFingerprint,
+    snapshotId: binding.snapshotId,
+    snapshotFingerprint: binding.snapshotFingerprint,
+    providerResult: null,
+  };
+}
+
+async function resolveLiveEvidenceRuntime(input: {
+  claimedRun: RunRecord;
+  context: CurrentRunEvidenceContextV1;
+  dependencies: ProcessRunDependencies;
+  portfolioTexts: ReadonlyMap<string, readonly string[]>;
+  retrievedAt: Date;
+}): Promise<ResolvedRunEvidenceRuntime> {
+  if (input.context.evidenceMode !== "live") {
+    throw new Error("Live evidence resolution requires a live current run.");
+  }
+  const scanned = await input.dependencies.market.scanMarketWindow({
+    days: 14,
+    now: new Date(input.context.anchorAt),
+    retrievedAt: input.retrievedAt,
+  });
+  const classified = scanned.events.map((event) =>
+    classifyMarketEventForAnalysis(event) ?? event
+  );
+  const persisted = await input.dependencies.intelligence.saveMarketEvents(
+    classified,
+    input.claimedRun.workspaceId,
+  );
+  const selected = selectMarketEventsForAnalysis(
+    persisted,
+    undefined,
+    input.portfolioTexts,
+  );
+  await input.dependencies.runs.bindLiveMarketEvents(
+    input.claimedRun.workspaceId,
+    input.claimedRun.id,
+    selected.events,
+  );
+  const binding = requireExactReloadedBinding({
+    run: input.claimedRun,
+    context: input.context,
+    binding: await input.dependencies.runs.getEvidenceBinding(
+      input.claimedRun.workspaceId,
+      input.claimedRun.id,
+    ),
+    expectedEvents: selected.events,
+  });
+  return {
+    evidenceMode: "live",
+    context: input.context,
+    binding,
+    events: binding.events,
+    selection: { ...selected, events: binding.events },
+    contextFingerprint: binding.contextFingerprint,
+    eventSetFingerprint: binding.eventSetFingerprint,
+    bindingFingerprint: binding.bindingFingerprint,
+    snapshotId: null,
+    snapshotFingerprint: null,
+    providerResult: { ...scanned, events: persisted },
+  };
+}
+
+function requireExactReloadedBinding(input: {
+  run: RunRecord;
+  context: CurrentRunEvidenceContextV1;
+  binding: RunEvidenceBindingV1 | null;
+  expectedEvents?: readonly RunEvidenceBindingV1["events"][number][];
+}): RunEvidenceBindingV1 {
+  const binding = input.binding;
+  const context = input.context;
+  if (
+    binding === null
+    || binding.workspaceId !== input.run.workspaceId
+    || binding.runId !== input.run.id
+    || binding.evidenceMode !== context.evidenceMode
+    || binding.windowDays !== context.windowDays
+    || binding.anchorAt !== context.anchorAt
+    || binding.windowStartAt !== context.windowStartAt
+    || binding.windowEndAt !== context.windowEndAt
+    || binding.windowTimezone !== context.windowTimezone
+    || binding.snapshotId !== context.snapshotId
+    || binding.snapshotFingerprint !== context.snapshotFingerprint
+    || binding.contextFingerprint !== context.contextFingerprint
+    || binding.eventCount !== binding.events.length
+  ) throw new Error("The current run evidence binding did not reload with exact authority.");
+  const events = [...binding.events].sort((left, right) =>
+    compareUtf8(left.id, right.id)
+  );
+  const eventSetFingerprint = lengthFramedFingerprint([
+    "run-event-set-v1",
+    ...events.map(canonicalEvidenceJson),
+  ]);
+  const bindingFingerprint = lengthFramedFingerprint([
+    "run-evidence-binding-v1",
+    input.run.workspaceId,
+    input.run.id,
+    context.contextFingerprint,
+    eventSetFingerprint,
+    String(events.length),
+  ]);
+  if (
+    binding.eventSetFingerprint !== eventSetFingerprint
+    || binding.bindingFingerprint !== bindingFingerprint
+  ) throw new Error("The current run evidence binding fingerprint is stale.");
+  if (input.expectedEvents) {
+    const expected = [...input.expectedEvents].sort((left, right) =>
+      compareUtf8(left.id, right.id)
+    );
+    if (
+      expected.length !== events.length
+      || events.some((event, index) =>
+        canonicalEvidenceJson(event) !== canonicalEvidenceJson(expected[index])
+      )
+    ) throw new Error("The reloaded run binding changed its canonical event payloads.");
+  }
+  return binding;
+}
+
+function lengthFramedFingerprint(frames: readonly string[]): string {
+  const hash = createHash("sha256");
+  for (const frame of frames) {
+    const bytes = Buffer.from(frame, "utf8");
+    hash.update(`${bytes.length}:`);
+    hash.update(bytes);
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function requireExactReloadedReport(input: {
+  run: RunRecord;
+  binding: RunEvidenceBindingV1;
+  report: IntelligenceReportRecord | null;
+  expectedAnalyses: IntelligenceReportRecord["companyAnalyses"];
+}): IntelligenceReportRecord {
+  const report = input.report;
+  const context = report?.evidenceContext;
+  if (
+    report === null
+    || report.workspaceId !== input.run.workspaceId
+    || report.runId !== input.run.id
+    || context?.state !== "current"
+    || context.contextFingerprint !== input.binding.contextFingerprint
+    || context.eventSetFingerprint !== input.binding.eventSetFingerprint
+    || context.bindingFingerprint !== input.binding.bindingFingerprint
+    || context.snapshotFingerprint !== input.binding.snapshotFingerprint
+    || canonicalEvidenceJson(report.companyAnalyses)
+      !== canonicalEvidenceJson(input.expectedAnalyses)
+  ) throw new Error("The saved report did not reload with its exact run evidence binding.");
+  return report;
 }
 
 function isCanonicalImageOnlyBundle(bundle: DealMemoryBundle): boolean {

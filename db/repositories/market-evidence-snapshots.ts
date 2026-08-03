@@ -162,3 +162,15 @@ export function createSupabaseMarketEvidenceSnapshotsRepository(options: {
     },
   };
 }
+
+let singleton: MarketEvidenceSnapshotsRepository | undefined;
+
+export function getMarketEvidenceSnapshotsRepository(): MarketEvidenceSnapshotsRepository {
+  if (singleton) return singleton;
+  const url = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  singleton = url && serviceRoleKey
+    ? createSupabaseMarketEvidenceSnapshotsRepository({ url, serviceRoleKey })
+    : createMemoryMarketEvidenceSnapshotsRepository();
+  return singleton;
+}
