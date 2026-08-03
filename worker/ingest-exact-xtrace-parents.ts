@@ -48,6 +48,13 @@ export async function runExactXTraceIngestStage(input: {
     };
     try {
       let ingest = await input.service.ingestExactParent(parent);
+      if (ingest.state === "submitting" && !ingest.providerJobId) {
+        throw codedError("XTRACE_EXACT_INGEST_BLOCKED");
+      }
+      if (
+        (ingest.state === "submitted" || ingest.state === "running")
+        && !ingest.providerJobId
+      ) throw codedError("XTRACE_EXACT_INGEST_BLOCKED");
       if (
         (ingest.state === "submitted" || ingest.state === "running")
         && ingest.providerJobId
@@ -56,6 +63,13 @@ export async function runExactXTraceIngestStage(input: {
           intentId: ingest.intentId,
           providerJobId: ingest.providerJobId,
         });
+      }
+      if (ingest.state !== "succeeded") {
+        throw codedError(
+          ingest.state === "submission_unknown"
+            ? "XTRACE_SUBMISSION_UNKNOWN"
+            : "XTRACE_EXACT_INGEST_FAILED",
+        );
       }
       results.push({
         ...identity,
@@ -71,6 +85,10 @@ export async function runExactXTraceIngestStage(input: {
     }
   }
   return { workspaceId, parentCount: parents.length, results };
+}
+
+function codedError(code: string): Error & { code: string } {
+  return Object.assign(new Error(code), { code });
 }
 
 function safeFailureCode(error: unknown): string {

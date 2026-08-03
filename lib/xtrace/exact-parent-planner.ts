@@ -77,25 +77,36 @@ export function createExactParentPlanner(dependencies: {
             `An XTrace parent has unresolved or inconsistent source lineage: ${ownership.dealId}/${ownership.sourceRevisionId}.`,
           );
         }
-        assertExactBundle(exact);
-        const parentKind = classifyParent(exact);
-        const payload = canonicalEvidenceJson(exact.bundle);
-        if (Buffer.byteLength(payload, "utf8") > 128_000) {
-          throw new Error("An XTrace parent retrieval payload exceeds its bounded contract.");
-        }
-        units.push({
-          ...structuredClone(exact),
-          parentKind,
-          parentFingerprint: revision.contentHash.startsWith("sha256:")
-            ? revision.contentHash
-            : `sha256:${revision.contentHash}`,
-          payloadFingerprint: `sha256:${createHash("sha256")
-            .update(lengthFrame(["xtrace-parent-payload-v2", payload]), "utf8")
-            .digest("hex")}`,
-        });
+        units.push(createExactXTraceParentUnit(exact, revision));
       }
       return units;
     },
+  };
+}
+
+export function createExactXTraceParentUnit(
+  exact: ExactSourceMemoryBundle,
+  revision: { workspaceId: string; sourceId: string; contentHash: string },
+): ExactXTraceParentUnit {
+  if (
+    revision.workspaceId !== exact.workspaceId
+    || revision.sourceId !== exact.sourceId
+    || !/^(?:sha256:)?[0-9a-f]{64}$/.test(revision.contentHash)
+  ) throw new Error("An XTrace parent has inconsistent source revision authority.");
+  assertExactBundle(exact);
+  const payload = canonicalEvidenceJson(exact.bundle);
+  if (Buffer.byteLength(payload, "utf8") > 128_000) {
+    throw new Error("An XTrace parent retrieval payload exceeds its bounded contract.");
+  }
+  return {
+    ...structuredClone(exact),
+    parentKind: classifyParent(exact),
+    parentFingerprint: revision.contentHash.startsWith("sha256:")
+      ? revision.contentHash
+      : `sha256:${revision.contentHash}`,
+    payloadFingerprint: `sha256:${createHash("sha256")
+      .update(lengthFrame(["xtrace-parent-payload-v2", payload]), "utf8")
+      .digest("hex")}`,
   };
 }
 

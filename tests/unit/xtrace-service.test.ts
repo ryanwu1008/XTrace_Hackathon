@@ -1087,6 +1087,85 @@ test("concurrent exact-parent reserves permit exactly one provider POST", async 
   assert.equal(results.filter((result) => result.state === "submitted").length, 2);
 });
 
+test("an expired submitter lease becomes submission_unknown and cannot attach", async () => {
+  let now = Date.parse("2026-08-03T00:00:00.000Z");
+  const lineage = createMemoryXTraceLineageRepository({
+    now: () => now,
+  } as never);
+  const first = await lineage.reserveExactIntent({
+    parent: exactParent,
+    serializerVersion: "xtrace-parent-v2",
+  });
+  assert.equal(first.action, "submit");
+  now += 5 * 60_000 + 1;
+
+  const expired = await lineage.reserveExactIntent({
+    parent: exactParent,
+    serializerVersion: "xtrace-parent-v2",
+  });
+  assert.equal(expired.action, "blocked");
+  assert.equal(expired.intent.state, "submission_unknown");
+  await assert.rejects(lineage.attachExactJob({
+    intentId: first.intent.intentId,
+    leaseToken: first.intent.leaseToken!,
+    providerJobId: "late_job",
+  }), /lease is not active/i);
+});
+
+test("waiting for another exact submitter is bounded", async () => {
+  const lineage = createMemoryXTraceLineageRepository({
+    waitTimeoutMs: 5,
+  } as never);
+  const first = await lineage.reserveExactIntent({
+    parent: exactParent,
+    serializerVersion: "xtrace-parent-v2",
+  });
+  const outcome = await Promise.race([
+    lineage.waitForExactIntent(first.intent.intentId).then(
+      () => "resolved",
+      () => "rejected",
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("still_pending"), 25)),
+  ]);
+  assert.equal(outcome, "rejected");
+});
+
+test("Supabase exact-intent waiting polls a bounded number of times", async () => {
+  let requests = 0;
+  const repository = createSupabaseXTraceLineageRepository({
+    url: "https://example.invalid",
+    serviceRoleKey: "test-key",
+    waitAttempts: 3,
+    sleep: async () => undefined,
+    fetchImpl: async () => {
+      requests += 1;
+      return new Response(JSON.stringify([{
+        intent_id: "intent_wait",
+        workspace_id: "workspace_demo",
+        deal_id: "deal_1",
+        parent_kind: "legacy_source_revision",
+        source_id: "source_1",
+        source_revision_id: "revision_1",
+        parent_fingerprint: `sha256:${"a".repeat(64)}`,
+        payload_fingerprint: `sha256:${"b".repeat(64)}`,
+        serializer_version: "xtrace-parent-v2",
+        state: "submitting",
+        state_history: ["reserved", "submitting"],
+        lease_token: "lease_1",
+        lease_expires_at: "2026-08-03T00:05:00.000Z",
+        provider_job_id: null,
+        memory_ids: [],
+      }]), { status: 200 });
+    },
+  });
+
+  await assert.rejects(
+    repository.waitForExactIntent("intent_wait"),
+    /wait timed out/i,
+  );
+  assert.equal(requests, 3);
+});
+
 test("an ambiguous exact-parent POST becomes submission_unknown and is never resent", async () => {
   let posts = 0;
   const lineage = createMemoryXTraceLineageRepository();

@@ -13,11 +13,7 @@ import {
   createDefaultDemoDataStore,
   createDefaultPrivateDocumentAccess,
 } from "../../../../lib/storage/service";
-import {
-  getXTraceClient,
-  isXTraceConfigured,
-} from "../../../../lib/xtrace/client";
-import { createXTraceService } from "../../../../lib/xtrace/service";
+import { isXTraceConfigured } from "../../../../lib/xtrace/client";
 
 const ConfirmRequestSchema = z.object({
   documentIds: z.array(z.string().min(1)).min(1),
@@ -87,25 +83,12 @@ export async function POST(
       workspaceId: context.workspaceId,
     });
     const xtraceConfigured = isXTraceConfigured();
-    const xtraceResults = xtraceConfigured
-      ? await Promise.allSettled(result.memoryBundles.map((bundle) =>
-          createXTraceService(getXTraceClient({
-            stage: "explicit_ingest",
-            allowLive: true,
-          }), {
-            workspaceId: context.workspaceId,
-          }).ingestDealMemory(bundle)
-        ))
-      : [];
-    const xtraceJobs = xtraceResults.flatMap((item) =>
-      item.status === "fulfilled" ? [item.value] : []
-    );
-    const xtraceErrors = toPublicXTraceErrors(xtraceResults);
     return jsonOk({
       ...result,
       xtraceConfigured,
-      xtraceJobs,
-      xtraceErrors,
+      xtraceExactIngestPrepared: xtraceConfigured,
+      xtraceJobs: [],
+      xtraceErrors: [],
     });
   } catch (error) {
     return errorResponse(error);

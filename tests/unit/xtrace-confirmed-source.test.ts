@@ -165,7 +165,9 @@ test("a newer revision of the same source cannot ingest under an older revision 
         memoryIds: ["memory_wrong_revision"],
       };
     },
-    complete: (input) => uploads.completeConfirmed(input),
+    complete: (
+      input: Parameters<typeof uploads.completeConfirmed>[0],
+    ) => uploads.completeConfirmed(input),
     fail: (input) => uploads.failConfirmed(input),
   }), /revision/i);
   assert.equal(ingestCalls, 0);
@@ -237,6 +239,85 @@ test("only a confirmed claim reaches XTrace and success is lease-token guarded",
     workspaceId: "workspace_1",
     id: "upload_1",
   }))?.status, "ready");
+});
+
+test("normal confirmed-source processing writes v2 exact links and never calls legacy ingest", async () => {
+  const uploads = createMemoryUploadedDocumentsRepository();
+  await uploads.create({
+    id: "upload_v2",
+    workspaceId: "workspace_1",
+    filename: "acme.txt",
+    contentType: "text/plain",
+    byteSize: 23,
+    checksum: "hash-v2",
+    objectKey: "private/acme-v2.txt",
+  });
+  await stageConfirmed(uploads, {
+    id: "upload_v2",
+    dealId: "deal_1",
+    sourceId: "source_upload_1",
+    sourceRevisionId: "revision_upload_1",
+  });
+  const claimed = await uploads.claimNextConfirmed("worker-v2");
+  assert.ok(claimed);
+  const exact = {
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    sourceId: "source_upload_1",
+    sourceRevisionId: "revision_upload_1",
+    parentKind: "legacy_source_revision" as const,
+    parentFingerprint: `sha256:${"a".repeat(64)}`,
+    payloadFingerprint: `sha256:${"b".repeat(64)}`,
+    bundle: {
+      dealId: "deal_1",
+      companyName: "Acme",
+      status: "evaluating" as const,
+      facts: [{
+        text: "Acme has ten customers.",
+        sources: [{
+          id: "evidence_upload_1_0",
+          documentId: "source_upload_1",
+          sourceRevisionId: "revision_upload_1",
+          provenance: "source_document" as const,
+          title: "acme.txt",
+          excerpt: "Acme has ten customers.",
+        }],
+      }],
+      interactions: [],
+    },
+  };
+  let exactCalls = 0;
+  let legacyCalls = 0;
+  const result = await processConfirmedSource(claimed, {
+    loadBundle: async () => exact,
+    loadExactParent: async () => exact,
+    ingestExactParent: async () => {
+      exactCalls += 1;
+      return {
+        intentId: "intent_v2",
+        state: "succeeded" as const,
+        providerJobId: "job_v2",
+        memoryIds: ["memory_v2"],
+        reused: false,
+      };
+    },
+    ingest: async () => {
+      legacyCalls += 1;
+      return {
+        dealId: "deal_1",
+        jobId: "legacy_job",
+        status: "succeeded" as const,
+        memoryIds: ["legacy_memory"],
+      };
+    },
+    complete: (
+      input: Parameters<typeof uploads.completeConfirmed>[0],
+    ) => uploads.completeConfirmed(input),
+  } as never);
+
+  assert.equal(result.kind, "xtrace_ingested");
+  assert.equal(exactCalls, 1);
+  assert.equal(legacyCalls, 0);
 });
 
 test("confirmed image evidence becomes ready without inventing XTrace memory", async () => {

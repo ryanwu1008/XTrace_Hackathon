@@ -17,6 +17,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
     "worker": "tsx worker/runner.ts",
+    "xtrace:ingest": "tsx worker/run-exact-xtrace-ingest.ts",
     "worker:health": "node --import tsx worker/health.ts",
     "db:generate": "drizzle-kit generate",
     "db:seed": "node --import tsx scripts/seed-demo.ts",

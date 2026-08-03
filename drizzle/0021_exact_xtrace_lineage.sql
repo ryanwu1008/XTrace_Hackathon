@@ -160,6 +160,7 @@ as $$
     'state', p_intent.state,
     'stateHistory', p_intent.state_history,
     'leaseToken', p_intent.lease_token,
+    'leaseExpiresAt', p_intent.lease_expires_at,
     'providerJobId', p_intent.provider_job_id,
     'memoryIds', p_intent.memory_ids
   )
@@ -244,6 +245,17 @@ begin
   if target.payload_fingerprint <> p_intent ->> 'payloadFingerprint' then
     raise exception 'Exact parent identity already has a different immutable payload';
   end if;
+  if not created and target.state = 'submitting'
+     and target.lease_expires_at <= clock_timestamp() then
+    update public.xtrace_ingest_intents_v2 set
+      state = 'submission_unknown',
+      state_history = state_history || '"submission_unknown"'::jsonb,
+      lease_token = null,
+      lease_expires_at = null,
+      updated_at = clock_timestamp()
+    where workspace_id = target.workspace_id and intent_id = target.intent_id
+    returning * into target;
+  end if;
   action := case
     when created then 'submit'
     when target.state = 'succeeded' then 'reuse'
@@ -276,7 +288,8 @@ begin
   end if;
   select * into strict target from public.xtrace_ingest_intents_v2
   where intent_id = p_intent_id for update;
-  if target.state <> 'submitting' or target.lease_token <> p_lease_token then
+  if target.state <> 'submitting' or target.lease_token <> p_lease_token
+     or target.lease_expires_at <= clock_timestamp() then
     raise exception 'Exact XTrace submitter lease is not active';
   end if;
   if exists (
@@ -315,7 +328,8 @@ declare target public.xtrace_ingest_intents_v2%rowtype;
 begin
   select * into strict target from public.xtrace_ingest_intents_v2
   where intent_id = p_intent_id for update;
-  if target.state <> 'submitting' or target.lease_token <> p_lease_token then
+  if target.state <> 'submitting' or target.lease_token <> p_lease_token
+     or target.lease_expires_at <= clock_timestamp() then
     raise exception 'Exact XTrace submitter lease is not active';
   end if;
   update public.xtrace_ingest_intents_v2 set
@@ -443,6 +457,11 @@ as $$
    and (case when revision.content_hash like 'sha256:%'
      then revision.content_hash else 'sha256:' || revision.content_hash end)
        = link.parent_fingerprint
+  join public.deals deal
+    on deal.workspace_id = link.workspace_id
+   and deal.id = link.deal_id
+   and deal.analysis_eligible_at is not null
+   and deal.active_source_revision_fingerprint = p_active_parent_fingerprint
   where link.workspace_id = p_workspace_id
     and link.memory_id = p_memory_id
     and link.deal_id = p_deal_id
@@ -457,7 +476,9 @@ language plpgsql
 security definer
 set search_path = pg_catalog, public
 as $$
-declare v_audit_id text;
+declare
+  v_audit_id text;
+  authorized boolean;
 begin
   if jsonb_typeof(p_audit) <> 'object'
      or coalesce(p_audit ->> 'evidenceContextFingerprint', '') !~ '^sha256:[0-9a-f]{64}$'
@@ -467,22 +488,46 @@ begin
     raise exception 'Invalid exact XTrace recall audit';
   end if;
   v_audit_id := 'xtrace_audit_' || encode(digest(p_audit::text, 'sha256'), 'hex');
-  insert into public.xtrace_recall_audits_v2(
-    audit_id, workspace_id, run_id, deal_id, evidence_context_fingerprint,
-    active_parent_fingerprint, query_fingerprint, memory_ids
-  ) values (
-    v_audit_id, p_audit ->> 'workspaceId', (p_audit ->> 'runId')::uuid,
-    p_audit ->> 'dealId', p_audit ->> 'evidenceContextFingerprint',
-    p_audit ->> 'activeParentFingerprint', p_audit ->> 'queryFingerprint',
-    p_audit -> 'memoryIds'
-  ) on conflict (audit_id) do nothing;
+  with authority as materialized (
+    select 1
+    from public.scan_runs run
+    join public.deals deal
+      on deal.workspace_id = run.workspace_id
+     and deal.id = p_audit ->> 'dealId'
+    where run.workspace_id = p_audit ->> 'workspaceId'
+      and run.id = (p_audit ->> 'runId')::uuid
+      and run.evidence_context_version = 'run-evidence-context-v1'
+      and run.evidence_mode in ('live', 'pinned')
+      and run.evidence_context_fingerprint = p_audit ->> 'evidenceContextFingerprint'
+      and deal.analysis_eligible_at is not null
+      and deal.active_source_revision_fingerprint = p_audit ->> 'activeParentFingerprint'
+  ), inserted as (
+    insert into public.xtrace_recall_audits_v2(
+      audit_id, workspace_id, run_id, deal_id, evidence_context_fingerprint,
+      active_parent_fingerprint, query_fingerprint, memory_ids
+    )
+    select
+      v_audit_id, p_audit ->> 'workspaceId', (p_audit ->> 'runId')::uuid,
+      p_audit ->> 'dealId', p_audit ->> 'evidenceContextFingerprint',
+      p_audit ->> 'activeParentFingerprint', p_audit ->> 'queryFingerprint',
+      p_audit -> 'memoryIds'
+    from authority
+    on conflict (audit_id) do nothing
+    returning 1
+  )
+  select exists(select 1 from authority) into authorized;
+  if not authorized then
+    raise exception 'Exact XTrace recall audit authority drifted';
+  end if;
 end;
 $$;
 alter function public.record_xtrace_recall_audit_v2(jsonb)
   owner to vsee_xtrace_owner;
 
-grant select on public.deals, public.source_documents, public.source_revisions,
+grant select on public.scan_runs, public.deals, public.source_documents, public.source_revisions,
   public.deal_source_assignments to vsee_xtrace_owner;
+create policy scan_runs_xtrace_owner_select on public.scan_runs
+  for select to vsee_xtrace_owner using (true);
 create policy deals_xtrace_owner_select on public.deals
   for select to vsee_xtrace_owner using (true);
 create policy source_documents_xtrace_owner_select on public.source_documents

@@ -681,7 +681,7 @@ export default function Home() {
         }),
       });
       setNotice(result.xtraceConfigured
-        ? `${selectedDocuments.length} sources confirmed; ${result.xtraceJobs.length} Deal memories submitted to XTrace${result.xtraceErrors.length ? ` with ${result.xtraceErrors.length} warning(s)` : ""}.`
+        ? `${selectedDocuments.length} sources confirmed; exact-parent XTrace ingestion is prepared for the explicit worker command.`
         : `${selectedDocuments.length} sources confirmed. XTrace ingestion was skipped because the integration is not configured; structured mode remains available.`);
       await load();
       setImportPreview(null);

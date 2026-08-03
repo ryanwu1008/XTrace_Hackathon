@@ -10,10 +10,15 @@
 - Preserves one Market analysis slot for every relevant Deal up to the hard cap of 25; the 23-Deal fixture is not truncated to 20.
 - Adds local migration `0021_exact_xtrace_lineage.sql`; the production migration launcher remains authorized only through `0019`.
 - Live XTrace construction now requires an explicit live authorization stage; ordinary and dry-run paths fail closed.
+- Exposes the accepted-fixture runtime boundary as `npm run xtrace:ingest -- <workspace-id>`, which composes the authoritative planner and v2 service. Confirmed uploads use the same exact-parent v2 path; corpus confirmation no longer auto-submits whole-bundle v1 jobs.
+- Reconciles an expired submitter lease atomically to terminal `submission_unknown`. Memory and Supabase waiters are bounded, late attach/unknown writes require the matching unexpired lease, and a jobless submitting stage is reported as blocked.
+- Compares recall authority atomically in PostgreSQL: resolution joins the Deal's current active-parent fingerprint, while audit insertion and run/Deal fingerprint validation share one statement snapshot.
 
 ## TDD evidence
 
 The initial contract tests failed for the old behavior: process-run polled ingest jobs, Market selected 20 of 23, three transient Deal failures produced 26 calls, malformed provider envelopes were accepted, Supabase recovered by conversation ID, and cache reuse ignored changed parent/context fingerprints. Each was made green by the implementation above.
+
+The review follow-up tests also failed against the prior checkpoint: the confirmed path called v1 instead of v2, a jobless `submitting` intent was reported as recorded, expired reservations remained waiting, memory waiters remained pending, and PostgreSQL accepted stale run/Deal fingerprints. The follow-up implementation makes each contract fail closed.
 
 ## Verification
 
@@ -25,6 +30,12 @@ The initial contract tests failed for the old behavior: process-run polled inges
 - Fresh PostgreSQL 17 local migration group through `0021`: 15/15 pass, exit 0; the direct `0021` static and database cases are 2/2 pass.
 - Production-baseline regression on the same reused temporary cluster: 40 pass, 1 fail, 3 skip. The sole failure is pre-existing test-state contamination: a prior migration fixture left global role `anon` as `NOINHERIT`, while that legacy test assumes `INHERIT`. All launcher, catalog, drift, and lock cases passed; no production launcher code was changed.
 - `git diff --check`: exit 0.
+
+Review follow-up verification:
+
+- Runtime, confirmed-source, lease, planner, and XTrace focused group: 62/62 pass, exit 0.
+- Fresh PostgreSQL 17 direct `0021` test, including stale fingerprints and expired lease reconciliation: 2/2 pass, exit 0 (5.22 s).
+- `npm run typecheck`: exit 0.
 
 ## Safety notes
 

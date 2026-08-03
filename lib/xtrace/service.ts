@@ -140,6 +140,15 @@ export class XTraceLineageError extends XTraceUnavailableError {
   }
 }
 
+export class XTraceExactIngestBlockedError extends XTraceUnavailableError {
+  readonly code = "XTRACE_EXACT_INGEST_BLOCKED";
+
+  constructor() {
+    super(false, "Exact XTrace ingest requires operator reconciliation");
+    this.name = "XTraceExactIngestBlockedError";
+  }
+}
+
 const sharedLimiter = createXTraceRateLimiter(Date.now, defaultSleep);
 let persistentLimiter: XTraceRateLimiter | undefined;
 
@@ -177,10 +186,13 @@ export function createXTraceService(
         serializerVersion: "xtrace-parent-v2",
       });
       if (reservation.action === "wait") {
-        return exactIngestResult(
-          await lineage.waitForExactIntent(reservation.intent.intentId),
-          true,
+        const observed = await lineage.waitForExactIntent(
+          reservation.intent.intentId,
         );
+        if (observed.state === "submitting") {
+          throw new XTraceExactIngestBlockedError();
+        }
+        return exactIngestResult(observed, true);
       }
       if (reservation.action === "reuse" || reservation.action === "blocked") {
         return exactIngestResult(reservation.intent, true);

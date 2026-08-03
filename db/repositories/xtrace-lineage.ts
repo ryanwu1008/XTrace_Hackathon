@@ -56,6 +56,7 @@ export interface XTraceIngestIntentV2 {
   state: XTraceIngestStateV2;
   stateHistory: XTraceIngestStateV2[];
   leaseToken: string | null;
+  leaseExpiresAt: string | null;
   providerJobId: string | null;
   memoryIds: string[];
 }
@@ -138,7 +139,11 @@ export function createMemoryXTraceLineageRepository(options: {
     activeParentSetFingerprint: string;
   }) => boolean | Promise<boolean>;
   persistRecallAudit?: (input: XTraceRecallAuditV2) => void | Promise<void>;
+  now?: () => number;
+  waitTimeoutMs?: number;
 } = {}): XTraceLineageRepository {
+  const now = options.now ?? Date.now;
+  const waitTimeoutMs = options.waitTimeoutMs ?? 5_000;
   const jobs = new Map<string, XTraceIngestLineage>();
   const memories = new Map<string, XTraceMemoryLineage>();
   const exactIntents = new Map<string, XTraceIngestIntentV2>();
@@ -227,6 +232,17 @@ export function createMemoryXTraceLineageRepository(options: {
         if (existing.payloadFingerprint !== parent.payloadFingerprint) {
           throw new Error("The exact parent identity already has a different immutable payload.");
         }
+        if (
+          existing.state === "submitting"
+          && existing.leaseExpiresAt !== null
+          && Date.parse(existing.leaseExpiresAt) <= now()
+        ) {
+          existing.state = "submission_unknown";
+          existing.stateHistory.push("submission_unknown");
+          existing.leaseToken = null;
+          existing.leaseExpiresAt = null;
+          notify(existing);
+        }
         return {
           action: existing.state === "succeeded"
             ? "reuse"
@@ -250,6 +266,7 @@ export function createMemoryXTraceLineageRepository(options: {
         state: "submitting",
         stateHistory: ["reserved", "submitting"],
         leaseToken: randomUUID(),
+        leaseExpiresAt: new Date(now() + 5 * 60_000).toISOString(),
         providerJobId: null,
         memoryIds: [],
       };
@@ -261,15 +278,32 @@ export function createMemoryXTraceLineageRepository(options: {
       const current = exactIntents.get(intentId);
       if (!current) throw new Error("The exact XTrace intent does not exist.");
       if (current.state !== "submitting") return structuredClone(current);
-      return new Promise<XTraceIngestIntentV2>((resolve) => {
+      return new Promise<XTraceIngestIntentV2>((resolve, reject) => {
         const waiters = exactWaiters.get(intentId) ?? [];
-        waiters.push(resolve);
+        const waiter = (intent: XTraceIngestIntentV2) => {
+          clearTimeout(timer);
+          resolve(intent);
+        };
+        waiters.push(waiter);
         exactWaiters.set(intentId, waiters);
+        const timer = setTimeout(() => {
+          const remaining = (exactWaiters.get(intentId) ?? [])
+            .filter((candidate) => candidate !== waiter);
+          if (remaining.length) exactWaiters.set(intentId, remaining);
+          else exactWaiters.delete(intentId);
+          reject(new Error("Exact XTrace intent wait timed out."));
+        }, waitTimeoutMs);
+        timer.unref();
       });
     },
     async attachExactJob(input) {
       const intent = requireExactIntent(exactIntents, input.intentId);
-      if (intent.state !== "submitting" || intent.leaseToken !== input.leaseToken) {
+      if (
+        intent.state !== "submitting"
+        || intent.leaseToken !== input.leaseToken
+        || intent.leaseExpiresAt === null
+        || Date.parse(intent.leaseExpiresAt) <= now()
+      ) {
         throw new Error("The exact XTrace submitter lease is not active.");
       }
       const jobKey = lineageKey(intent.workspaceId, input.providerJobId);
@@ -282,17 +316,24 @@ export function createMemoryXTraceLineageRepository(options: {
       intent.state = "submitted";
       intent.stateHistory.push("submitted");
       intent.leaseToken = null;
+      intent.leaseExpiresAt = null;
       notify(intent);
       return structuredClone(intent);
     },
     async markExactSubmissionUnknown(input) {
       const intent = requireExactIntent(exactIntents, input.intentId);
-      if (intent.state !== "submitting" || intent.leaseToken !== input.leaseToken) {
+      if (
+        intent.state !== "submitting"
+        || intent.leaseToken !== input.leaseToken
+        || intent.leaseExpiresAt === null
+        || Date.parse(intent.leaseExpiresAt) <= now()
+      ) {
         throw new Error("The exact XTrace submitter lease is not active.");
       }
       intent.state = "submission_unknown";
       intent.stateHistory.push("submission_unknown");
       intent.leaseToken = null;
+      intent.leaseExpiresAt = null;
       notify(intent);
       return structuredClone(intent);
     },
@@ -377,9 +418,14 @@ export function createSupabaseXTraceLineageRepository(options: {
   url: string;
   serviceRoleKey: string;
   fetchImpl?: typeof fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+  waitAttempts?: number;
 }): XTraceLineageRepository {
   const base = `${options.url.replace(/\/$/, "")}/rest/v1`;
   const fetchImpl = options.fetchImpl ?? fetch;
+  const sleep = options.sleep ?? ((milliseconds: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const waitAttempts = options.waitAttempts ?? 4;
   const headers = {
     apikey: options.serviceRoleKey,
     authorization: `Bearer ${options.serviceRoleKey}`,
@@ -454,6 +500,9 @@ export function createSupabaseXTraceLineageRepository(options: {
         : [],
       leaseToken: row.lease_token ?? row.leaseToken
         ? String(row.lease_token ?? row.leaseToken)
+        : null,
+      leaseExpiresAt: row.lease_expires_at ?? row.leaseExpiresAt
+        ? String(row.lease_expires_at ?? row.leaseExpiresAt)
         : null,
       providerJobId: row.provider_job_id ?? row.providerJobId
         ? String(row.provider_job_id ?? row.providerJobId)
@@ -596,11 +645,16 @@ export function createSupabaseXTraceLineageRepository(options: {
       };
     },
     async waitForExactIntent(intentId) {
-      const rows = await request(
-        `/xtrace_ingest_intents_v2?intent_id=eq.${encodeURIComponent(intentId)}&limit=1`,
-      ) as Record<string, unknown>[];
-      if (!rows[0]) throw new Error("The exact XTrace intent does not exist.");
-      return toExactIntent(rows[0]);
+      for (let attempt = 0; attempt < waitAttempts; attempt += 1) {
+        const rows = await request(
+          `/xtrace_ingest_intents_v2?intent_id=eq.${encodeURIComponent(intentId)}&limit=1`,
+        ) as Record<string, unknown>[];
+        if (!rows[0]) throw new Error("The exact XTrace intent does not exist.");
+        const intent = toExactIntent(rows[0]);
+        if (intent.state !== "submitting") return intent;
+        if (attempt + 1 < waitAttempts) await sleep(50);
+      }
+      throw new Error("Exact XTrace intent wait timed out.");
     },
     async attachExactJob(input) {
       return exactRpc("attach_xtrace_ingest_job_v2", {

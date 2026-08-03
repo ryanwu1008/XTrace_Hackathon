@@ -58,6 +58,7 @@ import {
   isXTraceConfigured,
 } from "../lib/xtrace/client";
 import { createXTraceService } from "../lib/xtrace/service";
+import { createExactXTraceParentUnit } from "../lib/xtrace/exact-parent-planner";
 import { createDefaultDemoDataStore } from "../lib/storage/service";
 import {
   workerHealthFilePath,
@@ -388,6 +389,7 @@ export async function runNextConfirmedUpload(): Promise<boolean> {
   leaseHeartbeat.unref();
   try {
     const deals = getDealRegistry();
+    const sources = getSourceRegistry();
     const evidencePacks = getEvidencePacksRepository();
     const xtrace = isXTraceConfigured()
       ? createXTraceService(getXTraceClient({
@@ -399,12 +401,24 @@ export async function runNextConfirmedUpload(): Promise<boolean> {
       })
       : null;
     const result = await processConfirmedSource(claimed, {
-      loadBundle: (upload) => deals.getExactSourceBundle({
-        workspaceId: upload.workspaceId,
-        dealId: upload.dealId!,
-        sourceId: upload.sourceId!,
-        sourceRevisionId: upload.sourceRevisionId!,
-      }),
+      loadExactParent: async (upload) => {
+        const identity = {
+          workspaceId: upload.workspaceId,
+          dealId: upload.dealId!,
+          sourceId: upload.sourceId!,
+          sourceRevisionId: upload.sourceRevisionId!,
+        };
+        const [exact, revision] = await Promise.all([
+          deals.getExactSourceBundle(identity),
+          sources.getRevision({
+            workspaceId: upload.workspaceId,
+            revisionId: upload.sourceRevisionId!,
+          }),
+        ]);
+        return exact && revision
+          ? createExactXTraceParentUnit(exact, revision)
+          : null;
+      },
       loadCanonicalEvidence: (upload) =>
         evidencePacks.listSourceEvidence({
           workspaceId: upload.workspaceId,
@@ -413,9 +427,8 @@ export async function runNextConfirmedUpload(): Promise<boolean> {
         }),
       ...(xtrace
         ? {
-          ingest: (bundle, lineage) =>
-            xtrace.ingestDealMemory(bundle, lineage),
-          poll: (jobId, options) => xtrace.pollIngestJob(jobId, options),
+          ingestExactParent: xtrace.ingestExactParent,
+          pollExactIntent: xtrace.pollExactIntent,
         }
         : {}),
       complete: (input) => uploads.completeConfirmed(input),

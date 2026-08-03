@@ -6,6 +6,8 @@ import type {
 import type { ExactSourceMemoryBundle } from "../db/repositories/deal-registry";
 import type { SourceEvidenceInput } from "../db/repositories/evidence-packs";
 import type { PersistedIngest } from "../lib/xtrace/service";
+import type { PersistedExactIngest } from "../lib/xtrace/service";
+import type { ExactXTraceParentUnit } from "../lib/xtrace/exact-parent-planner";
 import { parseSourceRefV2Read } from "../lib/contracts/legacy-evidence-adapter";
 import { sourceTextForRetrieval } from "../lib/contracts/source-evidence";
 import {
@@ -21,7 +23,7 @@ export interface ConfirmedSourceLineage {
 export type ConfirmedSourceProcessingResult =
   | {
     kind: "xtrace_ingested";
-    ingest: PersistedIngest;
+    ingest: PersistedIngest | PersistedExactIngest;
   }
   | {
     kind: "ready_without_xtrace_memory";
@@ -31,9 +33,12 @@ export type ConfirmedSourceProcessingResult =
 export async function processConfirmedSource(
   upload: ClaimedUploadedDocument,
   dependencies: {
-    loadBundle: (
+    loadBundle?: (
       upload: ClaimedUploadedDocument,
     ) => Promise<ExactSourceMemoryBundle | null>;
+    loadExactParent?: (
+      upload: ClaimedUploadedDocument,
+    ) => Promise<ExactXTraceParentUnit | null>;
     loadCanonicalEvidence?: (
       upload: ClaimedUploadedDocument,
     ) => Promise<SourceEvidenceInput[]>;
@@ -45,6 +50,13 @@ export async function processConfirmedSource(
       jobId: string,
       options: { dealId: string },
     ) => Promise<PersistedIngest>;
+    ingestExactParent?: (
+      parent: ExactXTraceParentUnit,
+    ) => Promise<PersistedExactIngest>;
+    pollExactIntent?: (input: {
+      intentId: string;
+      providerJobId: string;
+    }) => Promise<PersistedExactIngest>;
     complete: UploadedDocumentsRepository["completeConfirmed"];
     fail?: UploadedDocumentsRepository["failConfirmed"];
   },
@@ -53,7 +65,8 @@ export async function processConfirmedSource(
     if (!upload.dealId || !upload.sourceId || !upload.sourceRevisionId) {
       throw new Error("Confirmed upload lineage is incomplete.");
     }
-    const exact = await dependencies.loadBundle(upload);
+    const exactParent = await dependencies.loadExactParent?.(upload) ?? null;
+    const exact = exactParent ?? await dependencies.loadBundle?.(upload) ?? null;
     if (
       !exact
       || exact.workspaceId !== upload.workspaceId
@@ -105,6 +118,33 @@ export async function processConfirmedSource(
     }
     if (bundle.facts.length === 0) {
       throw new Error("Confirmed source has no exact source-backed facts.");
+    }
+    if (exactParent) {
+      if (!dependencies.ingestExactParent) {
+        throw new Error("Exact XTrace ingest is not configured for confirmed source ingest.");
+      }
+      let exactResult = await dependencies.ingestExactParent(exactParent);
+      if (
+        (exactResult.state === "submitted" || exactResult.state === "running")
+        && exactResult.providerJobId
+        && dependencies.pollExactIntent
+      ) {
+        exactResult = await dependencies.pollExactIntent({
+          intentId: exactResult.intentId,
+          providerJobId: exactResult.providerJobId,
+        });
+      }
+      if (exactResult.state !== "succeeded") {
+        throw new Error(`Exact XTrace ingest ended in ${exactResult.state}.`);
+      }
+      const completed = await dependencies.complete({
+        workspaceId: upload.workspaceId,
+        id: upload.id,
+        workerId: upload.workerId,
+        leaseToken: upload.leaseToken,
+      });
+      if (!completed) throw new Error("Confirmed upload claim was lost before completion.");
+      return { kind: "xtrace_ingested", ingest: exactResult };
     }
     if (!dependencies.ingest) {
       throw new Error(
