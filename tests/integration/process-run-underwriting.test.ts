@@ -3179,7 +3179,10 @@ test("processes a confirmed uploaded Deal from the authoritative registry before
 
   const result = await processClaimedRun(claimed, {
     runs,
-    intelligence: createMemoryIntelligenceRepository({ now: () => NOW }),
+    intelligence: createMemoryIntelligenceRepository({
+      now: () => NOW,
+      dealRegistry: registry,
+    }),
     dealRegistry: registry,
     importGate: { async assertReady() {} },
     market: {
@@ -3276,7 +3279,10 @@ test("structured mode matches an image-only Deal into the ranked opportunity rep
 
   const result = await processClaimedRun(claimed, {
     runs,
-    intelligence: createMemoryIntelligenceRepository({ now: () => NOW }),
+    intelligence: createMemoryIntelligenceRepository({
+      now: () => NOW,
+      dealRegistry: registry,
+    }),
     dealRegistry: registry,
     importGate: { async assertReady() {} },
     market: {
@@ -3348,7 +3354,10 @@ test("XTrace mode uses a partial structured fallback only for an image-only Deal
 
   const result = await processClaimedRun(claimed, {
     runs,
-    intelligence: createMemoryIntelligenceRepository({ now: () => NOW }),
+    intelligence: createMemoryIntelligenceRepository({
+      now: () => NOW,
+      dealRegistry: registry,
+    }),
     dealRegistry: registry,
     importGate: { async assertReady() {} },
     market: {
@@ -3431,7 +3440,10 @@ test("XTrace mode does not use structured-image fallback when a Deal has a non-i
 
   const result = await processClaimedRun(claimed, {
     runs,
-    intelligence: createMemoryIntelligenceRepository({ now: () => NOW }),
+    intelligence: createMemoryIntelligenceRepository({
+      now: () => NOW,
+      dealRegistry: registry,
+    }),
     dealRegistry: registry,
     importGate: { async assertReady() {} },
     market: {
@@ -3574,7 +3586,10 @@ test("keeps XTrace partial recall visible while underwriting receives every elig
 
   const result = await processClaimedRun(claimed, {
     runs,
-    intelligence: createMemoryIntelligenceRepository({ now: () => NOW }),
+    intelligence: createMemoryIntelligenceRepository({
+      now: () => NOW,
+      dealRegistry: registry,
+    }),
     dealRegistry: registry,
     importGate: { async assertReady() {} },
     market: {
