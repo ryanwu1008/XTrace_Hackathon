@@ -103,6 +103,36 @@ alter table public.deal_interactions
     )
   );
 
+drop policy if exists deal_interactions_registry_owner_0020
+  on public.deal_interactions;
+create policy deal_interactions_registry_owner_0020
+  on public.deal_interactions for all to vsee_registry_owner
+  using (true) with check (true);
+
+create or replace function public.protect_sample_decision_document_0020()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if old.role = 'sample_decision_record'
+    and (tg_op = 'DELETE'
+      or new.role is distinct from 'sample_decision_record')
+    and current_user <> 'vsee_registry_owner'
+  then
+    raise exception 'Sample decision record parents are RPC-only and immutable';
+  end if;
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_sample_decision_document_0020
+  on public.source_documents;
+create trigger protect_sample_decision_document_0020
+before update of role or delete on public.source_documents
+for each row execute function public.protect_sample_decision_document_0020();
+
 create or replace function public.protect_sample_decision_interaction_0020()
 returns trigger
 language plpgsql
@@ -111,20 +141,36 @@ as $$
 declare
   old_document_role text;
   new_document_role text;
+  old_is_versioned_sample boolean := false;
+  new_is_versioned_sample boolean := false;
 begin
   if tg_op in ('UPDATE', 'DELETE') then
     select role into old_document_role
     from public.source_documents where id = old.document_id;
+    old_is_versioned_sample := old.prior_actions is not null
+      or old.action_policy_version is not null
+      or old.interaction_schema_version is not null;
   end if;
   if tg_op in ('INSERT', 'UPDATE') then
     select role into new_document_role
     from public.source_documents where id = new.document_id;
+    new_is_versioned_sample := new.prior_actions is not null
+      or new.action_policy_version is not null
+      or new.interaction_schema_version is not null;
   end if;
   if (old_document_role = 'sample_decision_record'
-      or new_document_role = 'sample_decision_record')
+      or new_document_role = 'sample_decision_record'
+      or old_is_versioned_sample
+      or new_is_versioned_sample)
     and current_user <> 'vsee_registry_owner'
   then
     raise exception 'Sample decision records are RPC-only and immutable';
+  end if;
+  if new_is_versioned_sample
+    and new_document_role is distinct from 'sample_decision_record'
+  then
+    raise exception
+      'A versioned Sample interaction must bind a sample_decision_record role';
   end if;
   if tg_op = 'DELETE' then return old; end if;
   return new;
@@ -231,8 +277,7 @@ begin
   v_created := v_row_count = 1;
 
   select * into strict target from public.deal_interactions
-  where workspace_id = v_workspace_id and id = v_id
-  for key share;
+  where workspace_id = v_workspace_id and id = v_id;
   if target.document_id is distinct from v_document_id
     or target.source_revision_id is distinct from v_revision_id
     or target.deal_id is distinct from v_deal_id
@@ -257,9 +302,13 @@ $$;
 
 alter function public.protect_sample_decision_interaction_0020()
   owner to vsee_registry_owner;
+alter function public.protect_sample_decision_document_0020()
+  owner to vsee_registry_owner;
 alter function public.save_sample_decision_interaction(jsonb)
   owner to vsee_registry_owner;
 revoke all on function public.protect_sample_decision_interaction_0020()
+  from public, anon, authenticated, service_role;
+revoke all on function public.protect_sample_decision_document_0020()
   from public, anon, authenticated, service_role;
 revoke all on function public.save_sample_decision_interaction(jsonb)
   from public, anon, authenticated, service_role;
