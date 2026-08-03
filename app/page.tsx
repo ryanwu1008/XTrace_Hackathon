@@ -22,6 +22,7 @@ import { SAMPLE_DEAL_PROFILES } from "./deal-profiles";
 import type { ChatMemoryStatus } from "../lib/chat/service";
 import type { ConfirmUpload } from "../lib/contracts/http";
 import type { EvidenceSourceRef } from "../lib/contracts/domain";
+import type { FinalizedChatSourceRef } from "../lib/contracts/finalized-chat";
 import type { MarketEventV2 } from "../lib/contracts/source-evidence";
 import type {
   ReportEvidenceContext,
@@ -137,7 +138,7 @@ interface LegacyUiSource {
     | "underwriting_reference";
 }
 
-type Source = EvidenceSourceRef | LegacyUiSource;
+type Source = EvidenceSourceRef | LegacyUiSource | FinalizedChatSourceRef;
 
 type MarketEvent = MarketEventV2;
 
@@ -184,12 +185,62 @@ export interface ChatReportScope {
   reportId: string;
   runId: string;
   dealId?: string;
+  companyName?: string;
+  evidenceContext?: ReportEvidenceContext;
+}
+
+export interface ChatResolvedScope {
+  reportId: string;
+  runId: string;
+  dealId: string | null;
+  companyName?: string;
+  evidenceContext: ReportEvidenceContext;
+}
+
+export function mergeResolvedChatScope(
+  current: ChatReportScope | null,
+  resolved: ChatResolvedScope | null,
+): ChatReportScope | null {
+  if (
+    current === null
+    || resolved === null
+    || current.reportId !== resolved.reportId
+    || current.runId !== resolved.runId
+  ) return current;
+  return {
+    ...current,
+    ...(resolved.dealId === null ? {} : { dealId: resolved.dealId }),
+    ...(resolved.companyName === undefined
+      ? {}
+      : { companyName: resolved.companyName }),
+    evidenceContext: resolved.evidenceContext,
+  };
+}
+
+function chatScopeIdentity(scope: ChatReportScope | null): string {
+  return scope === null
+    ? "global"
+    : [scope.reportId, scope.runId, scope.dealId ?? "unresolved"].join("\u0000");
+}
+
+export function shouldResetChatTranscript(
+  current: ChatReportScope | null,
+  next: ChatReportScope | null,
+): boolean {
+  return chatScopeIdentity(current) !== chatScopeIdentity(next);
+}
+
+export function shouldApplyChatResponse(
+  requestScope: ChatReportScope | null,
+  currentScope: ChatReportScope | null,
+): boolean {
+  return chatScopeIdentity(requestScope) === chatScopeIdentity(currentScope);
 }
 
 export function resolveReportChatScope(
   report: Pick<
     IntelligenceReportView,
-    "id" | "runId" | "priorityDealId" | "companyAnalyses"
+    "id" | "runId" | "priorityDealId" | "companyAnalyses" | "evidenceContext"
   >,
 ): ChatReportScope | null {
   if (!report.runId) return null;
@@ -202,10 +253,18 @@ export function resolveReportChatScope(
     : memberDealIds.length === 1
     ? memberDealIds[0]
     : undefined;
+  const companyName = dealId === undefined
+    ? undefined
+    : report.companyAnalyses.find((analysis) => analysis.dealId === dealId)
+      ?.companyName;
   return {
     reportId: report.id,
     runId: report.runId,
     ...(dealId === undefined ? {} : { dealId }),
+    ...(companyName === undefined ? {} : { companyName }),
+    ...(report.evidenceContext === undefined
+      ? {}
+      : { evidenceContext: report.evidenceContext }),
   };
 }
 
@@ -213,15 +272,25 @@ export function buildChatApiRequest(input: {
   question: string;
   xtraceEnabled: boolean;
   scope: ChatReportScope | null;
+  deploymentMode: UiSession["deploymentMode"];
 }): { url: "/api/chat"; init: RequestInit } {
+  const scope = input.scope;
   return {
     url: "/api/chat",
     init: {
       method: "POST",
       body: JSON.stringify({
         question: input.question,
-        xtraceEnabled: input.xtraceEnabled,
-        ...(input.scope ?? {}),
+        ...(isDurableWorkspaceUiMode(input.deploymentMode)
+          ? {}
+          : { xtraceEnabled: input.xtraceEnabled }),
+        ...(scope === null
+          ? {}
+          : {
+              reportId: scope.reportId,
+              runId: scope.runId,
+              ...(scope.dealId === undefined ? {} : { dealId: scope.dealId }),
+            }),
       }),
     },
   };
@@ -330,6 +399,7 @@ export default function Home() {
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatScope, setChatScope] = useState<ChatReportScope | null>(null);
+  const chatScopeRef = useRef<ChatReportScope | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -368,7 +438,7 @@ export default function Home() {
           : "Unable to verify server capabilities",
       );
     }
-  }, []);
+  }, [setError]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -552,7 +622,11 @@ export default function Home() {
   );
 
   function navigate(nextView: View) {
-    if (nextView === "chat") setChatScope(null);
+    if (nextView === "chat") {
+      if (shouldResetChatTranscript(chatScope, null)) setChatMessages([]);
+      chatScopeRef.current = null;
+      setChatScope(null);
+    }
     setView(nextView);
     setFocusedReportId(null);
     const url = new URL(window.location.href);
@@ -787,6 +861,7 @@ export default function Home() {
     event.preventDefault();
     const question = chatQuestion.trim();
     if (!question) return;
+    const requestScope = chatScope;
     setChatMessages((current) => [...current, { role: "user", text: question }]);
     setChatQuestion("");
     setBusy("chat");
@@ -796,13 +871,16 @@ export default function Home() {
         question,
         xtraceEnabled,
         scope: chatScope,
+        deploymentMode: uiSession.deploymentMode,
       });
       const answer = await api<{
         answer: string;
         citations: Source[];
         memoryStatus: ChatMemoryStatus;
         insufficientEvidence: boolean;
+        scope: ChatResolvedScope | null;
       }>(chatRequest.url, chatRequest.init);
+      if (!shouldApplyChatResponse(requestScope, chatScopeRef.current)) return;
       setChatMessages((current) => [
         ...current,
         {
@@ -812,6 +890,11 @@ export default function Home() {
           memoryStatus: answer.memoryStatus,
         },
       ]);
+      setChatScope((current) => {
+        const merged = mergeResolvedChatScope(current, answer.scope);
+        chatScopeRef.current = merged;
+        return merged;
+      });
     } catch (chatError) {
       setError(chatError instanceof Error ? chatError.message : "Chat unavailable");
     } finally {
@@ -996,6 +1079,10 @@ export default function Home() {
                 onAsk={(report) => {
                   const scope = resolveReportChatScope(report);
                   if (!scope) return;
+                  if (shouldResetChatTranscript(chatScope, scope)) {
+                    setChatMessages([]);
+                  }
+                  chatScopeRef.current = scope;
                   setChatScope(scope);
                   setView("chat");
                 }}
@@ -1796,6 +1883,10 @@ export function ChatView({
       {reportScope && (
         <div className="vsee-banner" role="status">
           ASKING REPORT · {reportScope.reportId} · RUN {reportScope.runId}
+          {reportScope.companyName ? ` · ${reportScope.companyName}` : ""}
+          {reportScope.evidenceContext
+            ? ` · ${evidenceContextLabel(reportScope.evidenceContext)}`
+            : ""}
         </div>
       )}
       <div className="vsee-chat-log" aria-live="polite" aria-label="Evidence chat messages">
@@ -1816,7 +1907,7 @@ export function ChatView({
               </strong>
             )}
             <p>{message.text}</p>
-            {!!message.citations?.length && <footer>{message.citations.map((source) => <SourceLink source={source} key={source.id} />)}</footer>}
+            {!!message.citations?.length && <footer>{message.citations.map((source) => <SourceLink source={source} key={sourceKey(source)} />)}</footer>}
           </article>
         ))}
       </div>
@@ -1893,6 +1984,15 @@ function Empty({ title, copy }: { title: string; copy: string }) {
 }
 
 function SourceLink({ source }: { source: Source }) {
+  if ("sourceId" in source) {
+    return (
+      <span className="vsee-source-links">
+        <SourceRevisionLink revisionId={source.sourceRevisionId}>
+          {source.sourceId} · Exact Source Revision · {source.sourceRevisionId} ↗
+        </SourceRevisionLink>
+      </span>
+    );
+  }
   const legacy = !("schemaVersion" in source);
   const sourceUrl = legacy ? source.url : source.canonicalUrl ?? undefined;
   const page = legacy
@@ -1937,4 +2037,10 @@ function SourceLink({ source }: { source: Source }) {
       )}
     </span>
   );
+}
+
+function sourceKey(source: Source): string {
+  return "sourceId" in source
+    ? `${source.sourceId}:${source.sourceRevisionId}`
+    : source.id;
 }

@@ -235,7 +235,7 @@ test("authenticated product Chat does not mix demo fixtures into an empty worksp
   }
 });
 
-test("authenticated product Chat rejects XTrace memories backed only by demo fixtures", async () => {
+test("authenticated product finalized Chat never recalls XTrace memories backed by demo fixtures", async () => {
   const workspaceId = `workspace_product_fixture_${crypto.randomUUID()}`;
   const memoryId = `memory_product_fixture_${crypto.randomUUID()}`;
   const lineage = getXTraceLineageRepository();
@@ -281,7 +281,7 @@ test("authenticated product Chat rejects XTrace memories backed only by demo fix
           insufficientEvidence: boolean;
         };
       };
-      assert.equal(payload.data.memoryStatus, "unavailable");
+      assert.equal(payload.data.memoryStatus, "disabled");
       assert.equal(payload.data.insufficientEvidence, true);
       assert.deepEqual(payload.data.citations, []);
       assert.doesNotMatch(
@@ -292,7 +292,7 @@ test("authenticated product Chat rejects XTrace memories backed only by demo fix
   });
 });
 
-test("authenticated product Chat resolves exact XTrace lineage while filtering a mixed Sample source", async () => {
+test("authenticated product finalized Chat does not enter the legacy exact-XTrace path", async () => {
   const workspaceId = `workspace_product_xtrace_${crypto.randomUUID()}`;
   const dealId = `deal_product_xtrace_${crypto.randomUUID()}`;
   const sourceId = `claim_product_xtrace_${crypto.randomUUID()}`;
@@ -389,18 +389,15 @@ test("authenticated product Chat resolves exact XTrace lineage while filtering a
           insufficientEvidence: boolean;
         };
       };
-      assert.equal(payload.data.memoryStatus, "available");
-      assert.equal(payload.data.usedXTrace, true);
-      assert.equal(payload.data.insufficientEvidence, false);
-      assert.ok(payload.data.citations.some((citation) => citation.id === sourceId));
-      assert.ok(payload.data.citations.every((citation) =>
-        citation.id !== sample.id
-      ));
+      assert.equal(payload.data.memoryStatus, "disabled");
+      assert.equal(payload.data.usedXTrace, false);
+      assert.equal(payload.data.insufficientEvidence, true);
+      assert.deepEqual(payload.data.citations, []);
     },
   });
 });
 
-test("public sandbox Chat resolves a canonical Sample decision record by exact revision", async () => {
+test("public sandbox finalized Chat ignores legacy XTrace recall until artifacts are finalized", async () => {
   const workspaceId = `workspace_sandbox_sample_${crypto.randomUUID()}`;
   const dealId = `deal_sandbox_sample_${crypto.randomUUID()}`;
   const memoryId = `memory_sandbox_sample_${crypto.randomUUID()}`;
@@ -501,19 +498,15 @@ test("public sandbox Chat resolves a canonical Sample decision record by exact r
           insufficientEvidence: boolean;
         };
       };
-      assert.equal(payload.data.memoryStatus, "available");
-      assert.equal(payload.data.usedXTrace, true);
-      assert.equal(payload.data.insufficientEvidence, false);
-      assert.ok(payload.data.citations.some((citation) =>
-        citation.id === sample.id
-        && citation.provenance === "demo_fixture"
-        && citation.sourceRevisionId === sample.sourceRevisionId
-      ));
+      assert.equal(payload.data.memoryStatus, "disabled");
+      assert.equal(payload.data.usedXTrace, false);
+      assert.equal(payload.data.insufficientEvidence, true);
+      assert.deepEqual(payload.data.citations, []);
     },
   });
 });
 
-test("authenticated product Chat rejects mixed or demo-provenance XTrace contexts", async () => {
+test("authenticated product finalized Chat disables every legacy XTrace context", async () => {
   const scenarios = [{
     label: "mixed fixture lineage",
     fixtureIds: ["fixture_mixed_lineage"],
@@ -601,11 +594,11 @@ test("authenticated product Chat rejects mixed or demo-provenance XTrace context
             insufficientEvidence: boolean;
           };
         };
-        assert.equal(payload.data.memoryStatus, "unavailable", scenario.label);
+        assert.equal(payload.data.memoryStatus, "disabled", scenario.label);
         assert.equal(payload.data.usedXTrace, false, scenario.label);
         assert.equal(payload.data.insufficientEvidence, true, scenario.label);
         assert.deepEqual(payload.data.citations, [], scenario.label);
-        assert.match(payload.data.answer, /local-only answer.*withheld/i);
+        assert.match(payload.data.answer, /insufficient finalized evidence/i);
       },
     });
   }
@@ -666,7 +659,7 @@ test("authenticated product Chat ignores a persisted market event backed only by
   });
 });
 
-test("authenticated product Chat keeps scoped durable market event grounding", async () => {
+test("authenticated product finalized Chat never answers an unsupported runtime-event query", async () => {
   const workspaceId = `workspace_product_durable_event_${crypto.randomUUID()}`;
   const dealId = `deal_product_durable_event_${crypto.randomUUID()}`;
   const sourceId = `source_product_durable_event_${crypto.randomUUID()}`;
@@ -731,23 +724,12 @@ test("authenticated product Chat keeps scoped durable market event grounding", a
         insufficientEvidence: boolean;
       };
     };
-    assert.equal(payload.data.insufficientEvidence, false);
-    assert.equal(payload.data.citations.length, 1);
-    assert.equal(payload.data.citations[0].id, sourceId);
-    assert.equal(payload.data.citations[0].provenance, "public_web");
-    assert.equal(payload.data.citations[0].schemaVersion, "source-ref-v2");
-    assert.equal(
-      payload.data.citations[0].canonicalUrl,
-      "https://example.test/durable-semiconductor-source",
-    );
-    assert.deepEqual(payload.data.citations[0].text, {
-      status: "normalized_only",
-      normalizedStatement: durableExcerpt,
-    });
+    assert.equal(payload.data.insufficientEvidence, true);
+    assert.deepEqual(payload.data.citations, []);
   });
 });
 
-test("product Chat validates the complete authority catalog before provenance filtering or the 12-item cap", async (t) => {
+test("product finalized Chat never enters the obsolete runtime authority-catalog path", async (t) => {
   const previousKey = process.env.ANTHROPIC_API_KEY;
   const previousSupabaseUrl = process.env.SUPABASE_URL;
   const previousSupabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -848,7 +830,12 @@ test("product Chat validates the complete authority catalog before provenance fi
           scopedChatDependencies(report, `user_catalog_${crypto.randomUUID()}`),
         );
 
-        assert.equal(response.status, 500, label);
+        assert.equal(response.status, 200, label);
+        const payload = await response.json() as {
+          data: { insufficientEvidence: boolean; citations: unknown[] };
+        };
+        assert.equal(payload.data.insufficientEvidence, true, label);
+        assert.deepEqual(payload.data.citations, [], label);
         assert.equal(modelCalls, 0, label);
       });
     }
@@ -916,7 +903,7 @@ test("authenticated product Chat ignores a persisted report opportunity carrying
   });
 });
 
-test("authenticated product Chat does not label durable report evidence with Demo catalog company names", async () => {
+test("authenticated product finalized Chat cannot fall back to Demo catalog company names", async () => {
   const workspaceId = `workspace_product_company_name_${crypto.randomUUID()}`;
   const whyNow = "Durable naming evidence confirms a logistics signal";
   const report = await saveCanonicalChatReport({
@@ -965,13 +952,12 @@ test("authenticated product Chat does not label durable report evidence with Dem
         insufficientEvidence: boolean;
       };
     };
-    assert.equal(payload.data.insufficientEvidence, false);
-    assert.equal(payload.data.citations[0].title, "Durable logistics source");
-    assert.doesNotMatch(payload.data.citations[0].title, /7bridges/i);
+    assert.equal(payload.data.insufficientEvidence, true);
+    assert.deepEqual(payload.data.citations, []);
   });
 });
 
-test("Chat API answers an exact sandbox report from persisted report lineage", async () => {
+test("sandbox finalized Chat rejects unsupported legacy report questions without fallback", async () => {
   const report = await saveCanonicalChatReport({
     id: "report_chat_latest",
     workspaceId: "workspace_demo",
@@ -1004,30 +990,15 @@ test("Chat API answers an exact sandbox report from persisted report lineage", a
   delete process.env.ANTHROPIC_API_KEY;
 
   try {
-    const cases = [{
-      question: "What does the latest report say about logistics automation activity for 7bridges?",
-      answer: "Public evidence says logistics automation activity increased.",
-      sourceId: "market_logistics_activity",
-      provenance: "public_web",
-      insufficientEvidence: false,
-    }, {
-      question: "What previous context does the latest report have for 7bridges?",
-      answer:
-        "Sample decision record. The synthetic VC record says the team previously passed on 7bridges.",
-      sourceId: "fixture_chat_latest_7bridges_passed",
-      provenance: "demo_fixture",
-      insufficientEvidence: false,
-    }, {
-      question: "What does the latest report recommend for 7bridges?",
-      answer: null,
-      sourceId: null,
-      provenance: null,
-      insufficientEvidence: true,
-    }] as const;
+    const cases = [
+      "What does the latest report say about logistics automation activity for 7bridges?",
+      "What previous context does the latest report have for 7bridges?",
+      "What does the latest report recommend for 7bridges?",
+    ] as const;
 
-    for (const [index, item] of cases.entries()) {
+    for (const [index, question] of cases.entries()) {
       const response = await POST(
-        chatRequest(item.question, false, {
+        chatRequest(question, false, {
           reportId: report.id,
           runId: report.runId,
           dealId: "deal_7bridges",
@@ -1047,21 +1018,10 @@ test("Chat API answers an exact sandbox report from persisted report lineage", a
           insufficientEvidence: boolean;
         };
       };
-      assert.equal(
-        payload.data.insufficientEvidence,
-        item.insufficientEvidence,
-        item.question,
-      );
+      assert.equal(payload.data.insufficientEvidence, true, question);
       assert.equal(payload.data.memoryStatus, "disabled");
-      if (item.answer === null) {
-        assert.match(payload.data.answer, /not contain enough evidence/i);
-        assert.deepEqual(payload.data.citations, []);
-      } else {
-        assert.equal(payload.data.answer, item.answer);
-        assert.equal(payload.data.citations.length, 1);
-        assert.equal(payload.data.citations[0].id, item.sourceId);
-        assert.equal(payload.data.citations[0].provenance, item.provenance);
-      }
+      assert.match(payload.data.answer, /insufficient finalized evidence/i);
+      assert.deepEqual(payload.data.citations, []);
     }
   } finally {
     if (previousAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;

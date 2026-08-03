@@ -26,13 +26,13 @@ test("durable report-launched Chat posts the exact report scope to the Chat rout
     question: "What changed?",
     xtraceEnabled: true,
     scope: { reportId: "report_1", runId: "run_1" },
+    deploymentMode: "product",
   });
 
   assert.equal(request.url, "/api/chat");
   assert.equal(request.init.method, "POST");
   assert.deepEqual(JSON.parse(String(request.init.body)), {
     question: "What changed?",
-    xtraceEnabled: true,
     reportId: "report_1",
     runId: "run_1",
   });
@@ -67,6 +67,7 @@ test("ASK THIS REPORT sends the authoritative priority Deal in the normal Chat r
         question: "What changed?",
         xtraceEnabled: true,
         scope: resolveReportChatScope(selected),
+        deploymentMode: "product",
       });
     },
   });
@@ -76,7 +77,6 @@ test("ASK THIS REPORT sends the authoritative priority Deal in the normal Chat r
   askButton.props.onClick();
   assert.deepEqual(JSON.parse(String(request.init.body)), {
     question: "What changed?",
-    xtraceEnabled: true,
     reportId: "report_selected",
     runId: "run_selected",
     dealId: "deal_priority",
@@ -164,6 +164,7 @@ test("the UI report request exercises scoped Chat POST and returns that exact sc
     question: "Scoped Chat evidence changed",
     xtraceEnabled: false,
     scope: { reportId: report.id, runId: run.id },
+    deploymentMode: "product",
   });
   const response = await POST(new Request(`https://vsee.test${requestSpec.url}`, {
     ...requestSpec.init,

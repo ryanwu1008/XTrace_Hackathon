@@ -11,7 +11,7 @@ import {
 import { getDataClient } from "../../../db/client";
 import { createRunsRepository } from "../../../db/repositories/runs";
 import { getUnderwritingRunsRepository } from "../../../db/repositories/underwriting-runs";
-import { getDealRegistry } from "../../../db/repositories/deal-registry";
+import { getUnderwritingArtifactsRepository } from "../../../db/repositories/underwriting-artifacts";
 import { getXTraceLineageRepository } from "../../../db/repositories/xtrace-lineage";
 import {
   createGroundedChatService,
@@ -54,7 +54,23 @@ import {
 import {
   ReportScopeNotFoundError,
   resolveReportEvidenceScope,
+  type ResolvedReportEvidenceScope,
 } from "../../../lib/reports/evidence-scope";
+import { loadExactFinalizedChatScope } from "../../../lib/chat/finalized-scope";
+import { classifyFinalizedChatTopic } from "../../../lib/chat/finalized-topic";
+import { buildFinalizedChatProjection } from "../../../lib/chat/finalized-projection";
+import { renderFinalizedChatProjection } from "../../../lib/chat/finalized-renderer";
+import {
+  FinalizedChatEvidenceFrameSchema,
+  FinalizedChatInsufficientResponseSchema,
+  type FinalizedChatArtifactRef,
+  type FinalizedChatEvidenceFrame,
+  type FinalizedChatIdentity,
+  type FinalizedChatInsufficientReasonCode,
+  type FinalizedChatTopic,
+} from "../../../lib/contracts/finalized-chat";
+import type { AuthorizedRequestContext } from "../../../lib/auth/request-context";
+import type { CandidateRun } from "../../../lib/contracts/underwriting";
 
 export const dynamic = "force-dynamic";
 
@@ -411,6 +427,251 @@ function deterministicCompletion(prompt: string) {
   });
 }
 
+function finalizedEvidenceFrame(
+  scope: ResolvedReportEvidenceScope,
+): FinalizedChatEvidenceFrame {
+  const context = scope.report.evidenceContext ?? { state: "legacy_unbound" as const };
+  if (context.state === "legacy_unbound") {
+    return FinalizedChatEvidenceFrameSchema.parse({ state: "legacy_unbound" });
+  }
+  return FinalizedChatEvidenceFrameSchema.parse({
+    state: "current",
+    evidenceMode: context.evidenceMode,
+    contextFingerprint: context.contextFingerprint,
+    eventSetFingerprint: context.eventSetFingerprint,
+    bindingFingerprint: context.bindingFingerprint,
+    snapshotId: context.snapshotId,
+    snapshotFingerprint: context.snapshotFingerprint,
+  });
+}
+
+function finalizedIdentity(input: {
+  context: AuthorizedRequestContext;
+  scope: ResolvedReportEvidenceScope;
+  dealId: string;
+  candidateRunId: string;
+}): FinalizedChatIdentity {
+  return {
+    workspaceId: input.context.workspaceId,
+    reportId: input.scope.report.id,
+    runId: input.scope.run.id,
+    dealId: input.dealId,
+    candidateRunId: input.candidateRunId,
+  };
+}
+
+function finalizedScopePayload(
+  scope: ResolvedReportEvidenceScope,
+  dealId: string | null = scope.dealId,
+  companyName?: string,
+) {
+  return {
+    reportId: scope.report.id,
+    runId: scope.run.id,
+    dealId,
+    ...(companyName === undefined ? {} : { companyName }),
+    evidenceContext: scope.report.evidenceContext ?? { state: "legacy_unbound" as const },
+  };
+}
+
+function finalizedInsufficient(input: {
+  reasonCode: FinalizedChatInsufficientReasonCode;
+  answer: string;
+  topic?: FinalizedChatTopic | null;
+  identity?: FinalizedChatIdentity | null;
+  evidenceFrame?: FinalizedChatEvidenceFrame | null;
+  missingArtifactRefs?: FinalizedChatArtifactRef[];
+}) {
+  return FinalizedChatInsufficientResponseSchema.parse({
+    schemaVersion: "finalized-chat-response-v1",
+    status: "insufficient",
+    topic: input.topic ?? null,
+    answer: input.answer,
+    citations: [],
+    identity: input.identity ?? null,
+    evidenceFrame: input.evidenceFrame ?? null,
+    insufficientEvidence: true,
+    reasonCode: input.reasonCode,
+    missingArtifactRefs: input.missingArtifactRefs ?? [],
+  });
+}
+
+function scopeFailureReason(
+  reason: string,
+): FinalizedChatInsufficientReasonCode {
+  if (reason === "artifact_missing") return "artifact_missing";
+  if (reason.startsWith("artifact_")) return "artifact_mismatch";
+  return "scope_mismatch";
+}
+
+export function resolveFinalizedRouteCandidateBinding(
+  candidate: Pick<
+    CandidateRun,
+    "id" | "rerunOfId" | "candidateAnalysisFingerprint"
+  > | null,
+) {
+  return candidate === null
+    ? null
+    : {
+        candidateRunId: candidate.id,
+        rerunOfId: candidate.rerunOfId,
+        candidateAnalysisFingerprint: candidate.candidateAnalysisFingerprint,
+      };
+}
+
+async function answerDurableFinalizedChat(input: {
+  context: AuthorizedRequestContext;
+  request: ReturnType<typeof ChatRequestSchema.parse>;
+  dependencies: RouteDependencies;
+  repository: ReturnType<typeof getIntelligenceRepository>;
+}) {
+  const underwritingRuns = input.dependencies.underwritingRuns
+    ?? getUnderwritingRunsRepository();
+  const resolvedScope = await resolveReportEvidenceScope({
+    workspaceId: input.context.workspaceId,
+    request: input.request.reportId === undefined
+      ? { kind: "latest_terminal" }
+      : {
+          kind: "report",
+          reportId: input.request.reportId,
+          runId: input.request.runId!,
+          ...(input.request.dealId === undefined
+            ? {}
+            : { dealId: input.request.dealId }),
+        },
+    intelligence: input.repository,
+    runs: input.dependencies.runs ?? createRunsRepository(getDataClient()),
+    underwritingRuns,
+  }).catch((error) => {
+    if (
+      input.request.reportId === undefined
+      && error instanceof ReportScopeNotFoundError
+    ) return null;
+    throw error;
+  });
+  if (resolvedScope === null) {
+    return jsonOk({
+      ...finalizedInsufficient({
+        reasonCode: "scope_unavailable",
+        answer: "Insufficient finalized evidence: no terminal report scope is available.",
+      }),
+      memoryStatus: "disabled" as const,
+      usedXTrace: false,
+      scope: null,
+    });
+  }
+
+  const evidenceFrame = finalizedEvidenceFrame(resolvedScope);
+  const loaded = await loadExactFinalizedChatScope({
+    workspaceId: input.context.workspaceId,
+    scope: resolvedScope,
+    question: input.request.question,
+    dealId: input.request.dealId,
+    underwritingRuns,
+    artifacts: input.dependencies.underwritingArtifacts
+      ?? getUnderwritingArtifactsRepository(),
+  });
+  if (loaded.status === "insufficient_evidence") {
+    return jsonOk({
+      ...finalizedInsufficient({
+        reasonCode: scopeFailureReason(loaded.reason),
+        answer: `Insufficient finalized evidence: ${loaded.message}`,
+      }),
+      memoryStatus: "disabled" as const,
+      usedXTrace: false,
+      scope: finalizedScopePayload(resolvedScope, loaded.dealId),
+    });
+  }
+
+  const candidateBinding = resolveFinalizedRouteCandidateBinding(
+    loaded.candidate,
+  );
+  const candidateRunId = candidateBinding?.candidateRunId ?? null;
+  const identity = candidateRunId === null
+    ? null
+    : finalizedIdentity({
+        context: input.context,
+        scope: resolvedScope,
+        dealId: loaded.dealId,
+        candidateRunId,
+      });
+  const classification = classifyFinalizedChatTopic(input.request.question);
+  if (classification.status === "insufficient") {
+    return jsonOk({
+      ...finalizedInsufficient({
+        reasonCode: classification.reasonCode,
+        answer: classification.reasonCode === "ambiguous_topic"
+          ? "Insufficient finalized evidence: ask one supported finalized-report question at a time."
+          : "Insufficient finalized evidence: this finalized-report question is not supported.",
+        identity,
+        evidenceFrame: identity === null ? null : evidenceFrame,
+      }),
+      memoryStatus: "disabled" as const,
+      usedXTrace: false,
+      scope: finalizedScopePayload(
+        resolvedScope,
+        loaded.dealId,
+        loaded.analysis.companyName,
+      ),
+    });
+  }
+  if (identity === null) {
+    return jsonOk({
+      ...finalizedInsufficient({
+        reasonCode: "artifact_missing",
+        answer: "Insufficient finalized evidence: the scoped Deal has no finalized candidate identity.",
+        topic: classification.topic,
+      }),
+      memoryStatus: "disabled" as const,
+      usedXTrace: false,
+      scope: finalizedScopePayload(
+        resolvedScope,
+        loaded.dealId,
+        loaded.analysis.companyName,
+      ),
+    });
+  }
+
+  const built = buildFinalizedChatProjection({
+    topic: classification.topic,
+    requestMode: input.context.mode === "product" ? "product" : "public_sandbox",
+    identity,
+    evidenceFrame,
+    analysis: loaded.analysis,
+    bundle: loaded.bundle,
+    candidateBinding: candidateBinding!,
+  });
+  if (built.status === "insufficient") {
+    return jsonOk({
+      ...finalizedInsufficient({
+        reasonCode: built.reasonCode,
+        answer: `Insufficient finalized evidence: ${built.reasonCode}.`,
+        topic: built.topic,
+        identity: built.identity,
+        evidenceFrame: built.evidenceFrame,
+        missingArtifactRefs: built.missingArtifactRefs,
+      }),
+      memoryStatus: "disabled" as const,
+      usedXTrace: false,
+      scope: finalizedScopePayload(
+        resolvedScope,
+        loaded.dealId,
+        loaded.analysis.companyName,
+      ),
+    });
+  }
+  return jsonOk({
+    ...renderFinalizedChatProjection(built.projection),
+    memoryStatus: "disabled" as const,
+    usedXTrace: false,
+    scope: finalizedScopePayload(
+      resolvedScope,
+      loaded.dealId,
+      loaded.analysis.companyName,
+    ),
+  });
+}
+
 export async function POST(
   request: Request,
   _routeContext?: unknown,
@@ -435,43 +696,18 @@ export async function POST(
       );
     }
     const input = ChatRequestSchema.parse(await request.json());
-    const claude = process.env.ANTHROPIC_API_KEY ? createClaudeClient() : null;
     const repository =
       dependencies.intelligence ?? getIntelligenceRepository();
-    const resolvedScope = isDurableWorkspaceMode(context.mode)
-      ? await resolveReportEvidenceScope({
-          workspaceId: context.workspaceId,
-          request: input.reportId === undefined
-            ? { kind: "latest_terminal" }
-            : {
-                kind: "report",
-                reportId: input.reportId,
-                runId: input.runId!,
-                ...(input.dealId === undefined ? {} : { dealId: input.dealId }),
-              },
-          intelligence: repository,
-          runs: dependencies.runs ?? createRunsRepository(getDataClient()),
-          underwritingRuns: dependencies.underwritingRuns
-            ?? getUnderwritingRunsRepository(),
-        }).catch((error) => {
-          if (
-            input.reportId === undefined
-            && error instanceof ReportScopeNotFoundError
-          ) return null;
-          throw error;
-        })
-      : null;
-    const scopedReport = resolvedScope?.report ?? null;
-    const scopedDealId = resolvedScope?.dealId ?? null;
-    const scopedContextFingerprint = scopedReport?.evidenceContext?.state === "current"
-      ? scopedReport.evidenceContext.contextFingerprint
-      : null;
-    const scopedDeal = scopedDealId === null
-      ? null
-      : await (dependencies.dealRegistry ?? getDealRegistry()).findForWorkspace({
-          workspaceId: context.workspaceId,
-          dealId: scopedDealId,
-        });
+    if (isDurableWorkspaceMode(context.mode)) {
+      return answerDurableFinalizedChat({
+        context,
+        request: input,
+        dependencies,
+        repository,
+      });
+    }
+
+    const claude = process.env.ANTHROPIC_API_KEY ? createClaudeClient() : null;
     const service = createGroundedChatService({
       async searchExistingData({ question }) {
         return [
@@ -480,9 +716,9 @@ export async function POST(
             : []),
           ...await searchRuntimeIntelligence(
             question,
-            scopedReport,
+            null,
             context.mode,
-            scopedDealId,
+            null,
           ),
         ];
       },
@@ -491,11 +727,11 @@ export async function POST(
           question,
           context.workspaceId,
           context.mode,
-          scopedReport,
-          resolvedScope?.run.id ?? null,
-          scopedDealId,
-          scopedContextFingerprint,
-          scopedDeal?.activeSourceRevisionFingerprint ?? null,
+          null,
+          null,
+          null,
+          null,
+          null,
           dependencies,
         );
       },
@@ -515,15 +751,7 @@ export async function POST(
     });
     return jsonOk({
       ...answer,
-      scope: resolvedScope === null
-        ? null
-        : {
-            reportId: resolvedScope.report.id,
-            runId: resolvedScope.run.id,
-            dealId: resolvedScope.dealId,
-            evidenceContext: resolvedScope.report.evidenceContext
-              ?? { state: "legacy_unbound" },
-          },
+      scope: null,
     });
   } catch (error) {
     return errorResponse(error);
