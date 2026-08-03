@@ -10,6 +10,12 @@ import {
   IntegrationTransportError,
   isRetryableTransportStatus,
 } from "../../lib/api/errors";
+import {
+  WritableSourceRefV2Schema,
+  sourceTextForRetrieval,
+  type WritableSourceRefV2,
+} from "../../lib/contracts/source-evidence";
+import { DealFactSchema, type DealFact } from "../../lib/contracts/domain";
 
 export interface SourceEvidenceInput {
   id: string;
@@ -33,6 +39,8 @@ export interface SourceEvidenceInput {
   verificationMethod: string | null;
   freshness: Fact["freshness"];
   acceptedForGate: boolean;
+  sourceRef?: WritableSourceRefV2;
+  semanticFields?: NonNullable<DealFact["semanticFields"]>;
 }
 
 export interface SavedEvidencePack {
@@ -377,6 +385,25 @@ function validateSourceEvidenceInput(
     ["An evidence value", candidate.value],
   ] as const) {
     requiredText(value, label);
+  }
+  if (candidate.sourceRef !== undefined) {
+    const sourceRef = WritableSourceRefV2Schema.parse(candidate.sourceRef);
+    if (
+      sourceRef.id !== candidate.id
+      || sourceRef.provenance !== "public_web"
+      || sourceRef.documentId !== candidate.sourceId
+      || sourceRef.sourceRevisionId !== candidate.sourceRevisionId
+      || sourceTextForRetrieval(sourceRef) !== candidate.value
+    ) {
+      throw new Error(
+        "Canonical public source evidence must preserve exact identity and reviewed text.",
+      );
+    }
+    candidate.sourceRef = sourceRef;
+  }
+  if (candidate.semanticFields !== undefined) {
+    candidate.semanticFields = DealFactSchema.shape.semanticFields.unwrap()
+      .parse(candidate.semanticFields);
   }
   return candidate;
 }

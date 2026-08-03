@@ -155,6 +155,10 @@ export const sourceDocuments = pgTable("source_documents", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("source_documents_checksum_idx").on(table.checksum),
+  check(
+    "source_documents_role_check",
+    sql`${table.role} in ('deal_document', 'market_report', 'reference', 'public_web_snapshot', 'sample_decision_record')`,
+  ),
 ]);
 
 export const workspaceDocuments = pgTable("workspace_documents", {
@@ -517,6 +521,9 @@ export const dealInteractions = pgTable("deal_interactions", {
   concerns: jsonb("concerns").$type<string[]>().notNull().default([]),
   revisitConditions: jsonb("revisit_conditions").$type<string[]>().notNull().default([]),
   meetingSummary: text("meeting_summary").notNull(),
+  priorActions: jsonb("prior_actions").$type<string[]>(),
+  actionPolicyVersion: text("action_policy_version"),
+  interactionSchemaVersion: text("interaction_schema_version"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   primaryKey({ columns: [table.workspaceId, table.id] }),

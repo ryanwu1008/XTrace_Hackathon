@@ -99,6 +99,13 @@
       "when": 1785661200000,
       "tag": "0019_belief_reversal_evidence_context",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785751200000,
+      "tag": "0020_belief_reversal_demo_seed",
+      "breakpoints": true
     }
   ]
 }

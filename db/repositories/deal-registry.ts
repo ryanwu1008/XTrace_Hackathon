@@ -2,8 +2,11 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  DealFactSchema,
   DealMemoryBundleSchema,
   DealStatusSchema,
+  BeliefActionKindSchema,
+  SampleDecisionStatusSchema,
   type DealMemoryBundle,
   type DealStatus,
 } from "../../lib/contracts/domain";
@@ -23,6 +26,13 @@ import {
   structuredImageDealFact,
   type CanonicalStructuredImageEvidence,
 } from "../../lib/uploads/structured-image-evidence";
+import {
+  assertConsistentCanonicalEvidenceUnits,
+  WritableSourceRefV2Schema,
+  sourceTextForRetrieval,
+} from "../../lib/contracts/source-evidence";
+import { metadataForBeliefActionKind } from "../../lib/reports/action-policy";
+import { buildSampleDecisionSourceRef } from "../../lib/belief-reversal/sample-decision-source";
 
 export interface RegisteredDeal {
   id: string;
@@ -311,12 +321,18 @@ function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
 
-function canonicalImageFactFromRow(input: {
+function canonicalDealFactFromRow(input: {
   row: Record<string, unknown>;
   expectedWorkspaceId: string;
   expectedDealId: string;
   activeAssignments: ReadonlySet<string>;
   titleForSource(sourceId: string): string;
+  roleForSource(sourceId: string): string | null;
+  revisionForId(revisionId: string): {
+    workspaceId: string;
+    sourceId: string;
+    contentHash: string;
+  } | null;
 }) {
   const payload = input.row.payload;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -349,6 +365,38 @@ function canonicalImageFactFromRow(input: {
       "Canonical image evidence does not preserve exact source identity.",
     );
   }
+  if (item.sourceRef !== undefined) {
+    const source = WritableSourceRefV2Schema.parse(item.sourceRef);
+    const revision = input.revisionForId(rowIdentity.sourceRevisionId);
+    if (
+      source.id !== rowIdentity.id
+      || source.provenance !== "public_web"
+      || source.documentId !== rowIdentity.sourceId
+      || source.sourceRevisionId !== rowIdentity.sourceRevisionId
+      || source.title !== input.titleForSource(rowIdentity.sourceId)
+      || input.roleForSource(rowIdentity.sourceId) !== "public_web_snapshot"
+      || revision?.workspaceId !== rowIdentity.workspaceId
+      || revision.sourceId !== rowIdentity.sourceId
+      || revision.contentHash !== source.contentFingerprint
+      || typeof item.value !== "string"
+      || item.value.trim() === ""
+      || sourceTextForRetrieval(source) !== item.value
+    ) {
+      throw new Error(
+        "Canonical public-web evidence does not preserve exact source identity and reviewed text.",
+      );
+    }
+    return {
+      text: item.value,
+      sources: [source],
+      ...(item.semanticFields === undefined
+        ? {}
+        : {
+            semanticFields: DealFactSchema.shape.semanticFields.unwrap()
+              .parse(item.semanticFields),
+          }),
+    };
+  }
   const evidence: CanonicalStructuredImageEvidence = {
     ...rowIdentity,
     provenanceOrigin: String(item.provenanceOrigin ?? ""),
@@ -363,6 +411,92 @@ function canonicalImageFactFromRow(input: {
     evidence,
     title: input.titleForSource(evidence.sourceId),
   });
+}
+
+function dealInteractionFromRow(input: {
+  row: Record<string, unknown>;
+  expectedStatus: DealStatus;
+  documentRole: string | null;
+  revision: {
+    workspaceId: string;
+    sourceId: string;
+    contentHash: string;
+    extractedAt: string;
+  } | null;
+}) {
+  const occurredAt = requiredIsoDateTime(
+    String(input.row.occurred_at),
+    "An interaction occurrence time",
+  );
+  const base = {
+    id: String(input.row.id),
+    occurredAt,
+    summary: String(input.row.meeting_summary),
+    decisionReason: String(input.row.decision_reason),
+    concerns: input.row.concerns,
+    revisitConditions: input.row.revisit_conditions,
+    provenance: input.row.provenance,
+    label: input.row.label,
+  };
+  const isVersioned = input.row.interaction_schema_version != null
+    || input.row.action_policy_version != null
+    || input.row.prior_actions != null;
+  if (!isVersioned) return base;
+  const documentId = String(input.row.document_id ?? "");
+  const sourceRevisionId = String(input.row.source_revision_id ?? "");
+  const priorKinds = Array.isArray(input.row.prior_actions)
+    ? input.row.prior_actions
+    : [];
+  const status = SampleDecisionStatusSchema.safeParse(input.row.status);
+  const concerns = input.row.concerns;
+  const revisitConditions = input.row.revisit_conditions;
+  if (
+    input.documentRole !== "sample_decision_record"
+    || !status.success
+    || status.data !== input.expectedStatus
+    || priorKinds.length === 0
+    || !priorKinds.every((kind) => typeof kind === "string")
+    || !Array.isArray(concerns)
+    || !concerns.every((concern) => typeof concern === "string")
+    || !Array.isArray(revisitConditions)
+    || !revisitConditions.every((condition) => typeof condition === "string")
+    || !String(input.row.action_policy_version ?? "").trim()
+    || !String(input.row.interaction_schema_version ?? "").trim()
+    || input.revision?.workspaceId !== String(input.row.workspace_id ?? "")
+    || input.revision.sourceId !== documentId
+    || !/^sha256:[0-9a-f]{64}$/u.test(input.revision.contentHash)
+  ) {
+    throw new Error(
+      "Versioned Sample decision interaction does not preserve exact source ownership.",
+    );
+  }
+  const priorActions = priorKinds.map((value) => {
+    const kind = BeliefActionKindSchema.parse(value);
+    return { kind, ...metadataForBeliefActionKind(kind) };
+  });
+  const actionPolicyVersion = String(input.row.action_policy_version);
+  const interactionSchemaVersion = String(input.row.interaction_schema_version);
+  return {
+    ...base,
+    priorActions,
+    actionPolicyVersion,
+    interactionSchemaVersion,
+    source: buildSampleDecisionSourceRef({
+      id: base.id,
+      documentId,
+      sourceRevisionId,
+      contentFingerprint: input.revision.contentHash,
+      occurredAt,
+      retrievedAt: requiredIsoDateTime(
+        input.revision.extractedAt,
+        "A Sample decision retrieval time",
+      ),
+      summary: base.summary,
+      decisionReason: base.decisionReason,
+      concerns,
+      revisitConditions,
+    }),
+  };
 }
 
 function confirmationFingerprint(
@@ -1229,7 +1363,7 @@ export function createSupabaseDealRegistry(options: {
         deal_id: dealFilter,
         order: "deal_id.asc,occurred_at.asc,id.asc",
         select:
-          "id,workspace_id,deal_id,document_id,source_revision_id,occurred_at,meeting_summary,decision_reason,concerns,revisit_conditions,provenance,label",
+          "id,workspace_id,deal_id,document_id,source_revision_id,occurred_at,meeting_summary,decision_reason,concerns,revisit_conditions,provenance,label,status,prior_actions,action_policy_version,interaction_schema_version",
       });
       const canonicalEvidenceQuery = new URLSearchParams({
         workspace_id: `eq.${workspaceId}`,
@@ -1264,7 +1398,7 @@ export function createSupabaseDealRegistry(options: {
           `/source_documents?${
             new URLSearchParams({
               id: `in.(${documentIds.map(encodeURIComponent).join(",")})`,
-              select: "id,title",
+              select: "id,title,role",
             })
           }`,
         ) as Record<string, unknown>[]
@@ -1272,6 +1406,30 @@ export function createSupabaseDealRegistry(options: {
       const documentTitles = new Map(
         documentRows.map((row) => [String(row.id), String(row.title)]),
       );
+      const documentRoles = new Map(
+        documentRows.map((row) => [String(row.id), String(row.role ?? "")]),
+      );
+      const activeRevisionIdList = [
+        ...new Set([...revisionMap.values()].flatMap((items) =>
+          items.map((item) => item.revisionId)
+        )),
+      ];
+      const revisionRows = activeRevisionIdList.length === 0
+        ? []
+        : await request(`/source_revisions?${new URLSearchParams({
+          workspace_id: `eq.${workspaceId}`,
+          id: `in.(${activeRevisionIdList.map(encodeURIComponent).join(",")})`,
+          select: "workspace_id,id,source_id,content_hash,extracted_at",
+        })}`) as Record<string, unknown>[];
+      const revisionsById = new Map(revisionRows.map((revision) => [
+        String(revision.id),
+        {
+          workspaceId: String(revision.workspace_id),
+          sourceId: String(revision.source_id),
+          contentHash: String(revision.content_hash),
+          extractedAt: String(revision.extracted_at ?? ""),
+        },
+      ]));
 
       return dealRows.map((row) => {
         const dealId = String(row.id);
@@ -1309,16 +1467,23 @@ export function createSupabaseDealRegistry(options: {
           }
         }
         const canonicalImageFacts = dealCanonicalEvidence.flatMap((item) => {
-          const fact = canonicalImageFactFromRow({
+          const fact = canonicalDealFactFromRow({
             row: item,
             expectedWorkspaceId: workspaceId,
             expectedDealId: dealId,
             activeAssignments,
             titleForSource: (sourceId) =>
               documentTitles.get(sourceId) ?? sourceId,
+            roleForSource: (sourceId) => documentRoles.get(sourceId) ?? null,
+            revisionForId: (revisionId) =>
+              revisionsById.get(revisionId) ?? null,
           });
           return fact ? [fact] : [];
         });
+        assertConsistentCanonicalEvidenceUnits(
+          canonicalImageFacts.flatMap((fact) => fact.sources)
+            .filter((source) => "schemaVersion" in source),
+        );
         return DealMemoryBundleSchema.parse({
           dealId,
           companyName: row.company_name,
@@ -1338,19 +1503,18 @@ export function createSupabaseDealRegistry(options: {
             })),
             ...canonicalImageFacts,
           ],
-          interactions: dealInteractions.map((interaction) => ({
-            id: interaction.id,
-            occurredAt: requiredIsoDateTime(
-              String(interaction.occurred_at),
-              "An interaction occurrence time",
-            ),
-            summary: interaction.meeting_summary,
-            decisionReason: interaction.decision_reason,
-            concerns: interaction.concerns,
-            revisitConditions: interaction.revisit_conditions,
-            provenance: interaction.provenance,
-            label: interaction.label,
-          })),
+          interactions: dealInteractions.map((interaction) =>
+            dealInteractionFromRow({
+              row: interaction,
+              expectedStatus: DealStatusSchema.parse(row.status),
+              documentRole: documentRoles.get(
+                String(interaction.document_id),
+              ) ?? null,
+              revision: revisionsById.get(
+                String(interaction.source_revision_id),
+              ) ?? null,
+            })
+          ),
         });
       }).sort((left, right) =>
         compareUtf8(left.companyName, right.companyName)
@@ -1387,12 +1551,23 @@ export function createSupabaseDealRegistry(options: {
         select:
           "workspace_id,evidence_id,deal_id,source_id,source_revision_id,payload",
       });
+      const interactionQuery = new URLSearchParams({
+        workspace_id: `eq.${input.workspaceId}`,
+        deal_id: `eq.${input.dealId}`,
+        document_id: `eq.${input.sourceId}`,
+        source_revision_id: `eq.${input.sourceRevisionId}`,
+        order: "occurred_at.asc,id.asc",
+        select:
+          "id,workspace_id,deal_id,document_id,source_revision_id,occurred_at,meeting_summary,decision_reason,concerns,revisit_conditions,provenance,label,status,prior_actions,action_policy_version,interaction_schema_version",
+      });
       const [
         deal,
         assignmentRows,
         evidenceRows,
         canonicalEvidenceRows,
+        interactionRows,
         documentRows,
+        revisionRows,
       ] =
         await Promise.all([
           findForWorkspace({
@@ -1408,13 +1583,22 @@ export function createSupabaseDealRegistry(options: {
           request(`/source_evidence_items?${canonicalEvidenceQuery}`) as Promise<
             Record<string, unknown>[]
           >,
+          request(`/deal_interactions?${interactionQuery}`) as Promise<
+            Record<string, unknown>[]
+          >,
           request(`/source_documents?${
             new URLSearchParams({
               id: `eq.${input.sourceId}`,
-              select: "id,title",
+              select: "id,title,role",
               limit: "1",
             })
           }`) as Promise<Record<string, unknown>[]>,
+          request(`/source_revisions?${new URLSearchParams({
+            workspace_id: `eq.${input.workspaceId}`,
+            id: `eq.${input.sourceRevisionId}`,
+            select: "workspace_id,id,source_id,content_hash,extracted_at",
+            limit: "1",
+          })}`) as Promise<Record<string, unknown>[]>,
         ]);
       if (!deal || assignmentRows.length !== 1) {
         return null;
@@ -1438,15 +1622,29 @@ export function createSupabaseDealRegistry(options: {
         JSON.stringify([input.sourceId, input.sourceRevisionId]),
       ]);
       const canonicalImageFacts = canonicalEvidenceRows.flatMap((item) => {
-        const fact = canonicalImageFactFromRow({
+        const fact = canonicalDealFactFromRow({
           row: item,
           expectedWorkspaceId: input.workspaceId,
           expectedDealId: input.dealId,
           activeAssignments,
           titleForSource: () => title,
+          roleForSource: () => documentRows[0]
+            ? String(documentRows[0].role ?? "")
+            : null,
+          revisionForId: () => revisionRows[0]
+            ? {
+                workspaceId: String(revisionRows[0].workspace_id),
+                sourceId: String(revisionRows[0].source_id),
+                contentHash: String(revisionRows[0].content_hash),
+              }
+            : null,
         });
         return fact ? [fact] : [];
       });
+      assertConsistentCanonicalEvidenceUnits(
+        canonicalImageFacts.flatMap((fact) => fact.sources)
+          .filter((source) => "schemaVersion" in source),
+      );
       return {
         ...input,
         bundle: DealMemoryBundleSchema.parse({
@@ -1467,7 +1665,23 @@ export function createSupabaseDealRegistry(options: {
             })),
             ...canonicalImageFacts,
           ],
-          interactions: [],
+          interactions: interactionRows.map((interaction) =>
+            dealInteractionFromRow({
+              row: interaction,
+              expectedStatus: deal.status,
+              documentRole: documentRows[0]
+                ? String(documentRows[0].role ?? "")
+                : null,
+              revision: revisionRows[0]
+                ? {
+                    workspaceId: String(revisionRows[0].workspace_id),
+                    sourceId: String(revisionRows[0].source_id),
+                    contentHash: String(revisionRows[0].content_hash),
+                    extractedAt: String(revisionRows[0].extracted_at ?? ""),
+                  }
+                : null,
+            })
+          ),
         }),
       };
     },

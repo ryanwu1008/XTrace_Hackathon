@@ -65,6 +65,12 @@ export const BeliefActionKindSchema = z.enum([
   "no_new_action",
   "review_analysis_failure",
 ]);
+
+export const SampleDecisionStatusSchema = z.enum([
+  "passed",
+  "watchlist",
+  "invested",
+]);
 export const BeliefActionScopeSchema = z.enum([
   "deal",
   "portfolio",
@@ -228,9 +234,85 @@ function sameStringSet(
     && left.every((value) => right.has(value));
 }
 
+export const CanonicalSemanticFieldIdSchema = z.enum([
+  "company_identity",
+  "legal_name",
+  "official_domain",
+  "founders",
+  "founding_date",
+  "stage",
+  "business_model",
+  "geography",
+  "security_type",
+  "arr",
+  "revenue",
+  "customer_evidence",
+  "customer_count",
+  "cash",
+  "burn",
+  "runway",
+  "retention",
+  "reported_valuation",
+  "reported_valuation_basis",
+  "round",
+  "raise",
+  "unknowns",
+]);
+
+const SemanticFieldIdentityShape = {
+  id: z.string().regex(/^semantic-field-[a-f0-9]{24}$/),
+  schemaVersion: z.literal("deal-semantic-field-v1"),
+} as const;
+
 export const DealFactSchema = z.object({
   text: z.string().min(1),
   sources: z.array(EvidenceSourceRefSchema).min(1),
+  semanticFields: z.array(z.discriminatedUnion("classification", [
+    z.strictObject({
+      ...SemanticFieldIdentityShape,
+      fieldId: CanonicalSemanticFieldIdSchema,
+      classification: z.literal("fact"),
+      availability: z.literal("available"),
+      value: z.string().min(1),
+      basis: z.string().min(1).optional(),
+      asOfDate: z.string().date().optional(),
+      sourceIds: z.array(z.string().min(1)).min(1),
+    }),
+    z.strictObject({
+      ...SemanticFieldIdentityShape,
+      fieldId: CanonicalSemanticFieldIdSchema,
+      classification: z.literal("unavailable"),
+      availability: z.literal("unavailable"),
+      reason: z.string().min(1),
+      checkedSourceIds: z.array(z.string().min(1)).min(1),
+    }),
+    z.strictObject({
+      ...SemanticFieldIdentityShape,
+      fieldId: z.literal("founding_date"),
+      classification: z.literal("conflicting"),
+      observations: z.array(z.strictObject({
+        value: z.string().min(1),
+        sourceId: z.string().min(1),
+      })).min(2),
+    }),
+    z.strictObject({
+      ...SemanticFieldIdentityShape,
+      fieldId: z.literal("security_type"),
+      classification: z.literal("assumption"),
+      value: z.literal("preferred"),
+      basis: z.literal("assumption"),
+      requiresConfirmation: z.literal(true),
+      assumptionPolicyVersion: z.literal("belief-reversal-demo-context-v1"),
+      rationale: z.string().min(1),
+      sourceBoundary: z.string().min(1),
+    }),
+    z.strictObject({
+      ...SemanticFieldIdentityShape,
+      fieldId: z.literal("unknowns"),
+      classification: z.literal("unknown"),
+      reason: z.string().min(1),
+    }),
+  ])).optional(),
 });
 
 export const DealInteractionSchema = z.object({
@@ -241,8 +323,11 @@ export const DealInteractionSchema = z.object({
   concerns: z.array(z.string()),
   revisitConditions: z.array(z.string()),
   priorActions: z.array(BeliefActionSchema).min(1).optional(),
+  actionPolicyVersion: z.string().min(1).optional(),
+  interactionSchemaVersion: z.string().min(1).optional(),
   provenance: z.literal("demo_fixture"),
   label: z.literal(DEMO_FIXTURE_LABEL),
+  source: SourceRefV2Schema.optional(),
 });
 
 export const DealMemoryBundleSchema = z.object({

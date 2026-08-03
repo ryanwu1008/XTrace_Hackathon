@@ -883,7 +883,7 @@ test("Supabase eligible bundles normalize PostgREST offset interaction timestamp
           workspace_id: "workspace_one",
           company_id: "company_one",
           company_name: "Company one",
-          status: "screening",
+          status: "invested",
           analysis_eligible_at: "2026-07-28T11:00:00+00:00",
           active_source_revision_fingerprint:
             sourceRevisionFingerprint(["revision_one"]),
@@ -910,12 +910,27 @@ test("Supabase eligible bundles normalize PostgREST offset interaction timestamp
           revisit_conditions: ["Enterprise traction"],
           provenance: "demo_fixture",
           label: "Sample decision record",
+          status: "invested",
+          prior_actions: ["continue_monitoring"],
+          action_policy_version: "belief-action-policy-v1",
+          interaction_schema_version: "sample-decision-interaction-v1",
+        }]);
+      }
+      if (url.includes("/source_revisions?")) {
+        return Response.json([{
+          workspace_id: "workspace_one",
+          id: "revision_one",
+          source_id: "source_one",
+          content_hash:
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          extracted_at: "2026-07-28T11:00:00.000Z",
         }]);
       }
       if (url.includes("/source_documents?")) {
         return Response.json([{
           id: "source_one",
-          title: "meeting.md",
+          title: "Sample decision record",
+          role: "sample_decision_record",
         }]);
       }
       return Response.json([]);
@@ -926,6 +941,55 @@ test("Supabase eligible bundles normalize PostgREST offset interaction timestamp
   assert.equal(
     bundles[0]?.interactions[0]?.occurredAt,
     "2026-07-28T10:00:00.000Z",
+  );
+  assert.equal(
+    bundles[0]?.interactions[0]?.actionPolicyVersion,
+    "belief-action-policy-v1",
+  );
+  assert.equal(
+    bundles[0]?.interactions[0]?.interactionSchemaVersion,
+    "sample-decision-interaction-v1",
+  );
+  assert.deepEqual(bundles[0]?.interactions[0]?.source, {
+    schemaVersion: "source-ref-v2",
+    adaptation: "canonical",
+    id: "interaction_one",
+    provenance: "demo_fixture",
+    title: "Sample decision record",
+    canonicalUrl: null,
+    documentId: "source_one",
+    publisher: "Internal Deal Registry",
+    providerId: "deal-registry",
+    eventAt: "2026-07-28T10:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: "2026-07-28T11:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: [],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: "revision_one",
+    locator: { kind: "json_pointer", pointer: "/priorDecision" },
+    contentFingerprint:
+      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Sample decision record. Founder meeting. Decision reason: Market timing was early. Concerns: Adoption. Revisit conditions: Enterprise traction.",
+    },
+  });
+  assert.deepEqual(
+    (await repository.getExactSourceBundle({
+      workspaceId: "workspace_one",
+      dealId: "deal_one",
+      sourceId: "source_one",
+      sourceRevisionId: "revision_one",
+    }))?.bundle.interactions,
+    bundles[0]?.interactions,
   );
 });
 
@@ -1186,6 +1250,218 @@ test("Supabase Deal memory excludes quarantined legacy image summaries", async (
       "is.null",
     );
   }
+});
+
+test("Supabase Deal memory projects canonical public web text with exact revision and quote boundaries", async () => {
+  const canonicalRows = [
+    {
+      workspace_id: "workspace_one",
+      evidence_id: "claim_exact",
+      deal_id: "deal_public",
+      source_id: "source_public",
+      source_revision_id: "revision_public",
+      payload: {
+        id: "claim_exact",
+        workspaceId: "workspace_one",
+        dealId: "deal_public",
+        sourceId: "source_public",
+        sourceRevisionId: "revision_public",
+        provenanceOrigin: "public_source",
+        field: "public_claim",
+        value: "Henry AI reports that deployments reduced document work by 95%.",
+        unit: null,
+        currency: null,
+        periodStart: null,
+        periodEnd: null,
+        publishedAt: "2026-07-29T00:00:00.000Z",
+        eventAt: "2026-07-29T00:00:00.000Z",
+        retrievedAt: "2026-08-01T00:00:00.000Z",
+        locator: {
+          kind: "web_snapshot",
+          url: "https://example.com/henry",
+          excerpt: "deployments reduced document work by 95%",
+        },
+        sourceRole: "independent_third_party",
+        assertionStatus: "reported",
+        verificationMethod: "reviewed_public_snapshot_v1",
+        freshness: "current",
+        acceptedForGate: true,
+        sourceRef: {
+          schemaVersion: "source-ref-v2",
+          adaptation: "canonical",
+          id: "claim_exact",
+          provenance: "public_web",
+          title: "Henry AI customer result",
+          canonicalUrl: "https://example.com/henry",
+          documentId: "source_public",
+          publisher: "Example Publisher",
+          providerId: "belief_reversal_snapshot_v1",
+          eventAt: "2026-07-29",
+          eventAtPrecision: "date",
+          publishedAt: "2026-07-29",
+          publishedAtPrecision: "date",
+          retrievedAt: "2026-08-01",
+          retrievedAtPrecision: "date",
+          updatedAt: null,
+          updatedAtPrecision: null,
+          entityKeys: ["henry_ai"],
+          sourceClass: "company_official",
+          sourceAuthority: "primary",
+          evidenceRole: "trigger",
+          sourceRevisionId: "revision_public",
+          locator: { kind: "web_text", selector: "reviewed excerpt" },
+          contentFingerprint:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          text: {
+            status: "verified_exact",
+            verbatimExcerpt: "deployments reduced document work by 95%",
+            normalizedStatement:
+              "Henry AI reports that deployments reduced document work by 95%.",
+          },
+        },
+      },
+    },
+    {
+      workspace_id: "workspace_one",
+      evidence_id: "claim_normalized",
+      deal_id: "deal_public",
+      source_id: "source_public",
+      source_revision_id: "revision_public",
+      payload: {
+        id: "claim_normalized",
+        workspaceId: "workspace_one",
+        dealId: "deal_public",
+        sourceId: "source_public",
+        sourceRevisionId: "revision_public",
+        provenanceOrigin: "public_source",
+        field: "public_claim",
+        value: "Henry AI sells enterprise legal workflow software.",
+        unit: null,
+        currency: null,
+        periodStart: null,
+        periodEnd: null,
+        publishedAt: "2026-07-29T00:00:00.000Z",
+        eventAt: "2026-07-29T00:00:00.000Z",
+        retrievedAt: "2026-08-01T00:00:00.000Z",
+        locator: {
+          kind: "web_snapshot",
+          url: "https://example.com/henry",
+          excerpt: "enterprise legal workflow software",
+        },
+        sourceRole: "independent_third_party",
+        assertionStatus: "reported",
+        verificationMethod: "reviewed_public_snapshot_v1",
+        freshness: "current",
+        acceptedForGate: true,
+        sourceRef: {
+          schemaVersion: "source-ref-v2",
+          adaptation: "canonical",
+          id: "claim_normalized",
+          provenance: "public_web",
+          title: "Henry AI customer result",
+          canonicalUrl: "https://example.com/henry",
+          documentId: "source_public",
+          publisher: "Example Publisher",
+          providerId: "belief_reversal_snapshot_v1",
+          eventAt: "2026-07-29",
+          eventAtPrecision: "date",
+          publishedAt: "2026-07-29",
+          publishedAtPrecision: "date",
+          retrievedAt: "2026-08-01",
+          retrievedAtPrecision: "date",
+          updatedAt: null,
+          updatedAtPrecision: null,
+          entityKeys: ["henry_ai"],
+          sourceClass: "company_official",
+          sourceAuthority: "primary",
+          evidenceRole: "trigger",
+          sourceRevisionId: "revision_public",
+          locator: { kind: "web_text", selector: "reviewed statement" },
+          contentFingerprint:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          text: {
+            status: "normalized_only",
+            normalizedStatement:
+              "Henry AI sells enterprise legal workflow software.",
+          },
+        },
+      },
+    },
+  ];
+  const repository = createSupabaseDealRegistry({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    fetchImpl: async (input) => {
+      const url = String(input);
+      const query = new URL(url).searchParams;
+      if (url.includes("/deals?")) {
+        return Response.json([{
+          id: "deal_public",
+          workspace_id: "workspace_one",
+          company_id: "company_public",
+          company_name: "Henry AI",
+          status: "passed",
+          analysis_eligible_at: "2026-08-01T00:00:00.000Z",
+          active_source_revision_fingerprint:
+            sourceRevisionFingerprint(["revision_public"]),
+        }]);
+      }
+      if (url.includes("/deal_source_assignments?")) {
+        if (query.get("select") === "source_revision_id") {
+          return Response.json([{ source_revision_id: "revision_public" }]);
+        }
+        return Response.json([{
+          deal_id: "deal_public",
+          source_id: "source_public",
+          source_revision_id: "revision_public",
+        }]);
+      }
+      if (url.includes("/source_revisions?")) {
+        return Response.json([{
+          workspace_id: "workspace_one",
+          id: "revision_public",
+          source_id: "source_public",
+          content_hash:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          extracted_at: "2026-08-01T00:00:00.000Z",
+        }]);
+      }
+      if (url.includes("/source_evidence_items?")) {
+        return Response.json(canonicalRows);
+      }
+      if (url.includes("/source_documents?")) {
+        return Response.json([{
+          id: "source_public",
+          title: "Henry AI customer result",
+          role: "public_web_snapshot",
+        }]);
+      }
+      return Response.json([]);
+    },
+  });
+
+  const expectedFacts = canonicalRows.map((row) => ({
+    text: row.payload.value,
+    sources: [row.payload.sourceRef],
+  }));
+  const [bundle] = await repository.listAnalysisEligibleBundles(
+    "workspace_one",
+  );
+  assert.deepEqual(bundle?.facts, expectedFacts);
+  assert.equal(
+    "verbatimExcerpt" in expectedFacts[1]!.sources[0]!.text,
+    false,
+    "normalized-only evidence must never become quote-eligible",
+  );
+  assert.deepEqual(
+    (await repository.getExactSourceBundle({
+      workspaceId: "workspace_one",
+      dealId: "deal_public",
+      sourceId: "source_public",
+      sourceRevisionId: "revision_public",
+    }))?.bundle.facts,
+    expectedFacts,
+  );
 });
 
 test("Supabase Deal memory rejects canonical image evidence with foreign exact source identity", async () => {

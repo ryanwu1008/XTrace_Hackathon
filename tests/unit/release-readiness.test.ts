@@ -363,6 +363,7 @@ const migrationNames = [
   "0017_public_sandbox_test_generations.sql",
   "0018_pgcrypto_registry_schema_usage.sql",
   "0019_belief_reversal_evidence_context.sql",
+  "0020_belief_reversal_demo_seed.sql",
 ];
 
 const migrationTestNames = [
@@ -378,6 +379,7 @@ const migrationTestNames = [
   "tests/integration/public-sandbox-reset-migration.test.ts",
   "tests/integration/pgcrypto-registry-schema-usage-migration.test.ts",
   "tests/integration/belief-reversal-evidence-context-migration.test.ts",
+  "tests/integration/belief-reversal-demo-seed-migration.test.ts",
 ];
 
 test("release migration verification is serial and includes every migration suite", async () => {
@@ -428,7 +430,7 @@ test("release verification has a mandatory PostgreSQL 17.6 Supabase profile gate
   }
 });
 
-test("the physical migration chain is contiguous from 0000 through 0019", async () => {
+test("the physical migration chain is contiguous from 0000 through 0020", async () => {
   const actual = (await readdir(new URL("drizzle/", repositoryRoot)))
     .filter((filename) => /^\d{4}_.+\.sql$/.test(filename))
     .sort();
@@ -436,7 +438,7 @@ test("the physical migration chain is contiguous from 0000 through 0019", async 
   assert.deepEqual(actual, migrationNames);
 });
 
-test("journaled forward migrations preserve physical order and include 0010 through 0019", async () => {
+test("journaled forward migrations preserve physical order and include 0010 through 0020", async () => {
   const journal = JSON.parse(
     await readFile(
       new URL("drizzle/meta/_journal.json", repositoryRoot),
@@ -449,7 +451,7 @@ test("journaled forward migrations preserve physical order and include 0010 thro
   );
 
   assert.deepEqual(
-    actualForwardEntries.filter((tag) => /^001[0-9]_/.test(tag)),
+    actualForwardEntries.filter((tag) => /^(?:001[0-9]|0020)_/.test(tag)),
     physicalTags.slice(10),
   );
   let previousPhysicalPosition = -1;

@@ -19,6 +19,7 @@ import type { MatchingMemoryContext } from "./service";
 export function interactionSourceV2(
   interaction: DealInteraction,
 ): SourceRefV2 {
+  if (interaction.source) return structuredClone(interaction.source);
   return {
     schemaVersion: "source-ref-v2",
     adaptation: "canonical",

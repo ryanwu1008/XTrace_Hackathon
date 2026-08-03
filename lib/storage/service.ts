@@ -40,6 +40,22 @@ export interface StoredCorpusDocument extends PreloadedDocument {
   objectKey: string;
 }
 
+export type SourceDocumentRole = PreloadedDocument["role"]
+  | "public_web_snapshot"
+  | "sample_decision_record";
+
+export interface ImmutableSourceDocumentRecord {
+  id: string;
+  filename: string;
+  title: string;
+  role: SourceDocumentRole;
+  companyName: string | null;
+  dealId: string | null;
+  checksum: string;
+  byteSize: number;
+  objectKey: string;
+}
+
 export interface WorkspaceDocumentRecord {
   workspaceId: string;
   documentId: string;
@@ -58,6 +74,10 @@ export interface DemoDealRecord {
   companyName: string;
 }
 
+export interface ImmutableBeliefReversalDealRecord extends DemoDealRecord {
+  status: "passed" | "watchlist" | "invested";
+}
+
 export interface StoredEvidenceRecord extends DemoDealEvidence {
   workspaceId: string;
   sourceRevisionId?: string;
@@ -66,6 +86,35 @@ export interface StoredEvidenceRecord extends DemoDealEvidence {
 export interface StoredFixtureRecord extends DemoFixture {
   workspaceId: string;
   sourceRevisionId?: string;
+  priorActions?: string[];
+  actionPolicyVersion?: string;
+  interactionSchemaVersion?: string;
+}
+
+export interface SampleDecisionInteractionRecord
+  extends Omit<StoredFixtureRecord, "sourceRevisionId"> {
+  sourceRevisionId: string;
+  priorActions: string[];
+  actionPolicyVersion: string;
+  interactionSchemaVersion: string;
+}
+
+export interface BeliefReversalSeedDataStore {
+  ensureWorkspaceDocument(
+    input: WorkspaceDocumentRecord,
+  ): Promise<UpsertResult<WorkspaceDocumentRecord>>;
+  ensureImmutableSourceDocument(
+    input: ImmutableSourceDocumentRecord,
+  ): Promise<UpsertResult<ImmutableSourceDocumentRecord>>;
+  ensureImmutableCompany(
+    input: DemoCompanyRecord,
+  ): Promise<UpsertResult<DemoCompanyRecord>>;
+  ensureImmutableDeal(
+    input: ImmutableBeliefReversalDealRecord,
+  ): Promise<UpsertResult<ImmutableBeliefReversalDealRecord>>;
+  ensureSampleDecisionInteraction(
+    input: SampleDecisionInteractionRecord,
+  ): Promise<UpsertResult<SampleDecisionInteractionRecord>>;
 }
 
 export interface DemoDataStore {
@@ -89,7 +138,7 @@ export interface DemoDataSnapshot {
   workspaces: DemoWorkspaceRecord[];
   users: DemoUserRecord[];
   memberships: DemoMembershipRecord[];
-  documents: StoredCorpusDocument[];
+  documents: ImmutableSourceDocumentRecord[];
   workspaceDocuments: WorkspaceDocumentRecord[];
   companies: DemoCompanyRecord[];
   deals: DemoDealRecord[];
@@ -97,7 +146,8 @@ export interface DemoDataSnapshot {
   fixtures: StoredFixtureRecord[];
 }
 
-export interface MemoryDemoDataStore extends DemoDataStore {
+export interface MemoryDemoDataStore
+  extends DemoDataStore, BeliefReversalSeedDataStore {
   inspect(): DemoDataSnapshot;
 }
 
@@ -141,7 +191,7 @@ export function createMemoryDemoDataStore(): MemoryDemoDataStore {
   const workspaces = new Map<string, DemoWorkspaceRecord>();
   const users = new Map<string, DemoUserRecord>();
   const memberships = new Map<string, DemoMembershipRecord>();
-  const documents = new Map<string, StoredCorpusDocument>();
+  const documents = new Map<string, ImmutableSourceDocumentRecord>();
   const workspaceDocuments = new Map<string, WorkspaceDocumentRecord>();
   const companies = new Map<string, DemoCompanyRecord>();
   const deals = new Map<string, DemoDealRecord>();
@@ -161,7 +211,36 @@ export function createMemoryDemoDataStore(): MemoryDemoDataStore {
       if (existing && existing.id !== input.id) {
         throw new Error(`Corpus checksum ${input.checksum} is already assigned to ${existing.id}.`);
       }
-      return ensureMemory(documents, input.checksum, input);
+      const stored: ImmutableSourceDocumentRecord = {
+        id: input.id,
+        filename: input.filename,
+        title: input.title,
+        role: input.role,
+        companyName: input.company ?? null,
+        dealId: input.dealId ?? null,
+        checksum: input.checksum,
+        byteSize: input.byteSize,
+        objectKey: input.objectKey,
+      };
+      const result = await ensureMemory(documents, input.checksum, stored);
+      return { value: structuredClone(input), created: result.created };
+    },
+    ensureImmutableSourceDocument: async (input) => {
+      const existingChecksum = documents.get(input.checksum);
+      if (existingChecksum && existingChecksum.id !== input.id) {
+        throw new Error(
+          `Source checksum ${input.checksum} is already assigned to ${existingChecksum.id}.`,
+        );
+      }
+      const existing = [...documents.values()].find((document) =>
+        document.id === input.id
+      );
+      if (existing && canonicalJson(existing) !== canonicalJson(input)) {
+        throw new Error(
+          `Source document ${input.id} is immutable and already differs.`,
+        );
+      }
+      return ensureImmutableMemory(documents, input.checksum, input);
     },
     ensureWorkspaceDocument: (input) => ensureMemory(
       workspaceDocuments,
@@ -179,11 +258,27 @@ export function createMemoryDemoDataStore(): MemoryDemoDataStore {
       workspaceExternalId(input.workspaceId, input.id),
       input,
     ),
+    ensureImmutableCompany: (input) => ensureImmutableMemory(
+      companies,
+      workspaceExternalId(input.workspaceId, input.id),
+      input,
+    ),
     ensureDeal: (input) => ensureMemory(
       deals,
       workspaceExternalId(input.workspaceId, input.id),
       input,
     ),
+    async ensureImmutableDeal(input) {
+      const result = await ensureImmutableMemory(
+        deals,
+        workspaceExternalId(input.workspaceId, input.id),
+        input,
+      );
+      return {
+        value: structuredClone(input),
+        created: result.created,
+      };
+    },
     ensureEvidence: (input) => ensureMemory(
       evidence,
       workspaceExternalId(input.workspaceId, input.id),
@@ -194,6 +289,17 @@ export function createMemoryDemoDataStore(): MemoryDemoDataStore {
       workspaceExternalId(input.workspaceId, input.id),
       input,
     ),
+    async ensureSampleDecisionInteraction(input) {
+      const result = await ensureImmutableMemory(
+        fixtures,
+        workspaceExternalId(input.workspaceId, input.id),
+        input,
+      );
+      return {
+        value: structuredClone(input),
+        created: result.created,
+      };
+    },
     async resetDemoData(workspaceId) {
       const target = requiredWorkspaceId(workspaceId);
       deleteWorkspaceRows(memberships, target);
@@ -424,7 +530,7 @@ export function createSupabaseDemoDataStore(options: {
   url: string;
   serviceRoleKey: string;
   fetchImpl?: typeof fetch;
-}): DemoDataStore {
+}): DemoDataStore & BeliefReversalSeedDataStore {
   const fetchImpl = options.fetchImpl ?? fetch;
   const base = `${options.url.replace(/\/$/, "")}/rest/v1`;
   const headers = {
@@ -501,6 +607,45 @@ export function createSupabaseDemoDataStore(options: {
     return { value: structuredClone(value), created: existing.length === 0 };
   }
 
+  async function insertExactImmutable<T>(
+    table: string,
+    conflictColumns: string[],
+    match: Record<string, string>,
+    row: Record<string, unknown>,
+    value: T,
+  ): Promise<UpsertResult<T>> {
+    const lookup = new URLSearchParams({
+      select: Object.keys(row).join(","),
+      limit: "1",
+    });
+    for (const [column, columnValue] of Object.entries(match)) {
+      lookup.set(column, `eq.${columnValue}`);
+    }
+    const existing = await request(`/${table}?${lookup}`) as Array<
+      Record<string, unknown>
+    >;
+    if (existing[0]) {
+      const observed = Object.fromEntries(
+        Object.keys(row).map((key) => [key, existing[0]![key]]),
+      );
+      if (canonicalJson(observed) !== canonicalJson(row)) {
+        throw new Error(
+          `Immutable ${table} identity already contains different data.`,
+        );
+      }
+      return { value: structuredClone(value), created: false };
+    }
+    const query = new URLSearchParams({
+      on_conflict: conflictColumns.join(","),
+    });
+    await request(`/${table}?${query}`, {
+      method: "POST",
+      headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+      body: JSON.stringify(row),
+    });
+    return { value: structuredClone(value), created: true };
+  }
+
   return {
     ensureWorkspace: (input) => upsert(
       "workspaces",
@@ -530,6 +675,13 @@ export function createSupabaseDemoDataStore(options: {
       toDocumentRow(input),
       input,
     ),
+    ensureImmutableSourceDocument: (input) => insertExactImmutable(
+      "source_documents",
+      ["id"],
+      { id: input.id },
+      toImmutableSourceDocumentRow(input),
+      input,
+    ),
     ensureWorkspaceDocument: (input) => insertImmutable(
       "workspace_documents",
       ["workspace_id", "document_id"],
@@ -554,6 +706,13 @@ export function createSupabaseDemoDataStore(options: {
       { id: input.id, workspace_id: input.workspaceId, name: input.name },
       input,
     ),
+    ensureImmutableCompany: (input) => insertExactImmutable(
+      "companies",
+      ["workspace_id", "id"],
+      { workspace_id: input.workspaceId, id: input.id },
+      { id: input.id, workspace_id: input.workspaceId, name: input.name },
+      input,
+    ),
     ensureDeal: (input) => upsert(
       "deals",
       ["workspace_id", "id"],
@@ -563,6 +722,19 @@ export function createSupabaseDemoDataStore(options: {
         workspace_id: input.workspaceId,
         company_id: input.companyId,
         company_name: input.companyName,
+      },
+      input,
+    ),
+    ensureImmutableDeal: (input) => insertExactImmutable(
+      "deals",
+      ["workspace_id", "id"],
+      { workspace_id: input.workspaceId, id: input.id },
+      {
+        id: input.id,
+        workspace_id: input.workspaceId,
+        company_id: input.companyId,
+        company_name: input.companyName,
+        status: input.status,
       },
       input,
     ),
@@ -606,6 +778,20 @@ export function createSupabaseDemoDataStore(options: {
       },
       input,
     ),
+    async ensureSampleDecisionInteraction(input) {
+      const response = await request(
+        "/rpc/save_sample_decision_interaction",
+        {
+          method: "POST",
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify({ p_interaction: input }),
+        },
+      ) as Record<string, unknown>;
+      return {
+        value: structuredClone(input),
+        created: response.created === true,
+      };
+    },
     async resetDemoData(workspaceId, resetOptions = {}) {
       const target = requiredWorkspaceId(workspaceId);
       const workspaceFilter = `eq.${target}`;
@@ -695,7 +881,8 @@ export function createDefaultPrivateObjectStorage(): PrivateObjectStorage {
     : createBundledPrivateObjectStorage();
 }
 
-export function createDefaultDemoDataStore(): DemoDataStore {
+export function createDefaultDemoDataStore():
+  DemoDataStore & BeliefReversalSeedDataStore {
   const url = process.env.SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (url && serviceRoleKey) {
@@ -733,6 +920,35 @@ async function ensureMemory<T>(
   const created = !target.has(key);
   target.set(key, structuredClone(input));
   return { value: structuredClone(input), created };
+}
+
+async function ensureImmutableMemory<T>(
+  target: Map<string, T>,
+  key: string,
+  input: T,
+): Promise<UpsertResult<T>> {
+  const existing = target.get(key);
+  if (existing !== undefined) {
+    if (canonicalJson(existing) !== canonicalJson(input)) {
+      throw new Error("An immutable seed identity already contains different data.");
+    }
+    return { value: structuredClone(existing), created: false };
+  }
+  target.set(key, structuredClone(input));
+  return { value: structuredClone(input), created: true };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
 }
 
 function workspaceExternalId(workspaceId: string, externalId: string): string {
@@ -906,6 +1122,22 @@ function toDocumentRow(input: StoredCorpusDocument): Record<string, unknown> {
     title: input.title,
     role: input.role,
     company_name: input.company,
+    deal_id: input.dealId,
+    checksum: input.checksum,
+    byte_size: input.byteSize,
+    object_key: input.objectKey,
+  };
+}
+
+function toImmutableSourceDocumentRow(
+  input: ImmutableSourceDocumentRecord,
+): Record<string, unknown> {
+  return {
+    id: input.id,
+    filename: input.filename,
+    title: input.title,
+    role: input.role,
+    company_name: input.companyName,
     deal_id: input.dealId,
     checksum: input.checksum,
     byte_size: input.byteSize,

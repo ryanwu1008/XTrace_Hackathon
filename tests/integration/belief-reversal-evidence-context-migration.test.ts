@@ -30,7 +30,7 @@ function requireSuccess(
   return result.stdout.trim();
 }
 
-test("0019 evidence-context migration is the contiguous journal terminal", () => {
+test("0019 evidence-context migration remains the contiguous predecessor to 0020", () => {
   assert.equal(existsSync(migrationPath), true);
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
     entries: Array<{
@@ -41,14 +41,15 @@ test("0019 evidence-context migration is the contiguous journal terminal", () =>
       breakpoints: boolean;
     }>;
   };
-  assert.deepEqual(journal.entries.at(-1), {
+  assert.deepEqual(journal.entries.at(-2), {
     idx: 19,
     version: "7",
     when: 1785661200000,
     tag: migrationName,
     breakpoints: true,
   });
-  assert.equal(journal.entries.at(-2)?.idx, 18);
+  assert.equal(journal.entries.at(-3)?.idx, 18);
+  assert.equal(journal.entries.at(-1)?.idx, 20);
   assert.equal(
     new Set(journal.entries.map(({ idx }) => idx)).size,
     journal.entries.length,
@@ -121,7 +122,7 @@ test(
       const migrations = readdirSync(
         fileURLToPath(new URL("../../drizzle/", import.meta.url)),
       ).filter((name) => /^\d{4}_.+\.sql$/u.test(name)).sort();
-      assert.equal(migrations.length, 20);
+      assert.equal(migrations.length, 21);
       for (const migration of migrations) {
         const prefix = migration.slice(0, 4);
         const path = fileURLToPath(
