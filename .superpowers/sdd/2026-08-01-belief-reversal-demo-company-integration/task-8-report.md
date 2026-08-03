@@ -85,3 +85,33 @@ localization, or arbitrary snapshot administration was performed.
   supports multiple in-report claim sources for one parent revision and rejects
   stale/mismatched revisions. Product fixture contexts remain rejected;
   sandbox Sample fixture contexts resolve only through the exact in-report ID.
+
+## Second independent-review follow-up
+
+- `ASK THIS REPORT` now chooses a Deal only from the report's authoritative
+  CompanyAnalysis membership: a valid priority Deal wins, a single member is
+  the only fallback, and an ambiguous or empty report sends no Deal. The route
+  therefore cannot start Deal-scoped XTrace recall from an unrelated UI ID.
+- Canonical Sample recall is bound to both the exact fixture ID and its real
+  `sourceRevisionId`. Sandbox accepts only the canonical permanent Sample
+  marker issued by `deal-registry`; product rejects Sample lineage.
+- Source filtering is claim-level instead of record-level. Product keeps valid
+  public evidence from a mixed public/Sample opportunity while removing the
+  Sample source and Sample-derived previous context. Sandbox applies the same
+  canonical Sample authority check to local report evidence as it does to
+  recalled evidence.
+- The Chat route accepts an injected XTrace lineage repository for scoped
+  integration testing. Real POST tests now cover configured exact-parent recall
+  for a mixed product report and for a canonical Sample revision in sandbox.
+  The complete Chat route suite was updated to the current exact
+  report/run/Deal contract, and network behavior is mocked without loopback
+  listeners.
+
+## Final verification after review fixes
+
+- `npm run typecheck`: passed.
+- Targeted ESLint over all changed production and test files: passed with zero
+  findings.
+- Chat/review/scope regression group: 40 passed, 0 failed.
+- Broader Task 8 regression group: 163 passed, 0 failed.
+- `git diff --check`: passed.

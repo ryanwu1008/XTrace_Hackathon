@@ -12,6 +12,7 @@ import { getDataClient } from "../../../db/client";
 import { createRunsRepository } from "../../../db/repositories/runs";
 import { getUnderwritingRunsRepository } from "../../../db/repositories/underwriting-runs";
 import { getDealRegistry } from "../../../db/repositories/deal-registry";
+import { getXTraceLineageRepository } from "../../../db/repositories/xtrace-lineage";
 import {
   createGroundedChatService,
   type ChatEvidence,
@@ -59,7 +60,7 @@ export const dynamic = "force-dynamic";
 
 export interface ScopedRecallSourceIndex {
   parentClaims: Map<string, Map<string, EvidenceSourceRef[]>>;
-  fixtureClaims: Map<string, EvidenceSourceRef>;
+  fixtureClaims: Map<string, Map<string, EvidenceSourceRef>>;
 }
 
 export function buildScopedRecallSourceIndex(
@@ -71,11 +72,19 @@ export function buildScopedRecallSourceIndex(
     "Chat scoped recall source",
   );
   const parentClaims = new Map<string, Map<string, EvidenceSourceRef[]>>();
-  const fixtureClaims = new Map<string, EvidenceSourceRef>();
+  const fixtureClaims = new Map<string, Map<string, EvidenceSourceRef>>();
   for (const source of catalog) {
     if (!isAllowedScopedChatSource(source, mode)) continue;
     if (source.provenance === "demo_fixture") {
-      fixtureClaims.set(source.id, source);
+      if (
+        "schemaVersion" in source
+        && source.adaptation === "canonical"
+        && source.sourceRevisionId !== null
+      ) {
+        const byRevision = fixtureClaims.get(source.id) ?? new Map();
+        byRevision.set(source.sourceRevisionId, source);
+        fixtureClaims.set(source.id, byRevision);
+      }
       continue;
     }
     if (
@@ -121,12 +130,18 @@ export function resolveScopedRecallContextSources(
     if (claims.length === 0) return [];
     resolved.push(...claims);
   }
-  if (matchedRevisions.size !== new Set(revisions).size) return [];
   for (const fixtureId of context.fixtureIds) {
-    const fixture = index.fixtureClaims.get(fixtureId);
-    if (!fixture || mode !== "public_sandbox") return [];
-    resolved.push(fixture);
+    const byRevision = index.fixtureClaims.get(fixtureId);
+    if (!byRevision || mode !== "public_sandbox") return [];
+    const fixtures = revisions.flatMap((revisionId) => {
+      const fixture = byRevision.get(revisionId);
+      if (fixture) matchedRevisions.add(revisionId);
+      return fixture ? [fixture] : [];
+    });
+    if (fixtures.length === 0) return [];
+    resolved.push(...fixtures);
   }
+  if (matchedRevisions.size !== new Set(revisions).size) return [];
   if (context.sourceIds.length === 0 && context.fixtureIds.length === 0) {
     return [];
   }
@@ -138,7 +153,7 @@ function isAllowedScopedChatSource(
   mode: DeploymentMode,
 ): boolean {
   if (source.provenance !== "demo_fixture") return true;
-  return mode === "public_sandbox"
+  return mode !== "product"
     && "schemaVersion" in source
     && source.adaptation === "canonical"
     && source.title === SAMPLE_DECISION_RECORD_LABEL
@@ -211,11 +226,9 @@ export async function searchRuntimeIntelligence(
     ...scopedAnalyses.flatMap((analysis) => analysis.sources),
   ], "runtime Chat authority source");
   const eventEvidence = events.flatMap((event) => {
-    const sources = mode === "product"
-      ? event.sources.filter((source) =>
-        source.provenance !== "demo_fixture"
-      )
-      : event.sources;
+    const sources = event.sources.filter((source) =>
+      isAllowedScopedChatSource(source, mode)
+    );
     if (sources.length === 0) return [];
     const haystack = [
       event.title,
@@ -236,21 +249,11 @@ export async function searchRuntimeIntelligence(
     : new Map(
         buildDemoViewModel().deals.map((deal) => [deal.id, deal.companyName]),
       )
-  const searchableReports = mode === "product"
-    ? [{
-        ...scopedReport,
-        opportunities: scopedReport.opportunities.filter(
-          isProductOpportunityEvidence,
-        ),
-        companyAnalyses: scopedAnalyses.filter(
-          isProductCompanyAnalysisEvidence,
-        ),
-      }]
-    : [scopedReport];
   const reportEvidence = buildPersistedReportEvidence({
     question,
-    reports: searchableReports,
+    reports: [scopedReport],
     companyByDeal,
+    allowSource: (source) => isAllowedScopedChatSource(source, mode),
   });
   const runtimeEvidence = [...eventEvidence, ...reportEvidence];
   validateEvidenceSourceCatalog(
@@ -258,30 +261,6 @@ export async function searchRuntimeIntelligence(
     "runtime Chat source",
   );
   return runtimeEvidence.slice(0, 12);
-}
-
-function hasDemoFixtureSource(sources: readonly EvidenceSourceRef[]): boolean {
-  return sources.some((source) => source.provenance === "demo_fixture");
-}
-
-function isProductOpportunityEvidence(
-  opportunity: {
-    demoFixtureIds: readonly string[];
-    sources: readonly EvidenceSourceRef[];
-  },
-): boolean {
-  return opportunity.demoFixtureIds.length === 0
-    && !hasDemoFixtureSource(opportunity.sources);
-}
-
-function isProductCompanyAnalysisEvidence(
-  analysis: {
-    investmentMemory: { fixtureIds: readonly string[] };
-    sources: readonly EvidenceSourceRef[];
-  },
-): boolean {
-  return analysis.investmentMemory.fixtureIds.length === 0
-    && !hasDemoFixtureSource(analysis.sources);
 }
 
 async function productMemoryScope(
@@ -313,14 +292,12 @@ async function productMemoryScope(
     durableSourceCandidates.push(...durableSources);
   };
   for (const opportunity of report.opportunities) {
-      if (opportunity.dealId !== dealId) continue;
-      if (mode === "product" && !isProductOpportunityEvidence(opportunity)) continue;
-      addDurableDealSources(opportunity.dealId, opportunity.sources);
+    if (opportunity.dealId !== dealId) continue;
+    addDurableDealSources(opportunity.dealId, opportunity.sources);
   }
   for (const analysis of report.companyAnalyses) {
-      if (analysis.dealId !== dealId) continue;
-      if (mode === "product" && !isProductCompanyAnalysisEvidence(analysis)) continue;
-      addDurableDealSources(analysis.dealId, analysis.sources);
+    if (analysis.dealId !== dealId) continue;
+    addDurableDealSources(analysis.dealId, analysis.sources);
   }
   const durableSources = validateEvidenceSourceCatalog(
     durableSourceCandidates,
@@ -341,6 +318,7 @@ async function recallExistingMemory(
   dealId: string | null,
   evidenceContextFingerprint: string | null,
   activeParentFingerprint: string | null,
+  dependencies: Pick<RouteDependencies, "xtraceLineage"> = {},
 ): Promise<MemoryRecallOutcome> {
   if (!isXTraceConfigured()) {
     return { status: "unavailable" };
@@ -360,6 +338,8 @@ async function recallExistingMemory(
     allowLive: true,
   }), {
     workspaceId,
+    lineageRepository:
+      dependencies.xtraceLineage ?? getXTraceLineageRepository(),
   });
   try {
     const contexts = await service.recallDealContext({
@@ -516,6 +496,7 @@ export async function POST(
           scopedDealId,
           scopedContextFingerprint,
           scopedDeal?.activeSourceRevisionFingerprint ?? null,
+          dependencies,
         );
       },
       async complete({ system, prompt }) {

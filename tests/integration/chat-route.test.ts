@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import test from "node:test";
 
 import "../helpers/public-demo";
 import { POST } from "../../app/api/chat/route";
 import {
   getIntelligenceRepository,
-  type IntelligenceRepository,
 } from "../../db/repositories/intelligence";
-import { getXTraceLineageRepository } from "../../db/repositories/xtrace-lineage";
+import type { RunRecord } from "../../db/client";
+import {
+  createMemoryXTraceLineageRepository,
+  getXTraceLineageRepository,
+  type XTraceLineageRepository,
+} from "../../db/repositories/xtrace-lineage";
 import type { RouteDependencies } from "../../lib/api/route-dependencies";
+import { buildSampleDecisionSourceRef } from "../../lib/belief-reversal/sample-decision-source";
 import {
   CompanyAnalysisSchema,
   OpportunityReportItemSchema,
@@ -22,6 +26,7 @@ import {
   marketEventV2,
   normalizedSourceV2,
 } from "../helpers/source-evidence-v2";
+import type { ExactXTraceParentUnit } from "../../lib/xtrace/exact-parent-planner";
 
 test("Chat API rate-limit envelope remains public when persistent limiter transport rejects", async () => {
   const secret = "rate-limit-secret: connection reset";
@@ -287,14 +292,36 @@ test("authenticated product Chat rejects XTrace memories backed only by demo fix
   });
 });
 
-test("authenticated product Chat resolves XTrace only through scoped durable report lineage", async () => {
+test("authenticated product Chat resolves exact XTrace lineage while filtering a mixed Sample source", async () => {
   const workspaceId = `workspace_product_xtrace_${crypto.randomUUID()}`;
   const dealId = `deal_product_xtrace_${crypto.randomUUID()}`;
-  const sourceId = `source_product_xtrace_${crypto.randomUUID()}`;
+  const sourceId = `claim_product_xtrace_${crypto.randomUUID()}`;
+  const documentId = `source_product_xtrace_${crypto.randomUUID()}`;
+  const sourceRevisionId = `revision_product_xtrace_${crypto.randomUUID()}`;
   const memoryId = `memory_product_xtrace_${crypto.randomUUID()}`;
   const sourceExcerpt =
     "Durable product evidence says the customer pilot expanded.";
-  await saveCanonicalChatReport({
+  const source = canonicalPublicChatSource({
+    id: sourceId,
+    title: "Durable product source",
+    url: "https://example.test/durable-product-source",
+    text: sourceExcerpt,
+    documentId,
+    sourceRevisionId,
+  });
+  const sample = buildSampleDecisionSourceRef({
+    id: `fixture_product_xtrace_${crypto.randomUUID()}`,
+    documentId: `source_fixture_product_xtrace_${crypto.randomUUID()}`,
+    sourceRevisionId: `revision_fixture_product_xtrace_${crypto.randomUUID()}`,
+    contentFingerprint: `sha256:${"1".repeat(64)}`,
+    occurredAt: "2099-07-23T12:00:00.000Z",
+    retrievedAt: "2099-07-24T12:00:00.000Z",
+    summary: "Sample history must not enter product recall.",
+    decisionReason: "This is only a Sample decision record.",
+    concerns: [],
+    revisitConditions: [],
+  });
+  const report = await saveCanonicalChatReport({
     id: `report_product_xtrace_${crypto.randomUUID()}`,
     workspaceId,
     runId: crypto.randomUUID(),
@@ -309,45 +336,47 @@ test("authenticated product Chat resolves XTrace only through scoped durable rep
       previousContext: "The prior review requested customer validation.",
       implications: { positive: [], negative: [] },
       nextStep: "Review the cited evidence.",
-      sources: [canonicalPublicChatSource({
-        id: sourceId,
-        title: "Durable product source",
-        url: "https://example.test/durable-product-source",
-        text: sourceExcerpt,
-      })],
-      demoFixtureIds: [],
+      sources: [source, sample],
+      demoFixtureIds: [sample.id],
     }],
   });
-  const lineage = getXTraceLineageRepository();
-  const jobId = `job_product_xtrace_${crypto.randomUUID()}`;
-  await lineage.recordSubmission({
-    jobId,
+  const parentFingerprint = `sha256:${"2".repeat(64)}`;
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: ({ parentFingerprint: candidate }) =>
+      candidate === parentFingerprint,
+  });
+  await recordExactMemory(lineage, {
     workspaceId,
     dealId,
-    sourceIds: [sourceId],
-    fixtureIds: [],
-    bundleFingerprint: "product-durable-source",
-    serializerVersion: "deal-memory-v1",
-    provenance: "public_web",
-    status: "pending",
-  });
-  await lineage.recordCompletion({
-    workspaceId,
-    jobId,
-    status: "succeeded",
-    memoryIds: [memoryId],
-  });
+    sourceId: documentId,
+    sourceRevisionId,
+    parentKind: "canonical_source_revision",
+    parentFingerprint,
+    payloadFingerprint: `sha256:${"3".repeat(64)}`,
+    bundle: {
+      dealId,
+      companyName: dealId,
+      status: "passed",
+      facts: [{ text: sourceExcerpt, sources: [source] }],
+      interactions: [],
+    },
+  }, memoryId);
 
   await withMockXTraceSearch({
     memoryId,
     text: sourceExcerpt,
     action: async () => {
       const response = await POST(
-        chatRequest("What durable product evidence says the customer pilot expanded?", true),
+        chatRequest(
+          "What durable product evidence says the customer pilot expanded?",
+          true,
+          { reportId: report.id, runId: report.runId, dealId },
+        ),
         undefined,
-        productChatDependencies(
-          workspaceId,
+        scopedChatDependencies(
+          report,
           `user_product_xtrace_${workspaceId}`,
+          { lineage, parentFingerprint },
         ),
       );
 
@@ -363,9 +392,122 @@ test("authenticated product Chat resolves XTrace only through scoped durable rep
       assert.equal(payload.data.memoryStatus, "available");
       assert.equal(payload.data.usedXTrace, true);
       assert.equal(payload.data.insufficientEvidence, false);
-      assert.ok(payload.data.citations.some((source) => source.id === sourceId));
-      assert.ok(payload.data.citations.every((source) =>
-        source.id !== "fixture_7bridges_passed"
+      assert.ok(payload.data.citations.some((citation) => citation.id === sourceId));
+      assert.ok(payload.data.citations.every((citation) =>
+        citation.id !== sample.id
+      ));
+    },
+  });
+});
+
+test("public sandbox Chat resolves a canonical Sample decision record by exact revision", async () => {
+  const workspaceId = `workspace_sandbox_sample_${crypto.randomUUID()}`;
+  const dealId = `deal_sandbox_sample_${crypto.randomUUID()}`;
+  const memoryId = `memory_sandbox_sample_${crypto.randomUUID()}`;
+  const fixtureId = `fixture_sandbox_sample_${crypto.randomUUID()}`;
+  const sample = buildSampleDecisionSourceRef({
+    id: fixtureId,
+    documentId: `source_${fixtureId}`,
+    sourceRevisionId: `revision_fixture_sandbox_sample_${crypto.randomUUID()}`,
+    contentFingerprint: `sha256:${"4".repeat(64)}`,
+    occurredAt: "2099-07-23T12:00:00.000Z",
+    retrievedAt: "2099-07-24T12:00:00.000Z",
+    summary: "The Sample committee paused pending customer evidence.",
+    decisionReason: "Customer evidence was incomplete.",
+    concerns: ["Customer validation was limited."],
+    revisitConditions: ["New customer validation arrives."],
+  });
+  const publicSource = canonicalPublicChatSource({
+    id: `claim_sandbox_sample_${crypto.randomUUID()}`,
+    title: "Public companion source",
+    url: "https://example.test/sandbox-companion",
+    text: "A public companion source exists.",
+  });
+  const report = await saveCanonicalChatReport({
+    id: `report_sandbox_sample_${crypto.randomUUID()}`,
+    workspaceId,
+    runId: crypto.randomUUID(),
+    createdAt: "2099-07-24T12:00:00.000Z",
+    marketSummary: "A sandbox report exists.",
+    opportunities: [{
+      rank: 1,
+      dealId,
+      confidence: "medium",
+      score: 0.72,
+      whyNow: publicSource.text.normalizedStatement,
+      previousContext: sample.text.normalizedStatement,
+      implications: { positive: [], negative: [] },
+      nextStep: "Review the Sample history.",
+      sources: [publicSource, sample],
+      demoFixtureIds: [sample.id],
+    }],
+  });
+  const parentFingerprint = `sha256:${"5".repeat(64)}`;
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: ({ parentFingerprint: candidate }) =>
+      candidate === parentFingerprint,
+  });
+  await recordExactMemory(lineage, {
+    workspaceId,
+    dealId,
+    sourceId: sample.documentId!,
+    sourceRevisionId: sample.sourceRevisionId!,
+    parentKind: "sample_decision_record",
+    parentFingerprint,
+    payloadFingerprint: `sha256:${"6".repeat(64)}`,
+    bundle: {
+      dealId,
+      companyName: dealId,
+      status: "passed",
+      facts: [],
+      interactions: [{
+        id: sample.id,
+        occurredAt: "2099-07-23T12:00:00.000Z",
+        summary: "The Sample committee paused pending customer evidence.",
+        decisionReason: "Customer evidence was incomplete.",
+        concerns: ["Customer validation was limited."],
+        revisitConditions: ["New customer validation arrives."],
+        provenance: "demo_fixture",
+        label: "Sample decision record",
+        source: sample,
+      }],
+    },
+  }, memoryId);
+
+  await withMockXTraceSearch({
+    memoryId,
+    text: sample.text.normalizedStatement ?? "",
+    action: async () => {
+      const response = await POST(
+        chatRequest(
+          "Why was customer evidence incomplete?",
+          true,
+          { reportId: report.id, runId: report.runId, dealId },
+        ),
+        undefined,
+        scopedChatDependencies(
+          report,
+          `user_sandbox_sample_${workspaceId}`,
+          { mode: "public_sandbox", lineage, parentFingerprint },
+        ),
+      );
+
+      assert.equal(response.status, 200);
+      const payload = await response.json() as {
+        data: {
+          citations: Array<{ id: string; provenance: string; sourceRevisionId: string }>;
+          usedXTrace: boolean;
+          memoryStatus: string;
+          insufficientEvidence: boolean;
+        };
+      };
+      assert.equal(payload.data.memoryStatus, "available");
+      assert.equal(payload.data.usedXTrace, true);
+      assert.equal(payload.data.insufficientEvidence, false);
+      assert.ok(payload.data.citations.some((citation) =>
+        citation.id === sample.id
+        && citation.provenance === "demo_fixture"
+        && citation.sourceRevisionId === sample.sourceRevisionId
       ));
     },
   });
@@ -526,6 +668,7 @@ test("authenticated product Chat ignores a persisted market event backed only by
 
 test("authenticated product Chat keeps scoped durable market event grounding", async () => {
   const workspaceId = `workspace_product_durable_event_${crypto.randomUUID()}`;
+  const dealId = `deal_product_durable_event_${crypto.randomUUID()}`;
   const sourceId = `source_product_durable_event_${crypto.randomUUID()}`;
   const durableExcerpt =
     "Durable public evidence confirms semiconductor demand increased";
@@ -544,29 +687,36 @@ test("authenticated product Chat keeps scoped durable market event grounding", a
       normalizedStatement: durableExcerpt,
     },
   });
-  const durableEvent = WritableMarketEventV2Schema.parse(
-    marketEventV2(source, {
-    id: `event_product_durable_${crypto.randomUUID()}`,
-    title: "Semiconductor demand update",
-    eventType: "market_change",
-    sectors: ["semiconductors"],
-    themes: ["demand"],
-    summary: durableExcerpt,
-    positiveImplications: [],
-    negativeImplications: [],
-    confidence: "medium",
-  }));
-  await getIntelligenceRepository().saveMarketEvents(
-    [durableEvent],
+  const report = await saveCanonicalChatReport({
+    id: `report_product_durable_event_${crypto.randomUUID()}`,
     workspaceId,
-  );
+    runId: crypto.randomUUID(),
+    createdAt: now,
+    marketSummary: "A durable market event report exists.",
+    opportunities: [{
+      rank: 1,
+      dealId,
+      confidence: "medium",
+      score: 0.72,
+      whyNow: durableExcerpt,
+      previousContext: "No prior context is attached.",
+      implications: { positive: [], negative: [] },
+      nextStep: "Review semiconductor demand.",
+      sources: [source],
+      demoFixtureIds: [],
+    }],
+  });
 
   await withAnthropicDisabled(async () => {
     const response = await POST(
-      chatRequest("What durable public evidence confirms semiconductor demand increased?", false),
+      chatRequest(
+        "What durable public evidence confirms semiconductor demand increased?",
+        false,
+        { reportId: report.id, runId: report.runId, dealId },
+      ),
       undefined,
-      productChatDependencies(
-        workspaceId,
+      scopedChatDependencies(
+        report,
         `user_product_durable_event_${workspaceId}`,
       ),
     );
@@ -617,74 +767,85 @@ test("product Chat validates the complete authority catalog before provenance fi
   };
 
   try {
-    const shared = canonicalPublicChatSource({
-      id: "source_hidden_conflict",
-      title: "Catalog signal 0",
-      url: "https://example.test/catalog-0",
-      text: "Catalog signal 0 changed.",
-    });
-    const capEvents = Array.from({ length: 13 }, (_, index) => {
-      const source = index === 0
-        ? shared
-        : index === 12
-        ? canonicalPublicChatSource({
-            id: shared.id,
-            title: "Conflicting hidden source",
-            url: "https://example.test/catalog-conflict",
-            text: "A conflicting hidden statement.",
-          })
-        : canonicalPublicChatSource({
-            id: `source_catalog_${index}`,
-            title: `Catalog signal ${index}`,
-            url: `https://example.test/catalog-${index}`,
-            text: `Catalog signal ${index} changed.`,
-          });
-      return marketEventV2(source, {
-        id: `event_catalog_${index}`,
-        title: `Catalog signal ${index}`,
-        summary: "Catalog signal changed.",
-        themes: ["catalog"],
-      });
-    });
-    const filteredReports = [{
-      opportunities: [{
-        sources: [shared],
-        demoFixtureIds: [],
-      }, {
-        sources: [canonicalSampleDecisionSource({
-          id: shared.id,
-          text: "Filtered synthetic record.",
-        })],
-        demoFixtureIds: [shared.id],
-      }],
-      companyAnalyses: [],
-    }];
-
-    for (const [label, events, reports] of [
-      ["rejects a source-ID conflict in item 13 beyond the cap", capEvents, []],
-      ["rejects a source-ID conflict hidden by provenance filtering", [], filteredReports],
+    for (const label of [
+      "rejects a source-ID conflict in item 13 beyond the cap",
+      "rejects a source-ID conflict hidden by provenance filtering",
     ] as const) {
       await t.test(label, async () => {
-        const base = getIntelligenceRepository();
-        const intelligence = {
-          ...base,
-          async listMarketEvents() {
-            return events as never;
-          },
-          async listReports() {
-            return reports as never;
-          },
-        } satisfies IntelligenceRepository;
-        const response = await POST(
-          chatRequest(`What catalog signal changed? ${label}`, false),
-          undefined,
-          {
-            ...productChatDependencies(
-              `workspace_${label}`,
-              `user_${label}`,
+        const workspaceId = `workspace_catalog_${crypto.randomUUID()}`;
+        const dealId = `deal_catalog_${crypto.randomUUID()}`;
+        const shared = canonicalPublicChatSource({
+          id: `source_hidden_conflict_${crypto.randomUUID()}`,
+          title: "Catalog signal 0",
+          url: "https://example.test/catalog-0",
+          text: "Catalog signal 0 changed.",
+        });
+        const saved = await saveCanonicalChatReport({
+          id: `report_catalog_${crypto.randomUUID()}`,
+          workspaceId,
+          runId: crypto.randomUUID(),
+          createdAt: "2099-07-24T12:00:00.000Z",
+          marketSummary: "A catalog validation report exists.",
+          opportunities: [{
+            rank: 1,
+            dealId,
+            confidence: "medium",
+            score: 0.72,
+            whyNow: "Catalog signal 0 changed.",
+            previousContext: "No prior context is attached.",
+            implications: { positive: [], negative: [] },
+            nextStep: "Review the catalog.",
+            sources: [shared],
+            demoFixtureIds: [],
+          }],
+        });
+        const report = structuredClone(saved);
+        if (label.includes("item 13")) {
+          report.companyAnalyses[0].marketEvidence.events = Array.from(
+            { length: 13 },
+            (_, index) => marketEventV2(
+              index === 0
+                ? shared
+                : index === 12
+                ? canonicalPublicChatSource({
+                    id: shared.id,
+                    title: "Conflicting hidden source",
+                    url: "https://example.test/catalog-conflict",
+                    text: "A conflicting hidden statement.",
+                  })
+                : canonicalPublicChatSource({
+                    id: `source_catalog_${index}_${crypto.randomUUID()}`,
+                    title: `Catalog signal ${index}`,
+                    url: `https://example.test/catalog-${index}`,
+                    text: `Catalog signal ${index} changed.`,
+                  }),
+              {
+                id: `event_catalog_${index}_${crypto.randomUUID()}`,
+                title: `Catalog signal ${index}`,
+                summary: "Catalog signal changed.",
+                themes: ["catalog"],
+              },
             ),
-            intelligence,
-          },
+          ) as never;
+        } else {
+          report.opportunities.push({
+            ...structuredClone(report.opportunities[0]),
+            rank: 2,
+            sources: [canonicalSampleDecisionSource({
+              id: shared.id,
+              text: "Filtered synthetic record.",
+            })],
+            demoFixtureIds: [shared.id],
+          });
+        }
+        const response = await POST(
+          chatRequest(`What catalog signal changed? ${label}`, false, {
+            reportId: report.id,
+            runId: report.runId,
+            dealId,
+          }),
+          undefined,
+          scopedChatDependencies(report, `user_catalog_${crypto.randomUUID()}`),
         );
 
         assert.equal(response.status, 500, label);
@@ -758,7 +919,7 @@ test("authenticated product Chat ignores a persisted report opportunity carrying
 test("authenticated product Chat does not label durable report evidence with Demo catalog company names", async () => {
   const workspaceId = `workspace_product_company_name_${crypto.randomUUID()}`;
   const whyNow = "Durable naming evidence confirms a logistics signal";
-  await saveCanonicalChatReport({
+  const report = await saveCanonicalChatReport({
     id: `report_product_company_name_${crypto.randomUUID()}`,
     workspaceId,
     runId: crypto.randomUUID(),
@@ -785,10 +946,14 @@ test("authenticated product Chat does not label durable report evidence with Dem
 
   await withAnthropicDisabled(async () => {
     const response = await POST(
-      chatRequest("What durable naming evidence confirms a logistics signal?", false),
+      chatRequest(
+        "What durable naming evidence confirms a logistics signal?",
+        false,
+        { reportId: report.id, runId: report.runId, dealId: "deal_7bridges" },
+      ),
       undefined,
-      productChatDependencies(
-        workspaceId,
+      scopedChatDependencies(
+        report,
         `user_product_company_name_${workspaceId}`,
       ),
     );
@@ -806,8 +971,8 @@ test("authenticated product Chat does not label durable report evidence with Dem
   });
 });
 
-test("Chat API answers the latest report recommendation from persisted report lineage", async () => {
-  await saveCanonicalChatReport({
+test("Chat API answers an exact sandbox report from persisted report lineage", async () => {
+  const report = await saveCanonicalChatReport({
     id: "report_chat_latest",
     workspaceId: "workspace_demo",
     runId: "00000000-0000-4000-8000-000000000099",
@@ -861,17 +1026,17 @@ test("Chat API answers the latest report recommendation from persisted report li
     }] as const;
 
     for (const [index, item] of cases.entries()) {
-      const response = await POST(new Request("http://localhost/api/chat", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-forwarded-for": `198.51.100.${80 + index}`,
-        },
-        body: JSON.stringify({
-          question: item.question,
-          xtraceEnabled: false,
+      const response = await POST(
+        chatRequest(item.question, false, {
+          reportId: report.id,
+          runId: report.runId,
+          dealId: "deal_7bridges",
         }),
-      }));
+        undefined,
+        scopedChatDependencies(report, `user_sandbox_report_${index}`, {
+          mode: "public_sandbox",
+        }),
+      );
 
       assert.equal(response.status, 200);
       const payload = await response.json() as {
@@ -950,22 +1115,7 @@ test("Chat API visibly withholds a local-only answer when configured XTrace reca
 });
 
 test("Chat API withholds local evidence when enabled XTrace recall resolves no evidence", async () => {
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ success: true, data: [] }));
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-
-  const previousApiKey = process.env.XTRACE_API_KEY;
-  const previousBaseUrl = process.env.XTRACE_API_BASE_URL;
-  const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
-  process.env.XTRACE_API_KEY = "mmk_test";
-  process.env.XTRACE_API_BASE_URL = `http://127.0.0.1:${address.port}`;
-  delete process.env.ANTHROPIC_API_KEY;
-
-  try {
+  await withMockXTraceResponse({ success: true, data: [] }, async () => {
     const response = await POST(new Request("http://localhost/api/chat", {
       method: "POST",
       headers: {
@@ -991,34 +1141,11 @@ test("Chat API withholds local evidence when enabled XTrace recall resolves no e
     assert.equal(payload.data.insufficientEvidence, true);
     assert.deepEqual(payload.data.citations, []);
     assert.match(payload.data.answer, /local-only answer.*withheld/i);
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    if (previousApiKey === undefined) delete process.env.XTRACE_API_KEY;
-    else process.env.XTRACE_API_KEY = previousApiKey;
-    if (previousBaseUrl === undefined) delete process.env.XTRACE_API_BASE_URL;
-    else process.env.XTRACE_API_BASE_URL = previousBaseUrl;
-    if (previousAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey;
-  }
+  });
 });
 
 test("Chat API withholds local evidence when XTrace returns success false", async () => {
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ success: false, data: [] }));
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-
-  const previousApiKey = process.env.XTRACE_API_KEY;
-  const previousBaseUrl = process.env.XTRACE_API_BASE_URL;
-  const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
-  process.env.XTRACE_API_KEY = "mmk_test";
-  process.env.XTRACE_API_BASE_URL = `http://127.0.0.1:${address.port}`;
-  delete process.env.ANTHROPIC_API_KEY;
-
-  try {
+  await withMockXTraceResponse({ success: false, data: [] }, async () => {
     const response = await POST(new Request("http://localhost/api/chat", {
       method: "POST",
       headers: {
@@ -1038,15 +1165,7 @@ test("Chat API withholds local evidence when XTrace returns success false", asyn
     assert.equal(payload.data.memoryStatus, "unavailable");
     assert.deepEqual(payload.data.citations, []);
     assert.match(payload.data.answer, /local-only answer.*withheld/i);
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    if (previousApiKey === undefined) delete process.env.XTRACE_API_KEY;
-    else process.env.XTRACE_API_KEY = previousApiKey;
-    if (previousBaseUrl === undefined) delete process.env.XTRACE_API_BASE_URL;
-    else process.env.XTRACE_API_BASE_URL = previousBaseUrl;
-    if (previousAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey;
-  }
+  });
 });
 
 function canonicalPublicChatSource(input: {
@@ -1054,12 +1173,14 @@ function canonicalPublicChatSource(input: {
   title: string;
   url: string;
   text: string;
+  documentId?: string;
+  sourceRevisionId?: string;
 }) {
   return WritableSourceRefV2Schema.parse(normalizedSourceV2(input.id, {
     provenance: "public_web",
     title: input.title,
     canonicalUrl: input.url,
-    documentId: null,
+    documentId: input.documentId ?? null,
     publisher: "Example",
     providerId: "chat-route-test",
     eventAt: null,
@@ -1074,7 +1195,7 @@ function canonicalPublicChatSource(input: {
     sourceClass: "industry_publication",
     sourceAuthority: "secondary",
     evidenceRole: "trigger",
-    sourceRevisionId: null,
+    sourceRevisionId: input.sourceRevisionId ?? null,
     locator: null,
     text: {
       status: "normalized_only",
@@ -1248,11 +1369,12 @@ async function saveCanonicalChatReport(input: {
 function productChatDependencies(
   workspaceId: string,
   userId: string,
+  mode: "product" | "public_sandbox" = "product",
 ): RouteDependencies {
   return {
     async resolveRequestContext() {
       return {
-        mode: "product",
+        mode,
         principal: {
           userId,
           email: `${userId}@example.test`,
@@ -1271,14 +1393,120 @@ function productChatDependencies(
   };
 }
 
-function chatRequest(question: string, xtraceEnabled: boolean): Request {
+function terminalRunForReport(
+  report: Awaited<ReturnType<typeof saveCanonicalChatReport>>,
+): RunRecord {
+  return {
+    id: report.runId,
+    workspaceId: report.workspaceId,
+    mode: "xtrace",
+    windowDays: 14,
+    status: "completed",
+    currentStage: "notification",
+    warningCount: 0,
+    warnings: [],
+    workerId: null,
+    createdAt: report.createdAt,
+    startedAt: report.createdAt,
+    completedAt: report.createdAt,
+    leaseExpiresAt: null,
+    evidenceContext: report.evidenceContext ?? { state: "legacy_unbound" },
+  };
+}
+
+function scopedChatDependencies(
+  report: Awaited<ReturnType<typeof saveCanonicalChatReport>>,
+  userId: string,
+  options: {
+    mode?: "product" | "public_sandbox";
+    lineage?: XTraceLineageRepository;
+    parentFingerprint?: string;
+  } = {},
+): RouteDependencies {
+  const run = terminalRunForReport(report);
+  const repository = getIntelligenceRepository();
+  return {
+    ...productChatDependencies(
+      report.workspaceId,
+      userId,
+      options.mode ?? "product",
+    ),
+    intelligence: {
+      ...repository,
+      async listReports(workspaceId) {
+        return workspaceId === report.workspaceId ? [report] : [];
+      },
+      async getReport(workspaceId, reportId) {
+        return workspaceId === report.workspaceId && reportId === report.id
+          ? report
+          : null;
+      },
+    },
+    runs: {
+      async list(workspaceId) {
+        return workspaceId === report.workspaceId ? [run] : [];
+      },
+      async get(workspaceId, runId) {
+        return workspaceId === report.workspaceId && runId === run.id
+          ? run
+          : null;
+      },
+    } as RouteDependencies["runs"],
+    dealRegistry: {
+      async findForWorkspace({ workspaceId, dealId }) {
+        if (
+          workspaceId !== report.workspaceId
+          || !report.companyAnalyses.some((analysis) => analysis.dealId === dealId)
+        ) return null;
+        return {
+          id: dealId,
+          workspaceId,
+          activeSourceRevisionFingerprint:
+            options.parentFingerprint ?? null,
+        } as never;
+      },
+    } as RouteDependencies["dealRegistry"],
+    xtraceLineage: options.lineage,
+  };
+}
+
+async function recordExactMemory(
+  lineage: XTraceLineageRepository,
+  parent: ExactXTraceParentUnit,
+  memoryId: string,
+): Promise<void> {
+  const reservation = await lineage.reserveExactIntent({
+    parent,
+    serializerVersion: "xtrace-parent-v2",
+  });
+  assert.equal(reservation.action, "submit");
+  assert.ok(reservation.intent.leaseToken);
+  const providerJobId = `job_exact_${crypto.randomUUID()}`;
+  await lineage.attachExactJob({
+    intentId: reservation.intent.intentId,
+    leaseToken: reservation.intent.leaseToken,
+    providerJobId,
+  });
+  await lineage.advanceExactIntent({
+    intentId: reservation.intent.intentId,
+    providerJobId,
+    state: "succeeded",
+    memoryIds: [memoryId],
+  });
+}
+
+function chatRequest(
+  question: string,
+  xtraceEnabled: boolean,
+  scope: { reportId: string; runId: string; dealId?: string } | null = null,
+): Request {
   return new Request("http://localhost/api/chat", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-forwarded-for": `test-${crypto.randomUUID()}`,
     },
-    body: JSON.stringify({ question, xtraceEnabled }),
+    body: JSON.stringify({ question, xtraceEnabled, ...(scope ?? {}) }),
   });
 }
 
@@ -1313,6 +1541,37 @@ async function withMockXTraceSearch(input: {
   };
   try {
     await input.action();
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnvironment("XTRACE_API_KEY", previousApiKey);
+    restoreEnvironment("XTRACE_API_BASE_URL", previousBaseUrl);
+    restoreEnvironment("ANTHROPIC_API_KEY", previousAnthropicApiKey);
+    restoreEnvironment("SUPABASE_URL", previousSupabaseUrl);
+    restoreEnvironment("SUPABASE_SERVICE_ROLE_KEY", previousSupabaseKey);
+  }
+}
+
+async function withMockXTraceResponse(
+  body: unknown,
+  action: () => Promise<void>,
+): Promise<void> {
+  const previousApiKey = process.env.XTRACE_API_KEY;
+  const previousBaseUrl = process.env.XTRACE_API_BASE_URL;
+  const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  const previousSupabaseUrl = process.env.SUPABASE_URL;
+  const previousSupabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.XTRACE_API_KEY = "mmk_test";
+  process.env.XTRACE_API_BASE_URL = "https://xtrace.example.test";
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  globalThis.fetch = async (request) => {
+    assert.match(String(request), /xtrace\.example\.test\/v1\/memories\/search$/);
+    return Response.json(body);
+  };
+  try {
+    await action();
   } finally {
     globalThis.fetch = previousFetch;
     restoreEnvironment("XTRACE_API_KEY", previousApiKey);

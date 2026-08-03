@@ -179,10 +179,33 @@ interface ChatMessage {
   memoryStatus?: ChatMemoryStatus;
 }
 
-interface ChatReportScope {
+export interface ChatReportScope {
   reportId: string;
   runId: string;
   dealId?: string;
+}
+
+export function resolveReportChatScope(
+  report: Pick<
+    IntelligenceReportView,
+    "id" | "runId" | "priorityDealId" | "companyAnalyses"
+  >,
+): ChatReportScope | null {
+  if (!report.runId) return null;
+  const memberDealIds = [...new Set(
+    report.companyAnalyses.map(({ dealId }) => dealId),
+  )];
+  const dealId = report.priorityDealId !== null
+      && memberDealIds.includes(report.priorityDealId)
+    ? report.priorityDealId
+    : memberDealIds.length === 1
+    ? memberDealIds[0]
+    : undefined;
+  return {
+    reportId: report.id,
+    runId: report.runId,
+    ...(dealId === undefined ? {} : { dealId }),
+  };
 }
 
 export function buildChatApiRequest(input: {
@@ -970,8 +993,9 @@ export default function Home() {
                   uiSession.capabilities.saveActionDrafts
                 }
                 onAsk={(report) => {
-                  if (!report.runId) return;
-                  setChatScope({ reportId: report.id, runId: report.runId });
+                  const scope = resolveReportChatScope(report);
+                  if (!scope) return;
+                  setChatScope(scope);
                   setView("chat");
                 }}
               />

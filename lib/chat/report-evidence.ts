@@ -2,6 +2,7 @@ import { evidenceQueryTokens } from "../demo/search";
 import {
   evidenceSourceText,
   type CompanyAnalysis,
+  type EvidenceSourceRef,
   type SourceRef,
 } from "../contracts/domain";
 import {
@@ -25,9 +26,11 @@ export function buildPersistedReportEvidence(input: {
   question: string;
   reports: readonly PersistedReportForChat[];
   companyByDeal: ReadonlyMap<string, string>;
+  allowSource?: (source: EvidenceSourceRef) => boolean;
 }): ChatEvidence[] {
   const tokens = evidenceQueryTokens(input.question);
   const normalizedQuestion = input.question.toLocaleLowerCase();
+  const allowSource = input.allowSource ?? (() => true);
 
   return input.reports.flatMap((report, reportIndex) => {
     const companyAnalyses = parseCompanyAnalyses(report.companyAnalyses)
@@ -41,6 +44,7 @@ export function buildPersistedReportEvidence(input: {
           reportIndex,
           tokens,
           normalizedQuestion,
+          allowSource,
           companyName:
             input.companyByDeal.get(analysis.dealId) ?? analysis.companyName,
         })
@@ -49,11 +53,16 @@ export function buildPersistedReportEvidence(input: {
     return sanitizeReportOpportunities(report.opportunities).flatMap((opportunity, opportunityIndex) => {
       const companyName =
         input.companyByDeal.get(opportunity.dealId) ?? opportunity.dealId;
+      const allowedSources = opportunity.sources.filter(allowSource);
+      const historicalContextAllowed = opportunity.sources.every(allowSource)
+        && opportunity.demoFixtureIds.every(
+          (fixtureId) => allowedSources.some(({ id }) => id === fixtureId),
+        );
       const haystack = [
         opportunity.dealId,
         companyName,
         opportunity.whyNow,
-        opportunity.previousContext,
+        ...(historicalContextAllowed ? [opportunity.previousContext] : []),
         opportunity.nextStep,
         "report recommendation recommend recommended previous context next step",
         reportIndex === 0 ? "latest" : "",
@@ -66,11 +75,11 @@ export function buildPersistedReportEvidence(input: {
           label: "why now",
           text: opportunity.whyNow,
         },
-        {
+        ...(historicalContextAllowed ? [{
           key: "previous-context",
           label: "previous context",
           text: opportunity.previousContext,
-        },
+        }] : []),
         {
           key: "recommendation",
           label: "recommendation",
@@ -92,7 +101,7 @@ export function buildPersistedReportEvidence(input: {
           excerpt: field.text,
         }],
       }));
-      const supportingEvidence = opportunity.sources.flatMap((source) =>
+      const supportingEvidence = allowedSources.flatMap((source) =>
         "schemaVersion" in source
           && sourceClaimSupportKind(source, preferredField.text) !== null
           ? [{ text: evidenceSourceText(source), sources: [source] }]
@@ -119,8 +128,11 @@ function companyAnalysisEvidence(input: {
   tokens: string[];
   normalizedQuestion: string;
   companyName: string;
+  allowSource(source: EvidenceSourceRef): boolean;
 }): ChatEvidence[] {
   const analysis = input.analysis;
+  const allowedSources = analysis.sources.filter(input.allowSource);
+  const allowedSourceIds = new Set(allowedSources.map(({ id }) => id));
   const linkedFixtureIds = new Set(
     analysis.investmentMemory.fixtureIds.filter((fixtureId) =>
       analysis.investmentMemory.sourceIds.includes(fixtureId)
@@ -132,6 +144,7 @@ function companyAnalysisEvidence(input: {
       || source.adaptation !== "canonical"
       || source.provenance !== "demo_fixture"
       || source.title !== SAMPLE_DECISION_RECORD_LABEL
+      || !input.allowSource(source)
       || !linkedFixtureIds.has(source.id)
     ) {
       return [];
@@ -141,14 +154,23 @@ function companyAnalysisEvidence(input: {
       ? []
       : [{ text, sources: [source] }];
   });
+  const historicalContextAllowed = analysis.investmentMemory.sourceIds.length
+    === 0
+    || analysis.investmentMemory.sourceIds.every((sourceId) =>
+      allowedSourceIds.has(sourceId)
+    );
   const haystack = [
     analysis.dealId,
     input.companyName,
     analysis.outcome.replaceAll("_", " "),
-    analysis.investmentMemory.previousMeetingSummary,
-    analysis.investmentMemory.decisionReason,
-    ...analysis.investmentMemory.concerns,
-    ...analysis.investmentMemory.revisitConditions,
+    ...(historicalContextAllowed
+      ? [
+        analysis.investmentMemory.previousMeetingSummary,
+        analysis.investmentMemory.decisionReason,
+        ...analysis.investmentMemory.concerns,
+        ...analysis.investmentMemory.revisitConditions,
+      ]
+      : []),
     analysis.marketEvidence.explanation,
     analysis.recommendedNextMove,
     ...sampleDecisionEvidence.map((item) => item.text),
@@ -169,12 +191,12 @@ function companyAnalysisEvidence(input: {
       text: outcomeText,
       sourceIds: analysis.sources.map((source) => source.id),
     },
-    {
+    ...(historicalContextAllowed ? [{
       key: "decision-reason",
       label: "decision reason",
       text: analysis.investmentMemory.decisionReason,
       sourceIds: analysis.investmentMemory.sourceIds,
-    },
+    }] : []),
     {
       key: "market-evidence",
       label: "market evidence",
@@ -218,7 +240,7 @@ function companyAnalysisEvidence(input: {
     Number(right.key === preferredKey) - Number(left.key === preferredKey)
   );
   const sourceById = new Map(
-    analysis.sources.map((source) => [source.id, source]),
+    allowedSources.map((source) => [source.id, source]),
   );
   const conclusionEvidence = fields
     .filter((field) => field.key === preferredKey)
@@ -246,7 +268,7 @@ function companyAnalysisEvidence(input: {
       ],
     };
     });
-  const supportingEvidence = analysis.sources.flatMap((source) =>
+  const supportingEvidence = allowedSources.flatMap((source) =>
     "schemaVersion" in source
       && sourceClaimSupportKind(source, preferredField.text) !== null
       ? [{ text: evidenceSourceText(source), sources: [source] }]

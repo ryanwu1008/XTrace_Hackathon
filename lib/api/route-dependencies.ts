@@ -17,6 +17,7 @@ import type {
   IntelligenceRepository,
 } from "../../db/repositories/intelligence";
 import type { createRunsRepository } from "../../db/repositories/runs";
+import type { XTraceLineageRepository } from "../../db/repositories/xtrace-lineage";
 import {
   resolveRequestContext,
   type AuthorizedRequestContext,
@@ -41,6 +42,7 @@ export interface RouteDependencies {
   underwritingArtifacts?: UnderwritingArtifactsRepository;
   intelligence?: IntelligenceRepository;
   runs?: ReturnType<typeof createRunsRepository>;
+  xtraceLineage?: XTraceLineageRepository;
   now?: () => number;
 }
 
