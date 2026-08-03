@@ -2,10 +2,19 @@ import { z } from "zod";
 
 import { ClaimEdgeSchema } from "./evidence";
 import {
+  BeliefActionSchema,
+  BeliefChangeDirectionSchema,
+  CanonicalDealStatusSchema,
+} from "./domain";
+import {
   FrameworkCardAuthoringSchema,
   FrameworkPackAuthoringSchema,
   ResearchSourceRecordSchema,
 } from "../underwriting/frameworks/research-schemas";
+import {
+  actionsForDealStatusAndDirection,
+  beliefActionListsEqual,
+} from "../reports/action-policy";
 
 const IdSchema = z.string().min(1).refine(
   (value) => value.trim() === value,
@@ -41,12 +50,13 @@ export const FundPolicySnapshotSchema = z.strictObject({
   createdAt: IsoDateTimeSchema,
 });
 
-export const ResolvedUnderwritingContextSchema = z.strictObject({
+const ResolvedUnderwritingContextShape = {
   id: IdSchema,
   contextVersion: z.string().min(1),
+  analysisMode: z.enum(["full", "core_only"]).optional(),
   stage: z.enum(["seed", "series_a"]),
   businessModel: z.enum(["b2b_saas", "enterprise_ai"]),
-  geography: z.enum(["us", "global"]),
+  geography: z.enum(["us", "global", "unavailable"]),
   securityType: z.literal("preferred"),
   asOfDate: IsoDateSchema,
   criticalEvidenceProfileId: IdSchema,
@@ -60,12 +70,73 @@ export const ResolvedUnderwritingContextSchema = z.strictObject({
   valuationMethodPolicyId: IdSchema,
   decisionPolicyId: IdSchema,
   frameworkPackId: IdSchema,
-});
+} as const;
 
-export const ResearchFrameworkContextSchema =
-  ResolvedUnderwritingContextSchema.extend({
+function validateResolvedContext(
+  value: {
+    analysisMode?: "full" | "core_only";
+    geography: "us" | "global" | "unavailable";
+    benchmarkPackId: string | null;
+    benchmarkCompatibility:
+      | "exact"
+      | "broad_compatible"
+      | "adjacent_only"
+      | "unavailable";
+  },
+  context: z.core.$RefinementCtx,
+): void {
+  if (
+    value.geography !== "us"
+    && (
+      value.benchmarkPackId !== null
+      || value.benchmarkCompatibility !== "unavailable"
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Non-US contexts cannot bind or claim a benchmark.",
+    });
+  }
+  if (
+    value.geography === "unavailable"
+    && (
+      value.analysisMode !== "core_only"
+      || value.benchmarkPackId !== null
+      || value.benchmarkCompatibility !== "unavailable"
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Unavailable geography requires explicit Core-only analysis and no benchmark.",
+    });
+  }
+  if (
+    value.analysisMode === "full"
+    && (
+      value.geography !== "us"
+      || value.benchmarkPackId === null
+      || !["exact", "broad_compatible"].includes(
+        value.benchmarkCompatibility,
+      )
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Full analysis requires a compatible US benchmark-bound context.",
+    });
+  }
+}
+
+export const ResolvedUnderwritingContextSchema = z.strictObject(
+  ResolvedUnderwritingContextShape,
+).superRefine(validateResolvedContext);
+
+export const ResearchFrameworkContextSchema = z.strictObject({
+    ...ResolvedUnderwritingContextShape,
     securityType: z.enum(["preferred", "convertible"]),
-  });
+  }).superRefine(validateResolvedContext);
 
 export type ResearchFrameworkContext = z.infer<
   typeof ResearchFrameworkContextSchema
@@ -90,7 +161,7 @@ export const FrameworkAdvisoryMetadataSchema = z.strictObject({
   context: z.strictObject({
     stage: z.enum(["seed", "series_a"]),
     businessModel: z.enum(["b2b_saas", "enterprise_ai"]),
-    geography: z.enum(["us", "global"]),
+    geography: z.enum(["us", "global", "unavailable"]),
     securityType: ResearchFrameworkContextSchema.shape.securityType,
   }),
   applicable: z.boolean(),
@@ -471,7 +542,7 @@ export const MissingEvidenceItemSchema = z.strictObject({
   mostLikelyDecisionImpact: z.string().min(1),
 });
 
-export const ActionDraftSchema = z.strictObject({
+export const LegacyActionDraftV1Schema = z.strictObject({
   id: IdSchema,
   workspaceId: IdSchema,
   candidateRunId: IdSchema,
@@ -487,6 +558,203 @@ export const ActionDraftSchema = z.strictObject({
   createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
 });
+
+export const ACTION_DRAFT_POLICY_VERSION =
+  "status-safe-action-draft-v2" as const;
+
+const EXTERNAL_ACTION_DRAFT_FORMATS = new Set([
+  "founder_email",
+  "founder_sms",
+  "founder_linkedin",
+  "diligence_request",
+]);
+
+type ExternalActionDraftFormat =
+  | "founder_email"
+  | "founder_sms"
+  | "founder_linkedin"
+  | "diligence_request";
+
+export function canonicalExternalActionDraftBodies(input: {
+  format: ExternalActionDraftFormat;
+  missingEvidence: z.infer<typeof MissingEvidenceItemSchema>[];
+}): string[] {
+  if (input.missingEvidence.some(({ label }) =>
+    label.includes("\n") || label.includes("\r")
+  )) return [];
+  const bulletLines = input.missingEvidence.length > 0
+    ? input.missingEvidence.map(({ label }) => `- ${label}`)
+    : ["- No additional evidence item is currently requested."];
+  const inlineLabels = input.missingEvidence.length > 0
+    ? input.missingEvidence.map(({ label }) => label).join("; ")
+    : "no saved missing-evidence item";
+  const requestLines = [
+    "Please share the following current evidence for review:",
+    ...bulletLines,
+  ];
+  switch (input.format) {
+    case "founder_email": {
+      const body = [
+        "DRAFT ONLY — NOT SENT",
+        ...requestLines,
+        "This draft is limited to evidence collection and neutral sharing instructions.",
+      ];
+      return [
+        ["Subject: Draft evidence follow-up", "", ...body].join("\n"),
+        body.join("\n"),
+      ];
+    }
+    case "founder_sms":
+      return [
+        `DRAFT ONLY — NOT SENT. Please share current evidence for review: ${inlineLabels}.`,
+      ];
+    case "founder_linkedin":
+      return [["DRAFT ONLY — NOT SENT", ...requestLines].join("\n")];
+    case "diligence_request":
+      return [[
+        "DUE DILIGENCE EVIDENCE REQUEST — DRAFT ONLY — NOT SENT",
+        "",
+        ...requestLines,
+        "Please use a secure sharing method approved by your organization.",
+      ].join("\n")];
+  }
+}
+
+export function externalActionDraftBodySafetyViolations(input: {
+  format: string;
+  body: string;
+  missingEvidence: z.infer<typeof MissingEvidenceItemSchema>[];
+}): string[] {
+  if (!EXTERNAL_ACTION_DRAFT_FORMATS.has(input.format)) return [];
+  const allowedBodies = canonicalExternalActionDraftBodies({
+    format: input.format as ExternalActionDraftFormat,
+    missingEvidence: input.missingEvidence,
+  });
+  return allowedBodies.includes(input.body)
+    ? []
+    : [
+      "External action draft body must match the format-specific neutral evidence-request grammar and exact saved missing-evidence labels.",
+    ];
+}
+
+function hasPermanentDraftOnlyMarker(input: {
+  format: string;
+  body: string;
+}): boolean {
+  const lines = input.body.split("\n");
+  switch (input.format) {
+    case "internal_memo":
+      return lines[0] === "INTERNAL UNDERWRITING ACTION MEMO — DRAFT ONLY";
+    case "founder_email":
+      return lines[0] === "DRAFT ONLY — NOT SENT"
+        || (
+          lines[0]?.startsWith("Subject:")
+          && lines[1] === ""
+          && lines[2] === "DRAFT ONLY — NOT SENT"
+        );
+    case "founder_sms":
+      return input.body.startsWith("DRAFT ONLY — NOT SENT.");
+    case "founder_linkedin":
+      return lines[0] === "DRAFT ONLY — NOT SENT";
+    case "diligence_request":
+      return lines[0]
+        === "DUE DILIGENCE EVIDENCE REQUEST — DRAFT ONLY — NOT SENT";
+    default:
+      return false;
+  }
+}
+
+export const ActionDraftV2Schema = z.strictObject({
+  schemaVersion: z.literal("action-draft-v2"),
+  safety: z.literal("status_safe"),
+  deliveryMode: z.literal("draft_only"),
+  draftPolicyVersion: z.literal(ACTION_DRAFT_POLICY_VERSION),
+  actionPolicyVersion: z.literal("belief-action-policy-v1"),
+  id: IdSchema,
+  workspaceId: IdSchema,
+  candidateRunId: IdSchema,
+  dealStatus: CanonicalDealStatusSchema,
+  beliefDirection: BeliefChangeDirectionSchema,
+  actions: z.array(BeliefActionSchema).min(1),
+  missingEvidence: z.array(MissingEvidenceItemSchema),
+  format: z.enum([
+    "founder_email",
+    "founder_sms",
+    "founder_linkedin",
+    "internal_memo",
+    "diligence_request",
+  ]),
+  channel: z.enum(["email", "sms", "linkedin", "internal"]),
+  audienceType: z.enum(["founder", "internal"]),
+  body: z.string().min(1),
+  createdAt: IsoDateTimeSchema,
+  updatedAt: IsoDateTimeSchema,
+}).superRefine((draft, context) => {
+  const compatibility = {
+    founder_email: ["email", "founder"],
+    founder_sms: ["sms", "founder"],
+    founder_linkedin: ["linkedin", "founder"],
+    internal_memo: ["internal", "internal"],
+    diligence_request: ["email", "founder"],
+  } as const;
+  const [channel, audienceType] = compatibility[draft.format];
+  if (draft.channel !== channel || draft.audienceType !== audienceType) {
+    context.addIssue({
+      code: "custom",
+      message: "Action draft format, channel, and audience are incompatible.",
+    });
+  }
+  const expectedActions = actionsForDealStatusAndDirection(
+    draft.dealStatus,
+    draft.beliefDirection,
+  );
+  if (!beliefActionListsEqual(draft.actions, expectedActions)) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Action draft actions do not match the authoritative status policy.",
+    });
+  }
+  const actionKinds = new Set(expectedActions.map(({ kind }) => kind));
+  const allowedFormats = actionKinds.has("advance_diligence")
+      || actionKinds.has("reopen_diligence")
+    ? new Set([
+      "internal_memo",
+      "founder_email",
+      "founder_sms",
+      "founder_linkedin",
+      "diligence_request",
+    ])
+    : actionKinds.has("evaluate_follow_on")
+    ? new Set(["internal_memo", "founder_email", "diligence_request"])
+    : new Set(["internal_memo"]);
+  if (!allowedFormats.has(draft.format)) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Action draft format is not allowed by the authoritative status policy.",
+    });
+  }
+  if (!hasPermanentDraftOnlyMarker(draft)) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Status-safe action drafts require the exact permanent DRAFT ONLY marker for their format.",
+    });
+  }
+  if (externalActionDraftBodySafetyViolations(draft).length > 0) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "External action drafts must use the format-specific neutral evidence-request grammar and exact saved missing-evidence labels.",
+    });
+  }
+});
+
+export const ActionDraftSchema = z.union([
+  ActionDraftV2Schema,
+  LegacyActionDraftV1Schema,
+]);
 
 export type FundPolicySnapshot = z.infer<typeof FundPolicySnapshotSchema>;
 export type ResolvedUnderwritingContext = z.infer<
@@ -520,3 +788,4 @@ export type XTraceLineageSnapshot = z.infer<
 >;
 export type MissingEvidenceItem = z.infer<typeof MissingEvidenceItemSchema>;
 export type ActionDraft = z.infer<typeof ActionDraftSchema>;
+export type ActionDraftV2 = z.infer<typeof ActionDraftV2Schema>;

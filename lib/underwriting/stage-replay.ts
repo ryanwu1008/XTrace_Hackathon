@@ -28,7 +28,13 @@ const IdSchema = z.string().min(1).refine(
 const FingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const RouterEvidenceValueSchema = z.strictObject({
   value: z.string().min(1),
-  basis: z.enum(["confirmed", "source_explicit", "derived"]),
+  basis: z.enum([
+    "confirmed",
+    "source_explicit",
+    "derived",
+    "semantic_availability",
+    "assumption",
+  ]),
   evidenceItemId: IdSchema,
 });
 const CandidateIdentityEvidenceSchema = z.strictObject({

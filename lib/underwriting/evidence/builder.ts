@@ -25,7 +25,7 @@ import {
   DEFAULT_MATERIALITY_RULES,
   type MaterialityRule,
 } from "./conflicts";
-import { normalizeSourceEvidence } from "./normalization";
+import { projectUnderwritingEvidence } from "./semantic-projector";
 import type {
   ContextRouter,
   CriticalEvidenceProfile,
@@ -105,8 +105,8 @@ export function createEvidencePackBuilder(options: {
         sourceRevisionIds,
         sourceRevisionSnapshots,
       });
-      const facts = sourceEvidence
-        .map(normalizeSourceEvidence)
+      const projected = projectUnderwritingEvidence(sourceEvidence);
+      const facts = projected.facts
         .sort((left, right) => compareUtf8(left.id, right.id));
       const conflicts = buildEvidenceConflicts(
         facts,
@@ -119,7 +119,8 @@ export function createEvidencePackBuilder(options: {
         conflicts,
         fundPolicy: input.fundPolicy,
         benchmark: input.benchmark,
-      }).sort((left, right) => compareUtf8(left.id, right.id));
+      }).concat(projected.assumptions)
+        .sort((left, right) => compareUtf8(left.id, right.id));
       const inputFingerprint = createEvidencePackInputFingerprint({
         workspaceId: input.workspaceId,
         dealId: input.dealId,
@@ -169,6 +170,7 @@ export function createEvidencePackBuilder(options: {
         coverage: options.router.evaluateCoverage({
           pack: provisional,
           profile,
+          context: input.context,
         }),
       });
       const saved: SavedEvidencePack = await options.repository.saveExact({

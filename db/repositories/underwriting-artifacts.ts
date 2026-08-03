@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { isDeepStrictEqual } from "node:util";
+import {
+  BeliefActionSchema,
+  BeliefChangeDirectionSchema,
+  CanonicalDealStatusSchema,
+} from "../../lib/contracts/domain";
 
 import {
   CalculationSchema,
@@ -11,13 +17,16 @@ import {
 import {
   ActionDraftSchema,
   DecisionResultSchema,
+  FundPolicySnapshotSchema,
   FrameworkDisagreementSchema,
   FrameworkJudgmentSchema,
   ResolvedUnderwritingContextSchema,
   ScenarioModelSchema,
   ValuationEvaluationSchema,
   type ActionDraft,
+  type ActionDraftV2,
   type DecisionResult,
+  type FundPolicySnapshot,
   type FrameworkDisagreement,
   type FrameworkJudgment,
   type ResolvedUnderwritingContext,
@@ -28,6 +37,23 @@ import {
   IntegrationTransportError,
   isRetryableTransportStatus,
 } from "../../lib/api/errors";
+import {
+  actionsForDealStatusAndDirection,
+  beliefActionListsEqual,
+} from "../../lib/reports/action-policy";
+import { CONTEXT_ROUTER_VERSION } from "../../lib/underwriting/router";
+import {
+  addDecimalStrings,
+  divideDecimalStrings,
+  multiplyDecimalStrings,
+  subtractDecimalStrings,
+} from "../../lib/underwriting/numbers";
+import {
+  applyFutureDilution,
+  computeOwnership,
+} from "../../lib/underwriting/valuation/ownership";
+import { computeGrossReturns } from "../../lib/underwriting/valuation/returns";
+import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
 
 const IdSchema = z.string().min(1).refine(
   (value) => value.trim() === value,
@@ -37,6 +63,24 @@ const FingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 
 export const CandidateVersionSnapshotSchema = z.strictObject({
   fundPolicyId: IdSchema,
+  dealStatus: CanonicalDealStatusSchema.optional(),
+  beliefDirection: BeliefChangeDirectionSchema.optional(),
+  canonicalActions: z.array(BeliefActionSchema).optional(),
+  actionPolicyVersion: z.literal("belief-action-policy-v1").optional(),
+  draftPolicyVersion: z.literal("status-safe-action-draft-v2").optional(),
+  semanticContextAssumptionPolicyVersion:
+    z.literal("belief-reversal-demo-context-v1").optional(),
+  semanticContextMappingVersion:
+    z.literal("belief-reversal-reviewed-context-mapping-v1").optional(),
+  analysisMode: z.enum(["full", "core_only"]).optional(),
+  contextVersion: z.string().min(1).optional(),
+  geography: z.enum(["us", "global", "unavailable"]).optional(),
+  benchmarkCompatibility: z.enum([
+    "exact",
+    "broad_compatible",
+    "adjacent_only",
+    "unavailable",
+  ]).optional(),
   benchmarkPackId: IdSchema.nullable(),
   benchmarkEntryId: IdSchema.nullable(),
   benchmarkDefinitionFingerprint: FingerprintSchema.nullable(),
@@ -183,6 +227,7 @@ export interface MemoryUnderwritingArtifactsRepository
       workspaceId: string;
       dealId: string;
       fundPolicySnapshotId: string;
+      fundPolicyValues?: FundPolicySnapshot["values"];
     };
     finalization: CandidateFinalization;
   }): CandidateArtifactBundle;
@@ -290,7 +335,7 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
     },
 
     prepareFinalization({ candidate, finalization }) {
-      return validateFinalization(candidate, finalization);
+      return prepareCandidateFinalization(candidate, finalization);
     },
 
     commitPrepared(bundle) {
@@ -612,7 +657,27 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
         && persistedCalculationIds.has(edge.claimItemId)
         && persistedCalculationIds.has(edge.dependencyItemId)
       );
-      const prepared = validateFinalization(
+      let fundPolicyValues: FundPolicySnapshot["values"] | undefined;
+      if (calculationRows.length > 0) {
+        const policyQuery = new URLSearchParams({
+          workspace_id: `eq.${workspaceId}`,
+          id: `eq.${String(batchRows[0].fund_policy_snapshot_id)}`,
+          select: "values",
+          limit: "2",
+        });
+        const policyRows = await request(
+          `/fund_policy_versions?${policyQuery}`,
+        ) as Array<Record<string, unknown>>;
+        if (policyRows.length !== 1) {
+          throw new Error(
+            "Completed candidate artifacts are missing their exact pinned Fund Policy values.",
+          );
+        }
+        fundPolicyValues = FundPolicySnapshotSchema.shape.values.parse(
+          policyRows[0].values,
+        );
+      }
+      const prepared = prepareCandidateFinalization(
         {
           id: artifactCandidateRunId,
           workspaceId,
@@ -620,6 +685,7 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           fundPolicySnapshotId: String(
             batchRows[0].fund_policy_snapshot_id,
           ),
+          fundPolicyValues,
         },
         {
           workerId: "persisted",
@@ -648,6 +714,7 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           versionSnapshot:
             versionRows[0].payload as CandidateVersionSnapshot,
         },
+        { mode: "persisted_read" },
       );
       if (
         JSON.stringify(sortedClaimEdges(persistedEdges))
@@ -691,12 +758,27 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
         : [];
     },
     async replaceActionDraftBody(input) {
+      const workspaceId = requiredText(input.workspaceId, "A workspace");
+      const draftId = requiredText(input.draftId, "An action draft");
+      const body = requiredBody(input.body);
+      const query = new URLSearchParams({
+        workspace_id: `eq.${workspaceId}`,
+        artifact_id: `eq.${draftId}`,
+        select: "payload",
+        limit: "1",
+      });
+      const existingRows = await request(`/action_drafts?${query}`);
+      if (!Array.isArray(existingRows) || !existingRows[0]) return null;
+      const existingPayload = (existingRows[0] as Record<string, unknown>)
+        .payload;
+      const existing = ActionDraftSchema.parse(existingPayload);
+      ActionDraftSchema.parse({ ...existing, body });
       const value = await request("/rpc/replace_action_draft_body", {
         method: "POST",
         body: JSON.stringify({
-          p_workspace_id: requiredText(input.workspaceId, "A workspace"),
-          p_draft_id: requiredText(input.draftId, "An action draft"),
-          p_body: requiredBody(input.body),
+          p_workspace_id: workspaceId,
+          p_draft_id: draftId,
+          p_body: body,
         }),
       }) as Record<string, unknown> | Record<string, unknown>[] | null;
       const row = Array.isArray(value) ? value[0] : value;
@@ -706,14 +788,16 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
   return repository;
 }
 
-function validateFinalization(
+export function prepareCandidateFinalization(
   candidate: {
     id: string;
     workspaceId: string;
     dealId: string;
     fundPolicySnapshotId: string;
+    fundPolicyValues?: FundPolicySnapshot["values"];
   },
   input: Omit<CandidateFinalization, "evidencePackBuildInputFingerprint">,
+  options: { mode?: "new_finalization" | "persisted_read" } = {},
 ): CandidateArtifactBundle {
   const candidateRunId = requiredText(input.candidateRunId, "A candidate run");
   const workspaceId = requiredText(candidate.workspaceId, "A workspace");
@@ -744,6 +828,110 @@ function validateFinalization(
   const versionSnapshot = CandidateVersionSnapshotSchema.parse(
     input.versionSnapshot,
   );
+  const v2Drafts = actionDrafts.filter((draft): draft is ActionDraftV2 =>
+    "schemaVersion" in draft && draft.schemaVersion === "action-draft-v2"
+  );
+  const isNewFinalization = options.mode !== "persisted_read";
+  if (
+    isNewFinalization
+    && (
+      context.analysisMode === undefined
+      || actionDrafts.length === 0
+      || v2Drafts.length !== actionDrafts.length
+    )
+  ) {
+    throw new Error(
+      "New finalization requires the complete current status-safe artifact contract.",
+    );
+  }
+  const usesCurrentContract = isNewFinalization
+    || context.analysisMode !== undefined
+    || v2Drafts.length > 0;
+  if (usesCurrentContract) {
+    const currentIdentity = {
+      dealStatus: versionSnapshot.dealStatus,
+      beliefDirection: versionSnapshot.beliefDirection,
+      canonicalActions: versionSnapshot.canonicalActions,
+      actionPolicyVersion: versionSnapshot.actionPolicyVersion,
+      draftPolicyVersion: versionSnapshot.draftPolicyVersion,
+      semanticContextAssumptionPolicyVersion:
+        versionSnapshot.semanticContextAssumptionPolicyVersion,
+      semanticContextMappingVersion:
+        versionSnapshot.semanticContextMappingVersion,
+      analysisMode: versionSnapshot.analysisMode,
+      contextVersion: versionSnapshot.contextVersion,
+      geography: versionSnapshot.geography,
+      benchmarkCompatibility: versionSnapshot.benchmarkCompatibility,
+    };
+    if (
+      Object.values(currentIdentity).some((value) => value === undefined)
+      || context.analysisMode === undefined
+      || v2Drafts.length !== actionDrafts.length
+      || versionSnapshot.analysisMode !== context.analysisMode
+      || versionSnapshot.contextVersion !== context.contextVersion
+      || versionSnapshot.geography !== context.geography
+      || versionSnapshot.benchmarkCompatibility
+        !== context.benchmarkCompatibility
+      || versionSnapshot.routerVersion !== CONTEXT_ROUTER_VERSION
+    ) {
+      throw new Error(
+        "Current status-safe finalization requires complete belief, policy, and context identity.",
+      );
+    }
+    const expectedActions = actionsForDealStatusAndDirection(
+      versionSnapshot.dealStatus!,
+      versionSnapshot.beliefDirection!,
+    );
+    const actionKinds = new Set(expectedActions.map(({ kind }) => kind));
+    const expectedFormats = actionKinds.has("advance_diligence")
+        || actionKinds.has("reopen_diligence")
+      ? [
+        "internal_memo",
+        "founder_email",
+        "founder_sms",
+        "founder_linkedin",
+        "diligence_request",
+      ]
+      : actionKinds.has("evaluate_follow_on")
+      ? ["internal_memo", "founder_email", "diligence_request"]
+      : ["internal_memo"];
+    const actualFormats = v2Drafts.map(({ format }) => format);
+    const expectedMissingEvidence = evidencePack.coverage.missingFieldIds
+      .map((fieldId) => ({
+        fieldId,
+        label: fieldId.replaceAll("_", " "),
+        reasonCode: "MISSING_CRITICAL_EVIDENCE",
+        mostLikelyDecisionImpact:
+          "Providing accepted evidence may raise or lower the formal decision ceiling.",
+      }));
+    if (
+      !beliefActionListsEqual(
+        versionSnapshot.canonicalActions!,
+        expectedActions,
+      )
+      || v2Drafts.some((draft) =>
+        draft.dealStatus !== versionSnapshot.dealStatus
+        || draft.beliefDirection !== versionSnapshot.beliefDirection
+        || !beliefActionListsEqual(
+          draft.actions,
+          versionSnapshot.canonicalActions!,
+        )
+        || draft.actionPolicyVersion !== versionSnapshot.actionPolicyVersion
+        || draft.draftPolicyVersion !== versionSnapshot.draftPolicyVersion
+      )
+      || actualFormats.length !== expectedFormats.length
+      || expectedFormats.some((format) =>
+        actualFormats.filter((actual) => actual === format).length !== 1
+      )
+      || v2Drafts.some((draft) =>
+        !isDeepStrictEqual(draft.missingEvidence, expectedMissingEvidence)
+      )
+    ) {
+      throw new Error(
+        "Status-safe action drafts do not match the finalized belief identity.",
+      );
+    }
+  }
   const narrative = requiredText(input.narrative, "A narrative");
   const candidateAnalysisFingerprint = requiredText(
     input.candidateAnalysisFingerprint,
@@ -776,6 +964,35 @@ function validateFinalization(
     throw new Error(
       "The candidate version snapshot must match the resolved context.",
     );
+  }
+
+  if (usesCurrentContract) {
+    validateCurrentFrameworkJudgments({
+      judgments,
+      evidencePack,
+      calculations,
+    });
+    validateValuationCalculationBinding({
+      evidencePack,
+      context,
+      scenarioModel,
+      valuation,
+      calculations,
+      calculationClaimEdges,
+      formulaVersions: versionSnapshot.formulaVersions,
+      fundPolicyValues: candidate.fundPolicyValues,
+    });
+    validatePartialUnderwritingTerminalSemantics({
+      evidencePack,
+      context,
+      scenarioModel,
+      calculations,
+      calculationClaimEdges,
+      judgments,
+      disagreements,
+      valuation,
+      decision,
+    });
   }
 
   assertUnique(calculations.map(({ id }) => id), "Calculation");
@@ -941,6 +1158,776 @@ function validateFinalization(
     versionSnapshot,
     claimEdges,
   };
+}
+
+function validateCurrentFrameworkJudgments(input: {
+  judgments: FrameworkJudgment[];
+  evidencePack: EvidencePack;
+  calculations: Calculation[];
+}): void {
+  const expectedVersions = new Map(
+    SYNTHETIC_FRAMEWORK_PACK.cards.map(({ id, version }) => [id, version]),
+  );
+  const formalJudgments = input.judgments.filter(
+    ({ frameworkMetadata }) => frameworkMetadata === undefined,
+  );
+  if (
+    formalJudgments.length !== expectedVersions.size
+    || [...expectedVersions].some(([frameworkCardId, version]) =>
+      formalJudgments.filter((judgment) =>
+        judgment.frameworkCardId === frameworkCardId
+        && judgment.frameworkVersion === version
+      ).length !== 1
+    )
+    || formalJudgments.some(({ frameworkCardId }) =>
+      !expectedVersions.has(frameworkCardId)
+    )
+  ) {
+    throw new Error(
+      "New finalization requires exactly the authorized formal framework catalog.",
+    );
+  }
+
+  const factDependencies = new Map(
+    input.evidencePack.facts.map(({ id }) => [id, "fact" as const]),
+  );
+  const assumptionDependencies = new Map(
+    input.evidencePack.assumptions.map(({ id }) => [
+      id,
+      "assumption" as const,
+    ]),
+  );
+  const valuationFrameworkId = SYNTHETIC_FRAMEWORK_PACK.cards.find(
+    ({ title }) => title === "Valuation & Fund Return",
+  )?.id;
+  for (const judgment of input.judgments) {
+    const dependencies = new Map([
+      ...factDependencies,
+      ...assumptionDependencies,
+      ...(judgment.frameworkCardId === valuationFrameworkId
+        ? input.calculations.map(({ id }) => [id, "calculation" as const] as const)
+        : []),
+    ]);
+    const partition = [
+      ...judgment.supportEvidenceItemIds,
+      ...judgment.counterEvidenceItemIds,
+      ...judgment.unusedEvidenceItemIds,
+    ];
+    const exactPartition = partition.length === dependencies.size
+      && new Set(partition).size === partition.length
+      && partition.every((id) => dependencies.has(id));
+    const abstained = judgment.applicability !== "applicable";
+    const validConclusionShape = abstained
+      ? judgment.conclusion === "abstain"
+        && judgment.supportEvidenceItemIds.length === 0
+        && judgment.counterEvidenceItemIds.length === 0
+        && judgment.strongestSupport === null
+        && judgment.strongestCounterargument === null
+        && Object.values(judgment.confidence).every((value) => value === "low")
+      : judgment.conclusion !== "abstain"
+        && judgment.supportEvidenceItemIds.length > 0
+        && judgment.counterEvidenceItemIds.length > 0
+        && judgment.strongestSupport !== null
+        && judgment.strongestCounterargument !== null;
+    const expectedEdges: ClaimEdge[] = [
+      ...judgment.supportEvidenceItemIds,
+      ...judgment.counterEvidenceItemIds,
+    ].map((dependencyItemId) => ({
+      claimItemId: judgment.id,
+      dependencyItemId,
+      dependencyType: dependencies.get(dependencyItemId)!,
+    }));
+    expectedEdges.push({
+      claimItemId: judgment.id,
+      dependencyItemId: judgment.frameworkCardId,
+      dependencyType: "framework_ref",
+    });
+    if (
+      !exactPartition
+      || !validConclusionShape
+      || !isDeepStrictEqual(
+        sortedClaimEdges(judgment.claimEdges),
+        sortedClaimEdges(expectedEdges),
+      )
+    ) {
+      throw new Error(
+        "Framework judgments must exactly partition and cite their authorized immutable inputs.",
+      );
+    }
+  }
+}
+
+function validatePartialUnderwritingTerminalSemantics(input: {
+  evidencePack: EvidencePack;
+  context: ResolvedUnderwritingContext;
+  scenarioModel: ScenarioModel;
+  calculations: Calculation[];
+  calculationClaimEdges: ClaimEdge[];
+  judgments: FrameworkJudgment[];
+  disagreements: FrameworkDisagreement[];
+  valuation: ValuationEvaluation;
+  decision: DecisionResult;
+}): void {
+  if (
+    input.context.asOfDate !== input.evidencePack.asOfDate
+    || input.scenarioModel.formulaPolicyVersion
+      !== input.context.valuationMethodPolicyId
+  ) {
+    throw new Error(
+      "Finalized context, Evidence Pack, and scenario policy identity must align.",
+    );
+  }
+
+  const factIds = new Set(input.evidencePack.facts.map(({ id }) => id));
+  const assumptionIds = new Set(
+    input.evidencePack.assumptions.map(({ id }) => id),
+  );
+  if (
+    input.scenarioModel.scenarios.some(({ inputs }) =>
+      inputs.some((scenarioInput) =>
+        scenarioInput.evidenceItemId !== null
+          ? !factIds.has(scenarioInput.evidenceItemId)
+          : scenarioInput.assumptionItemId !== null
+          ? !assumptionIds.has(scenarioInput.assumptionItemId)
+          : false
+      )
+    )
+  ) {
+    throw new Error(
+      "Every available scenario input must resolve to persisted evidence.",
+    );
+  }
+
+  const derivedValuationOutputs = [
+    input.valuation.maximumAcceptablePreMoney,
+    input.valuation.initialOwnership,
+    input.valuation.postDilutionOwnership,
+    input.valuation.grossMoic,
+    input.valuation.grossIrr,
+    input.valuation.pricingPremium,
+    ...input.valuation.scenarios.map(({ valuation }) => valuation),
+  ];
+  if (
+    (
+      derivedValuationOutputs.some((value) => value !== null)
+      && input.valuation.calculationIds.length === 0
+    )
+    || input.valuation.scenarios.some((scenario) =>
+      scenario.valuation !== null && scenario.calculationIds.length === 0
+    )
+    || (
+      input.valuation.currentAsk !== null
+      && !input.evidencePack.facts.some((fact) =>
+        fact.field === "reported_valuation"
+        && fact.acceptedForGate
+        && fact.value === input.valuation.currentAsk
+      )
+    )
+  ) {
+    throw new Error(
+      "Valuation outputs require exact persisted Fact or Calculation lineage.",
+    );
+  }
+
+  const hasUnavailableDecisionViolation =
+    input.decision.companyQuality !== "unavailable"
+    || input.decision.priceAttractiveness !== "unavailable"
+    || input.decision.fundFit !== "unavailable"
+    || input.decision.decision !== null
+    || input.decision.decisionCeiling !== null
+    || input.decision.hardVeto
+    || input.decision.confidence !== "low";
+  const requiresUnavailableDecision =
+    !input.evidencePack.coverage.minimumModelInputsComplete
+    || input.evidencePack.coverage.underwritingStatus === "unavailable"
+    || (
+      input.context.analysisMode === "core_only"
+      && input.context.geography === "unavailable"
+    );
+  if (requiresUnavailableDecision && hasUnavailableDecisionViolation) {
+    throw new Error(
+      "Unavailable underwriting inputs require an unavailable low-confidence formal decision.",
+    );
+  }
+
+  if (input.context.analysisMode !== "core_only") return;
+
+  const exceedsCoreOnlyCeiling = [
+    input.evidencePack.coverage.decisionCeiling,
+    input.decision.decision,
+    input.decision.decisionCeiling,
+  ].some((label) => label === "Invest Candidate");
+  if (exceedsCoreOnlyCeiling) {
+    throw new Error(
+      "Core-only finalization cannot exceed the Advance decision ceiling.",
+    );
+  }
+  if (
+    input.evidencePack.coverage.minimumModelInputsComplete
+    && (
+      input.evidencePack.coverage.decisionCeiling !== "Advance"
+      || !input.evidencePack.coverage.reasonCodes.includes(
+        "CORE_ONLY_ANALYSIS_CEILING",
+      )
+    )
+  ) {
+    throw new Error(
+      "Complete Core-only coverage requires the typed Advance ceiling result.",
+    );
+  }
+
+  if (input.context.geography !== "unavailable") return;
+
+  const valuationScalarOutputs = [
+    input.valuation.currentAsk,
+    input.valuation.maximumAcceptablePreMoney,
+    input.valuation.initialOwnership,
+    input.valuation.postDilutionOwnership,
+    input.valuation.grossMoic,
+    input.valuation.grossIrr,
+    input.valuation.pricingPremium,
+  ];
+  const hasUnavailableValuationViolation =
+    input.valuation.status !== "unavailable"
+    || input.calculations.length !== 0
+    || input.calculationClaimEdges.length !== 0
+    || input.valuation.calculationIds.length !== 0
+    || input.valuation.blockerCodes.length === 0
+    || valuationScalarOutputs.some((value) => value !== null)
+    || input.valuation.scenarios.some((scenario) =>
+      scenario.valuation !== null || scenario.calculationIds.length !== 0
+    );
+  const hasUnavailableFrameworkViolation =
+    input.judgments.length === 0
+    || input.judgments.some((judgment) =>
+      judgment.applicability !== "unavailable"
+      || judgment.conclusion !== "abstain"
+    )
+    || input.disagreements.length !== 0;
+  if (
+    hasUnavailableValuationViolation
+    || hasUnavailableFrameworkViolation
+  ) {
+    throw new Error(
+      "Unavailable-geography Core-only finalization requires one truthful unavailable terminal artifact set.",
+    );
+  }
+}
+
+function validateValuationCalculationBinding(input: {
+  evidencePack: EvidencePack;
+  context: ResolvedUnderwritingContext;
+  scenarioModel: ScenarioModel;
+  valuation: ValuationEvaluation;
+  calculations: Calculation[];
+  calculationClaimEdges: ClaimEdge[];
+  formulaVersions: string[];
+  fundPolicyValues?: FundPolicySnapshot["values"];
+}): void {
+  const canonicalFormulaVersions = [...new Set(input.calculations.map(
+    ({ formulaId, formulaVersion }) => `${formulaId}@${formulaVersion}`,
+  ))].sort();
+  if (!isDeepStrictEqual(input.formulaVersions, canonicalFormulaVersions)) {
+    throw new Error(
+      "The finalized formula-version snapshot must exactly match saved calculations.",
+    );
+  }
+  const calculationsById = new Map(
+    input.calculations.map((calculation) => [calculation.id, calculation]),
+  );
+  try {
+    for (const calculation of input.calculations) {
+      const expectedOutput = expectedCalculationOutput({
+        calculation,
+        calculationsById,
+        calculationClaimEdges: input.calculationClaimEdges,
+        evidencePack: input.evidencePack,
+        context: input.context,
+        scenarioModel: input.scenarioModel,
+        fundPolicyValues: input.fundPolicyValues,
+      });
+      if (
+        calculation.status !== "completed"
+        || calculation.formulaVersion !== "1"
+        || calculation.output !== expectedOutput
+      ) {
+        throw new Error("calculation output mismatch");
+      }
+    }
+  } catch {
+    throw new Error(
+      "Saved valuation calculations must satisfy the authorized deterministic formula graph.",
+    );
+  }
+  const valuationCalculationIds = new Set(input.valuation.calculationIds);
+  const hasOutput = (
+    value: string | null,
+    formulaId: string,
+    outputField: string,
+  ): boolean => value === null || input.calculations.some((calculation) =>
+    valuationCalculationIds.has(calculation.id)
+    && calculation.status === "completed"
+    && calculation.formulaId === formulaId
+    && calculation.formulaVersion === "1"
+    && calculation.id.endsWith(`:${outputField}`)
+    && calculation.output === value
+  );
+  if (
+    input.valuation.scenarios.some((scenario) =>
+      scenario.valuation !== null
+      && (
+        scenario.calculationIds.length !== 1
+        || !input.calculations.some((calculation) =>
+          calculation.id === scenario.calculationIds[0]
+          && valuationCalculationIds.has(calculation.id)
+          && calculation.status === "completed"
+          && calculation.formulaId === "market_comps_v1"
+          && calculation.formulaVersion === "1"
+          && calculation.id.endsWith(`:${scenario.name}_valuation`)
+          && calculation.output === scenario.valuation
+        )
+      )
+    )
+    || !hasOutput(
+      input.valuation.maximumAcceptablePreMoney,
+      "venture_return_method_v1",
+      "maximum_acceptable_pre_money",
+    )
+    || !hasOutput(
+      input.valuation.initialOwnership,
+      "simple_pre_post_ownership_v1",
+      "initial_ownership",
+    )
+    || !hasOutput(
+      input.valuation.postDilutionOwnership,
+      "future_dilution_v1",
+      "post_dilution_ownership",
+    )
+    || !hasOutput(
+      input.valuation.grossMoic,
+      "gross_deal_moic_v1",
+      "gross_moic",
+    )
+    || !hasOutput(
+      input.valuation.grossIrr,
+      "annualized_gross_irr_v1",
+      "gross_irr",
+    )
+    || !hasOutput(
+      input.valuation.pricingPremium,
+      "market_comps_v1",
+      "pricing_premium",
+    )
+  ) {
+    throw new Error(
+      "Every finalized valuation output must equal its authorized completed calculation.",
+    );
+  }
+}
+
+function expectedCalculationOutput(input: {
+  calculation: Calculation;
+  calculationsById: Map<string, Calculation>;
+  calculationClaimEdges: ClaimEdge[];
+  evidencePack: EvidencePack;
+  context: ResolvedUnderwritingContext;
+  scenarioModel: ScenarioModel;
+  fundPolicyValues?: FundPolicySnapshot["values"];
+}): string {
+  const outputField = input.calculation.id.split(":").at(-1) ?? "";
+  const expectedInputRefs = expectedCalculationInputRefs({
+    formulaId: input.calculation.formulaId,
+    outputField,
+    evidencePack: input.evidencePack,
+    context: input.context,
+    scenarioModel: input.scenarioModel,
+    fundPolicyValues: input.fundPolicyValues,
+  });
+  const expectedIdentity = expectedCalculationIdentity({
+    formulaId: input.calculation.formulaId,
+    outputField,
+    evidencePack: input.evidencePack,
+    context: input.context,
+    fundPolicyValues: input.fundPolicyValues,
+  });
+  if (
+    !isDeepStrictEqual(input.calculation.inputRefs, expectedInputRefs)
+    || input.calculation.id !== expectedIdentity.id
+    || input.calculation.unit !== expectedIdentity.unit
+    || input.calculation.currency !== expectedIdentity.currency
+    || input.calculation.period !== expectedIdentity.period
+  ) {
+    throw new Error("calculation identity or authoritative input mismatch");
+  }
+  const values = expectedInputRefs.map(({ value }) => value);
+  const dependency = (...outputFields: string[]): Calculation[] => {
+    const edges = input.calculationClaimEdges.filter((edge) =>
+      edge.claimItemId === input.calculation.id
+      && edge.dependencyType === "calculation"
+    );
+    if (edges.length !== outputFields.length) {
+      throw new Error("calculation dependency count mismatch");
+    }
+    return outputFields.map((field) => {
+      const matching = edges.filter(({ dependencyItemId }) =>
+        dependencyItemId.endsWith(`:${field}`)
+      );
+      if (matching.length !== 1) {
+        throw new Error("calculation dependency identity mismatch");
+      }
+      const value = input.calculationsById.get(matching[0]!.dependencyItemId);
+      if (!value) throw new Error("calculation dependency is missing");
+      return value;
+    });
+  };
+  switch (`${input.calculation.formulaId}:${outputField}`) {
+    case "market_comps_v1:bear_valuation":
+    case "market_comps_v1:base_valuation":
+    case "market_comps_v1:bull_valuation":
+      if (values.length !== 3 || dependency().length !== 0) throw new Error();
+      return multiplyDecimalStrings(values[0]!, values[2]!);
+    case "market_comps_v1:pricing_premium":
+      if (values.length !== 3 || dependency().length !== 0) throw new Error();
+      return subtractDecimalStrings(
+        divideDecimalStrings(values[0]!, values[1]!),
+        "1",
+      );
+    case "venture_return_method_v1:exit_equity_value":
+    case "venture_return_method_v1:required_exit_proceeds":
+      if (values.length !== 2 || dependency().length !== 0) throw new Error();
+      return multiplyDecimalStrings(values[0]!, values[1]!);
+    case "venture_return_method_v1:required_post_dilution_ownership": {
+      if (values.length !== 0) throw new Error();
+      const [requiredExitProceeds, exitEquityValue] = dependency(
+        "required_exit_proceeds",
+        "exit_equity_value",
+      );
+      return divideDecimalStrings(
+        requiredExitProceeds!.output,
+        exitEquityValue!.output,
+      );
+    }
+    case "venture_return_method_v1:required_initial_ownership": {
+      if (values.length !== 1) throw new Error();
+      const [requiredPostDilutionOwnership] = dependency(
+        "required_post_dilution_ownership",
+      );
+      return divideDecimalStrings(
+        requiredPostDilutionOwnership!.output,
+        subtractDecimalStrings("1", values[0]!),
+      );
+    }
+    case "venture_return_method_v1:maximum_acceptable_post_money": {
+      if (values.length !== 1) throw new Error();
+      const [requiredInitialOwnership] = dependency(
+        "required_initial_ownership",
+      );
+      return divideDecimalStrings(
+        values[0]!,
+        requiredInitialOwnership!.output,
+      );
+    }
+    case "venture_return_method_v1:maximum_acceptable_pre_money": {
+      if (values.length !== 1) throw new Error();
+      const [maximumAcceptablePostMoney] = dependency(
+        "maximum_acceptable_post_money",
+      );
+      return subtractDecimalStrings(
+        maximumAcceptablePostMoney!.output,
+        values[0]!,
+      );
+    }
+    case "simple_pre_post_ownership_v1:post_money":
+      if (values.length !== 2 || dependency().length !== 0) throw new Error();
+      return addDecimalStrings(values[0]!, values[1]!);
+    case "simple_pre_post_ownership_v1:initial_ownership":
+      if (values.length !== 2 || dependency().length !== 0) throw new Error();
+      return computeOwnership({
+        investment: values[0]!,
+        preMoney: values[1]!,
+      }).initialOwnership;
+    case "future_dilution_v1:post_dilution_ownership": {
+      if (values.length !== 1) throw new Error();
+      const [initialOwnership] = dependency("initial_ownership");
+      return applyFutureDilution(initialOwnership!.output, values[0]!);
+    }
+    case "gross_deal_moic_v1:exit_proceeds": {
+      if (values.length !== 0) throw new Error();
+      const [exitEquityValue, postDilutionOwnership] = dependency(
+        "exit_equity_value",
+        "post_dilution_ownership",
+      );
+      return multiplyDecimalStrings(
+        exitEquityValue!.output,
+        postDilutionOwnership!.output,
+      );
+    }
+    case "gross_deal_moic_v1:gross_moic": {
+      if (values.length !== 1) throw new Error();
+      const [exitProceeds] = dependency("exit_proceeds");
+      return divideDecimalStrings(exitProceeds!.output, values[0]!);
+    }
+    case "annualized_gross_irr_v1:gross_irr": {
+      if (values.length !== 1) throw new Error();
+      const [grossMoic] = dependency("gross_moic");
+      return computeGrossReturns({
+        invested: "1",
+        proceeds: grossMoic!.output,
+        holdingYears: values[0]!,
+      }).irr;
+    }
+    default:
+      throw new Error("unsupported valuation formula");
+  }
+}
+
+type CalculationInputRef = Calculation["inputRefs"][number];
+
+function expectedCalculationInputRefs(input: {
+  formulaId: string;
+  outputField: string;
+  evidencePack: EvidencePack;
+  context: ResolvedUnderwritingContext;
+  scenarioModel: ScenarioModel;
+  fundPolicyValues?: FundPolicySnapshot["values"];
+}): CalculationInputRef[] {
+  const exactFact = (field: string): CalculationInputRef => {
+    const matches = input.evidencePack.facts.filter((fact) =>
+      fact.field === field && fact.acceptedForGate
+    );
+    if (matches.length !== 1) {
+      throw new Error(`Expected exactly one accepted ${field} Fact.`);
+    }
+    return {
+      itemId: matches[0]!.id,
+      value: matches[0]!.value,
+      type: "fact",
+    };
+  };
+  const exactAssumption = (
+    field: string,
+    scenario: "bear" | "base" | "bull" | "all",
+    provenanceOrigin: "benchmark" | "recommended_policy",
+  ): CalculationInputRef => {
+    const matches = input.evidencePack.assumptions.filter((assumption) =>
+      assumption.field === field
+      && assumption.scenario === scenario
+      && assumption.provenanceOrigin === provenanceOrigin
+      && (
+        provenanceOrigin !== "benchmark"
+        || (
+          input.context.benchmarkPackId !== null
+          && assumption.inputRefIds.length === 1
+          && assumption.inputRefIds[0] === input.context.benchmarkPackId
+        )
+      )
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `Expected exactly one ${provenanceOrigin} ${scenario} ${field} Assumption.`,
+      );
+    }
+    return {
+      itemId: matches[0]!.id,
+      value: matches[0]!.value,
+      type: provenanceOrigin === "benchmark" ? "benchmark" : "assumption",
+    };
+  };
+  const scenarioRef = (field: "arr_path" | "exit_multiple") => {
+    const base = input.scenarioModel.scenarios.filter(
+      ({ name }) => name === "base",
+    );
+    const matches = base.length === 1
+      ? base[0]!.inputs.filter((candidate) => candidate.field === field)
+      : [];
+    if (matches.length !== 1 || matches[0]!.value === null) {
+      throw new Error(`Expected one available base ${field} Scenario input.`);
+    }
+    const scenarioInput = matches[0]!;
+    const referenceCount = Number(scenarioInput.evidenceItemId !== null)
+      + Number(scenarioInput.assumptionItemId !== null);
+    if (referenceCount !== 1) {
+      throw new Error("Scenario formula input must have one evidence identity.");
+    }
+    if (scenarioInput.evidenceItemId !== null) {
+      const facts = input.evidencePack.facts.filter((fact) =>
+        fact.id === scenarioInput.evidenceItemId
+        && fact.value === scenarioInput.value
+      );
+      if (facts.length !== 1) {
+        throw new Error("Scenario Fact formula input is not authoritative.");
+      }
+      return {
+        itemId: facts[0]!.id,
+        value: facts[0]!.value,
+        type: "fact" as const,
+      };
+    }
+    const assumptions = input.evidencePack.assumptions.filter((assumption) =>
+      assumption.id === scenarioInput.assumptionItemId
+      && assumption.value === scenarioInput.value
+    );
+    if (assumptions.length !== 1) {
+      throw new Error("Scenario Assumption formula input is not authoritative.");
+    }
+    return {
+      itemId: assumptions[0]!.id,
+      value: assumptions[0]!.value,
+      type: "assumption" as const,
+    };
+  };
+  const policyRef = (...path: string[]): CalculationInputRef => ({
+    itemId: `policy:${path.join(".")}`,
+    value: exactFundPolicyString(input.fundPolicyValues, path),
+    type: "policy",
+  });
+  const benchmarkValue = () => exactAssumption(
+    "compatible_benchmark_value",
+    "all",
+    "benchmark",
+  );
+  const benchmarkFreshness = () => exactAssumption(
+    "compatible_benchmark_stale_after",
+    "all",
+    "benchmark",
+  );
+
+  switch (`${input.formulaId}:${input.outputField}`) {
+    case "market_comps_v1:bear_valuation":
+      return [
+        benchmarkValue(),
+        benchmarkFreshness(),
+        exactAssumption("scenario_price_multiplier", "bear", "recommended_policy"),
+      ];
+    case "market_comps_v1:base_valuation":
+      return [
+        benchmarkValue(),
+        benchmarkFreshness(),
+        exactAssumption("scenario_price_multiplier", "base", "recommended_policy"),
+      ];
+    case "market_comps_v1:bull_valuation":
+      return [
+        benchmarkValue(),
+        benchmarkFreshness(),
+        exactAssumption("scenario_price_multiplier", "bull", "recommended_policy"),
+      ];
+    case "market_comps_v1:pricing_premium":
+      return [exactFact("reported_valuation"), benchmarkValue(), benchmarkFreshness()];
+    case "venture_return_method_v1:exit_equity_value":
+      return [scenarioRef("arr_path"), scenarioRef("exit_multiple")];
+    case "venture_return_method_v1:required_exit_proceeds":
+      return [
+        policyRef("initialCheckMax"),
+        policyRef("returnTargets", input.context.stage, "grossMoic"),
+      ];
+    case "venture_return_method_v1:required_post_dilution_ownership":
+    case "gross_deal_moic_v1:exit_proceeds":
+      return [];
+    case "venture_return_method_v1:required_initial_ownership":
+    case "future_dilution_v1:post_dilution_ownership":
+      return [policyRef("acceptableFutureDilution")];
+    case "venture_return_method_v1:maximum_acceptable_post_money":
+    case "venture_return_method_v1:maximum_acceptable_pre_money":
+    case "gross_deal_moic_v1:gross_moic":
+      return [policyRef("initialCheckMax")];
+    case "simple_pre_post_ownership_v1:post_money":
+    case "simple_pre_post_ownership_v1:initial_ownership":
+      return [policyRef("initialCheckMax"), exactFact("reported_valuation")];
+    case "annualized_gross_irr_v1:gross_irr":
+      return [policyRef("returnTargets", input.context.stage, "horizonYears")];
+    default:
+      throw new Error("unsupported valuation formula input contract");
+  }
+}
+
+function expectedCalculationIdentity(input: {
+  formulaId: string;
+  outputField: string;
+  evidencePack: EvidencePack;
+  context: ResolvedUnderwritingContext;
+  fundPolicyValues?: FundPolicySnapshot["values"];
+}): {
+  id: string;
+  unit: string;
+  currency: string | null;
+  period: string | null;
+} {
+  const key = `${input.formulaId}:${input.outputField}`;
+  const id = `calculation:valuation:${input.evidencePack.id}:${key}`;
+  const baseCurrency = () => exactFundPolicyString(
+    input.fundPolicyValues,
+    ["baseCurrency"],
+  );
+  if (/^market_comps_v1:(bear|base|bull)_valuation$/u.test(key)) {
+    const benchmark = input.evidencePack.assumptions.filter((assumption) =>
+      assumption.field === "compatible_benchmark_value"
+      && assumption.provenanceOrigin === "benchmark"
+      && assumption.inputRefIds.length === 1
+      && assumption.inputRefIds[0] === input.context.benchmarkPackId
+    );
+    if (benchmark.length !== 1 || !/^[A-Z]{3}$/u.test(benchmark[0]!.unit ?? "")) {
+      throw new Error("Market-comps currency is not authoritative.");
+    }
+    return {
+      id,
+      unit: "currency",
+      currency: benchmark[0]!.unit,
+      period: input.outputField.replace("_valuation", ""),
+    };
+  }
+  switch (key) {
+    case "market_comps_v1:pricing_premium":
+      return { id, unit: "decimal", currency: null, period: null };
+    case "venture_return_method_v1:exit_equity_value":
+    case "venture_return_method_v1:required_exit_proceeds":
+    case "venture_return_method_v1:maximum_acceptable_post_money":
+    case "venture_return_method_v1:maximum_acceptable_pre_money":
+    case "simple_pre_post_ownership_v1:post_money":
+    case "gross_deal_moic_v1:exit_proceeds":
+      return { id, unit: "currency", currency: baseCurrency(), period: null };
+    case "venture_return_method_v1:required_post_dilution_ownership":
+    case "venture_return_method_v1:required_initial_ownership":
+    case "simple_pre_post_ownership_v1:initial_ownership":
+    case "future_dilution_v1:post_dilution_ownership":
+      return { id, unit: "decimal", currency: null, period: null };
+    case "gross_deal_moic_v1:gross_moic":
+      return { id, unit: "multiple", currency: null, period: null };
+    case "annualized_gross_irr_v1:gross_irr":
+      return {
+        id,
+        unit: "decimal",
+        currency: null,
+        period: exactFundPolicyString(input.fundPolicyValues, [
+          "returnTargets",
+          input.context.stage,
+          "horizonYears",
+        ]),
+      };
+    default:
+      throw new Error("unsupported valuation calculation identity");
+  }
+}
+
+function exactFundPolicyString(
+  values: FundPolicySnapshot["values"] | undefined,
+  path: readonly string[],
+): string {
+  let current: unknown = values;
+  for (const segment of path) {
+    if (
+      current === null
+      || typeof current !== "object"
+      || Array.isArray(current)
+      || !(segment in current)
+    ) {
+      throw new Error(`Pinned Fund Policy value ${path.join(".")} is missing.`);
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  if (typeof current !== "string") {
+    throw new Error(`Pinned Fund Policy value ${path.join(".")} is not text.`);
+  }
+  return current;
 }
 
 function assertUnique(values: readonly string[], label: string): void {

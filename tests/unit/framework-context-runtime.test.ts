@@ -69,7 +69,10 @@ test("caches the exact authorized catalog and service by immutable deal context 
     resolver.resolve({
       ...context,
       id: "underwriting_context_seed_b2b_saas_global_v1",
+      analysisMode: "core_only",
       geography: "global",
+      benchmarkPackId: null,
+      benchmarkCompatibility: "unavailable",
     }),
   ]);
 
@@ -138,6 +141,126 @@ test("partitions exact catalog and service instances by research security type",
   assert.strictEqual(sameConvertible, convertible);
   assert.strictEqual(sameConvertible.catalog, convertible.catalog);
   assert.strictEqual(sameConvertible.service, convertible.service);
+});
+
+test("unavailable geography resolves and replays one catalog service whose cards explicitly abstain", async () => {
+  let providerCalls = 0;
+  const resolver = createContextAwareFrameworkLensResolver({
+    execution,
+    client: {
+      async complete() {
+        providerCalls += 1;
+        return "{}";
+      },
+    },
+  });
+  const unavailableContext: ResolvedUnderwritingContext = {
+    ...context,
+    id: "underwriting_context_series_a_enterprise_ai_unavailable_v1",
+    analysisMode: "core_only",
+    stage: "series_a",
+    businessModel: "enterprise_ai",
+    geography: "unavailable",
+    benchmarkPackId: null,
+    benchmarkCompatibility: "unavailable",
+  };
+
+  const first = await resolver.resolve(unavailableContext);
+  const replay = await resolver.resolve({
+    ...unavailableContext,
+    id: "same-unavailable-selection",
+  });
+  assert.strictEqual(replay, first);
+  assert.equal(first.catalog.composites.every(({ experimentalAdvisory }) =>
+    experimentalAdvisory.applicable === false
+    && experimentalAdvisory.components.length === 0
+    && experimentalAdvisory.componentCardIds.length === 0
+  ), true);
+
+  const result = await first.service.runAll({
+    candidate: {
+      id: "candidate_irregular",
+      batchId: "batch_1",
+      workspaceId: "workspace_1",
+      dealId: "deal_irregular",
+      status: "running",
+      candidateAnalysisFingerprint: `sha256:${"a".repeat(64)}`,
+      rerunOfId: null,
+      createdAt: "2026-07-29T10:02:00.000Z",
+      finalizedAt: null,
+    },
+    pack: {
+      id: "evidence_pack_irregular",
+      version: 1,
+      workspaceId: "workspace_1",
+      dealId: "deal_irregular",
+      asOfDate: unavailableContext.asOfDate,
+      sourceRevisionIds: ["revision_irregular"],
+      facts: [],
+      assumptions: [],
+      conflicts: [],
+      coverage: {
+        minimumModelInputsComplete: false,
+        criticalEvidenceComplete: false,
+        missingFieldIds: ["reported_valuation"],
+        blockingConflictIds: [],
+        decisionCeiling: null,
+        underwritingStatus: "unavailable",
+        reasonCodes: ["MISSING_MINIMUM_MODEL_INPUTS"],
+      },
+      createdAt: "2026-07-29T10:01:00.000Z",
+    },
+    context: unavailableContext,
+    calculations: [],
+  });
+  const serviceReplay = await first.service.runAll({
+    candidate: {
+      id: "candidate_irregular",
+      batchId: "batch_1",
+      workspaceId: "workspace_1",
+      dealId: "deal_irregular",
+      status: "running",
+      candidateAnalysisFingerprint: `sha256:${"a".repeat(64)}`,
+      rerunOfId: null,
+      createdAt: "2026-07-29T10:02:00.000Z",
+      finalizedAt: null,
+    },
+    pack: {
+      id: "evidence_pack_irregular",
+      version: 1,
+      workspaceId: "workspace_1",
+      dealId: "deal_irregular",
+      asOfDate: unavailableContext.asOfDate,
+      sourceRevisionIds: ["revision_irregular"],
+      facts: [],
+      assumptions: [],
+      conflicts: [],
+      coverage: {
+        minimumModelInputsComplete: false,
+        criticalEvidenceComplete: false,
+        missingFieldIds: ["reported_valuation"],
+        blockingConflictIds: [],
+        decisionCeiling: null,
+        underwritingStatus: "unavailable",
+        reasonCodes: ["MISSING_MINIMUM_MODEL_INPUTS"],
+      },
+      createdAt: "2026-07-29T10:01:00.000Z",
+    },
+    context: unavailableContext,
+    calculations: [],
+  });
+
+  assert.equal(providerCalls, 0);
+  assert.deepEqual(serviceReplay, result);
+  assert.ok(result.judgments.length > 0);
+  assert.equal(result.judgments.every((judgment) =>
+    judgment.applicability === "unavailable"
+    && judgment.conclusion === "abstain"
+    && judgment.limitations.some((limitation) =>
+      /core-only.*geography.*unavailable/i.test(limitation)
+    )
+  ), true);
+  assert.deepEqual(result.disagreements, []);
 });
 
 test("aborts an in-flight real catalog resolution before authorizing a service", async () => {

@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 
-import type { XTraceLineageSnapshot } from "../contracts/underwriting";
+import type { RunRecord } from "../../db/client";
+import type { RegisteredDeal } from "../../db/repositories/deal-registry";
+import type {
+  IntelligenceReportRecord,
+} from "../../db/repositories/intelligence";
+import type { CompanyAnalysis } from "../contracts/domain";
+import type { FundPolicySnapshot } from "../contracts/underwriting";
+import type {
+  CandidateExecutionBudget,
+} from "./candidate-stage-runtime";
 
 export interface ImmutableFingerprintRef {
   id: string;
@@ -10,6 +19,13 @@ export interface ImmutableFingerprintRef {
 export interface VersionedRef {
   id: string;
   version: string;
+}
+
+export interface CanonicalBeliefActionFingerprint {
+  kind: string;
+  scope: string;
+  priority: string;
+  visibility: string;
 }
 
 export type UnderwritingReferenceKind =
@@ -31,39 +47,25 @@ export interface UnderwritingReferenceCatalogSnapshot {
 }
 
 export interface BatchFingerprintInput {
-  workspaceId: string;
-  evidenceFrame: UnderwritingEvidenceFrameV1;
-  window: {
-    days: 14;
-    startsAt: string;
-    endsAt: string;
-  };
-  marketSnapshot: ImmutableFingerprintRef;
-  eligibleDealRevisions: Array<{
-    dealId: string;
-    status: string;
-    sourceRevisionIds: string[];
-    fingerprint: string;
-  }>;
-  xtraceLineage: XTraceLineageSnapshot;
-  selectedEvents: ImmutableFingerprintRef[];
-  matching: {
-    providerModel: string;
-    promptVersion: string;
-    schemaVersion: string;
-    scoringPolicyVersion: string;
-    selectionPolicyVersion: string;
-    judgmentFingerprint: string;
-  };
-  fundPolicySnapshot: {
-    id: string;
-    version: number;
-    fingerprint: string;
-  };
-  frameworkPack: VersionedRef;
-  routerVersion: string;
-  decisionPolicy: VersionedRef;
+  scanRun: RunRecord;
+  report: IntelligenceReportRecord;
+  analyses: CompanyAnalysis[];
+  eligibleDeals: RegisteredDeal[];
+  policy: FundPolicySnapshot;
+  executionBudget: CandidateExecutionBudget;
+  candidateExecutionFingerprint: string;
   referenceCatalog: UnderwritingReferenceCatalogSnapshot;
+  evidenceFrame?: UnderwritingEvidenceFrameV1;
+  selectionPolicyVersion: string;
+  routerVersion: string;
+  beliefPolicies: {
+    actionPolicyVersion: string;
+    draftPolicyVersion: string;
+    semanticContextAssumptionPolicyVersion: string;
+    semanticContextMappingVersion: string;
+  };
+  evidencePackBuilderVersion: string;
+  decisionPolicyVersion: string;
 }
 
 export interface UnderwritingEvidenceFrameV1 {
@@ -84,6 +86,15 @@ export interface CandidateFingerprintInput {
     sourceRevisionIds: string[];
     fingerprint: string;
   };
+  beliefState: {
+    dealStatus: string;
+    direction: string;
+    canonicalActions: CanonicalBeliefActionFingerprint[];
+    actionPolicyVersion: string;
+    draftPolicyVersion: string;
+    semanticContextAssumptionPolicyVersion: string;
+    semanticContextMappingVersion: string;
+  };
   evidencePack: {
     id: string;
     version: number;
@@ -99,7 +110,12 @@ export interface CandidateFingerprintInput {
     valuationMethodPolicyId: string;
     frameworkPackId: string;
     decisionPolicyId: string;
+    analysisMode: "full" | "core_only";
+    geography: "us" | "global" | "unavailable";
+    securityType: "preferred";
+    benchmarkCompatibility: string;
   };
+  routerVersion: string;
   criticalEvidenceProfile: ReferenceDefinitionRef;
   benchmark: ReferenceDefinitionRef | null;
   valuationMethodPolicy: ReferenceDefinitionRef;
@@ -122,58 +138,52 @@ export interface CandidateFingerprintInput {
 export function createBatchInputFingerprint(
   input: BatchFingerprintInput,
 ): string {
-  if (input.window.days !== 14) {
+  if (input.scanRun.windowDays !== 14) {
     throw new Error("Underwriting batch fingerprints require a 14-day window.");
   }
   return fingerprint({
-    kind: "underwriting-batch-input-v1",
-    workspaceId: required(input.workspaceId, "workspaceId"),
-    evidenceFrame: normalizedEvidenceFrame(input.evidenceFrame),
-    window: {
-      days: input.window.days,
-      startsAt: required(input.window.startsAt, "window.startsAt"),
-      endsAt: required(input.window.endsAt, "window.endsAt"),
+    kind: "underwriting-orchestration-v2",
+    evidenceFrame: input.evidenceFrame === undefined
+      ? null
+      : normalizedEvidenceFrame(input.evidenceFrame),
+    scan: {
+      id: input.scanRun.id,
+      workspaceId: input.scanRun.workspaceId,
+      mode: input.scanRun.mode,
+      windowDays: input.scanRun.windowDays,
+      createdAt: input.scanRun.createdAt,
     },
-    marketSnapshot: normalizedFingerprintRef(input.marketSnapshot),
-    eligibleDealRevisions: input.eligibleDealRevisions
-      .map((revision) => ({
-        dealId: required(revision.dealId, "dealId"),
-        status: required(revision.status, "deal status"),
-        sourceRevisionIds: sortedUnique(revision.sourceRevisionIds),
-        fingerprint: required(revision.fingerprint, "Deal fingerprint"),
-      }))
-      .sort((left, right) => compareUtf8(left.dealId, right.dealId)),
-    xtraceLineage: {
-      memoryIds: sortedUnique(input.xtraceLineage.memoryIds),
-      sourceRevisionIds: sortedUnique(input.xtraceLineage.sourceRevisionIds),
-      sourceIds: sortedUnique(input.xtraceLineage.sourceIds),
-      fixtureIds: sortedUnique(input.xtraceLineage.fixtureIds),
-      capturedAt: required(
-        input.xtraceLineage.capturedAt,
-        "XTrace capture time",
-      ),
-    },
-    selectedEvents: input.selectedEvents
-      .map(normalizedFingerprintRef)
+    immutableReport: input.report,
+    eligibleDeals: [...input.eligibleDeals]
       .sort((left, right) => compareUtf8(left.id, right.id)),
-    matching: normalizedRecord(input.matching),
-    fundPolicySnapshot: {
-      id: required(input.fundPolicySnapshot.id, "Fund Policy id"),
-      version: input.fundPolicySnapshot.version,
-      fingerprint: required(
-        input.fundPolicySnapshot.fingerprint,
-        "Fund Policy fingerprint",
-      ),
-    },
-    frameworkPack: normalizedVersionedRef(input.frameworkPack),
-    routerVersion: required(input.routerVersion, "Router version"),
-    decisionPolicy: normalizedVersionedRef(input.decisionPolicy),
+    companyAnalyses: [...input.analyses]
+      .sort((left, right) => compareUtf8(left.dealId, right.dealId)),
+    fundPolicy: input.policy,
+    selectionPolicyVersion: required(
+      input.selectionPolicyVersion,
+      "Selection Policy version",
+    ),
+    executionBudget: input.executionBudget,
+    candidateExecutionFingerprint: required(
+      input.candidateExecutionFingerprint,
+      "Candidate execution fingerprint",
+    ),
     referenceCatalog: normalizedReferenceCatalog(input.referenceCatalog),
+    routerVersion: required(input.routerVersion, "Router version"),
+    beliefPolicies: normalizedRecord(input.beliefPolicies),
+    evidencePackBuilderVersion: required(
+      input.evidencePackBuilderVersion,
+      "Evidence Pack builder version",
+    ),
+    decisionPolicyVersion: required(
+      input.decisionPolicyVersion,
+      "Decision Policy version",
+    ),
   });
 }
 
 function normalizedEvidenceFrame(
-  value: BatchFingerprintInput["evidenceFrame"],
+  value: UnderwritingEvidenceFrameV1,
 ) {
   const pinned = value.evidenceMode === "pinned";
   if (!pinned && value.evidenceMode !== "live") {
@@ -227,6 +237,32 @@ export function createCandidateAnalysisFingerprint(
         "Deal revision fingerprint",
       ),
     },
+    beliefState: {
+      dealStatus: required(input.beliefState.dealStatus, "Deal status"),
+      direction: required(
+        input.beliefState.direction,
+        "Belief direction",
+      ),
+      canonicalActions: input.beliefState.canonicalActions.map(
+        normalizedBeliefAction,
+      ),
+      actionPolicyVersion: required(
+        input.beliefState.actionPolicyVersion,
+        "Action Policy version",
+      ),
+      draftPolicyVersion: required(
+        input.beliefState.draftPolicyVersion,
+        "Draft Policy version",
+      ),
+      semanticContextAssumptionPolicyVersion: required(
+        input.beliefState.semanticContextAssumptionPolicyVersion,
+        "Semantic context assumption Policy version",
+      ),
+      semanticContextMappingVersion: required(
+        input.beliefState.semanticContextMappingVersion,
+        "Semantic context mapping version",
+      ),
+    },
     evidencePack: {
       id: required(input.evidencePack.id, "Evidence Pack id"),
       version: input.evidencePack.version,
@@ -240,6 +276,7 @@ export function createCandidateAnalysisFingerprint(
     },
     evidenceSourceIds: sortedUnique(input.evidenceSourceIds),
     context: normalizedRecord(input.context),
+    routerVersion: required(input.routerVersion, "Router version"),
     criticalEvidenceProfile: normalizedReferenceDefinitionRef(
       input.criticalEvidenceProfile,
     ),
@@ -349,22 +386,6 @@ function fingerprint(value: unknown): string {
   return createCanonicalFingerprint(value);
 }
 
-function normalizedFingerprintRef(
-  value: ImmutableFingerprintRef,
-): ImmutableFingerprintRef {
-  return {
-    id: required(value.id, "Snapshot id"),
-    fingerprint: required(value.fingerprint, "Snapshot fingerprint"),
-  };
-}
-
-function normalizedVersionedRef(value: VersionedRef): VersionedRef {
-  return {
-    id: required(value.id, "Versioned reference id"),
-    version: required(value.version, "Versioned reference version"),
-  };
-}
-
 function normalizedReferenceDefinitionRef(
   value: ReferenceDefinitionRef,
 ): ReferenceDefinitionRef {
@@ -405,6 +426,20 @@ function normalizedRecord<T extends Record<string, unknown>>(value: T): T {
     if (typeof item === "string") required(item, key);
   }
   return { ...value };
+}
+
+function normalizedBeliefAction(
+  value: CanonicalBeliefActionFingerprint,
+): CanonicalBeliefActionFingerprint {
+  return {
+    kind: required(value.kind, "Canonical action kind"),
+    scope: required(value.scope, "Canonical action scope"),
+    priority: required(value.priority, "Canonical action priority"),
+    visibility: required(
+      value.visibility,
+      "Canonical action visibility",
+    ),
+  };
 }
 
 function sortedUnique(values: readonly string[]): string[] {

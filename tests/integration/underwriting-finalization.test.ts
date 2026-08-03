@@ -17,12 +17,19 @@ import {
 } from "../../db/repositories/underwriting-runs";
 import type { EvidencePack } from "../../lib/contracts/evidence";
 import {
+  ACTION_DRAFT_POLICY_VERSION,
   ScenarioInputFieldSchema,
   type FrameworkJudgment,
   type FundPolicySnapshot,
   type ResolvedUnderwritingContext,
 } from "../../lib/contracts/underwriting";
+import {
+  BELIEF_ACTION_POLICY_VERSION,
+  actionsForDealStatusAndDirection,
+} from "../../lib/reports/action-policy";
+import { CONTEXT_ROUTER_VERSION } from "../../lib/underwriting/router";
 import { createValuationEngine } from "../../lib/underwriting/valuation/service";
+import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
 
 const migrationPath = fileURLToPath(
   new URL("../../drizzle/0011_underwriting_runs.sql", import.meta.url),
@@ -191,6 +198,13 @@ function finalization(input: {
   leaseToken: string;
   fundPolicyId?: string;
 }): CandidateFinalization {
+  const actions = actionsForDealStatusAndDirection("invested", "negative");
+  const judgments = canonicalFrameworkAbstentions({
+    prefix: input.dealId,
+    factIds: [],
+    assumptionIds: [],
+    calculations: [],
+  });
   const scenarioInputs = (scenario: "bear" | "base" | "bull") =>
     ScenarioInputFieldSchema.options.map((field) => ({
       id: `${scenario}_${field}`,
@@ -232,6 +246,7 @@ function finalization(input: {
     context: {
       id: "context_1",
       contextVersion: "1",
+      analysisMode: "full",
       stage: "seed",
       businessModel: "b2b_saas",
       geography: "us",
@@ -242,7 +257,7 @@ function finalization(input: {
       benchmarkCompatibility: "exact",
       valuationMethodPolicyId: "valuation_policy_1",
       decisionPolicyId: "decision_policy_1",
-      frameworkPackId: "framework_pack_1",
+      frameworkPackId: SYNTHETIC_FRAMEWORK_PACK.id,
     },
     scenarioModel: {
       id: `scenario_model_${input.dealId}`,
@@ -256,7 +271,7 @@ function finalization(input: {
     },
     calculations: [],
     calculationClaimEdges: [],
-    judgments: [],
+    judgments,
     disagreements: [],
     valuation: {
       id: `valuation_${input.dealId}`,
@@ -281,9 +296,9 @@ function finalization(input: {
       analysisType: "final_synthesis",
       companyQuality: "unavailable",
       priceAttractiveness: "unavailable",
-      fundFit: "mixed",
-      decision: "Advance",
-      decisionCeiling: "Advance",
+      fundFit: "unavailable",
+      decision: null,
+      decisionCeiling: null,
       hardVeto: false,
       firedRules: [],
       blockingEvidenceItemIds: [],
@@ -292,23 +307,52 @@ function finalization(input: {
     },
     narrative: "The company needs more evidence before an investment decision.",
     actionDrafts: [{
+      schemaVersion: "action-draft-v2",
+      safety: "status_safe",
+      deliveryMode: "draft_only",
+      draftPolicyVersion: ACTION_DRAFT_POLICY_VERSION,
+      actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
       id: `draft_${input.dealId}`,
       workspaceId: "workspace_1",
       candidateRunId: input.candidateRunId,
-      channel: "dd_request",
-      audienceType: "founder",
-      body: "Please provide current ARR and retention.",
+      dealStatus: "invested",
+      beliefDirection: "negative",
+      actions,
+      missingEvidence: [{
+        fieldId: "arr",
+        label: "arr",
+        reasonCode: "MISSING_CRITICAL_EVIDENCE",
+        mostLikelyDecisionImpact:
+          "Providing accepted evidence may raise or lower the formal decision ceiling.",
+      }],
+      format: "internal_memo",
+      channel: "internal",
+      audienceType: "internal",
+      body: "INTERNAL UNDERWRITING ACTION MEMO — DRAFT ONLY\nPlease review missing ARR evidence.",
       createdAt: "2026-07-29T12:00:00.000Z",
       updatedAt: "2026-07-29T12:00:00.000Z",
     }],
     versionSnapshot: {
       fundPolicyId: input.fundPolicyId ?? "fund_policy_1",
+      dealStatus: "invested",
+      beliefDirection: "negative",
+      canonicalActions: actions,
+      actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
+      draftPolicyVersion: ACTION_DRAFT_POLICY_VERSION,
+      semanticContextAssumptionPolicyVersion:
+        "belief-reversal-demo-context-v1",
+      semanticContextMappingVersion:
+        "belief-reversal-reviewed-context-mapping-v1",
+      analysisMode: "full",
+      contextVersion: "1",
+      geography: "us",
+      benchmarkCompatibility: "exact",
       benchmarkPackId: "benchmark_1",
       benchmarkEntryId: "benchmark_entry_1",
       benchmarkDefinitionFingerprint: `sha256:${"1".repeat(64)}`,
-      frameworkPackId: "framework_pack_1",
+      frameworkPackId: SYNTHETIC_FRAMEWORK_PACK.id,
       frameworkPackDefinitionFingerprint: `sha256:${"2".repeat(64)}`,
-      routerVersion: "router-v1",
+      routerVersion: CONTEXT_ROUTER_VERSION,
       criticalEvidenceProfileId: "critical_1",
       criticalEvidenceProfileDefinitionFingerprint:
         `sha256:${"3".repeat(64)}`,
@@ -328,34 +372,52 @@ function finalization(input: {
   };
 }
 
-function advisorySpecialistJudgment(
-  applicability: "not_applicable" | "unavailable",
-  ordinal: number,
-): FrameworkJudgment {
-  return {
-    id: `judgment_specialist_${applicability}`,
-    analysisType: "framework_judgment",
-    frameworkCardId: `framework_card_synthetic_${ordinal}_v1`,
-    frameworkVersion: "1",
-    applicability,
-    conclusion: "abstain",
-    supportEvidenceItemIds: [],
-    counterEvidenceItemIds: [],
-    unusedEvidenceItemIds: [],
-    strongestSupport: null,
-    strongestCounterargument: null,
-    unknowns: [`Specialist judgment is ${applicability}.`],
-    limitations: ["This judgment is advisory and not a formal decision input."],
-    confidence: {
-      sourceReliability: "medium",
-      evidenceStrength: "low",
-      evidenceCoverage: "low",
-      applicability: "high",
-      judgment: "high",
-    },
-    claimEdges: [],
-    fingerprint: `fingerprint_specialist_${applicability}`,
-  };
+function canonicalFrameworkAbstentions(input: {
+  prefix: string;
+  factIds: string[];
+  assumptionIds: string[];
+  calculations: CandidateFinalization["calculations"];
+}): FrameworkJudgment[] {
+  const valuationFrameworkId = SYNTHETIC_FRAMEWORK_PACK.cards.find(
+    ({ title }) => title === "Valuation & Fund Return",
+  )!.id;
+  return SYNTHETIC_FRAMEWORK_PACK.cards.map((card, index) => {
+    const id = `judgment_${input.prefix}_${index + 1}`;
+    return {
+      id,
+      analysisType: "framework_judgment",
+      frameworkCardId: card.id,
+      frameworkVersion: card.version,
+      applicability: "unavailable",
+      conclusion: "abstain",
+      supportEvidenceItemIds: [],
+      counterEvidenceItemIds: [],
+      unusedEvidenceItemIds: [
+        ...input.factIds,
+        ...input.assumptionIds,
+        ...(card.id === valuationFrameworkId
+          ? input.calculations.map(({ id: calculationId }) => calculationId)
+          : []),
+      ].sort(),
+      strongestSupport: null,
+      strongestCounterargument: null,
+      unknowns: ["Minimum evidence is unavailable."],
+      limitations: ["The framework must abstain."],
+      confidence: {
+        sourceReliability: "low",
+        evidenceStrength: "low",
+        evidenceCoverage: "low",
+        applicability: "low",
+        judgment: "low",
+      },
+      claimEdges: [{
+        claimItemId: id,
+        dependencyItemId: card.id,
+        dependencyType: "framework_ref",
+      }],
+      fingerprint: `unavailable-${input.prefix}-${index + 1}`,
+    };
+  });
 }
 
 function valuationEvidencePack(): EvidencePack {
@@ -494,6 +556,7 @@ function valuationContext(): ResolvedUnderwritingContext {
   return {
     id: "context_seed_saas_us",
     contextVersion: "1",
+    analysisMode: "full",
     stage: "seed",
     businessModel: "b2b_saas",
     geography: "us",
@@ -554,6 +617,10 @@ function realValuationFinalization(input: {
     leaseToken: input.leaseToken,
     fundPolicyId: policy.id,
   });
+  const actionDrafts = structuredClone(base.actionDrafts);
+  if ("missingEvidence" in actionDrafts[0]!) {
+    actionDrafts[0].missingEvidence = [];
+  }
   return {
     ...base,
     evidencePack: pack,
@@ -561,7 +628,14 @@ function realValuationFinalization(input: {
     scenarioModel: detailed.scenarioModel,
     calculations: detailed.calculations,
     calculationClaimEdges: detailed.calculationClaimEdges,
+    judgments: canonicalFrameworkAbstentions({
+      prefix: pack.dealId,
+      factIds: pack.facts.map(({ id }) => id),
+      assumptionIds: pack.assumptions.map(({ id }) => id),
+      calculations: detailed.calculations,
+    }),
     valuation: detailed.evaluation,
+    actionDrafts,
     versionSnapshot: {
       ...base.versionSnapshot,
       fundPolicyId: policy.id,
@@ -570,14 +644,9 @@ function realValuationFinalization(input: {
       criticalEvidenceProfileId: context.criticalEvidenceProfileId,
       valuationMethodPolicyId: context.valuationMethodPolicyId,
       decisionPolicyId: context.decisionPolicyId,
-      formulaVersions: [
-        "market_comps_v1",
-        "venture_return_method_v1",
-        "simple_pre_post_ownership_v1",
-        "future_dilution_v1",
-        "gross_deal_moic_v1",
-        "annualized_gross_irr_v1",
-      ],
+      formulaVersions: [...new Set(detailed.calculations.map(
+        ({ formulaId, formulaVersion }) => `${formulaId}@${formulaVersion}`,
+      ))].sort(),
     },
   } as CandidateFinalization;
 }
@@ -801,7 +870,7 @@ test("finalization rejects a foreign lease and stores exact immutable snapshots 
   assert.equal(artifacts.inspect().rowCounts.evidencePacks, 1);
 });
 
-test("Task8 finalization preserves advisory specialist judgments without requiring formal decision edges", async () => {
+test("finalization preserves canonical framework abstentions without requiring formal decision edges", async () => {
   const { artifacts, evidencePacks, runs, first } =
     await twoClaimedCandidates();
   const payload = finalization({
@@ -810,10 +879,10 @@ test("Task8 finalization preserves advisory specialist judgments without requiri
     workerId: "worker_1",
     leaseToken: first.leaseToken,
   });
-  payload.judgments = [
-    advisorySpecialistJudgment("not_applicable", 4),
-    advisorySpecialistJudgment("unavailable", 5),
-  ];
+  payload.judgments[3] = {
+    ...payload.judgments[3]!,
+    applicability: "not_applicable",
+  };
   payload.narrative = [
     payload.narrative,
     "framework_card_synthetic_4_v1: not_applicable",
@@ -836,7 +905,7 @@ test("Task8 finalization preserves advisory specialist judgments without requiri
     ),
     false,
   );
-  assert.equal(artifacts.inspect().rowCounts.judgments, 2);
+  assert.equal(artifacts.inspect().rowCounts.judgments, 8);
 });
 
 test("finalization persists the real valuation artifact graph without losing Task10 references", async () => {
@@ -855,6 +924,7 @@ test("finalization persists the real valuation artifact graph without losing Tas
     scanRunId: "scan_1",
     batchInputFingerprint: `sha256:${"c".repeat(64)}`,
     fundPolicySnapshotId: valuationFundPolicy().id,
+    fundPolicyValues: valuationFundPolicy().values,
     forceRefresh: false,
     refreshNonce: null,
     rerunOfId: null,
@@ -883,6 +953,65 @@ test("finalization persists the real valuation artifact graph without losing Tas
   });
 
   await saveFinalizationBuild(evidencePacks, payload);
+  const forged = structuredClone(payload);
+  const forgedCalculation = forged.calculations.find(({ id }) =>
+    id.endsWith(":bear_valuation")
+  );
+  const forgedScenario = forged.valuation.scenarios.find(
+    ({ name }) => name === "bear",
+  );
+  assert.ok(forgedCalculation);
+  assert.ok(forgedScenario);
+  forgedCalculation.output = "999999999";
+  forgedScenario.valuation = forgedCalculation.output;
+  await assert.rejects(
+    runs.finalizeCandidate(forged),
+    /authorized deterministic formula graph/i,
+  );
+  const forgedInputValue = structuredClone(payload);
+  const forgedInputCalculation = forgedInputValue.calculations.find(({ id }) =>
+    id.endsWith(":bear_valuation")
+  );
+  const forgedInputScenario = forgedInputValue.valuation.scenarios.find(
+    ({ name }) => name === "bear",
+  );
+  assert.ok(forgedInputCalculation);
+  assert.ok(forgedInputScenario);
+  forgedInputCalculation.inputRefs.at(-1)!.value = "50";
+  forgedInputCalculation.output = "1000000000";
+  forgedInputScenario.valuation = forgedInputCalculation.output;
+  await assert.rejects(
+    runs.finalizeCandidate(forgedInputValue),
+    /authorized deterministic formula graph/i,
+  );
+
+  const substitutedInput = structuredClone(payload);
+  const substitutedBear = substitutedInput.calculations.find(({ id }) =>
+    id.endsWith(":bear_valuation")
+  );
+  const substitutedBull = substitutedInput.calculations.find(({ id }) =>
+    id.endsWith(":bull_valuation")
+  );
+  const substitutedScenario = substitutedInput.valuation.scenarios.find(
+    ({ name }) => name === "bear",
+  );
+  assert.ok(substitutedBear);
+  assert.ok(substitutedBull);
+  assert.ok(substitutedScenario);
+  substitutedBear.inputRefs[substitutedBear.inputRefs.length - 1] =
+    structuredClone(substitutedBull.inputRefs.at(-1)!);
+  substitutedBear.output = substitutedBull.output;
+  substitutedScenario.valuation = substitutedBear.output;
+  await assert.rejects(
+    runs.finalizeCandidate(substitutedInput),
+    /authorized deterministic formula graph/i,
+  );
+  assert.equal(
+    runs.inspect().candidates.find(({ id }) => id === claimed.candidate.id)
+      ?.status,
+    "running",
+  );
+
   await runs.finalizeCandidate(payload);
   const stored = await artifacts.getByCandidateRunId({
     workspaceId: "workspace_1",

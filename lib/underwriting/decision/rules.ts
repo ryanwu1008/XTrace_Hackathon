@@ -149,7 +149,33 @@ export function evaluateDecisionRules(
     };
   }
 
-  const decisionCeiling = resolveDecisionCeiling(input.coverage);
+  if (
+    input.context.analysisMode === "core_only"
+    && input.context.geography === "unavailable"
+  ) {
+    rules.push(rule({
+      ruleId: RULE_IDS.mandate,
+      inputRefs: [
+        typedRef("policy_ref", `${input.fundPolicy.id}#mandates`),
+        typedRef("underwriting_context", input.context.id),
+      ],
+      result: "not_applicable",
+    }));
+    return {
+      companyQuality: "unavailable",
+      priceAttractiveness: "unavailable",
+      fundFit: "unavailable",
+      mandateMismatch: false,
+      hardVeto: false,
+      actionablePositiveSignal: false,
+      decisionCeiling: null,
+      firedRules: rules,
+    };
+  }
+
+  const decisionCeiling = input.context.analysisMode === "core_only"
+    ? "Advance"
+    : resolveDecisionCeiling(input.coverage);
   rules.push(rule({
     ruleId: RULE_IDS.criticalEvidence,
     inputRefs: [

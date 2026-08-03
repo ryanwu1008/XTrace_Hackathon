@@ -8,6 +8,7 @@ import type {
 import type {
   FundPolicySnapshot,
   ResolvedUnderwritingContext,
+  ScenarioModel,
   ValuationEvaluation,
 } from "../../contracts/underwriting";
 import { z } from "zod";
@@ -48,6 +49,19 @@ export function evaluateValuationArtifacts(input: {
 }, options: CalculationOptions = {}): ValuationArtifactSet {
   const calculationScope = `valuation:${input.pack.id}`;
   const formulaOptions = { ...options, calculationScope };
+  const scenarioModel = buildScenarioModel({
+    pack: input.pack,
+    candidateRunId: `valuation:${input.pack.id}`,
+    formulaPolicyVersion: input.context.valuationMethodPolicyId,
+    probabilityWeighted:
+      input.fundPolicy.values.probabilityWeighted === true,
+  });
+  if (
+    input.context.analysisMode === "core_only"
+    && input.context.geography === "unavailable"
+  ) {
+    return coreOnlyUnavailableArtifacts(input.pack.id, scenarioModel);
+  }
   const currentAskFact = acceptedFact(
     input.pack,
     "reported_valuation",
@@ -98,13 +112,6 @@ export function evaluateValuationArtifacts(input: {
     },
   }, formulaOptions);
 
-  const scenarioModel = buildScenarioModel({
-    pack: input.pack,
-    candidateRunId: `valuation:${input.pack.id}`,
-    formulaPolicyVersion: input.context.valuationMethodPolicyId,
-    probabilityWeighted:
-      input.fundPolicy.values.probabilityWeighted === true,
-  });
   const probabilityStatus = validateProbabilityWeights(scenarioModel);
   const baseInputs = scenarioModel.scenarios.find(
     ({ name }) => name === "base",
@@ -312,6 +319,35 @@ export function evaluateValuationArtifacts(input: {
     scenarioModel,
     calculations,
     calculationClaimEdges,
+  };
+}
+
+function coreOnlyUnavailableArtifacts(
+  packId: string,
+  scenarioModel: ScenarioModel,
+): ValuationArtifactSet {
+  return {
+    evaluation: {
+      id: `valuation:${packId}`,
+      status: "unavailable",
+      scenarios: (["bear", "base", "bull"] as const).map((name) => ({
+        name,
+        valuation: null,
+        calculationIds: [],
+      })),
+      currentAsk: null,
+      maximumAcceptablePreMoney: null,
+      initialOwnership: null,
+      postDilutionOwnership: null,
+      grossMoic: null,
+      grossIrr: null,
+      pricingPremium: null,
+      calculationIds: [],
+      blockerCodes: ["CORE_ONLY_GEOGRAPHY_UNAVAILABLE"],
+    },
+    scenarioModel,
+    calculations: [],
+    calculationClaimEdges: [],
   };
 }
 

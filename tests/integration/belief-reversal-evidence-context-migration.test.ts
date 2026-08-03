@@ -41,16 +41,16 @@ test("0019 evidence-context migration remains the contiguous predecessor to 0020
       breakpoints: boolean;
     }>;
   };
-  assert.deepEqual(journal.entries.at(-3), {
+  const entryIndex = journal.entries.findIndex(({ idx }) => idx === 19);
+  assert.deepEqual(journal.entries[entryIndex], {
     idx: 19,
     version: "7",
     when: 1785661200000,
     tag: migrationName,
     breakpoints: true,
   });
-  assert.equal(journal.entries.at(-4)?.idx, 18);
-  assert.equal(journal.entries.at(-2)?.idx, 20);
-  assert.equal(journal.entries.at(-1)?.idx, 21);
+  assert.equal(journal.entries[entryIndex - 1]?.idx, 18);
+  assert.equal(journal.entries[entryIndex + 1]?.idx, 20);
   assert.equal(
     new Set(journal.entries.map(({ idx }) => idx)).size,
     journal.entries.length,

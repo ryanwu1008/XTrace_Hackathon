@@ -21,7 +21,6 @@ import {
 import {
   SLICE_ONE_CONTEXTS,
   type SliceOneBusinessModel,
-  type SliceOneGeography,
   type SliceOneStage,
 } from "../../seed/underwriting/slice-one-contexts-v1";
 import type { CriticalEvidenceProfile } from "../../lib/underwriting/router";
@@ -33,7 +32,7 @@ import { canonicalJson } from "../../lib/underwriting/fingerprints";
 export interface ContextKey {
   stage: SliceOneStage;
   businessModel: SliceOneBusinessModel;
-  geography: SliceOneGeography;
+  geography: ResolvedUnderwritingContext["geography"];
   securityType: "preferred";
   asOfDate: string;
 }
@@ -267,7 +266,7 @@ export function createMemoryUnderwritingReferencesRepository(options: {
       if (
         !["seed", "series_a"].includes(input.stage)
         || !["b2b_saas", "enterprise_ai"].includes(input.businessModel)
-        || !["us", "global"].includes(input.geography)
+        || !["us", "global", "unavailable"].includes(input.geography)
         || input.securityType !== "preferred"
         || !isIsoDate(input.asOfDate)
       ) {
@@ -288,6 +287,7 @@ export function createMemoryUnderwritingReferencesRepository(options: {
           id:
             `${profile.id}:${input.geography}:preferred:${input.asOfDate}`,
           contextVersion: profile.contextVersion,
+          analysisMode: benchmarkAvailable ? "full" : "core_only",
           stage: input.stage,
           businessModel: input.businessModel,
           geography: input.geography,
@@ -496,7 +496,7 @@ export function createSupabaseUnderwritingReferencesRepository(options: {
       if (
         !["seed", "series_a"].includes(input.stage)
         || !["b2b_saas", "enterprise_ai"].includes(input.businessModel)
-        || !["us", "global"].includes(input.geography)
+        || !["us", "global", "unavailable"].includes(input.geography)
         || input.securityType !== "preferred"
         || !isIsoDate(input.asOfDate)
       ) {
@@ -532,6 +532,7 @@ export function createSupabaseUnderwritingReferencesRepository(options: {
         value: ResolvedUnderwritingContextSchema.parse({
           id: `${String(row.id)}:${input.geography}:preferred:${input.asOfDate}`,
           contextVersion: row.context_version,
+          analysisMode: us ? "full" : "core_only",
           stage: input.stage,
           businessModel: input.businessModel,
           geography: input.geography,
@@ -541,7 +542,7 @@ export function createSupabaseUnderwritingReferencesRepository(options: {
           benchmarkPackId: us ? row.us_benchmark_pack_id : null,
           benchmarkCompatibility: us
             ? row.us_benchmark_compatibility
-            : row.global_benchmark_compatibility,
+            : "unavailable",
           valuationMethodPolicyId: row.valuation_method_policy_id,
           decisionPolicyId: row.decision_policy_id,
           frameworkPackId: row.framework_pack_id,

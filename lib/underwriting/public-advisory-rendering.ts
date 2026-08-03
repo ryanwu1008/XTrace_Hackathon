@@ -130,13 +130,22 @@ export function renderPublicAdvisorySections(input: {
  */
 export function sanitizeLegacyPublicActionDraftBody(input: {
   channel: ActionDraft["channel"];
+  format?: string | null;
   body: string;
 }): string {
-  const expectedHeader = LEGACY_ACTION_DRAFT_HEADERS[input.channel];
+  const effectiveChannel = input.format === "internal_memo"
+    ? "internal_memo"
+    : input.format === "diligence_request"
+    ? "dd_request"
+    : input.channel;
+  const expectedHeader = LEGACY_ACTION_DRAFT_HEADERS[effectiveChannel];
   if (!expectedHeader) return input.body;
 
   const lines = input.body.split("\n");
-  if (lines[0] !== expectedHeader) return input.body;
+  if (
+    lines[0] !== expectedHeader
+    && lines[0] !== `${expectedHeader} — DRAFT ONLY`
+  ) return input.body;
 
   const opinionsHeadingIndex = lines.indexOf(
     LEGACY_ADVISORY_OPINIONS_HEADING,
@@ -173,9 +182,7 @@ export function sanitizeLegacyPublicActionDraftBody(input: {
   }
   const publicGeneratedDiligenceLines = diligenceLines
     .slice(0, generatedDiligenceEnd)
-    .filter((line) =>
-      !line.startsWith(LEGACY_PRIVATE_DILIGENCE_LINE_PREFIX)
-    );
+    .flatMap(publicLegacyDiligenceLine);
 
   return [
     ...lines.slice(0, opinionsHeadingIndex + 1),
@@ -212,11 +219,31 @@ function sanitizeLegacyOpinionSpan(lines: string[]): string[] {
         line.startsWith(prefix)
       )
     ) {
+      if (line.startsWith("  Limitations:")) {
+        const publicValues = line.slice("  Limitations:".length)
+          .split(";")
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0 && !/^private\b/i.test(value));
+        if (publicValues.length > 0) {
+          retained.push(`  Public limitations: ${publicValues.join("; ")}`);
+        }
+      }
       continue;
     }
     retained.push(line);
   }
   return retained;
+}
+
+function publicLegacyDiligenceLine(line: string): string[] {
+  if (!line.startsWith(LEGACY_PRIVATE_DILIGENCE_LINE_PREFIX)) return [line];
+  const value = line.slice(line.indexOf(":") + 1).trim();
+  return /^private\b/i.test(value)
+    ? []
+    : [line.replace(
+      LEGACY_PRIVATE_DILIGENCE_LINE_PREFIX,
+      "- Address public advisory limitation [",
+    )];
 }
 
 function isLegacyGeneratedDiligenceLine(line: string): boolean {

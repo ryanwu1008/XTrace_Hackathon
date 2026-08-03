@@ -39,11 +39,14 @@ import { interactionSourceV2 } from "../../lib/matching/context";
 import { buildOpportunityScoreBreakdown } from "../../lib/matching/scoring";
 import { evaluateBeliefRevisionHardGates } from "../../lib/matching/hard-gates";
 import {
+  BELIEF_ACTION_POLICY_VERSION,
   actionsForDealStatusAndDirection,
   renderRecommendedNextMove,
 } from "../../lib/reports/action-policy";
 import {
+  ACTION_DRAFT_POLICY_VERSION,
   ScenarioInputFieldSchema,
+  type CandidateRun,
   type FundPolicySnapshot,
 } from "../../lib/contracts/underwriting";
 import {
@@ -56,12 +59,19 @@ import {
 import {
   createEvidencePackBuilder,
 } from "../../lib/underwriting/evidence/builder";
+import {
+  SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+  SEMANTIC_CONTEXT_MAPPING_VERSION,
+} from "../../lib/underwriting/evidence/semantic-projector";
+import { createActionDraftGenerator } from "../../lib/underwriting/action-drafts";
 import { IntegrationTransportError } from "../../lib/api/errors";
 import {
+  CONTEXT_ROUTER_VERSION,
   createContextRouter,
   type CriticalEvidenceProfile,
 } from "../../lib/underwriting/router";
 import {
+  createBatchInputFingerprint,
   createCanonicalFingerprint,
   createReferenceCatalogSnapshot,
 } from "../../lib/underwriting/fingerprints";
@@ -71,6 +81,9 @@ import {
 import type {
   FrameworkLensService,
 } from "../../lib/underwriting/frameworks/service";
+import {
+  buildFrameworkAbstention,
+} from "../../lib/underwriting/frameworks/grounding";
 import type {
   FrameworkCard,
 } from "../../lib/underwriting/frameworks/schemas";
@@ -79,6 +92,7 @@ import type {
   ClaudeCompleteInput,
 } from "../../lib/claude/client";
 import { BALANCED_POLICY_VALUES } from "../../seed/underwriting/balanced-policy-v1";
+import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
 import {
   processClaimedRun,
   projectRecommendedOpportunities,
@@ -93,6 +107,41 @@ import {
 } from "../helpers/source-evidence-v2";
 
 const NOW = new Date("2026-07-29T12:00:00.000Z");
+
+function canonicalFrameworkAbstentions(
+  request: Parameters<FrameworkLensService["runAll"]>[0],
+): Awaited<ReturnType<FrameworkLensService["runAll"]>> {
+  return {
+    judgments: canonicalFrameworkAbstentionJudgments(request),
+    disagreements: [],
+  };
+}
+
+function canonicalFrameworkAbstentionJudgments(
+  request: Pick<
+    Parameters<FrameworkLensService["runAll"]>[0],
+    "candidate" | "pack" | "calculations"
+  >,
+): Awaited<ReturnType<FrameworkLensService["runAll"]>>["judgments"] {
+  assert.equal(SYNTHETIC_FRAMEWORK_PACK.cards.length, 8);
+  return SYNTHETIC_FRAMEWORK_PACK.cards.map((card) =>
+    buildFrameworkAbstention({
+      candidate: request.candidate,
+      pack: request.pack,
+      card,
+      calculations: request.calculations,
+      fingerprint: createCanonicalFingerprint({
+        fixture: "canonical-framework-abstention-v1",
+        candidateRunId: request.candidate.id,
+        frameworkCardId: card.id,
+        frameworkVersion: card.version,
+      }),
+      applicability: "unavailable",
+      reason:
+        "Framework execution is unavailable in this deterministic test fixture.",
+    })
+  );
+}
 
 const IMAGE_INTERACTION = {
   id: "fixture_image",
@@ -422,6 +471,7 @@ async function candidateGroundingFor(
   dealId: string,
   options: {
     includeContext: boolean;
+    includeValuation?: boolean;
     now?: () => Date;
     repository?: ReturnType<typeof createMemoryEvidencePacksRepository>;
   },
@@ -470,7 +520,7 @@ async function candidateGroundingFor(
         field: "Company identity",
         value: registeredDeal.companyId,
         locator: {
-          kind: "text_range",
+          kind: "text_range" as const,
           start: 0,
           end: 10,
           excerpt: registeredDeal.companyName,
@@ -494,7 +544,7 @@ async function candidateGroundingFor(
           excerpt: `${field}: ${value}`,
         },
       })),
-      {
+      ...(options.includeValuation === false ? [] : [{
         ...common,
         id: `fact_${dealId}_valuation`,
         field: "Pre-money valuation",
@@ -502,12 +552,12 @@ async function candidateGroundingFor(
         unit: "currency",
         currency: "USD",
         locator: {
-          kind: "text_range",
+          kind: "text_range" as const,
           start: 70,
           end: 80,
           excerpt: "Pre-money $18m",
         },
-      },
+      }]),
     ]);
   }
   const criticalEvidenceProfile: CriticalEvidenceProfile = {
@@ -672,11 +722,62 @@ test("current underwriting rejects a report from another evidence frame before b
 });
 
 function finalization(input: {
+  candidate: CandidateRun;
   candidateRunId: string;
   dealId: string;
   workerId: string;
   leaseToken: string;
 }): CandidateFinalization {
+  const evidencePack: CandidateFinalization["evidencePack"] = {
+    id: `evidence_pack_${input.dealId}`,
+    version: 1,
+    workspaceId: "workspace_1",
+    dealId: input.dealId,
+    asOfDate: "2026-07-29",
+    sourceRevisionIds: [`revision_${input.dealId}`],
+    facts: [],
+    assumptions: [],
+    conflicts: [],
+    coverage: {
+      minimumModelInputsComplete: false,
+      criticalEvidenceComplete: false,
+      missingFieldIds: ["company_identity"],
+      blockingConflictIds: [],
+      decisionCeiling: null,
+      underwritingStatus: "unavailable",
+      reasonCodes: ["MISSING_MINIMUM_MODEL_INPUTS"],
+    },
+    createdAt: NOW.toISOString(),
+  };
+  const judgments = canonicalFrameworkAbstentionJudgments({
+    candidate: input.candidate,
+    pack: evidencePack,
+    calculations: [],
+  });
+  const decision: CandidateFinalization["decision"] = {
+    id: `decision_${input.dealId}`,
+    analysisType: "final_synthesis",
+    companyQuality: "unavailable",
+    priceAttractiveness: "unavailable",
+    fundFit: "unavailable",
+    decision: null,
+    decisionCeiling: null,
+    hardVeto: false,
+    firedRules: [],
+    blockingEvidenceItemIds: [],
+    claimEdges: [],
+    confidence: "low",
+  };
+  const actions = actionsForDealStatusAndDirection("passed", "positive");
+  const missingEvidence = evidencePack.coverage.missingFieldIds.map(
+    (fieldId) => ({
+      fieldId,
+      label: fieldId.replaceAll("_", " "),
+      reasonCode: "MISSING_CRITICAL_EVIDENCE",
+      mostLikelyDecisionImpact:
+        "Providing accepted evidence may raise or lower the formal decision ceiling.",
+    }),
+  );
   return {
     workerId: input.workerId,
     leaseToken: input.leaseToken,
@@ -684,30 +785,11 @@ function finalization(input: {
     candidateAnalysisFingerprint:
       `sha256:${input.dealId.padEnd(64, "a").slice(0, 64)}`,
     evidencePackBuildInputFingerprint: `sha256:${"e".repeat(64)}`,
-    evidencePack: {
-      id: `evidence_pack_${input.dealId}`,
-      version: 1,
-      workspaceId: "workspace_1",
-      dealId: input.dealId,
-      asOfDate: "2026-07-29",
-      sourceRevisionIds: [`revision_${input.dealId}`],
-      facts: [],
-      assumptions: [],
-      conflicts: [],
-      coverage: {
-        minimumModelInputsComplete: false,
-        criticalEvidenceComplete: false,
-        missingFieldIds: ["company_identity"],
-        blockingConflictIds: [],
-        decisionCeiling: null,
-        underwritingStatus: "unavailable",
-        reasonCodes: ["MISSING_MINIMUM_MODEL_INPUTS"],
-      },
-      createdAt: NOW.toISOString(),
-    },
+    evidencePack,
     context: {
       id: "underwriting_context_seed_b2b_saas_v1",
       contextVersion: "1",
+      analysisMode: "full",
       stage: "seed",
       businessModel: "b2b_saas",
       geography: "us",
@@ -742,7 +824,7 @@ function finalization(input: {
     },
     calculations: [],
     calculationClaimEdges: [],
-    judgments: [],
+    judgments,
     disagreements: [],
     valuation: {
       id: `valuation_${input.dealId}`,
@@ -762,31 +844,42 @@ function finalization(input: {
       calculationIds: [],
       blockerCodes: ["MISSING_MINIMUM_MODEL_INPUTS"],
     },
-    decision: {
-      id: `decision_${input.dealId}`,
-      analysisType: "final_synthesis",
-      companyQuality: "unavailable",
-      priceAttractiveness: "unavailable",
-      fundFit: "unavailable",
-      decision: null,
-      decisionCeiling: null,
-      hardVeto: false,
-      firedRules: [],
-      blockingEvidenceItemIds: [],
-      claimEdges: [],
-      confidence: "low",
-    },
+    decision,
     narrative: "Underwriting unavailable because minimum evidence is missing.",
-    actionDrafts: [],
+    actionDrafts: createActionDraftGenerator({
+      workspaceId: input.candidate.workspaceId,
+      now: () => NOW,
+    }).generate({
+      candidateRunId: input.candidateRunId,
+      decision,
+      missingEvidence,
+      dealStatus: "passed",
+      beliefDirection: "positive",
+      actions,
+      judgments,
+      disagreements: [],
+    }),
     versionSnapshot: {
       fundPolicyId: policy.id,
+      dealStatus: "passed",
+      beliefDirection: "positive",
+      canonicalActions: actions,
+      actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
+      draftPolicyVersion: ACTION_DRAFT_POLICY_VERSION,
+      semanticContextAssumptionPolicyVersion:
+        SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+      semanticContextMappingVersion: SEMANTIC_CONTEXT_MAPPING_VERSION,
+      analysisMode: "full",
+      contextVersion: "1",
+      geography: "us",
+      benchmarkCompatibility: "exact",
       benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
       benchmarkEntryId: "benchmark_entry_synthetic_seed_valuation_v1",
       benchmarkDefinitionFingerprint: `sha256:${"1".repeat(64)}`,
       frameworkPackId:
         "framework_pack_synthetic_universal_saas_ai_v1",
       frameworkPackDefinitionFingerprint: `sha256:${"2".repeat(64)}`,
-      routerVersion: "context-router-v1",
+      routerVersion: CONTEXT_ROUTER_VERSION,
       criticalEvidenceProfileId: "critical_evidence_seed_b2b_saas_v1",
       criticalEvidenceProfileDefinitionFingerprint:
         `sha256:${"3".repeat(64)}`,
@@ -1402,6 +1495,105 @@ test("reuses the same immutable batch input without creating duplicate candidate
   assert.equal(runs.inspect().candidates.length, 1);
 });
 
+test("persists the fingerprint produced by the authoritative batch input path", async () => {
+  let sequence = 0;
+  const runs = createMemoryUnderwritingRunsRepository({
+    now: () => NOW,
+    idGenerator: (kind) => `${kind}_${++sequence}`,
+  });
+  const candidateExecutionFingerprint = "candidate-executor-runtime-test-v1";
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    autoProcessCandidates: false,
+    candidateExecutionFingerprint,
+    referenceCatalog: TEST_REFERENCE_CATALOG,
+  });
+  const analyses = [analysis("deal_a", 0.99)];
+  const eligibleDeals = [deal("deal_a")];
+  const immutableReport = report(analyses);
+
+  const batch = await orchestrator.createBatchAndSelections({
+    scanRun,
+    report: immutableReport,
+    analyses,
+    eligibleDeals,
+    forceRefresh: false,
+  });
+
+  assert.equal(batch.batchInputFingerprint, createBatchInputFingerprint({
+    scanRun,
+    report: immutableReport,
+    analyses,
+    eligibleDeals,
+    policy,
+    executionBudget: {
+      maxCostUnits: 28,
+      maxTokenUnits: 112_000,
+      maxConcurrency: 1,
+      stages: {
+        context_router: {
+          timeoutMs: 30_000,
+          maxAttempts: 1,
+          costUnits: 0,
+          tokenUnits: 0,
+        },
+        evidence_pack: {
+          timeoutMs: 30_000,
+          maxAttempts: 2,
+          costUnits: 0,
+          tokenUnits: 0,
+        },
+        valuation: {
+          timeoutMs: 30_000,
+          maxAttempts: 1,
+          costUnits: 0,
+          tokenUnits: 0,
+        },
+        framework_catalog: {
+          timeoutMs: 30_000,
+          maxAttempts: 2,
+          costUnits: 0,
+          tokenUnits: 0,
+        },
+        framework_lenses: {
+          timeoutMs: 30_000,
+          maxAttempts: 1,
+          costUnits: 0,
+          tokenUnits: 0,
+        },
+        decision: {
+          timeoutMs: 30_000,
+          maxAttempts: 1,
+          costUnits: 0,
+          tokenUnits: 0,
+        },
+        narrative_drafts: {
+          timeoutMs: 30_000,
+          maxAttempts: 1,
+          costUnits: 0,
+          tokenUnits: 0,
+        },
+      },
+    },
+    candidateExecutionFingerprint,
+    referenceCatalog: TEST_REFERENCE_CATALOG,
+    evidenceFrame: undefined,
+    selectionPolicyVersion: "top-five-belief-revised-v1",
+    routerVersion: "context-router-v2",
+    beliefPolicies: {
+      actionPolicyVersion: "belief-action-policy-v1",
+      draftPolicyVersion: "status-safe-action-draft-v2",
+      semanticContextAssumptionPolicyVersion:
+        "belief-reversal-demo-context-v1",
+      semanticContextMappingVersion:
+        "belief-reversal-reviewed-context-mapping-v1",
+    },
+    evidencePackBuilderVersion: "evidence_pack_builder_v2",
+    decisionPolicyVersion: "1",
+  }));
+});
+
 test("changes the batch fingerprint when exact XTrace source lineage changes", async () => {
   let sequence = 0;
   const runs = createMemoryUnderwritingRunsRepository({
@@ -1634,6 +1826,7 @@ test("processing a named candidate cannot lease an older queued candidate", asyn
     autoProcessCandidates: false,
     candidateExecutor: async ({ candidate, workerId, leaseToken }) => {
       const payload = finalization({
+        candidate,
         candidateRunId: candidate.id,
         dealId: candidate.dealId,
         workerId,
@@ -1695,6 +1888,7 @@ test("byte-identical force refresh completes as an immutable artifact alias", as
     refreshNonce: () => `refresh_${++sequence}`,
     candidateExecutor: async ({ candidate, workerId, leaseToken }) => {
       const payload = finalization({
+        candidate,
         candidateRunId: candidate.id,
         dealId: candidate.dealId,
         workerId,
@@ -1769,6 +1963,7 @@ test("a persistence failure during finalization terminates the candidate and bat
     activeFundPolicy: async () => policy,
     candidateExecutor: async ({ candidate, workerId, leaseToken }) =>
       finalization({
+        candidate,
         candidateRunId: candidate.id,
         dealId: candidate.dealId,
         workerId,
@@ -1811,6 +2006,7 @@ test("a candidate failure preserves a completed predecessor and leaves the batch
         throw new Error("provider returned private diagnostic detail");
       }
       const payload = finalization({
+        candidate,
         candidateRunId: candidate.id,
         dealId: candidate.dealId,
         workerId,
@@ -1912,6 +2108,111 @@ test("identity-only evidence requires context confirmation before resolving a fr
   assert.equal(batch.status, "failed");
 });
 
+test("missing valuation inputs continue through every stage and finalize a terminal unavailable result", async () => {
+  let sequence = 0;
+  const artifacts = createMemoryUnderwritingArtifactsRepository();
+  const evidencePacks = createMemoryEvidencePacksRepository();
+  const runs = createMemoryUnderwritingRunsRepository({
+    now: () => NOW,
+    idGenerator: (kind) => `${kind}_${++sequence}`,
+    leaseTokenGenerator: () => `lease_${++sequence}`,
+    artifacts,
+    evidencePacks,
+  });
+  const grounding = await candidateGroundingFor("deal_a", {
+    includeContext: true,
+    includeValuation: false,
+    repository: evidencePacks,
+  });
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    referenceCatalog: TEST_REFERENCE_CATALOG,
+    candidateExecutor: createSourceGroundedCandidateExecutor({
+      grounding,
+      resolveFrameworkLenses: async () => ({
+        catalogVersion: "research-framework-catalog-v1",
+        catalogFingerprint: `sha256:${"7".repeat(64)}`,
+        corpusDigest: `sha256:${"8".repeat(64)}`,
+        service: {
+          async runAll(request) {
+            return canonicalFrameworkAbstentions(request);
+          },
+        },
+      }),
+      now: () => NOW,
+      execution: {
+        providerModel: "synthetic-test-lens",
+        promptVersion: "framework-lens-v1",
+        schemaVersion: "framework-judgment-v1",
+        settingsFingerprint: `sha256:${"b".repeat(64)}`,
+        applicationCommit: "task9-test",
+      },
+    }),
+    now: () => NOW,
+  });
+  const analyses = [analysis("deal_a", 0.99)];
+
+  const batch = await orchestrator.createBatchAndSelections({
+    scanRun,
+    report: report(analyses),
+    analyses,
+    eligibleDeals: [deal("deal_a")],
+    forceRefresh: false,
+  });
+
+  assert.equal(batch.status, "completed");
+  assert.equal(runs.inspect().candidates[0]?.status, "completed");
+  assert.deepEqual(runs.inspect().unavailableReasons, {});
+  assert.deepEqual(
+    runs.inspect().checkpoints.map(({ stage, status }) => [stage, status]),
+    [
+      ["context_router", "completed"],
+      ["evidence_pack", "completed"],
+      ["valuation", "completed"],
+      ["framework_catalog", "completed"],
+      ["framework_lenses", "completed"],
+      ["decision", "completed"],
+      ["narrative_drafts", "completed"],
+      ["finalization", "completed"],
+    ],
+  );
+  const saved = artifacts.inspect().bundles[0];
+  assert.ok(saved);
+  assert.equal(saved.scenarioModel.scenarios.length, 3);
+  assert.equal(
+    saved.scenarioModel.scenarios.every(({ inputs }) => inputs.length === 17),
+    true,
+  );
+  assert.equal(saved.valuation.status, "unavailable");
+  assert.deepEqual({
+    currentAsk: saved.valuation.currentAsk,
+    maximumAcceptablePreMoney:
+      saved.valuation.maximumAcceptablePreMoney,
+    initialOwnership: saved.valuation.initialOwnership,
+    postDilutionOwnership: saved.valuation.postDilutionOwnership,
+    grossMoic: saved.valuation.grossMoic,
+    grossIrr: saved.valuation.grossIrr,
+    pricingPremium: saved.valuation.pricingPremium,
+    decision: saved.decision.decision,
+    decisionCeiling: saved.decision.decisionCeiling,
+    confidence: saved.decision.confidence,
+  }, {
+    currentAsk: null,
+    maximumAcceptablePreMoney: null,
+    initialOwnership: null,
+    postDilutionOwnership: null,
+    grossMoic: null,
+    grossIrr: null,
+    pricingPremium: null,
+    decision: null,
+    decisionCeiling: null,
+    confidence: "low",
+  });
+  assert.match(saved.narrative, /unavailable/i);
+  assert.ok(saved.actionDrafts.length > 0);
+});
+
 test("runs the source-grounded candidate chain once and persists communication channels as drafts", async () => {
   let sequence = 0;
   let lensExecutions = 0;
@@ -1949,7 +2250,7 @@ test("runs the source-grounded candidate chain once and persists communication c
             async runAll(request) {
               lensExecutions += 1;
               frameworkInput = request;
-              return { judgments: [], disagreements: [] };
+              return canonicalFrameworkAbstentions(request);
             },
           },
         };
@@ -2049,8 +2350,16 @@ test("runs the source-grounded candidate chain once and persists communication c
     "benchmark_entry_synthetic_seed_valuation_v1",
   );
   assert.deepEqual(
-    saved.bundles[0]?.actionDrafts.map(({ channel }) => channel).sort(),
-    ["dd_request", "email", "internal_memo", "linkedin", "sms"],
+    saved.bundles[0]?.actionDrafts.map((draft) =>
+      "format" in draft ? draft.format : draft.channel
+    ).sort(),
+    [
+      "diligence_request",
+      "founder_email",
+      "founder_linkedin",
+      "founder_sms",
+      "internal_memo",
+    ],
   );
   assert.equal(
     saved.bundles[0]?.actionDrafts.every((draft) =>
@@ -2277,8 +2586,8 @@ test("a clock-advanced source-grounded force refresh aliases the canonical artif
     candidateExecutor: createSourceGroundedCandidateExecutor({
       grounding,
       frameworkLenses: {
-        async runAll() {
-          return { judgments: [], disagreements: [] };
+        async runAll(request) {
+          return canonicalFrameworkAbstentions(request);
         },
       },
       now: () => groundingNow,
@@ -2768,6 +3077,7 @@ test("a reclaimed lease replays completed stages and restores provider usage wit
       throw new Error("simulated worker loss after durable stage completion");
     }
     const payload = finalization({
+      candidate,
       candidateRunId: candidate.id,
       dealId: candidate.dealId,
       workerId,
@@ -2873,9 +3183,9 @@ test("a reclaimed lease recovers from a persisted catalog failure without changi
           catalogFingerprint: `sha256:${"7".repeat(64)}`,
           corpusDigest: `sha256:${"8".repeat(64)}`,
           service: {
-            async runAll() {
+            async runAll(request) {
               lensExecutions += 1;
-              return { judgments: [], disagreements: [] };
+              return canonicalFrameworkAbstentions(request);
             },
           },
         };
@@ -3031,8 +3341,8 @@ test("retries a transient framework catalog transport failure before exposing un
           catalogFingerprint: `sha256:${"7".repeat(64)}`,
           corpusDigest: `sha256:${"8".repeat(64)}`,
           service: {
-            async runAll() {
-              return { judgments: [], disagreements: [] };
+            async runAll(request) {
+              return canonicalFrameworkAbstentions(request);
             },
           },
         };

@@ -97,10 +97,22 @@ test("four Slice-1 profiles resolve US and Global requests without borrowing a b
     securityType: "preferred",
     asOfDate: "2026-07-29",
   });
+  const irregular = await repository.resolveContext({
+    stage: "series_a",
+    businessModel: "enterprise_ai",
+    geography: "unavailable",
+    securityType: "preferred",
+    asOfDate: "2026-07-29",
+  });
 
   assert.equal(seedSaas.kind, "resolved");
   assert.equal(seriesAi.kind, "resolved");
-  if (seedSaas.kind !== "resolved" || seriesAi.kind !== "resolved") {
+  assert.equal(irregular.kind, "resolved");
+  if (
+    seedSaas.kind !== "resolved"
+    || seriesAi.kind !== "resolved"
+    || irregular.kind !== "resolved"
+  ) {
     assert.fail("Supported Slice-1 contexts must resolve");
   }
   assert.notEqual(
@@ -110,6 +122,17 @@ test("four Slice-1 profiles resolve US and Global requests without borrowing a b
   assert.equal(seedSaas.value.benchmarkCompatibility, "exact");
   assert.equal(seriesAi.value.benchmarkCompatibility, "unavailable");
   assert.equal(seriesAi.value.benchmarkPackId, null);
+  assert.deepEqual({
+    analysisMode: irregular.value.analysisMode,
+    geography: irregular.value.geography,
+    benchmarkPackId: irregular.value.benchmarkPackId,
+    benchmarkCompatibility: irregular.value.benchmarkCompatibility,
+  }, {
+    analysisMode: "core_only",
+    geography: "unavailable",
+    benchmarkPackId: null,
+    benchmarkCompatibility: "unavailable",
+  });
   assert.equal(seedSaas.value.frameworkPackId, SYNTHETIC_FRAMEWORK_PACK_ID);
 
   const unsupported = await repository.resolveContext({
@@ -499,4 +522,59 @@ test("Supabase context resolution stays pinned to the same v1 profile as memory 
     /id=eq\.underwriting_context_seed_b2b_saas_v1/,
   );
   assert.match(requestedUrl, /context_version=eq\.1/);
+});
+
+test("Supabase and memory preserve unavailable geography as Core-only with no benchmark", async () => {
+  const requests: string[] = [];
+  const input = {
+    stage: "series_a" as const,
+    businessModel: "enterprise_ai" as const,
+    geography: "unavailable" as const,
+    securityType: "preferred" as const,
+    asOfDate: "2026-08-01",
+  };
+  const repository = createSupabaseUnderwritingReferencesRepository({
+    url: "https://database.example.test",
+    serviceRoleKey: "secret",
+    fetchImpl: async (request) => {
+      requests.push(String(request));
+      return Response.json([{
+        id: "underwriting_context_series_a_enterprise_ai_v1",
+        context_version: "1",
+        stage: "series_a",
+        business_model: "enterprise_ai",
+        critical_evidence_profile_id:
+          "critical_evidence_series_a_enterprise_ai_v1",
+        us_benchmark_pack_id: "benchmark_pack_synthetic_us_software_v1",
+        us_benchmark_compatibility: "exact",
+        global_benchmark_compatibility: "unavailable",
+        valuation_method_policy_id:
+          "valuation_method_series_a_enterprise_ai_v1",
+        decision_policy_id: "decision_policy_series_a_enterprise_ai_v1",
+        framework_pack_id: SYNTHETIC_FRAMEWORK_PACK_ID,
+        publication_status: "published",
+      }]);
+    },
+  });
+
+  const [supabase, memory] = await Promise.all([
+    repository.resolveContext(input),
+    createMemoryUnderwritingReferencesRepository().resolveContext(input),
+  ]);
+
+  assert.deepEqual(supabase, memory);
+  assert.equal(requests.length, 1);
+  assert.equal(supabase.kind, "resolved");
+  if (supabase.kind !== "resolved") assert.fail("Context must resolve");
+  assert.deepEqual({
+    analysisMode: supabase.value.analysisMode,
+    geography: supabase.value.geography,
+    benchmarkPackId: supabase.value.benchmarkPackId,
+    benchmarkCompatibility: supabase.value.benchmarkCompatibility,
+  }, {
+    analysisMode: "core_only",
+    geography: "unavailable",
+    benchmarkPackId: null,
+    benchmarkCompatibility: "unavailable",
+  });
 });

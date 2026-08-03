@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { EvidencePack, Fact } from "../../lib/contracts/evidence";
+import type { ResolvedUnderwritingContext } from "../../lib/contracts/underwriting";
 import {
   createContextRouter,
   type CandidateIdentityEvidence,
@@ -106,6 +107,23 @@ const profile: CriticalEvidenceProfile = {
   ],
 };
 
+const fullCoverageContext: ResolvedUnderwritingContext = {
+  id: "underwriting_context_seed_b2b_saas_v1",
+  contextVersion: "1",
+  analysisMode: "full",
+  stage: "seed",
+  businessModel: "b2b_saas",
+  geography: "us",
+  securityType: "preferred",
+  asOfDate: "2026-07-29",
+  criticalEvidenceProfileId: profile.id,
+  benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+  benchmarkCompatibility: "exact",
+  valuationMethodPolicyId: "valuation_method_seed_b2b_saas_v1",
+  decisionPolicyId: "decision_policy_seed_b2b_saas_v1",
+  frameworkPackId: "framework_pack_synthetic_universal_saas_ai_v1",
+};
+
 test("router precedence is confirmed, source-explicit, then derived", () => {
   const router = createContextRouter();
   const result = router.resolve(identity({
@@ -120,6 +138,51 @@ test("router precedence is confirmed, source-explicit, then derived", () => {
   if (result.kind !== "resolved") assert.fail("Expected a resolved context");
   assert.equal(result.context?.stage, "seed");
   assert.equal(result.analysisMode, "full");
+});
+
+test("a reviewed preferred-security assumption resolves core-only and never a full Invest Candidate ceiling", () => {
+  const router = createContextRouter();
+  const result = router.resolve(identity({
+    securityType: [{
+      value: "preferred",
+      basis: "assumption" as never,
+      evidenceItemId: "semantic-field-security-assumption",
+    }],
+  }));
+
+  assert.equal(result.kind, "resolved");
+  if (result.kind !== "resolved") assert.fail("Expected a resolved context");
+  assert.equal(result.analysisMode, "core_only");
+  assert.equal(result.decisionCeiling, "Advance");
+  assert.equal(result.context?.securityType, "preferred");
+});
+
+test("an explicitly unavailable geography persists core-only without a benchmark", () => {
+  const router = createContextRouter();
+  const result = router.resolve(identity({
+    geography: [claim("unavailable")],
+    securityType: [{
+      value: "preferred",
+      basis: "assumption",
+      evidenceItemId: "semantic-field-security-assumption",
+    }],
+  }));
+
+  assert.equal(result.kind, "resolved");
+  if (result.kind !== "resolved") assert.fail("Expected a resolved context");
+  assert.equal(result.analysisMode, "core_only");
+  assert.equal(result.decisionCeiling, "Advance");
+  assert.deepEqual(result.context && {
+    analysisMode: result.context.analysisMode,
+    geography: result.context.geography,
+    benchmarkPackId: result.context.benchmarkPackId,
+    benchmarkCompatibility: result.context.benchmarkCompatibility,
+  }, {
+    analysisMode: "core_only",
+    geography: "unavailable",
+    benchmarkPackId: null,
+    benchmarkCompatibility: "unavailable",
+  });
 });
 
 test("equal winning claims preserve all evidence IDs independent of input order", () => {
@@ -274,10 +337,12 @@ test("coverage makes identity absence unavailable and round-price absence Advanc
   const noIdentity = router.evaluateCoverage({
     pack: pack([fact("reported_valuation")]),
     profile,
+    context: fullCoverageContext,
   });
   const noRoundPrice = router.evaluateCoverage({
     pack: pack([fact("company_identity")]),
     profile,
+    context: fullCoverageContext,
   });
 
   assert.deepEqual(
@@ -310,6 +375,18 @@ test("coverage makes identity absence unavailable and round-price absence Advanc
       missing: ["reported_valuation"],
     },
   );
+});
+
+test("otherwise-complete US core-only coverage persists an explained Advance ceiling", () => {
+  const coverage = createContextRouter().evaluateCoverage({
+    pack: pack([fact("company_identity"), fact("reported_valuation")]),
+    profile,
+    context: { ...fullCoverageContext, analysisMode: "core_only" },
+  });
+  assert.equal(coverage.minimumModelInputsComplete, true);
+  assert.equal(coverage.criticalEvidenceComplete, true);
+  assert.equal(coverage.decisionCeiling, "Advance");
+  assert.ok(coverage.reasonCodes.includes("CORE_ONLY_ANALYSIS_CEILING"));
 });
 
 test("only critical material open conflicts become coverage blockers", () => {
@@ -355,6 +432,7 @@ test("only critical material open conflicts become coverage blockers", () => {
   const coverage = router.evaluateCoverage({
     pack: candidate,
     profile: arrProfile,
+    context: fullCoverageContext,
   });
   assert.deepEqual(coverage.blockingConflictIds, ["conflict:arr"]);
   assert.equal(coverage.decisionCeiling, "Advance");

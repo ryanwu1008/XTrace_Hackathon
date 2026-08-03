@@ -4,6 +4,7 @@ import test from "node:test";
 import { createMemoryEvidencePacksRepository } from "../../db/repositories/evidence-packs";
 import * as evidencePackRepositories from "../../db/repositories/evidence-packs";
 import { createMemorySourceRegistry } from "../../db/repositories/source-registry";
+import { WritableSourceRefV2Schema } from "../../lib/contracts/source-evidence";
 import type {
   FundPolicySnapshot,
   ResolvedUnderwritingContext,
@@ -13,6 +14,7 @@ import {
   createContextRouter,
   type CriticalEvidenceProfile,
 } from "../../lib/underwriting/router";
+import { exactSourceV2 } from "../helpers/source-evidence-v2";
 
 const context: ResolvedUnderwritingContext = {
   id: "underwriting_context_seed_b2b_saas_v1",
@@ -216,7 +218,7 @@ async function setup() {
     criticalEvidenceProfiles: [profile],
     now: () => new Date("2026-07-29T10:10:00.000Z"),
   });
-  return { repository, builder };
+  return { repository, builder, sourceRegistry };
 }
 
 test("builds one immutable pack without resolving a material ARR conflict in favor of either source", async () => {
@@ -314,6 +316,276 @@ test("rejects canonical evidence whose document ID does not own its revision", a
     context,
     ...referenceInputs,
   }), /document.*revision|source.*revision/i);
+});
+
+test("public claim prose is never a Fact while reviewed semantic facts and security assumptions are projected", async () => {
+  const { repository, builder, sourceRegistry } = await setup();
+  const claimId = "claim_semantic_projection";
+  const claimText =
+    "Historical prose mentions a $120 million valuation but does not report a current underwriting input.";
+  await sourceRegistry.createInitialRevision({
+    id: "revision_semantic_projection",
+    workspaceId: "workspace_1",
+    sourceId: "source_irregular_wsgr_stage_v1",
+    contentHash: `sha256:${"a".repeat(64)}`,
+    objectKey: "private/semantic-projection.md",
+    objectVersion: "object:semantic-projection:v1",
+    contentType: "text/markdown",
+    extractorId: "plain_text_v1",
+    extractorVersion: "1",
+    extractedAt: "2026-07-29T10:04:00.000Z",
+    createdAt: "2026-07-29T10:04:01.000Z",
+  });
+  await repository.putSourceEvidence([{
+    id: claimId,
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    sourceId: "source_irregular_wsgr_stage_v1",
+    sourceRevisionId: "revision_semantic_projection",
+    provenanceOrigin: "public_source",
+    field: "public_claim",
+    value: claimText,
+    unit: null,
+    currency: null,
+    periodStart: null,
+    periodEnd: null,
+    publishedAt: "2026-07-28T00:00:00.000Z",
+    eventAt: null,
+    retrievedAt: "2026-07-29T10:05:00.000Z",
+    locator: {
+      kind: "web_snapshot",
+      url: "https://example.test/semantic-claim",
+      excerpt: claimText,
+    },
+    sourceRole: "independent_third_party",
+    assertionStatus: "reported",
+    verificationMethod: "reviewed_public_snapshot_v1",
+    freshness: "current",
+    acceptedForGate: true,
+    sourceRef: WritableSourceRefV2Schema.parse(exactSourceV2(claimId, {
+      documentId: "source_irregular_wsgr_stage_v1",
+      sourceRevisionId: "revision_semantic_projection",
+      canonicalUrl: "https://example.test/semantic-claim",
+      contentFingerprint: `sha256:${"a".repeat(64)}`,
+      providerId: "belief_reversal_snapshot_v1",
+      entityKeys: ["irregular"],
+      text: {
+        status: "verified_exact",
+        verbatimExcerpt:
+          "The company was valued at $120m in a historical financing.",
+        normalizedStatement: claimText,
+      },
+    })),
+    semanticFields: [{
+      id: "semantic-field-111111111111111111111111",
+      schemaVersion: "deal-semantic-field-v1",
+      fieldId: "stage",
+      classification: "fact",
+      availability: "available",
+      value: "Seed and Series A",
+      basis: "Reviewed package mapping.",
+      sourceIds: [claimId],
+    }, {
+      id: "semantic-field-222222222222222222222222",
+      schemaVersion: "deal-semantic-field-v1",
+      fieldId: "security_type",
+      classification: "assumption",
+      value: "preferred",
+      basis: "assumption",
+      requiresConfirmation: true,
+      assumptionPolicyVersion: "belief-reversal-demo-context-v1",
+      rationale: "The reviewed package requires security confirmation.",
+      sourceBoundary: "Reviewed package only.",
+    }, {
+      id: "semantic-field-333333333333333333333333",
+      schemaVersion: "deal-semantic-field-v1",
+      fieldId: "arr",
+      classification: "unavailable",
+      availability: "unavailable",
+      reason: "Current ARR was not reported.",
+      checkedSourceIds: [claimId],
+    }, {
+      id: "semantic-field-444444444444444444444444",
+      schemaVersion: "deal-semantic-field-v1",
+      fieldId: "unknowns",
+      classification: "unknown",
+      reason: "Current valuation is unknown.",
+    }, {
+      id: "semantic-field-666666666666666666666666",
+      schemaVersion: "deal-semantic-field-v1",
+      fieldId: "founding_date",
+      classification: "conflicting",
+      observations: [{ value: "2019-01-01", sourceId: claimId }, {
+        value: "2020-01-01",
+        sourceId: claimId,
+      }],
+    }],
+  }]);
+
+  const pack = await builder.build({
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    asOfDate: "2026-07-29",
+    sourceRevisionIds: [
+      "revision_1",
+      "revision_2",
+      "revision_semantic_projection",
+    ],
+    xtraceLineage: {
+      memoryIds: [],
+      sourceRevisionIds: [],
+      sourceIds: [],
+      fixtureIds: [],
+      capturedAt: "2026-07-29T10:09:00.000Z",
+    },
+    context,
+    ...referenceInputs,
+  });
+
+  assert.equal(pack.facts.some(({ id }) => id === claimId), false);
+  assert.deepEqual(pack.facts.filter(({ id }) =>
+    id === "semantic-field-111111111111111111111111"
+  ).map(({ field, value, sourceRevisionId }) => ({
+    field,
+    value,
+    sourceRevisionId,
+  })), [{
+    field: "stage",
+    value: "Seed and Series A",
+    sourceRevisionId: "revision_semantic_projection",
+  }]);
+  assert.deepEqual(pack.assumptions.filter(({ id }) =>
+    id === "semantic-field-222222222222222222222222"
+  ).map(({ field, value, requiresConfirmation, rationale }) => ({
+    field,
+    value,
+    requiresConfirmation,
+    rationale,
+  })), [{
+    field: "security_type",
+    value: "preferred",
+    requiresConfirmation: true,
+    rationale:
+      "belief-reversal-demo-context-v1: The reviewed package requires security confirmation.",
+  }]);
+  for (const omittedId of [
+    "semantic-field-333333333333333333333333",
+    "semantic-field-444444444444444444444444",
+    "semantic-field-666666666666666666666666",
+  ]) {
+    assert.equal(pack.facts.some(({ id }) => id === omittedId), false);
+  }
+  assert.equal(pack.facts.some(({ value }) => value.includes("120")), false);
+});
+
+test("public semantic facts fail closed when their source IDs do not resolve to the exact claim revision", async () => {
+  const { repository, builder } = await setup();
+  const claimId = "claim_cross_revision_semantic";
+  const otherClaimId = "claim_other_active_revision";
+  const claimText = "Reviewed stage context.";
+  await repository.putSourceEvidence([{
+    id: otherClaimId,
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    sourceId: "source_management",
+    sourceRevisionId: "revision_1",
+    provenanceOrigin: "public_source",
+    field: "public_claim",
+    value: "A different active claim exists.",
+    unit: null,
+    currency: null,
+    periodStart: null,
+    periodEnd: null,
+    publishedAt: null,
+    eventAt: null,
+    retrievedAt: "2026-07-29T10:05:00.000Z",
+    locator: {
+      kind: "web_snapshot",
+      url: "https://example.test/other-active-claim",
+      excerpt: "A different active claim exists.",
+    },
+    sourceRole: "independent_third_party",
+    assertionStatus: "reported",
+    verificationMethod: "reviewed_public_snapshot_v1",
+    freshness: "current",
+    acceptedForGate: true,
+    sourceRef: WritableSourceRefV2Schema.parse(exactSourceV2(otherClaimId, {
+      documentId: "source_management",
+      sourceRevisionId: "revision_1",
+      canonicalUrl: "https://example.test/other-active-claim",
+      providerId: "belief_reversal_snapshot_v1",
+      entityKeys: ["irregular"],
+      text: {
+        status: "verified_exact",
+        verbatimExcerpt: "A separate active source states another claim.",
+        normalizedStatement: "A different active claim exists.",
+      },
+    })),
+    semanticFields: [],
+  }, {
+    id: claimId,
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    sourceId: "source_verified",
+    sourceRevisionId: "revision_2",
+    provenanceOrigin: "public_source",
+    field: "public_claim",
+    value: claimText,
+    unit: null,
+    currency: null,
+    periodStart: null,
+    periodEnd: null,
+    publishedAt: null,
+    eventAt: null,
+    retrievedAt: "2026-07-29T10:05:00.000Z",
+    locator: {
+      kind: "web_snapshot",
+      url: "https://example.test/cross-revision",
+      excerpt: claimText,
+    },
+    sourceRole: "independent_third_party",
+    assertionStatus: "reported",
+    verificationMethod: "reviewed_public_snapshot_v1",
+    freshness: "current",
+    acceptedForGate: true,
+    sourceRef: WritableSourceRefV2Schema.parse(exactSourceV2(claimId, {
+      documentId: "source_verified",
+      sourceRevisionId: "revision_2",
+      canonicalUrl: "https://example.test/cross-revision",
+      providerId: "belief_reversal_snapshot_v1",
+      entityKeys: ["irregular"],
+      text: {
+        status: "verified_exact",
+        verbatimExcerpt: "The business is currently at seed stage.",
+        normalizedStatement: claimText,
+      },
+    })),
+    semanticFields: [{
+      id: "semantic-field-555555555555555555555555",
+      schemaVersion: "deal-semantic-field-v1",
+      fieldId: "stage",
+      classification: "fact",
+      availability: "available",
+      value: "seed",
+      sourceIds: [otherClaimId],
+    }],
+  }]);
+
+  await assert.rejects(builder.build({
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    asOfDate: "2026-07-29",
+    sourceRevisionIds: ["revision_1", "revision_2"],
+    xtraceLineage: {
+      memoryIds: [],
+      sourceRevisionIds: [],
+      sourceIds: [],
+      fixtureIds: [],
+      capturedAt: "2026-07-29T10:09:00.000Z",
+    },
+    context,
+    ...referenceInputs,
+  }), /semantic.*source|source.*semantic|lineage/i);
 });
 
 test("emits valuation-compatible benchmark, policy multiplier, and currency-bearing ARR assumptions", async () => {

@@ -30,7 +30,10 @@ import {
   type EvidencePackBuilder,
   type SelectedBenchmarkInput,
 } from "./evidence/builder";
-import { normalizeSourceEvidence } from "./evidence/normalization";
+import {
+  projectUnderwritingEvidence,
+  SemanticEvidenceProjectionError,
+} from "./evidence/semantic-projector";
 import type {
   CandidateIdentityEvidence,
   CriticalEvidenceProfile,
@@ -132,11 +135,21 @@ export function createEvidencePackCandidateGrounding(options: {
         ]);
       }
       throwIfAborted(signal);
-      const identityEvidence = candidateIdentityEvidence({
-        analysis,
-        deal,
-        sourceEvidence,
-      });
+      let identityEvidence: CandidateIdentityEvidence;
+      try {
+        identityEvidence = candidateIdentityEvidence({
+          analysis,
+          deal,
+          sourceEvidence,
+        });
+      } catch (error) {
+        if (error instanceof SemanticEvidenceProjectionError) {
+          throw new CandidateGroundingUnavailableError([
+            "SEMANTIC_EVIDENCE_LINEAGE_MISMATCH",
+          ]);
+        }
+        throw error;
+      }
       const xtraceLineage = await resolveXTraceLineage({
         analysis,
         deal,
@@ -234,8 +247,11 @@ function candidateIdentityEvidence(input: {
   sourceEvidence: SourceEvidenceInput[];
 }): CandidateIdentityEvidence {
   const values = new Map<string, RouterEvidenceValue[]>();
-  for (const source of input.sourceEvidence) {
-    const fact = normalizeSourceEvidence(source);
+  const projected = projectUnderwritingEvidence(input.sourceEvidence);
+  const contextValuesByEvidenceId = new Map(
+    projected.contextValues.map((value) => [value.evidenceItemId, value]),
+  );
+  for (const fact of projected.facts) {
     if (
       !fact.acceptedForGate
       || fact.assertionStatus === "disputed"
@@ -243,15 +259,43 @@ function candidateIdentityEvidence(input: {
     ) {
       continue;
     }
-    const value = fact.value.trim().toLowerCase();
+    const value = (
+      contextValuesByEvidenceId.get(fact.id)?.value ?? fact.value
+    ).trim().toLowerCase();
     const item: RouterEvidenceValue = {
       value,
-      basis: "source_explicit",
+      basis: contextValuesByEvidenceId.has(fact.id)
+        ? "derived"
+        : "source_explicit",
       evidenceItemId: fact.id,
     };
     const existing = values.get(fact.field) ?? [];
     existing.push(item);
     values.set(fact.field, existing);
+  }
+  for (const assumption of projected.assumptions) {
+    if (assumption.field !== "security_type") continue;
+    const existing = values.get(assumption.field) ?? [];
+    existing.push({
+      value: assumption.value,
+      basis: "assumption",
+      evidenceItemId: assumption.id,
+    });
+    values.set(assumption.field, existing);
+  }
+  for (const unavailable of projected.unavailableFields) {
+    if (unavailable.fieldId !== "geography") continue;
+    const contextValue = contextValuesByEvidenceId.get(
+      unavailable.evidenceItemId,
+    );
+    if (!contextValue) continue;
+    const existing = values.get(unavailable.fieldId) ?? [];
+    existing.push({
+      value: contextValue.value,
+      basis: "semantic_availability",
+      evidenceItemId: unavailable.evidenceItemId,
+    });
+    values.set(unavailable.fieldId, existing);
   }
   const explicitCompany = values.get("company_identity") ?? [];
   const confirmedCompany: RouterEvidenceValue = {

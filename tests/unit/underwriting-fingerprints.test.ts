@@ -9,79 +9,151 @@ import {
   type CandidateFingerprintInput,
 } from "../../lib/underwriting/fingerprints";
 
-function batchInput(): BatchFingerprintInput {
+function canonicalAction(
+  kind: string,
+  overrides: Partial<{
+    scope: string;
+    priority: string;
+    visibility: string;
+  }> = {},
+) {
   return {
-    workspaceId: "workspace_1",
-    evidenceFrame: {
-      schemaVersion: "underwriting-evidence-frame-v1",
-      evidenceMode: "pinned",
-      contextFingerprint: `sha256:${"a".repeat(64)}`,
-      eventSetFingerprint: `sha256:${"b".repeat(64)}`,
-      bindingFingerprint: `sha256:${"c".repeat(64)}`,
-      snapshotFingerprint: `sha256:${"d".repeat(64)}`,
+    kind,
+    scope: "deal",
+    priority: "standard",
+    visibility: "internal_only",
+    ...overrides,
+  };
+}
+
+function batchInput(): BatchFingerprintInput {
+  const analyses = [
+    {
+      dealId: "deal_b",
+      dealStatus: "screening",
+      beliefAssessment: {
+        dealStatus: "screening",
+        direction: "positive",
+        actions: [canonicalAction("advance_diligence")],
+      },
+      investmentMemory: {
+        memoryIds: ["memory_2", "memory_1"],
+        sourceIds: ["source_2", "source_1"],
+        fixtureIds: ["fixture_1"],
+      },
+      marketEvidence: {
+        eventIds: ["event_b", "event_a"],
+      },
+      createdAt: "2026-07-29T00:00:00.000Z",
     },
-    window: {
-      days: 14,
-      startsAt: "2026-07-15T00:00:00.000Z",
-      endsAt: "2026-07-29T00:00:00.000Z",
+    {
+      dealId: "deal_a",
+      dealStatus: "passed",
+      beliefAssessment: {
+        dealStatus: "passed",
+        direction: "positive",
+        actions: [canonicalAction("reopen_diligence")],
+      },
+      investmentMemory: {
+        memoryIds: ["memory_3"],
+        sourceIds: ["source_3"],
+        fixtureIds: ["fixture_2"],
+      },
+      marketEvidence: {
+        eventIds: ["event_c"],
+      },
+      createdAt: "2026-07-29T00:00:00.000Z",
     },
-    marketSnapshot: {
-      id: "market_snapshot_1",
-      fingerprint: `sha256:${"1".repeat(64)}`,
+  ] as unknown as BatchFingerprintInput["analyses"];
+  return {
+    scanRun: {
+      id: "00000000-0000-4000-8000-000000000001",
+      workspaceId: "workspace_1",
+      mode: "structured",
+      windowDays: 14,
+      status: "running",
+      currentStage: "underwriting",
+      warningCount: 0,
+      warnings: [],
+      workerId: "worker_1",
+      createdAt: "2026-07-29T00:00:00.000Z",
+      startedAt: "2026-07-29T00:00:01.000Z",
+      completedAt: null,
+      leaseExpiresAt: "2026-07-29T00:05:00.000Z",
+      evidenceContext: { state: "legacy_unbound" },
     },
-    eligibleDealRevisions: [
+    report: {
+      id: "report_1",
+      workspaceId: "workspace_1",
+      runId: "00000000-0000-4000-8000-000000000001",
+      createdAt: "2026-07-29T00:00:00.000Z",
+      marketSummary: "Immutable market report",
+      opportunities: [],
+      analysisStatus: "completed",
+      evidenceCoverage: {
+        acceptedPublicEvents: 3,
+        excludedPublicItems: 0,
+        truncatedPublicEvents: 0,
+        recalledDealCount: 2,
+        unavailableDealCount: 0,
+      },
+      counts: {
+        companyCount: 2,
+        beliefRevised: 2,
+        monitor: 0,
+        noMaterialChange: 0,
+        analysisUnavailable: 0,
+      },
+      priorityDealId: "deal_b",
+      companyAnalyses: analyses,
+    },
+    analyses,
+    eligibleDeals: [
       {
-        dealId: "deal_b",
+        id: "deal_b",
+        workspaceId: "workspace_1",
+        companyId: "company_b",
+        companyName: "Company B",
         status: "screening",
-        sourceRevisionIds: ["revision_2", "revision_1"],
-        fingerprint: `sha256:${"2".repeat(64)}`,
+        analysisEligibleAt: "2026-07-01T00:00:00.000Z",
+        activeSourceRevisionFingerprint: `sha256:${"2".repeat(64)}`,
+        activeSourceRevisionIds: ["revision_2", "revision_1"],
       },
       {
-        dealId: "deal_a",
+        id: "deal_a",
+        workspaceId: "workspace_1",
+        companyId: "company_a",
+        companyName: "Company A",
         status: "passed",
-        sourceRevisionIds: ["revision_3"],
-        fingerprint: `sha256:${"3".repeat(64)}`,
+        analysisEligibleAt: "2026-07-01T00:00:00.000Z",
+        activeSourceRevisionFingerprint: `sha256:${"3".repeat(64)}`,
+        activeSourceRevisionIds: ["revision_3"],
       },
     ],
-    xtraceLineage: {
-      memoryIds: ["memory_2", "memory_1"],
-      sourceRevisionIds: ["revision_3", "revision_1"],
-      sourceIds: ["source_2", "source_1"],
-      fixtureIds: ["fixture_1"],
-      capturedAt: "2026-07-29T00:00:00.000Z",
-    },
-    selectedEvents: [
-      {
-        id: "event_b",
-        fingerprint: `sha256:${"4".repeat(64)}`,
-      },
-      {
-        id: "event_a",
-        fingerprint: `sha256:${"5".repeat(64)}`,
-      },
-    ],
-    matching: {
-      providerModel: "claude-sonnet-4-5",
-      promptVersion: "matching-prompt-v1",
-      schemaVersion: "matching-schema-v1",
-      scoringPolicyVersion: "score-v1",
-      selectionPolicyVersion: "top-five-v1",
-      judgmentFingerprint: `sha256:${"6".repeat(64)}`,
-    },
-    fundPolicySnapshot: {
+    policy: {
       id: "fund_policy_1",
+      workspaceId: "workspace_1",
       version: 1,
-      fingerprint: `sha256:${"7".repeat(64)}`,
+      source: "recommended_policy",
+      values: {},
+      createdByUserId: null,
+      createdAt: "2026-07-29T00:00:00.000Z",
     },
-    frameworkPack: {
-      id: "framework_pack_1",
-      version: "1",
+    executionBudget: {
+      maxCostUnits: 28,
+      maxTokenUnits: 112_000,
+      maxConcurrency: 1,
+      stages: {
+        context_router: stagePolicy(1),
+        evidence_pack: stagePolicy(2),
+        valuation: stagePolicy(1),
+        framework_catalog: stagePolicy(2),
+        framework_lenses: stagePolicy(1),
+        decision: stagePolicy(1),
+        narrative_drafts: stagePolicy(1),
+      },
     },
-    routerVersion: "router-v1",
-    decisionPolicy: {
-      id: "decision_policy_1",
-      version: "1",
-    },
+    candidateExecutionFingerprint: "candidate-executor-contract-v2",
     referenceCatalog: createReferenceCatalogSnapshot([
       reference("critical_evidence_profile", "critical_1", "1"),
       reference("benchmark_definition", "benchmark_entry_1", "2", {
@@ -91,6 +163,35 @@ function batchInput(): BatchFingerprintInput {
       reference("framework_pack", "framework_pack_1", "4"),
       reference("decision_policy", "decision_policy_1", "5"),
     ]),
+    evidenceFrame: {
+      schemaVersion: "underwriting-evidence-frame-v1",
+      evidenceMode: "pinned",
+      contextFingerprint: `sha256:${"a".repeat(64)}`,
+      eventSetFingerprint: `sha256:${"b".repeat(64)}`,
+      bindingFingerprint: `sha256:${"c".repeat(64)}`,
+      snapshotFingerprint: `sha256:${"d".repeat(64)}`,
+    },
+    selectionPolicyVersion: "top-five-belief-revised-v1",
+    routerVersion: "router-v1",
+    beliefPolicies: {
+      actionPolicyVersion: "belief-action-policy-v1",
+      draftPolicyVersion: "status-safe-action-draft-v2",
+      semanticContextAssumptionPolicyVersion:
+        "belief-reversal-demo-context-v1",
+      semanticContextMappingVersion:
+        "belief-reversal-reviewed-context-mapping-v1",
+    },
+    evidencePackBuilderVersion: "evidence_pack_builder_v2",
+    decisionPolicyVersion: "1",
+  };
+}
+
+function stagePolicy(maxAttempts: number) {
+  return {
+    timeoutMs: 30_000,
+    maxAttempts,
+    costUnits: 0,
+    tokenUnits: 0,
   };
 }
 
@@ -103,6 +204,17 @@ function candidateInput(): CandidateFingerprintInput {
       status: "passed",
       sourceRevisionIds: ["revision_3", "revision_1"],
       fingerprint: `sha256:${"8".repeat(64)}`,
+    },
+    beliefState: {
+      dealStatus: "passed",
+      direction: "positive",
+      canonicalActions: [canonicalAction("reopen_diligence")],
+      actionPolicyVersion: "belief-action-policy-v1",
+      draftPolicyVersion: "status-safe-action-draft-v2",
+      semanticContextAssumptionPolicyVersion:
+        "belief-reversal-demo-context-v1",
+      semanticContextMappingVersion:
+        "belief-reversal-reviewed-context-mapping-v1",
     },
     evidencePack: {
       id: "evidence_pack_1",
@@ -119,7 +231,12 @@ function candidateInput(): CandidateFingerprintInput {
       valuationMethodPolicyId: "valuation_policy_1",
       frameworkPackId: "framework_pack_1",
       decisionPolicyId: "decision_policy_1",
+      analysisMode: "full",
+      geography: "us",
+      securityType: "preferred",
+      benchmarkCompatibility: "exact",
     },
+    routerVersion: "context-router-v2",
     criticalEvidenceProfile:
       reference("critical_evidence_profile", "critical_1", "1"),
     benchmark: reference(
@@ -151,15 +268,11 @@ function candidateInput(): CandidateFingerprintInput {
   };
 }
 
-test("batch fingerprint is canonical over unordered revision, event, and lineage sets", () => {
+test("batch fingerprint is canonical over unordered Deal and analysis inputs", () => {
   const left = batchInput();
   const right = batchInput();
-  right.eligibleDealRevisions.reverse();
-  right.eligibleDealRevisions[0].sourceRevisionIds.reverse();
-  right.selectedEvents.reverse();
-  right.xtraceLineage.memoryIds.reverse();
-  right.xtraceLineage.sourceRevisionIds.reverse();
-  right.xtraceLineage.sourceIds.reverse();
+  right.eligibleDeals.reverse();
+  right.analyses = [...right.analyses].reverse();
 
   const fingerprint = createBatchInputFingerprint(left);
   assert.match(fingerprint, /^sha256:[0-9a-f]{64}$/);
@@ -170,53 +283,80 @@ test("batch fingerprint changes for every required execution dimension", () => {
   const baseline = createBatchInputFingerprint(batchInput());
   const mutations: Array<(input: BatchFingerprintInput) => void> = [
     (input) => {
-      input.workspaceId = "workspace_2";
+      input.scanRun.workspaceId = "workspace_2";
     },
     (input) => {
-      input.window.startsAt = "2026-07-14T00:00:00.000Z";
+      input.scanRun.createdAt = "2026-07-28T00:00:00.000Z";
     },
     (input) => {
-      input.marketSnapshot.fingerprint = `sha256:${"b".repeat(64)}`;
+      input.report.marketSummary = "Revised immutable market report";
     },
     (input) => {
-      input.eligibleDealRevisions[0].fingerprint =
+      input.eligibleDeals[0]!.activeSourceRevisionFingerprint =
         `sha256:${"c".repeat(64)}`;
     },
     (input) => {
-      input.xtraceLineage.memoryIds.push("memory_3");
+      input.eligibleDeals[0]!.status = "passed";
     },
     (input) => {
-      input.selectedEvents[0].fingerprint = `sha256:${"d".repeat(64)}`;
+      input.analyses[0]!.investmentMemory.sourceIds.push("source_3");
     },
     (input) => {
-      input.matching.providerModel = "claude-opus-4-1";
+      input.analyses[0]!.marketEvidence.eventIds.push("event_c");
     },
     (input) => {
-      input.matching.promptVersion = "matching-prompt-v2";
+      input.analyses[0]!.createdAt = "2026-07-30T00:00:00.000Z";
     },
     (input) => {
-      input.matching.schemaVersion = "matching-schema-v2";
+      input.policy.version = 2;
     },
     (input) => {
-      input.matching.scoringPolicyVersion = "score-v2";
+      input.selectionPolicyVersion = "top-five-belief-revised-v2";
     },
     (input) => {
-      input.matching.selectionPolicyVersion = "top-five-v2";
+      input.executionBudget.maxCostUnits = 29;
     },
     (input) => {
-      input.matching.judgmentFingerprint = `sha256:${"e".repeat(64)}`;
-    },
-    (input) => {
-      input.fundPolicySnapshot.fingerprint = `sha256:${"f".repeat(64)}`;
-    },
-    (input) => {
-      input.frameworkPack.version = "2";
+      input.candidateExecutionFingerprint = "candidate-executor-contract-v3";
     },
     (input) => {
       input.routerVersion = "router-v2";
     },
     (input) => {
-      input.decisionPolicy.version = "2";
+      input.evidencePackBuilderVersion = "evidence_pack_builder_v3";
+    },
+    (input) => {
+      input.decisionPolicyVersion = "2";
+    },
+    (input) => {
+      input.analyses[0]!.dealStatus = "passed";
+    },
+    (input) => {
+      input.analyses[0]!.beliefAssessment!.direction = "negative";
+    },
+    (input) => {
+      input.analyses[0]!.beliefAssessment!.actions = [
+        {
+          kind: "deprioritize",
+          scope: "deal",
+          priority: "standard",
+          visibility: "internal_only",
+        },
+      ];
+    },
+    (input) => {
+      input.beliefPolicies.actionPolicyVersion = "belief-action-policy-v2";
+    },
+    (input) => {
+      input.beliefPolicies.draftPolicyVersion = "status-safe-action-draft-v3";
+    },
+    (input) => {
+      input.beliefPolicies.semanticContextAssumptionPolicyVersion =
+        "belief-reversal-demo-context-v2";
+    },
+    (input) => {
+      input.beliefPolicies.semanticContextMappingVersion =
+        "belief-reversal-reviewed-context-mapping-v2";
     },
   ];
 
@@ -230,11 +370,22 @@ test("batch fingerprint changes for every required execution dimension", () => {
 test("batch fingerprint binds every field of the exact evidence frame", () => {
   const baseline = createBatchInputFingerprint(batchInput());
   const mutations: Array<(input: BatchFingerprintInput) => void> = [
-    (input) => { input.evidenceFrame.evidenceMode = "live"; input.evidenceFrame.snapshotFingerprint = null; },
-    (input) => { input.evidenceFrame.contextFingerprint = `sha256:${"1".repeat(64)}`; },
-    (input) => { input.evidenceFrame.eventSetFingerprint = `sha256:${"2".repeat(64)}`; },
-    (input) => { input.evidenceFrame.bindingFingerprint = `sha256:${"3".repeat(64)}`; },
-    (input) => { input.evidenceFrame.snapshotFingerprint = `sha256:${"4".repeat(64)}`; },
+    (input) => {
+      input.evidenceFrame!.evidenceMode = "live";
+      input.evidenceFrame!.snapshotFingerprint = null;
+    },
+    (input) => {
+      input.evidenceFrame!.contextFingerprint = `sha256:${"1".repeat(64)}`;
+    },
+    (input) => {
+      input.evidenceFrame!.eventSetFingerprint = `sha256:${"2".repeat(64)}`;
+    },
+    (input) => {
+      input.evidenceFrame!.bindingFingerprint = `sha256:${"3".repeat(64)}`;
+    },
+    (input) => {
+      input.evidenceFrame!.snapshotFingerprint = `sha256:${"4".repeat(64)}`;
+    },
   ];
   for (const mutate of mutations) {
     const input = batchInput();
@@ -297,6 +448,40 @@ test("candidate fingerprint is canonical and binds all candidate-specific versio
     },
     (input) => {
       input.applicationCommit = "different";
+    },
+    (input) => {
+      input.beliefState.dealStatus = "invested";
+    },
+    (input) => {
+      input.beliefState.direction = "negative";
+    },
+    (input) => {
+      input.beliefState.canonicalActions = [canonicalAction(
+        "pause_follow_on",
+        { scope: "portfolio", priority: "high" },
+      )];
+    },
+    (input) => {
+      input.beliefState.actionPolicyVersion = "belief-action-policy-v2";
+    },
+    (input) => {
+      input.beliefState.draftPolicyVersion = "status-safe-action-draft-v3";
+    },
+    (input) => {
+      input.beliefState.semanticContextAssumptionPolicyVersion =
+        "belief-reversal-demo-context-v2";
+    },
+    (input) => {
+      input.context.analysisMode = "core_only";
+    },
+    (input) => {
+      input.context.geography = "unavailable";
+    },
+    (input) => {
+      input.context.benchmarkCompatibility = "unavailable";
+    },
+    (input) => {
+      input.routerVersion = "context-router-v3";
     },
   ];
   for (const mutate of mutations) {

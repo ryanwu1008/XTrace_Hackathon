@@ -13,10 +13,14 @@ import {
   type SliceOneStage,
 } from "../../seed/underwriting/slice-one-contexts-v1";
 
+export const CONTEXT_ROUTER_VERSION = "context-router-v2" as const;
+
 export type RouterEvidenceBasis =
   | "confirmed"
   | "source_explicit"
-  | "derived";
+  | "derived"
+  | "semantic_availability"
+  | "assumption";
 
 export interface RouterEvidenceValue {
   value: string;
@@ -73,6 +77,7 @@ export interface ContextRouter {
   evaluateCoverage(input: {
     pack: EvidencePack;
     profile: CriticalEvidenceProfile;
+    context: ResolvedUnderwritingContext;
   }): EvidenceCoverageResult;
 }
 
@@ -140,7 +145,7 @@ export function createContextRouter(options: {
       );
       if (
         !profile
-        || !["us", "global"].includes(geography)
+        || !["us", "global", "unavailable"].includes(geography)
         || securityType !== "preferred"
       ) {
         return {
@@ -158,9 +163,28 @@ export function createContextRouter(options: {
       const benchmarkCompatibility = geography === "us"
         ? profile.usBenchmarkCompatibility
         : "unavailable";
+      const full = geography === "us"
+        && profile.usBenchmarkPackId !== null
+        && ["exact", "broad_compatible"].includes(
+          benchmarkCompatibility,
+        )
+        && publishedCriticalProfiles.has(referenceKey(
+          profile.criticalEvidenceProfileId,
+          profile.stage,
+          profile.businessModel,
+        ))
+        && publishedValuationPolicies.has(referenceKey(
+          profile.valuationMethodPolicyId,
+          profile.stage,
+          profile.businessModel,
+        ))
+        && !Object.values(selections).some((selection) =>
+          selection.kind === "selected" && selection.basis === "assumption"
+        );
       const context: ResolvedUnderwritingContext = {
         id: profile.id,
         contextVersion: profile.contextVersion,
+        analysisMode: full ? "full" : "core_only",
         stage: profile.stage,
         businessModel: profile.businessModel,
         geography: geography as ResolvedUnderwritingContext["geography"],
@@ -175,20 +199,6 @@ export function createContextRouter(options: {
         decisionPolicyId: profile.decisionPolicyId,
         frameworkPackId: profile.frameworkPackId,
       };
-      const full = context.benchmarkPackId !== null
-        && ["exact", "broad_compatible"].includes(
-          context.benchmarkCompatibility,
-        )
-        && publishedCriticalProfiles.has(referenceKey(
-          context.criticalEvidenceProfileId,
-          context.stage,
-          context.businessModel,
-        ))
-        && publishedValuationPolicies.has(referenceKey(
-          context.valuationMethodPolicyId,
-          context.stage,
-          context.businessModel,
-        ));
       return {
         kind: "resolved",
         context,
@@ -201,7 +211,7 @@ export function createContextRouter(options: {
       };
     },
 
-    evaluateCoverage({ pack, profile }) {
+    evaluateCoverage({ pack, profile, context }) {
       const acceptedFields = new Set(
         profile.fields
           .filter((requirement) =>
@@ -248,6 +258,10 @@ export function createContextRouter(options: {
         ...(profile.publicationStatus !== "published"
           ? ["CRITICAL_EVIDENCE_PROFILE_NOT_PUBLISHED"]
           : []),
+        ...(minimumModelInputsComplete
+            && context.analysisMode === "core_only"
+          ? ["CORE_ONLY_ANALYSIS_CEILING"]
+          : []),
       ];
 
       return {
@@ -258,7 +272,9 @@ export function createContextRouter(options: {
         blockingConflictIds,
         decisionCeiling: minimumModelInputsComplete
           ? criticalEvidenceComplete
-            ? "Invest Candidate"
+            ? context?.analysisMode === "core_only"
+              ? "Advance"
+              : "Invest Candidate"
             : "Advance"
           : null,
         underwritingStatus: minimumModelInputsComplete
@@ -314,6 +330,7 @@ type Selection =
   | {
     kind: "selected";
     value: string;
+    basis: RouterEvidenceBasis;
     evidenceItemIds: string[];
   }
   | { kind: "missing" }
@@ -324,6 +341,8 @@ function selectPrimary(values: RouterEvidenceValue[]): Selection {
     "confirmed",
     "source_explicit",
     "derived",
+    "semantic_availability",
+    "assumption",
   ] as const) {
     const candidates = values.filter((candidate) =>
       candidate.basis === basis && candidate.value.trim()
@@ -336,6 +355,7 @@ function selectPrimary(values: RouterEvidenceValue[]): Selection {
     return {
       kind: "selected",
       value: [...distinctValues][0]!,
+      basis,
       evidenceItemIds: uniqueSorted(
         candidates.map(({ evidenceItemId }) => evidenceItemId),
       ),

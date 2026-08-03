@@ -46,13 +46,16 @@ test("0020 is a contiguous local migration without production launcher authoriza
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
     entries: Array<{ idx: number; tag: string }>;
   };
-  assert.deepEqual(journal.entries.at(-2), {
+  const entryIndex = journal.entries.findIndex(({ idx }) => idx === 20);
+  assert.deepEqual(journal.entries[entryIndex], {
     idx: 20,
     version: "7",
     when: 1785751200000,
     tag: "0020_belief_reversal_demo_seed",
     breakpoints: true,
   });
+  assert.equal(journal.entries[entryIndex - 1]?.idx, 19);
+  assert.equal(journal.entries[entryIndex + 1]?.idx, 21);
   const packageJson = JSON.parse(readFileSync(
     fileURLToPath(new URL("../../package.json", import.meta.url)),
     "utf8",

@@ -13,8 +13,10 @@ import type {
 } from "../contracts/evidence";
 import type {
   ActionDraft,
+  ActionDraftV2,
   CandidateRun,
   FrameworkJudgment,
+  MissingEvidenceItem,
   UnderwritingBatch,
 } from "../contracts/underwriting";
 import { evidenceQueryTokens } from "../demo/search";
@@ -46,6 +48,16 @@ export interface UnderwritingBatchSummary {
 export interface PublicActionDraft {
   id: string;
   candidateRunId: string;
+  schemaVersion: "action-draft-v2" | "legacy-action-draft-v1";
+  safety: "status_safe" | "legacy_unclassified";
+  deliveryMode: "draft_only";
+  draftPolicyVersion: string | null;
+  actionPolicyVersion: string | null;
+  dealStatus: ActionDraftV2["dealStatus"] | null;
+  beliefDirection: ActionDraftV2["beliefDirection"] | null;
+  actions: ActionDraftV2["actions"];
+  missingEvidence: MissingEvidenceItem[];
+  format: ActionDraftV2["format"] | null;
   channel: ActionDraft["channel"];
   audienceType: ActionDraft["audienceType"];
   body: string;
@@ -324,13 +336,25 @@ function withoutFrameworkAuthoring(
 export function toPublicActionDraft(
   draft: ActionDraft,
 ): PublicActionDraft {
+  const v2 = "schemaVersion" in draft ? draft : null;
   return {
     id: draft.id,
     candidateRunId: draft.candidateRunId,
+    schemaVersion: v2?.schemaVersion ?? "legacy-action-draft-v1",
+    safety: v2?.safety ?? "legacy_unclassified",
+    deliveryMode: "draft_only",
+    draftPolicyVersion: v2?.draftPolicyVersion ?? null,
+    actionPolicyVersion: v2?.actionPolicyVersion ?? null,
+    dealStatus: v2?.dealStatus ?? null,
+    beliefDirection: v2?.beliefDirection ?? null,
+    actions: v2 ? structuredClone(v2.actions) : [],
+    missingEvidence: v2 ? structuredClone(v2.missingEvidence) : [],
+    format: v2?.format ?? null,
     channel: draft.channel,
     audienceType: draft.audienceType,
     body: sanitizeLegacyPublicActionDraftBody({
       channel: draft.channel,
+      format: v2?.format ?? null,
       body: draft.body,
     }),
     createdAt: draft.createdAt,

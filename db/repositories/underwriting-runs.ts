@@ -4,10 +4,12 @@ import { isDeepStrictEqual } from "node:util";
 import {
   CandidateCheckpointSchema,
   CandidateRunSchema,
+  FundPolicySnapshotSchema,
   UnderwritingBatchSchema,
   UnderwritingSelectionSchema,
   type CandidateCheckpoint,
   type CandidateRun,
+  type FundPolicySnapshot,
   type UnderwritingBatch,
   type UnderwritingSelection,
 } from "../../lib/contracts/underwriting";
@@ -17,6 +19,7 @@ import {
 } from "../../lib/api/errors";
 import {
   createMemoryUnderwritingArtifactsRepository,
+  prepareCandidateFinalization,
   type CandidateFinalization,
   type MemoryUnderwritingArtifactsRepository,
 } from "./underwriting-artifacts";
@@ -35,6 +38,7 @@ export interface CreateBatchInput {
   scanRunId: string;
   batchInputFingerprint: string;
   fundPolicySnapshotId: string;
+  fundPolicyValues?: FundPolicySnapshot["values"];
   forceRefresh: boolean;
   refreshNonce: string | null;
   rerunOfId: string | null;
@@ -106,6 +110,7 @@ export interface UnderwritingRunsRepository {
 
 interface StoredBatch {
   value: UnderwritingBatch;
+  fundPolicyValues: FundPolicySnapshot["values"] | null;
   forceRefresh: boolean;
   refreshNonce: string | null;
 }
@@ -312,6 +317,7 @@ export function createMemoryUnderwritingRunsRepository(
       });
       batches.set(batch.id, {
         value: batch,
+        fundPolicyValues: input.fundPolicyValues ?? null,
         forceRefresh: input.forceRefresh,
         refreshNonce: input.refreshNonce,
       });
@@ -678,6 +684,8 @@ export function createMemoryUnderwritingRunsRepository(
           ...candidate,
           fundPolicySnapshotId:
             batchById(candidate.batchId).value.fundPolicySnapshotId,
+          fundPolicyValues:
+            batchById(candidate.batchId).fundPolicyValues ?? undefined,
         },
         finalization: input,
       });
@@ -779,6 +787,76 @@ export function createSupabaseUnderwritingRunsRepository(options: {
     return responseBody.trim() ? JSON.parse(responseBody) : null;
   }
 
+  async function validatePersistedFinalizationAuthority(
+    input: CandidateFinalization,
+  ): Promise<void> {
+    const candidateRunId = requiredText(
+      input.candidateRunId,
+      "A candidate run",
+    );
+    const candidateQuery = new URLSearchParams({
+      id: `eq.${candidateRunId}`,
+      limit: "2",
+    });
+    const candidateRows = await read(`/candidate_runs?${candidateQuery}`);
+    if (!Array.isArray(candidateRows) || candidateRows.length !== 1) {
+      throw new Error(
+        "Finalization requires exactly one persisted candidate identity.",
+      );
+    }
+    const candidate = parseCandidate(candidateRows[0]);
+    if (candidate.id !== candidateRunId || candidate.status !== "running") {
+      throw new Error(
+        "Only the exact persisted running candidate can be finalized.",
+      );
+    }
+    const batchQuery = new URLSearchParams({
+      id: `eq.${candidate.batchId}`,
+      workspace_id: `eq.${candidate.workspaceId}`,
+      limit: "2",
+    });
+    const batchRows = await read(`/underwriting_batches?${batchQuery}`);
+    if (!Array.isArray(batchRows) || batchRows.length !== 1) {
+      throw new Error(
+        "Finalization requires exactly one persisted owning batch identity.",
+      );
+    }
+    const batch = parseBatch(batchRows[0]);
+    if (
+      batch.id !== candidate.batchId
+      || batch.workspaceId !== candidate.workspaceId
+    ) {
+      throw new Error(
+        "The persisted candidate and underwriting batch identity do not align.",
+      );
+    }
+    let fundPolicyValues: FundPolicySnapshot["values"] | undefined;
+    if (input.calculations.length > 0) {
+      const policyQuery = new URLSearchParams({
+        workspace_id: `eq.${candidate.workspaceId}`,
+        id: `eq.${batch.fundPolicySnapshotId}`,
+        select: "values",
+        limit: "2",
+      });
+      const policyRows = await read(`/fund_policy_versions?${policyQuery}`);
+      if (!Array.isArray(policyRows) || policyRows.length !== 1) {
+        throw new Error(
+          "Finalization requires exactly one authoritative pinned Fund Policy.",
+        );
+      }
+      fundPolicyValues = FundPolicySnapshotSchema.shape.values.parse(
+        (policyRows[0] as Record<string, unknown>).values,
+      );
+    }
+    prepareCandidateFinalization({
+      id: candidate.id,
+      workspaceId: candidate.workspaceId,
+      dealId: candidate.dealId,
+      fundPolicySnapshotId: batch.fundPolicySnapshotId,
+      fundPolicyValues,
+    }, input);
+  }
+
   return {
     async getBatchByScanRunId(input) {
       const query = new URLSearchParams({
@@ -817,7 +895,17 @@ export function createSupabaseUnderwritingRunsRepository(options: {
       const validated = validateBatchInput(input);
       return parseBatch(await request(
         "/rpc/create_or_reuse_underwriting_batch",
-        { p_payload: validated },
+        {
+          p_payload: {
+            workspaceId: validated.workspaceId,
+            scanRunId: validated.scanRunId,
+            batchInputFingerprint: validated.batchInputFingerprint,
+            fundPolicySnapshotId: validated.fundPolicySnapshotId,
+            forceRefresh: validated.forceRefresh,
+            refreshNonce: validated.refreshNonce,
+            rerunOfId: validated.rerunOfId,
+          },
+        },
       ));
     },
 
@@ -975,6 +1063,7 @@ export function createSupabaseUnderwritingRunsRepository(options: {
     },
 
     async finalizeCandidate(input) {
+      await validatePersistedFinalizationAuthority(input);
       return parseCandidate(await request(
         "/rpc/finalize_or_reuse_candidate_underwriting",
         { p_payload: input },
@@ -1079,6 +1168,13 @@ function validateBatchInput(input: CreateBatchInput): CreateBatchInput {
       input.fundPolicySnapshotId,
       "A Fund Policy snapshot",
     ),
+    ...(input.fundPolicyValues === undefined
+      ? {}
+      : {
+        fundPolicyValues: FundPolicySnapshotSchema.shape.values.parse(
+          input.fundPolicyValues,
+        ),
+      }),
     forceRefresh,
     refreshNonce,
     rerunOfId,

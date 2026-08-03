@@ -113,6 +113,13 @@
       "when": 1785837600000,
       "tag": "0021_exact_xtrace_lineage",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1785924000000,
+      "tag": "0022_task9_finalization_authority",
+      "breakpoints": true
     }
   ]
 }

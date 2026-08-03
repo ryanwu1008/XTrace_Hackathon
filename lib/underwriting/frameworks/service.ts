@@ -485,7 +485,22 @@ export function createFrameworkLensService(options: {
               let judgment: FrameworkJudgment;
               let attempts = 0;
               let repaired = false;
-              if (experimentalAdvisory) {
+              if (
+                context.analysisMode === "core_only"
+                && context.geography === "unavailable"
+              ) {
+                judgment = buildFrameworkAbstention({
+                  candidate,
+                  pack,
+                  card,
+                  calculations: scopedCalculations,
+                  fingerprint,
+                  applicability: "unavailable",
+                  reason:
+                    "Core-only analysis: geography is unavailable, so this framework cannot be applied to an immutable supported context.",
+                  retainAdvisoryMetadata: authorizedAdvisory,
+                });
+              } else if (experimentalAdvisory) {
                 if (!card.experimentalAdvisory.applicable) {
                   judgment = buildFrameworkAbstention({
                     candidate,

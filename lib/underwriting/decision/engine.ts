@@ -48,6 +48,10 @@ export function createDecisionEngine(): DecisionEngine {
       if (
         !input.coverage.minimumModelInputsComplete
         || input.coverage.underwritingStatus === "unavailable"
+        || (
+          input.context.analysisMode === "core_only"
+          && input.context.geography === "unavailable"
+        )
       ) {
         return DecisionResultSchema.parse({
           id: resultId,

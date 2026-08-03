@@ -167,6 +167,64 @@ test("evaluates pricing while refusing ownership when valuation basis is unknown
   assert.ok(!("netFundIrr" in result));
 });
 
+test("core-only unavailable geography never turns qualitative valuation prose into numeric outputs", () => {
+  const candidatePack = evidencePack();
+  candidatePack.coverage = {
+    minimumModelInputsComplete: true,
+    criticalEvidenceComplete: true,
+    missingFieldIds: [],
+    blockingConflictIds: [],
+    decisionCeiling: "Advance",
+    underwritingStatus: "available",
+    reasonCodes: [],
+  };
+  candidatePack.facts = candidatePack.facts.map((fact) =>
+    fact.field === "reported_valuation"
+      ? {
+          ...fact,
+          value:
+            "$450 million historical anonymous-source valuation reporting",
+        }
+      : fact
+  );
+  const detailed = createValuationEngine().evaluateDetailed({
+    pack: candidatePack,
+    context: {
+      ...context(),
+      analysisMode: "core_only",
+      geography: "unavailable",
+      benchmarkPackId: null,
+      benchmarkCompatibility: "unavailable",
+    },
+    fundPolicy: policy(),
+  });
+
+  assert.equal(detailed.scenarioModel.scenarios.length, 3);
+  assert.equal(detailed.scenarioModel.scenarios.every(({ inputs }) =>
+    inputs.length === 17
+  ), true);
+  assert.deepEqual(detailed.evaluation, {
+    id: `valuation:${candidatePack.id}`,
+    status: "unavailable",
+    scenarios: (["bear", "base", "bull"] as const).map((name) => ({
+      name,
+      valuation: null,
+      calculationIds: [],
+    })),
+    currentAsk: null,
+    maximumAcceptablePreMoney: null,
+    initialOwnership: null,
+    postDilutionOwnership: null,
+    grossMoic: null,
+    grossIrr: null,
+    pricingPremium: null,
+    calculationIds: [],
+    blockerCodes: ["CORE_ONLY_GEOGRAPHY_UNAVAILABLE"],
+  });
+  assert.deepEqual(detailed.calculations, []);
+  assert.deepEqual(detailed.calculationClaimEdges, []);
+});
+
 test("wires all six formula versions for a supported pre-money preferred round", () => {
   const pack = evidencePack();
   pack.facts = pack.facts.map((fact) =>

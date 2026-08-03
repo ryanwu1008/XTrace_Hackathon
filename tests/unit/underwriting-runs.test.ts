@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createMemoryUnderwritingArtifactsRepository,
   createSupabaseUnderwritingArtifactsRepository,
+  type CandidateFinalization,
 } from "../../db/repositories/underwriting-artifacts";
 import {
   createMemoryUnderwritingRunsRepository,
   createSupabaseUnderwritingRunsRepository,
 } from "../../db/repositories/underwriting-runs";
+import { ScenarioInputFieldSchema } from "../../lib/contracts/underwriting";
+import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
+import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
 
 function deterministicOptions() {
   let sequence = 0;
@@ -18,6 +23,427 @@ function deterministicOptions() {
     leaseTokenGenerator: () => `lease_${++sequence}`,
   };
 }
+
+function statusSafeFinalization(): CandidateFinalization {
+  const candidateRunId = "candidate_target";
+  const missingEvidence = [{
+    fieldId: "arr",
+    label: "arr",
+    reasonCode: "MISSING_CRITICAL_EVIDENCE",
+    mostLikelyDecisionImpact:
+      "Providing accepted evidence may raise or lower the formal decision ceiling.",
+  }];
+  const actions = actionsForDealStatusAndDirection("invested", "negative");
+  const judgments: CandidateFinalization["judgments"] =
+    SYNTHETIC_FRAMEWORK_PACK.cards.map((card, index) => {
+      const id = `judgment_unavailable_${index + 1}`;
+      return {
+      id,
+      analysisType: "framework_judgment",
+      frameworkCardId: card.id,
+      frameworkVersion: card.version,
+      applicability: "unavailable",
+      conclusion: "abstain",
+      supportEvidenceItemIds: [],
+      counterEvidenceItemIds: [],
+      unusedEvidenceItemIds: [],
+      strongestSupport: null,
+      strongestCounterargument: null,
+      unknowns: ["Geography is unavailable."],
+      limitations: ["Core-only analysis cannot run this framework."],
+      confidence: {
+        sourceReliability: "low",
+        evidenceStrength: "low",
+        evidenceCoverage: "low",
+        applicability: "low",
+        judgment: "low",
+      },
+      claimEdges: [{
+        claimItemId: id,
+        dependencyItemId: card.id,
+        dependencyType: "framework_ref",
+      }],
+      fingerprint: `unavailable-framework-${index + 1}`,
+    };
+    });
+  const scenarioInputs = (scenario: "bear" | "base" | "bull") =>
+    ScenarioInputFieldSchema.options.map((field) => ({
+      id: `${scenario}_${field}`,
+      scenario,
+      field,
+      value: null,
+      unit: null,
+      evidenceItemId: null,
+      assumptionItemId: null,
+      unavailableReason: `${field} is unavailable.`,
+    }));
+  return {
+    workerId: "worker_target",
+    leaseToken: "lease_target",
+    candidateRunId,
+    candidateAnalysisFingerprint: `sha256:${"9".repeat(64)}`,
+    evidencePackBuildInputFingerprint: `sha256:${"e".repeat(64)}`,
+    evidencePack: {
+      id: "pack_target",
+      version: 1,
+      workspaceId: "workspace_target",
+      dealId: "deal_target",
+      asOfDate: "2026-07-29",
+      sourceRevisionIds: ["revision_target"],
+      facts: [],
+      assumptions: [],
+      conflicts: [],
+      coverage: {
+        minimumModelInputsComplete: false,
+        criticalEvidenceComplete: false,
+        missingFieldIds: ["arr"],
+        blockingConflictIds: [],
+        decisionCeiling: null,
+        underwritingStatus: "unavailable",
+        reasonCodes: ["MISSING_MINIMUM_MODEL_INPUTS"],
+      },
+      createdAt: "2026-07-29T12:00:00.000Z",
+    },
+    context: {
+      id: "context_target",
+      contextVersion: "1",
+      analysisMode: "core_only",
+      stage: "series_a",
+      businessModel: "enterprise_ai",
+      geography: "unavailable",
+      securityType: "preferred",
+      asOfDate: "2026-07-29",
+      criticalEvidenceProfileId:
+        "critical_evidence_series_a_enterprise_ai_v1",
+      benchmarkPackId: null,
+      benchmarkCompatibility: "unavailable",
+      valuationMethodPolicyId:
+        "valuation_method_series_a_enterprise_ai_v1",
+      decisionPolicyId: "decision_policy_series_a_enterprise_ai_v1",
+      frameworkPackId:
+        "framework_pack_synthetic_universal_saas_ai_v1",
+    },
+    scenarioModel: {
+      id: "scenario_target",
+      candidateRunId,
+      formulaPolicyVersion:
+        "valuation_method_series_a_enterprise_ai_v1",
+      scenarios: (['bear', 'base', 'bull'] as const).map((name) => ({
+        name,
+        inputs: scenarioInputs(name),
+      })),
+      probabilityWeighted: false,
+    },
+    calculations: [],
+    calculationClaimEdges: [],
+    judgments,
+    disagreements: [],
+    valuation: {
+      id: "valuation_target",
+      status: "unavailable",
+      scenarios: (['bear', 'base', 'bull'] as const).map((name) => ({
+        name,
+        valuation: null,
+        calculationIds: [],
+      })),
+      currentAsk: null,
+      maximumAcceptablePreMoney: null,
+      initialOwnership: null,
+      postDilutionOwnership: null,
+      grossMoic: null,
+      grossIrr: null,
+      pricingPremium: null,
+      calculationIds: [],
+      blockerCodes: ["CORE_ONLY_GEOGRAPHY_UNAVAILABLE"],
+    },
+    decision: {
+      id: "decision_target",
+      analysisType: "final_synthesis",
+      companyQuality: "unavailable",
+      priceAttractiveness: "unavailable",
+      fundFit: "unavailable",
+      decision: null,
+      decisionCeiling: null,
+      hardVeto: false,
+      firedRules: [],
+      blockingEvidenceItemIds: [],
+      claimEdges: [],
+      confidence: "low",
+    },
+    narrative: "Formal values are unavailable.",
+    actionDrafts: [{
+      schemaVersion: "action-draft-v2",
+      safety: "status_safe",
+      deliveryMode: "draft_only",
+      draftPolicyVersion: "status-safe-action-draft-v2",
+      actionPolicyVersion: "belief-action-policy-v1",
+      id: "draft_target",
+      workspaceId: "workspace_target",
+      candidateRunId,
+      dealStatus: "invested",
+      beliefDirection: "negative",
+      actions,
+      missingEvidence,
+      format: "internal_memo",
+      channel: "internal",
+      audienceType: "internal",
+      body: [
+        "INTERNAL UNDERWRITING ACTION MEMO — DRAFT ONLY",
+        "Formal values are unavailable.",
+      ].join("\n"),
+      createdAt: "2026-07-29T12:00:00.000Z",
+      updatedAt: "2026-07-29T12:00:00.000Z",
+    }],
+    versionSnapshot: {
+      fundPolicyId: "fund_policy_target",
+      dealStatus: "invested",
+      beliefDirection: "negative",
+      canonicalActions: actions,
+      actionPolicyVersion: "belief-action-policy-v1",
+      draftPolicyVersion: "status-safe-action-draft-v2",
+      semanticContextAssumptionPolicyVersion:
+        "belief-reversal-demo-context-v1",
+      semanticContextMappingVersion:
+        "belief-reversal-reviewed-context-mapping-v1",
+      analysisMode: "core_only",
+      contextVersion: "1",
+      geography: "unavailable",
+      benchmarkCompatibility: "unavailable",
+      benchmarkPackId: null,
+      benchmarkEntryId: null,
+      benchmarkDefinitionFingerprint: null,
+      frameworkPackId:
+        "framework_pack_synthetic_universal_saas_ai_v1",
+      frameworkPackDefinitionFingerprint: `sha256:${"2".repeat(64)}`,
+      routerVersion: "context-router-v2",
+      criticalEvidenceProfileId:
+        "critical_evidence_series_a_enterprise_ai_v1",
+      criticalEvidenceProfileDefinitionFingerprint:
+        `sha256:${"3".repeat(64)}`,
+      valuationMethodPolicyId:
+        "valuation_method_series_a_enterprise_ai_v1",
+      valuationMethodPolicyDefinitionFingerprint:
+        `sha256:${"4".repeat(64)}`,
+      decisionPolicyId: "decision_policy_series_a_enterprise_ai_v1",
+      decisionPolicyDefinitionFingerprint: `sha256:${"5".repeat(64)}`,
+      referenceCatalogFingerprint: `sha256:${"6".repeat(64)}`,
+      formulaVersions: [],
+      providerModel: "synthetic-test",
+      promptVersion: "framework-lens-v1",
+      schemaVersion: "framework-judgment-v1",
+      settingsFingerprint: `sha256:${"7".repeat(64)}`,
+      applicationCommit: "task-9-test",
+    },
+  };
+}
+
+function forgedCoreOnlyUsFinalization(): CandidateFinalization {
+  const value = structuredClone(statusSafeFinalization());
+  value.context = {
+    ...value.context,
+    geography: "us",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkCompatibility: "broad_compatible",
+  };
+  value.evidencePack.coverage = {
+    minimumModelInputsComplete: true,
+    criticalEvidenceComplete: true,
+    missingFieldIds: [],
+    blockingConflictIds: [],
+    decisionCeiling: "Invest Candidate",
+    underwritingStatus: "available",
+    reasonCodes: ["CORE_ONLY_ANALYSIS_CEILING"],
+  };
+  if ("missingEvidence" in value.actionDrafts[0]!) {
+    value.actionDrafts[0].missingEvidence = [];
+  }
+  value.decision = {
+    ...value.decision,
+    companyQuality: "pass",
+    priceAttractiveness: "pass",
+    fundFit: "pass",
+    decision: "Invest Candidate",
+    decisionCeiling: "Invest Candidate",
+    confidence: "high",
+  };
+  value.versionSnapshot = {
+    ...value.versionSnapshot,
+    geography: "us",
+    benchmarkCompatibility: "broad_compatible",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkEntryId: "benchmark_entry_synthetic_seed_valuation_v1",
+    benchmarkDefinitionFingerprint: `sha256:${"1".repeat(64)}`,
+  };
+  return value;
+}
+
+function forgedUnavailableGeographyDecision(): CandidateFinalization {
+  const value = structuredClone(statusSafeFinalization());
+  value.decision = {
+    ...value.decision,
+    companyQuality: "pass",
+    priceAttractiveness: "pass",
+    fundFit: "pass",
+    decision: "Invest Candidate",
+    decisionCeiling: "Invest Candidate",
+    confidence: "high",
+  };
+  return value;
+}
+
+function forgedFullUnavailableDecision(): CandidateFinalization {
+  const value = forgedUnavailableGeographyDecision();
+  value.context = {
+    ...value.context,
+    analysisMode: "full",
+    geography: "us",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkCompatibility: "broad_compatible",
+  };
+  value.versionSnapshot = {
+    ...value.versionSnapshot,
+    analysisMode: "full",
+    geography: "us",
+    benchmarkCompatibility: "broad_compatible",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkEntryId: "benchmark_entry_synthetic_seed_valuation_v1",
+    benchmarkDefinitionFingerprint: `sha256:${"1".repeat(64)}`,
+  };
+  return value;
+}
+
+function forgedFullUnavailableValuation(): CandidateFinalization {
+  const value = structuredClone(statusSafeFinalization());
+  value.context = {
+    ...value.context,
+    analysisMode: "full",
+    geography: "us",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkCompatibility: "broad_compatible",
+  };
+  value.versionSnapshot = {
+    ...value.versionSnapshot,
+    analysisMode: "full",
+    geography: "us",
+    benchmarkCompatibility: "broad_compatible",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkEntryId: "benchmark_entry_synthetic_seed_valuation_v1",
+    benchmarkDefinitionFingerprint: `sha256:${"1".repeat(64)}`,
+  };
+  value.valuation = {
+    ...value.valuation,
+    status: "completed",
+    scenarios: value.valuation.scenarios.map((scenario) => ({
+      ...scenario,
+      valuation: "999999999",
+    })),
+    maximumAcceptablePreMoney: "999999999",
+    initialOwnership: "0.1",
+    postDilutionOwnership: "0.05",
+    grossMoic: "10",
+    grossIrr: "0.5",
+    pricingPremium: "1",
+  };
+  return value;
+}
+
+function evidenceCompleteUnavailableGeographyFinalization(): CandidateFinalization {
+  const value = structuredClone(statusSafeFinalization());
+  value.evidencePack.coverage = {
+    minimumModelInputsComplete: true,
+    criticalEvidenceComplete: true,
+    missingFieldIds: [],
+    blockingConflictIds: [],
+    decisionCeiling: "Advance",
+    underwritingStatus: "available",
+    reasonCodes: ["CORE_ONLY_ANALYSIS_CEILING"],
+  };
+  value.scenarioModel.probabilityWeighted = true;
+  if ("missingEvidence" in value.actionDrafts[0]!) {
+    value.actionDrafts[0].missingEvidence = [];
+  }
+  return value;
+}
+
+test("pure finalization authority rejects forged core-only and unavailable-geography terminal artifacts", () => {
+  const artifacts = createMemoryUnderwritingArtifactsRepository();
+  const candidate = {
+    id: "candidate_target",
+    workspaceId: "workspace_target",
+    dealId: "deal_target",
+    fundPolicySnapshotId: "fund_policy_target",
+  };
+  assert.doesNotThrow(() => artifacts.prepareFinalization({
+    candidate,
+    finalization: statusSafeFinalization(),
+  }));
+  assert.doesNotThrow(() => artifacts.prepareFinalization({
+    candidate,
+    finalization: evidenceCompleteUnavailableGeographyFinalization(),
+  }));
+  for (const forged of [
+    forgedCoreOnlyUsFinalization(),
+    forgedUnavailableGeographyDecision(),
+    forgedFullUnavailableDecision(),
+    forgedFullUnavailableValuation(),
+    (() => {
+      const value = structuredClone(statusSafeFinalization());
+      value.context.asOfDate = "2026-07-28";
+      return value;
+    })(),
+    (() => {
+      const value = structuredClone(statusSafeFinalization());
+      value.scenarioModel.formulaPolicyVersion = "forged-policy";
+      return value;
+    })(),
+    (() => {
+      const value = structuredClone(statusSafeFinalization());
+      const scenarioInput = value.scenarioModel.scenarios[0]!.inputs[0]!;
+      scenarioInput.value = "1";
+      scenarioInput.assumptionItemId = "missing_assumption";
+      scenarioInput.unavailableReason = null;
+      return value;
+    })(),
+    (() => {
+      const value = structuredClone(statusSafeFinalization());
+      value.valuation.currentAsk = "1";
+      return value;
+    })(),
+    (() => {
+      const value = structuredClone(statusSafeFinalization());
+      value.judgments.push({
+        id: "judgment_forged",
+        analysisType: "framework_judgment",
+        frameworkCardId: "framework_card_synthetic_1_v1",
+        frameworkVersion: "1",
+        applicability: "applicable",
+        conclusion: "supportive",
+        supportEvidenceItemIds: [],
+        counterEvidenceItemIds: [],
+        unusedEvidenceItemIds: [],
+        strongestSupport: "Forged provider-style support.",
+        strongestCounterargument: null,
+        unknowns: [],
+        limitations: [],
+        confidence: {
+          sourceReliability: "high",
+          evidenceStrength: "high",
+          evidenceCoverage: "high",
+          applicability: "high",
+          judgment: "high",
+        },
+        claimEdges: [],
+        fingerprint: "forged-framework-fingerprint",
+      });
+      return value;
+    })(),
+  ]) {
+    assert.throws(() => artifacts.prepareFinalization({
+      candidate,
+      finalization: forged,
+    }), /core-only|geography|terminal|unavailable|identity|lineage|framework|valuation|persisted evidence/i);
+  }
+});
 
 test("same batch fingerprint reuses one batch and force refresh creates a linked rerun", async () => {
   const repository = createMemoryUnderwritingRunsRepository(
@@ -446,7 +872,7 @@ test("Supabase adapters use controlled RPC writes and workspace-scoped artifact 
 });
 
 test("Supabase candidate writes use the exact target claim and alias-aware finalization RPCs", async () => {
-  const requests: Array<{ url: string; body: unknown }> = [];
+  const requests: Array<{ url: string; method: string; body: unknown }> = [];
   const candidate = {
     id: "candidate_target",
     batchId: "batch_target",
@@ -462,14 +888,35 @@ test("Supabase candidate writes use the exact target claim and alias-aware final
     url: "https://supabase.example",
     serviceRoleKey: "secret",
     fetchImpl: async (url, init = {}) => {
-      const body = JSON.parse(String(init.body));
-      requests.push({ url: String(url), body });
+      const body = init.body === undefined
+        ? null
+        : JSON.parse(String(init.body));
+      requests.push({
+        url: String(url),
+        method: init.method ?? "GET",
+        body,
+      });
       if (String(url).endsWith("/rpc/claim_underwriting_candidate")) {
         return Response.json({
           candidate,
           leaseToken: "lease_target",
           leaseExpiresAt: "2026-07-29T12:01:00.000Z",
         });
+      }
+      if (String(url).includes("/candidate_runs?")) {
+        return Response.json([candidate]);
+      }
+      if (String(url).includes("/underwriting_batches?")) {
+        return Response.json([{
+          id: "batch_target",
+          workspaceId: "workspace_target",
+          scanRunId: "scan_target",
+          status: "running",
+          batchInputFingerprint: `sha256:${"8".repeat(64)}`,
+          fundPolicySnapshotId: "fund_policy_target",
+          rerunOfId: null,
+          createdAt: "2026-07-29T11:00:00.000Z",
+        }]);
       }
       if (
         String(url).endsWith(
@@ -494,25 +941,195 @@ test("Supabase candidate writes use the exact target claim and alias-aware final
     leaseSeconds: 60,
   });
   assert.equal(claimed?.candidate.id, "candidate_target");
-  const completed = await runs.finalizeCandidate({ marker: true } as never);
+  const finalization = statusSafeFinalization();
+  const completed = await runs.finalizeCandidate(finalization);
   assert.equal(completed.status, "completed");
-  assert.deepEqual(requests, [
+  assert.deepEqual(
+    requests.map(({ url, method }) => ({
+      pathname: new URL(url).pathname,
+      method,
+    })),
+    [
+      {
+        pathname:
+          "/rest/v1/rpc/claim_underwriting_candidate",
+        method: "POST",
+      },
+      { pathname: "/rest/v1/candidate_runs", method: "GET" },
+      { pathname: "/rest/v1/underwriting_batches", method: "GET" },
+      {
+        pathname:
+          "/rest/v1/rpc/finalize_or_reuse_candidate_underwriting",
+        method: "POST",
+      },
+    ],
+  );
+  assert.deepEqual(requests[3]?.body, { p_payload: finalization });
+});
+
+test("Supabase finalization rejects forged current authority before the finalize RPC", async () => {
+  const base = statusSafeFinalization();
+  const variants: CandidateFinalization[] = [
+    forgedCoreOnlyUsFinalization(),
+    forgedUnavailableGeographyDecision(),
+    forgedFullUnavailableDecision(),
+    forgedFullUnavailableValuation(),
+    (() => {
+      const value = structuredClone(base);
+      value.valuation.currentAsk = "1";
+      return value;
+    })(),
     {
-      url:
-        "https://supabase.example/rest/v1/rpc/claim_underwriting_candidate",
-      body: {
-        p_workspace_id: "workspace_target",
-        p_candidate_run_id: "candidate_target",
-        p_worker_id: "worker_target",
-        p_lease_seconds: 60,
+      ...structuredClone(base),
+      actionDrafts: [{
+        ...structuredClone(base.actionDrafts[0]!),
+        body: "INTERNAL UNDERWRITING ACTION MEMO — DRAFT ONLY\nforged",
+        beliefDirection: "mixed",
+      } as never],
+    },
+    {
+      ...structuredClone(base),
+      versionSnapshot: {
+        ...structuredClone(base.versionSnapshot),
+        geography: "global",
       },
     },
     {
-      url:
-        "https://supabase.example/rest/v1/rpc/finalize_or_reuse_candidate_underwriting",
-      body: { p_payload: { marker: true } },
+      ...structuredClone(base),
+      versionSnapshot: {
+        ...structuredClone(base.versionSnapshot),
+        routerVersion: "context-router-v1",
+      },
     },
-  ]);
+    {
+      ...structuredClone(base),
+      versionSnapshot: {
+        ...structuredClone(base.versionSnapshot),
+        canonicalActions: actionsForDealStatusAndDirection(
+          "invested",
+          "mixed",
+        ),
+      },
+    },
+  ];
+  for (const finalization of variants) {
+    const requests: string[] = [];
+    const runs = createSupabaseUnderwritingRunsRepository({
+      url: "https://supabase.example",
+      serviceRoleKey: "secret",
+      fetchImpl: async (url) => {
+        requests.push(String(url));
+        if (String(url).includes("/candidate_runs?")) {
+          return Response.json([{
+            id: "candidate_target",
+            batchId: "batch_target",
+            workspaceId: "workspace_target",
+            dealId: "deal_target",
+            status: "running",
+            candidateAnalysisFingerprint: "pending:candidate_target",
+            rerunOfId: null,
+            createdAt: "2026-07-29T12:00:00.000Z",
+            finalizedAt: null,
+          }]);
+        }
+        if (String(url).includes("/underwriting_batches?")) {
+          return Response.json([{
+            id: "batch_target",
+            workspaceId: "workspace_target",
+            scanRunId: "scan_target",
+            status: "running",
+            batchInputFingerprint: `sha256:${"8".repeat(64)}`,
+            fundPolicySnapshotId: "fund_policy_target",
+            rerunOfId: null,
+            createdAt: "2026-07-29T11:00:00.000Z",
+          }]);
+        }
+        throw new Error(`Finalize RPC must not run for forged input: ${url}`);
+      },
+    });
+    await assert.rejects(runs.finalizeCandidate(finalization));
+    assert.equal(requests.some((url) =>
+      url.endsWith("/rpc/finalize_or_reuse_candidate_underwriting")
+    ), false);
+  }
+});
+
+test("Supabase finalization fails closed on ambiguous or misaligned persisted identity", async () => {
+  const candidate = {
+    id: "candidate_target",
+    batchId: "batch_target",
+    workspaceId: "workspace_target",
+    dealId: "deal_target",
+    status: "running",
+    candidateAnalysisFingerprint: "pending:candidate_target",
+    rerunOfId: null,
+    createdAt: "2026-07-29T12:00:00.000Z",
+    finalizedAt: null,
+  };
+  const batch = {
+    id: "batch_target",
+    workspaceId: "workspace_target",
+    scanRunId: "scan_target",
+    status: "running",
+    batchInputFingerprint: `sha256:${"8".repeat(64)}`,
+    fundPolicySnapshotId: "fund_policy_target",
+    rerunOfId: null,
+    createdAt: "2026-07-29T11:00:00.000Z",
+  };
+  const cases = [
+    { name: "candidate missing", candidateRows: [], batchRows: [batch] },
+    {
+      name: "candidate ambiguous",
+      candidateRows: [candidate, candidate],
+      batchRows: [batch],
+    },
+    {
+      name: "candidate not running",
+      candidateRows: [{ ...candidate, status: "completed" }],
+      batchRows: [batch],
+    },
+    { name: "batch missing", candidateRows: [candidate], batchRows: [] },
+    {
+      name: "batch ambiguous",
+      candidateRows: [candidate],
+      batchRows: [batch, batch],
+    },
+    {
+      name: "batch workspace mismatch",
+      candidateRows: [candidate],
+      batchRows: [{ ...batch, workspaceId: "workspace_foreign" }],
+    },
+    {
+      name: "batch ID mismatch",
+      candidateRows: [candidate],
+      batchRows: [{ ...batch, id: "batch_foreign" }],
+    },
+  ];
+  for (const testCase of cases) {
+    const requests: string[] = [];
+    const runs = createSupabaseUnderwritingRunsRepository({
+      url: "https://supabase.example",
+      serviceRoleKey: "secret",
+      fetchImpl: async (url) => {
+        requests.push(String(url));
+        if (String(url).includes("/candidate_runs?")) {
+          return Response.json(testCase.candidateRows);
+        }
+        if (String(url).includes("/underwriting_batches?")) {
+          return Response.json(testCase.batchRows);
+        }
+        throw new Error(
+          `Finalize RPC must not run for ${testCase.name}: ${url}`,
+        );
+      },
+    });
+    await assert.rejects(
+      runs.finalizeCandidate(statusSafeFinalization()),
+    );
+    assert.equal(requests.some((url) =>
+      url.endsWith("/rpc/finalize_or_reuse_candidate_underwriting")
+    ), false, testCase.name);
+  }
 });
 
 test("Supabase checkpoint replay reads only the exact workspace candidate", async () => {

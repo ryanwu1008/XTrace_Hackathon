@@ -224,7 +224,7 @@ export async function runNextQueuedScan(): Promise<boolean> {
       activeFundPolicy: (workspaceId) =>
         references.activeFundPolicy(workspaceId),
       candidateExecutionFingerprint:
-        `source-grounded-v2:${model}:framework-lens-v1:framework-judgment-v1`,
+        `source-grounded-v3:context-router-v2:semantic-context-v1:${model}:framework-lens-v1:framework-judgment-v1`,
       referenceCatalog,
       candidateExecutor: createSourceGroundedCandidateExecutor({
         grounding,

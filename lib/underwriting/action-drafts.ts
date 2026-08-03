@@ -1,5 +1,7 @@
 import {
+  ACTION_DRAFT_POLICY_VERSION,
   ActionDraftSchema,
+  canonicalExternalActionDraftBodies,
   DecisionResultSchema,
   FrameworkDisagreementSchema,
   FrameworkJudgmentSchema,
@@ -10,6 +12,18 @@ import {
   type FrameworkJudgment,
   type MissingEvidenceItem,
 } from "../contracts/underwriting";
+import type {
+  BeliefAction,
+  BeliefChangeDirection,
+  DealStatus,
+} from "../contracts/domain";
+import {
+  BELIEF_ACTION_POLICY_VERSION,
+  actionsForDealStatusAndDirection,
+  beliefActionListsEqual,
+  parseBeliefActions,
+  renderRecommendedNextMove,
+} from "../reports/action-policy";
 import {
   renderPublicAdvisoryConflicts,
   renderPublicAdvisoryDiligenceRequests,
@@ -21,7 +35,10 @@ export interface ActionDraftGenerator {
     candidateRunId: string;
     decision: DecisionResult;
     missingEvidence: MissingEvidenceItem[];
-    recommendedNextSteps: string[];
+    dealStatus: DealStatus;
+    beliefDirection: BeliefChangeDirection;
+    actions: BeliefAction[];
+    recommendedNextSteps?: readonly string[];
     judgments?: FrameworkJudgment[];
     disagreements?: FrameworkDisagreement[];
   }): ActionDraft[];
@@ -43,9 +60,16 @@ export function createActionDraftGenerator(options: {
       const missingEvidence = rawInput.missingEvidence.map((item) =>
         MissingEvidenceItemSchema.parse(item)
       );
-      const recommendedNextSteps = rawInput.recommendedNextSteps.map(
-        (step) => requireText(step, "recommendedNextStep"),
+      const actions = parseBeliefActions(rawInput.actions);
+      const expectedActions = actionsForDealStatusAndDirection(
+        rawInput.dealStatus,
+        rawInput.beliefDirection,
       );
+      if (!beliefActionListsEqual(actions, expectedActions)) {
+        throw new TypeError(
+          "Action draft actions do not match the authoritative status policy.",
+        );
+      }
       const judgments = (rawInput.judgments ?? []).map((judgment) =>
         FrameworkJudgmentSchema.parse(judgment)
       );
@@ -55,10 +79,7 @@ export function createActionDraftGenerator(options: {
       const timestamp = now().toISOString();
       const decisionLabel = decision.decision ?? "Unavailable";
       const missing = missingEvidenceText(missingEvidence);
-      const nextSteps = listText(
-        recommendedNextSteps,
-        "No next step is supported by the saved analysis.",
-      );
+      const statusAwareAction = renderRecommendedNextMove(actions);
       const common = [
         `Formal decision: ${decisionLabel}`,
         `Decision ceiling: ${decision.decisionCeiling ?? "Unavailable"}`,
@@ -81,85 +102,93 @@ export function createActionDraftGenerator(options: {
         : [];
       const definitions = [
         {
-          channel: "email" as const,
-          audienceType: "founder" as const,
-          body: [
-            `Subject: Follow-up on underwriting evidence`,
-            "",
-            common,
-            "",
-            "Evidence to clarify:",
-            missing,
-            "",
-            "Proposed next steps:",
-            nextSteps,
-          ].join("\n"),
-        },
-        {
-          channel: "sms" as const,
-          audienceType: "founder" as const,
-          body: [
-            `Underwriting follow-up draft — ${decisionLabel}.`,
-            `Evidence to clarify: ${inlineEvidence(missingEvidence)}.`,
-            `Next step: ${recommendedNextSteps[0] ?? "Review the saved analysis."}`,
-          ].join(" "),
-        },
-        {
-          channel: "linkedin" as const,
-          audienceType: "founder" as const,
-          body: [
-            "Follow-up message draft",
-            common,
-            "Evidence to clarify:",
-            missing,
-            "Proposed next steps:",
-            nextSteps,
-          ].join("\n"),
-        },
-        {
-          channel: "internal_memo" as const,
+          format: "internal_memo" as const,
+          channel: "internal" as const,
           audienceType: "internal" as const,
           body: [
-            "INTERNAL UNDERWRITING ACTION MEMO",
+            "INTERNAL UNDERWRITING ACTION MEMO — DRAFT ONLY",
+            "",
+            "Formal underwriting result",
             common,
             `Company Quality: ${decision.companyQuality}`,
             `Price Attractiveness: ${decision.priceAttractiveness}`,
             `Fund Fit: ${decision.fundFit}`,
             "",
-            "Blocking or missing evidence:",
-            missing,
+            "Status-aware action",
+            statusAwareAction,
             "",
-            "Recommended internal work:",
-            nextSteps,
+            "Blocking or missing evidence",
+            missing,
             ...advisoryDraftSections,
           ].join("\n"),
         },
         {
-          channel: "dd_request" as const,
+          format: "founder_email" as const,
+          channel: "email" as const,
           audienceType: "founder" as const,
-          body: [
-            "DUE DILIGENCE REQUEST DRAFT",
-            common,
-            "",
-            "Requested evidence:",
-            missing,
-            "",
-            "Review sequence:",
-            nextSteps,
-            ...advisoryDraftSections,
-          ].join("\n"),
+          body: canonicalExternalActionDraftBodies({
+            format: "founder_email",
+            missingEvidence,
+          })[0]!,
+        },
+        {
+          format: "founder_sms" as const,
+          channel: "sms" as const,
+          audienceType: "founder" as const,
+          body: canonicalExternalActionDraftBodies({
+            format: "founder_sms",
+            missingEvidence,
+          })[0]!,
+        },
+        {
+          format: "founder_linkedin" as const,
+          channel: "linkedin" as const,
+          audienceType: "founder" as const,
+          body: canonicalExternalActionDraftBodies({
+            format: "founder_linkedin",
+            missingEvidence,
+          })[0]!,
+        },
+        {
+          format: "diligence_request" as const,
+          channel: "email" as const,
+          audienceType: "founder" as const,
+          body: canonicalExternalActionDraftBodies({
+            format: "diligence_request",
+            missingEvidence,
+          })[0]!,
         },
       ];
 
-      return definitions.map((definition) =>
+      const actionKinds = new Set(actions.map(({ kind }) => kind));
+      const allowedFormats = actionKinds.has("advance_diligence")
+          || actionKinds.has("reopen_diligence")
+        ? new Set(definitions.map(({ format }) => format))
+        : actionKinds.has("evaluate_follow_on")
+        ? new Set(["internal_memo", "founder_email", "diligence_request"])
+        : new Set(["internal_memo"]);
+
+      return definitions.filter(({ format }) =>
+        allowedFormats.has(format)
+      ).map((definition) =>
         ActionDraftSchema.parse({
+          schemaVersion: "action-draft-v2",
+          safety: "status_safe",
+          deliveryMode: "draft_only",
+          draftPolicyVersion: ACTION_DRAFT_POLICY_VERSION,
+          actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
           id: [
             "action_draft",
             candidateRunId,
-            definition.channel,
+            definition.format,
           ].join(":"),
           workspaceId,
           candidateRunId,
+          dealStatus: rawInput.dealStatus,
+          beliefDirection: rawInput.beliefDirection,
+          actions,
+          missingEvidence,
+          format: definition.format,
           channel: definition.channel,
           audienceType: definition.audienceType,
           body: definition.body,
@@ -182,28 +211,9 @@ function missingEvidenceText(items: MissingEvidenceItem[]): string {
   ].join("\n")).join("\n");
 }
 
-function inlineEvidence(items: MissingEvidenceItem[]): string {
-  return items.length === 0
-    ? "no saved missing-evidence item"
-    : items.map(({ label }) => label).join("; ");
-}
-
-function listText(items: string[], fallback: string): string {
-  return items.length === 0
-    ? fallback
-    : items.map((item) => `- ${item}`).join("\n");
-}
-
 function requireId(value: string, label: string): string {
   if (value.trim() !== value || value.length === 0) {
     throw new TypeError(`${label} must be a non-empty normalized ID.`);
-  }
-  return value;
-}
-
-function requireText(value: string, label: string): string {
-  if (value.trim().length === 0) {
-    throw new TypeError(`${label} must be non-empty.`);
   }
   return value;
 }

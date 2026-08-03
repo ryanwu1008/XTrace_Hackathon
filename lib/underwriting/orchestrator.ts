@@ -22,8 +22,11 @@ import type {
   ResolvedUnderwritingContext,
   UnderwritingBatch,
 } from "../contracts/underwriting";
+import { ACTION_DRAFT_POLICY_VERSION } from "../contracts/underwriting";
+import { BELIEF_ACTION_POLICY_VERSION } from "../reports/action-policy";
 import {
   canonicalJson,
+  createBatchInputFingerprint,
   createReferenceCatalogSnapshot,
   createCandidateAnalysisFingerprint,
   type ReferenceDefinitionRef,
@@ -31,10 +34,15 @@ import {
   type UnderwritingReferenceCatalogSnapshot,
 } from "./fingerprints";
 import {
+  CONTEXT_ROUTER_VERSION,
   createContextRouter,
   type ContextRouter,
   type RouterResolution,
 } from "./router";
+import {
+  SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+  SEMANTIC_CONTEXT_MAPPING_VERSION,
+} from "./evidence/semantic-projector";
 import { createValuationEngine } from "./valuation/service";
 import type { ValuationEngine } from "./valuation/contracts";
 import type { FrameworkLensService } from "./frameworks/service";
@@ -428,18 +436,34 @@ export function createUnderwritingOrchestrator(options: {
         input.scanRun.workspaceId,
       );
       assertAlignedInput(input, policy);
-      const batchInputFingerprint = createOrchestrationFingerprint({
-        ...input,
+      const batchInputFingerprint = createBatchInputFingerprint({
+        scanRun: input.scanRun,
+        report: input.report,
+        analyses: input.analyses,
+        eligibleDeals: input.eligibleDeals,
         policy,
         executionBudget: budget,
         candidateExecutionFingerprint,
         referenceCatalog,
+        evidenceFrame: input.evidenceFrame,
+        selectionPolicyVersion: SELECTION_POLICY_VERSION,
+        routerVersion: CONTEXT_ROUTER_VERSION,
+        beliefPolicies: {
+          actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
+          draftPolicyVersion: ACTION_DRAFT_POLICY_VERSION,
+          semanticContextAssumptionPolicyVersion:
+            SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+          semanticContextMappingVersion: SEMANTIC_CONTEXT_MAPPING_VERSION,
+        },
+        evidencePackBuilderVersion: "evidence_pack_builder_v2",
+        decisionPolicyVersion: DECISION_POLICY_V1.version,
       });
       const ordinaryBatch = await options.runs.createOrReuseBatch({
         workspaceId: input.scanRun.workspaceId,
         scanRunId: input.scanRun.id,
         batchInputFingerprint,
         fundPolicySnapshotId: policy.id,
+        fundPolicyValues: policy.values,
         forceRefresh: false,
         refreshNonce: null,
         rerunOfId: null,
@@ -450,6 +474,7 @@ export function createUnderwritingOrchestrator(options: {
             scanRunId: input.scanRun.id,
             batchInputFingerprint,
             fundPolicySnapshotId: policy.id,
+            fundPolicyValues: policy.values,
             forceRefresh: true,
             refreshNonce: refreshNonce(),
             rerunOfId: ordinaryBatch.id,
@@ -569,6 +594,12 @@ export function createSourceGroundedCandidateExecutor(options: {
         "Candidate execution requires an immutable active Deal revision.",
       );
     }
+    const beliefAssessment = input.analysis.beliefAssessment;
+    if (!beliefAssessment) {
+      return unavailableExecution([
+        "AUTHORITATIVE_BELIEF_ASSESSMENT_UNAVAILABLE",
+      ]);
+    }
     let snapshot: CandidateGroundingSnapshot;
     let resolution: RouterResolution;
     try {
@@ -576,6 +607,11 @@ export function createSourceGroundedCandidateExecutor(options: {
         stage: "context_router",
         inputFingerprint: fingerprint({
           stage: "context_router",
+          routerVersion: CONTEXT_ROUTER_VERSION,
+          semanticContextAssumptionPolicyVersion:
+            SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+          semanticContextMappingVersion:
+            SEMANTIC_CONTEXT_MAPPING_VERSION,
           candidate: input.candidate,
           analysis: input.analysis,
           deal: input.deal,
@@ -685,16 +721,6 @@ export function createSourceGroundedCandidateExecutor(options: {
       }
       throw error;
     }
-    if (
-      pack.coverage.underwritingStatus === "unavailable"
-      || !pack.coverage.minimumModelInputsComplete
-    ) {
-      return unavailableExecution(
-        pack.coverage.reasonCodes.length > 0
-          ? pack.coverage.reasonCodes
-          : ["MISSING_MINIMUM_MODEL_INPUTS"],
-      );
-    }
     const evidenceFingerprint = fingerprint({
       pack,
       sourceRevisionSnapshots: snapshot.sourceRevisionSnapshots,
@@ -710,11 +736,44 @@ export function createSourceGroundedCandidateExecutor(options: {
         fundPolicy: input.fundPolicy,
       }),
       parseOutput: parseValuationArtifactSet,
-      operation: () => valuation.evaluateDetailed({
-        pack,
-        context,
-        fundPolicy: input.fundPolicy,
-      }),
+      operation: () => {
+        const artifacts = valuation.evaluateDetailed({
+          pack,
+          context,
+          fundPolicy: input.fundPolicy,
+        });
+        if (
+          pack.coverage.minimumModelInputsComplete
+          && pack.coverage.underwritingStatus !== "unavailable"
+        ) {
+          return artifacts;
+        }
+        return {
+          evaluation: {
+            id: `valuation:${pack.id}`,
+            status: "unavailable" as const,
+            scenarios: (["bear", "base", "bull"] as const).map((name) => ({
+              name,
+              valuation: null,
+              calculationIds: [],
+            })),
+            currentAsk: null,
+            maximumAcceptablePreMoney: null,
+            initialOwnership: null,
+            postDilutionOwnership: null,
+            grossMoic: null,
+            grossIrr: null,
+            pricingPremium: null,
+            calculationIds: [],
+            blockerCodes: pack.coverage.reasonCodes.length > 0
+              ? [...pack.coverage.reasonCodes]
+              : ["MISSING_MINIMUM_MODEL_INPUTS"],
+          },
+          scenarioModel: artifacts.scenarioModel,
+          calculations: [],
+          calculationClaimEdges: [],
+        };
+      },
     });
     const scenarioModel = {
       ...valuationArtifacts.scenarioModel,
@@ -827,6 +886,10 @@ export function createSourceGroundedCandidateExecutor(options: {
     if (input.signal.aborted) {
       throw new Error("Candidate execution exceeded its stage budget.");
     }
+    const selectedDecisionPolicy = {
+      ...DECISION_POLICY_V1,
+      id: context.decisionPolicyId,
+    };
     const formalDecision = await input.stages.run({
       stage: "decision",
       inputFingerprint: fingerprint({
@@ -836,7 +899,7 @@ export function createSourceGroundedCandidateExecutor(options: {
         valuation: valuationArtifacts.evaluation,
         fundPolicy: input.fundPolicy,
         context,
-        decisionPolicy: DECISION_POLICY_V1,
+        decisionPolicy: selectedDecisionPolicy,
       }),
       parseOutput: parseDecisionResult,
       operation: () => decision.decide({
@@ -846,7 +909,7 @@ export function createSourceGroundedCandidateExecutor(options: {
         valuation: valuationArtifacts.evaluation,
         fundPolicy: input.fundPolicy,
         context,
-        decisionPolicy: DECISION_POLICY_V1,
+        decisionPolicy: selectedDecisionPolicy,
       }),
     });
     const narrativeArtifacts = await input.stages.run({
@@ -888,10 +951,9 @@ export function createSourceGroundedCandidateExecutor(options: {
           missingEvidence,
           judgments: lensResult.judgments,
           disagreements: lensResult.disagreements,
-          recommendedNextSteps: [
-            "Review source-backed missing evidence with the investment team.",
-            "Request exact round terms and operating metrics from the founder.",
-          ],
+          dealStatus: beliefAssessment.dealStatus,
+          beliefDirection: beliefAssessment.direction,
+          actions: beliefAssessment.actions,
         });
         return { narrative, actionDrafts };
       },
@@ -913,6 +975,16 @@ export function createSourceGroundedCandidateExecutor(options: {
         sourceRevisionIds: input.deal.activeSourceRevisionIds,
         fingerprint: dealFingerprint,
       },
+      beliefState: {
+        dealStatus: beliefAssessment.dealStatus,
+        direction: beliefAssessment.direction,
+        canonicalActions: beliefAssessment.actions,
+        actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
+        draftPolicyVersion: ACTION_DRAFT_POLICY_VERSION,
+        semanticContextAssumptionPolicyVersion:
+          SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+        semanticContextMappingVersion: SEMANTIC_CONTEXT_MAPPING_VERSION,
+      },
       evidencePack: {
         id: pack.id,
         version: pack.version,
@@ -928,7 +1000,12 @@ export function createSourceGroundedCandidateExecutor(options: {
         valuationMethodPolicyId: context.valuationMethodPolicyId,
         frameworkPackId: context.frameworkPackId,
         decisionPolicyId: context.decisionPolicyId,
+        analysisMode: context.analysisMode ?? resolution.analysisMode,
+        geography: context.geography,
+        securityType: context.securityType,
+        benchmarkCompatibility: context.benchmarkCompatibility,
       },
+      routerVersion: CONTEXT_ROUTER_VERSION,
       criticalEvidenceProfile,
       benchmark,
       valuationMethodPolicy,
@@ -968,6 +1045,18 @@ export function createSourceGroundedCandidateExecutor(options: {
       actionDrafts: narrativeArtifacts.actionDrafts,
       versionSnapshot: {
         fundPolicyId: input.fundPolicy.id,
+        dealStatus: beliefAssessment.dealStatus,
+        beliefDirection: beliefAssessment.direction,
+        canonicalActions: beliefAssessment.actions,
+        actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
+        draftPolicyVersion: ACTION_DRAFT_POLICY_VERSION,
+        semanticContextAssumptionPolicyVersion:
+          SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+        semanticContextMappingVersion: SEMANTIC_CONTEXT_MAPPING_VERSION,
+        analysisMode: context.analysisMode ?? resolution.analysisMode,
+        contextVersion: context.contextVersion,
+        geography: context.geography,
+        benchmarkCompatibility: context.benchmarkCompatibility,
         benchmarkPackId: context.benchmarkPackId,
         benchmarkEntryId: benchmark?.id ?? null,
         benchmarkDefinitionFingerprint:
@@ -975,7 +1064,7 @@ export function createSourceGroundedCandidateExecutor(options: {
         frameworkPackId: context.frameworkPackId,
         frameworkPackDefinitionFingerprint:
           frameworkPack.definitionFingerprint,
-        routerVersion: "context-router-v1",
+        routerVersion: CONTEXT_ROUTER_VERSION,
         criticalEvidenceProfileId: context.criticalEvidenceProfileId,
         criticalEvidenceProfileDefinitionFingerprint:
           criticalEvidenceProfile.definitionFingerprint,
@@ -1085,48 +1174,6 @@ function qualifiedCandidates(
     historicalStatusByDeal,
     limit: Number.MAX_SAFE_INTEGER,
   });
-}
-
-function createOrchestrationFingerprint(
-  input: {
-    scanRun: RunRecord;
-    report: IntelligenceReportRecord;
-    analyses: CompanyAnalysis[];
-    eligibleDeals: RegisteredDeal[];
-    policy: FundPolicySnapshot;
-    executionBudget: CandidateExecutionBudget;
-    candidateExecutionFingerprint: string;
-    referenceCatalog: UnderwritingReferenceCatalogSnapshot;
-    evidenceFrame?: UnderwritingEvidenceFrameV1;
-  },
-): string {
-  const value = canonicalJson({
-    kind: "underwriting-orchestration-v2",
-    evidenceFrame: input.evidenceFrame ?? null,
-    scan: {
-      id: input.scanRun.id,
-      workspaceId: input.scanRun.workspaceId,
-      mode: input.scanRun.mode,
-      windowDays: input.scanRun.windowDays,
-      createdAt: input.scanRun.createdAt,
-    },
-    immutableReport: input.report,
-    eligibleDeals: [...input.eligibleDeals]
-      .sort((left, right) => compareUtf8(left.id, right.id)),
-    companyAnalyses: [...input.analyses]
-      .sort((left, right) => compareUtf8(left.dealId, right.dealId)),
-    fundPolicy: input.policy,
-    selectionPolicyVersion: SELECTION_POLICY_VERSION,
-    executionBudget: input.executionBudget,
-    candidateExecutionFingerprint: input.candidateExecutionFingerprint,
-    referenceCatalog: input.referenceCatalog,
-    routerVersion: "context-router-v1",
-    evidencePackBuilderVersion: "evidence_pack_builder_v2",
-    decisionPolicyVersion: DECISION_POLICY_V1.version,
-  });
-  return `sha256:${
-    createHash("sha256").update(value, "utf8").digest("hex")
-  }`;
 }
 
 function assertAlignedInput(

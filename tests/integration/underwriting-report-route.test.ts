@@ -526,9 +526,14 @@ function finalizedBundle(input: {
       reasonCode: "MISSING_CRITICAL_EVIDENCE",
       mostLikelyDecisionImpact: "May change the current decision ceiling.",
     }],
-    recommendedNextSteps: [
-      "Review saved public evidence with the founder.",
-    ],
+    dealStatus: "passed",
+    beliefDirection: "positive",
+    actions: [{
+      kind: "reopen_diligence",
+      scope: "deal",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
     judgments: bundle.judgments,
     disagreements: bundle.disagreements,
   });
@@ -558,6 +563,34 @@ async function readRepositories(options: {
     createdAt: "2026-07-29T12:00:00.000Z",
     marketSummary: "Persisted market summary",
   }));
+  const scanRun = {
+    id: RUN_ID,
+    workspaceId: WORKSPACE_ID,
+    mode: "structured" as const,
+    windowDays: 14 as const,
+    status: "completed" as const,
+    currentStage: "report",
+    warningCount: 0,
+    warnings: [],
+    workerId: null,
+    createdAt: "2026-07-29T11:00:00.000Z",
+    startedAt: "2026-07-29T11:00:00.000Z",
+    completedAt: "2026-07-29T12:00:00.000Z",
+    leaseExpiresAt: null,
+    evidenceContext: { state: "legacy_unbound" as const },
+  };
+  const scanRuns = {
+    async get(workspaceId: string, runId: string) {
+      return workspaceId === WORKSPACE_ID && runId === RUN_ID
+        ? structuredClone(scanRun)
+        : null;
+    },
+    async list(workspaceId: string) {
+      return workspaceId === WORKSPACE_ID
+        ? [structuredClone(scanRun)]
+        : [];
+    },
+  } as unknown as RouteDependencies["runs"];
   const batch = await runs.createOrReuseBatch({
     workspaceId: WORKSPACE_ID,
     scanRunId: RUN_ID,
@@ -596,7 +629,7 @@ async function readRepositories(options: {
       ? await options.prepareBundle(prepared, candidate)
       : prepared,
   );
-  return { artifacts, runs, intelligence, batch, candidate };
+  return { artifacts, runs, intelligence, scanRuns, batch, candidate };
 }
 
 test("public sandbox renders the complete persisted canonical named-advisory report", async () => {
@@ -1072,6 +1105,9 @@ test("search and action-draft reads rebuild public advisory text without persist
       ),
       undefined,
       productDependencies({
+        intelligence: repositories.intelligence,
+        runs: repositories.scanRuns,
+        underwritingRuns: repositories.runs,
         underwritingArtifacts: repositories.artifacts,
       }),
     );
@@ -1090,6 +1126,9 @@ test("search and action-draft reads rebuild public advisory text without persist
     ),
     undefined,
     productDependencies({
+      intelligence: repositories.intelligence,
+      runs: repositories.scanRuns,
+      underwritingRuns: repositories.runs,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
@@ -1112,6 +1151,9 @@ test("search and action-draft reads rebuild public advisory text without persist
     ),
     undefined,
     productDependencies({
+      intelligence: repositories.intelligence,
+      runs: repositories.scanRuns,
+      underwritingRuns: repositories.runs,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
@@ -1131,8 +1173,8 @@ test("search and action-draft reads rebuild public advisory text without persist
     workspaceId: WORKSPACE_ID,
     candidateRunId: repositories.candidate.id,
   });
-  const persistedMemo = persistedDrafts.find(({ channel }) =>
-    channel === "internal_memo"
+  const persistedMemo = persistedDrafts.find((draft) =>
+    "format" in draft && draft.format === "internal_memo"
   );
   assert.ok(persistedMemo);
   const editedConclusion =
@@ -1153,13 +1195,16 @@ test("search and action-draft reads rebuild public advisory text without persist
     ),
     undefined,
     productDependencies({
+      intelligence: repositories.intelligence,
+      runs: repositories.scanRuns,
+      underwritingRuns: repositories.runs,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
   const currentMemo =
     (await currentDraftResponse.json() as {
-      data: Array<{ channel: string; body: string }>;
-    }).data.find(({ channel }) => channel === "internal_memo");
+      data: Array<{ channel: string; format: string | null; body: string }>;
+    }).data.find(({ format }) => format === "internal_memo");
   assert.ok(currentMemo);
   assert.match(currentMemo.body, new RegExp(PUBLIC_JUDGMENT_LIMITATION));
   for (const privateMarker of PRIVATE_LIMITATION_MARKERS) {
@@ -1233,20 +1278,23 @@ test("search and action-draft reads rebuild public advisory text without persist
     ),
     undefined,
     productDependencies({
+      intelligence: repositories.intelligence,
+      runs: repositories.scanRuns,
+      underwritingRuns: repositories.runs,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
   assert.equal(draftResponse.status, 200);
   const drafts = (await draftResponse.json() as {
-    data: Array<{ channel: string; body: string }>;
+    data: Array<{ channel: string; format: string | null; body: string }>;
   }).data;
-  const internalMemo = drafts.find(({ channel }) =>
-    channel === "internal_memo"
+  const internalMemo = drafts.find(({ format }) =>
+    format === "internal_memo"
   );
   assert.ok(internalMemo);
   assert.match(
     internalMemo.body,
-    /Review saved public evidence with the founder\./,
+    /Reopen internal diligence based on the cited evidence\./,
   );
   assert.match(internalMemo.body, new RegExp(editedConclusion));
   assert.match(internalMemo.body, /Public advisory pack/);
@@ -1255,14 +1303,11 @@ test("search and action-draft reads rebuild public advisory text without persist
     internalMemo.body,
     /https:\/\/example\.test\/public-source/,
   );
-  assert.doesNotMatch(
+  assert.match(
     internalMemo.body,
     new RegExp(PUBLIC_JUDGMENT_LIMITATION),
   );
-  for (const privateMarker of [
-    ...PRIVATE_LIMITATION_MARKERS,
-    "Private authoring instruction.",
-  ]) {
+  for (const privateMarker of PRIVATE_LIMITATION_MARKERS) {
     assert.doesNotMatch(internalMemo.body, new RegExp(privateMarker));
   }
 });
@@ -1273,6 +1318,9 @@ test("search reads finalized persisted analysis items only and retains citations
     new Request("https://vsee.test/api/search?q=2.4m%20carrier%20revenue"),
     undefined,
     productDependencies({
+      intelligence: repositories.intelligence,
+      runs: repositories.scanRuns,
+      underwritingRuns: repositories.runs,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
@@ -1305,6 +1353,9 @@ test("assumption search preserves the exact persisted policy reference lineage",
     ),
     undefined,
     productDependencies({
+      intelligence: repositories.intelligence,
+      runs: repositories.scanRuns,
+      underwritingRuns: repositories.runs,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
@@ -1360,6 +1411,7 @@ test("new persisted-underwriting reads cannot cross organization scope", async (
       };
     },
     intelligence: repositories.intelligence,
+    runs: repositories.scanRuns,
     underwritingRuns: repositories.runs,
     underwritingArtifacts: repositories.artifacts,
   });
@@ -1378,12 +1430,8 @@ test("new persisted-underwriting reads cannot cross organization scope", async (
     foreign,
   );
   assert.equal(detail.status, 404);
-  assert.deepEqual(
-    (await searchResponse.json() as {
-      data: { results: unknown[] };
-    }).data.results,
-    [],
-  );
+  assert.equal(searchResponse.status, 404);
+  assert.match(JSON.stringify(await searchResponse.json()), /not.found/i);
 });
 
 test("public demo cannot query product underwriting search", async () => {

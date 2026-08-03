@@ -226,6 +226,61 @@ test("runs published synthetic lenses independently and scopes saved calculation
   );
 });
 
+test("core-only unavailable geography produces explicit framework abstentions without provider calls", async () => {
+  let providerCalls = 0;
+  const cards = SYNTHETIC_FRAMEWORK_PACK.cards.slice(0, 2);
+  const cache = createMemoryFrameworkLensCache();
+  const service = createFrameworkLensService({
+    cards,
+    cache,
+    execution,
+    client: {
+      async complete() {
+        providerCalls += 1;
+        return "{}";
+      },
+    },
+  });
+
+  const result = await service.runAll({
+    ...input(),
+    context: {
+      ...context,
+      analysisMode: "core_only",
+      geography: "unavailable",
+      benchmarkPackId: null,
+      benchmarkCompatibility: "unavailable",
+    },
+  });
+  const replay = await service.runAll({
+    ...input(),
+    context: {
+      ...context,
+      analysisMode: "core_only",
+      geography: "unavailable",
+      benchmarkPackId: null,
+      benchmarkCompatibility: "unavailable",
+    },
+  });
+
+  assert.equal(providerCalls, 0);
+  assert.deepEqual(replay, result);
+  assert.equal(cache.inspect().length, cards.length);
+  assert.equal(cache.inspect().every(({ providerMetadata }) =>
+    providerMetadata.attempts === 0
+    && providerMetadata.repaired === false
+  ), true);
+  assert.equal(result.judgments.length, cards.length);
+  assert.equal(result.judgments.every((judgment) =>
+    judgment.applicability === "unavailable"
+    && judgment.conclusion === "abstain"
+    && judgment.limitations.some((limitation) =>
+      /core-only.*geography.*unavailable/i.test(limitation)
+    )
+  ), true);
+  assert.deepEqual(result.disagreements, []);
+});
+
 test("propagates caller cancellation before starting any framework provider work", async () => {
   let modelCalls = 0;
   const controller = new AbortController();

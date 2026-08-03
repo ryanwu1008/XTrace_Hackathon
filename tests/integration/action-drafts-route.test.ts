@@ -12,6 +12,7 @@ import {
 } from "../../db/repositories/underwriting-artifacts";
 import type { RouteDependencies } from "../../lib/api/route-dependencies";
 import type { PublicActionDraft } from "../../lib/underwriting/read-model";
+import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 
 const WORKSPACE_ID = "workspace_drafts";
 const CANDIDATE_RUN_ID = "candidate_drafts";
@@ -44,6 +45,18 @@ const ORDINARY_EMAIL_WITH_MATCHING_LINES = [
   "  Limitations: Keep this email line.",
   "- Address advisory limitation [Partner note]: Keep this email request.",
 ].join("\n");
+const LEGACY_PUBLIC_METADATA = {
+  schemaVersion: "legacy-action-draft-v1",
+  safety: "legacy_unclassified",
+  deliveryMode: "draft_only",
+  draftPolicyVersion: null,
+  actionPolicyVersion: null,
+  dealStatus: null,
+  beliefDirection: null,
+  actions: [],
+  missingEvidence: [],
+  format: null,
+} as const;
 
 function productDependencies(
   artifacts: UnderwritingArtifactsRepository,
@@ -88,7 +101,7 @@ function seedDraftRepository() {
       createdAt: "2026-07-29T12:00:00.000Z",
       updatedAt: "2026-07-29T12:00:00.000Z",
     }],
-  } as CandidateArtifactBundle);
+  } as unknown as CandidateArtifactBundle);
   return artifacts;
 }
 
@@ -123,7 +136,53 @@ function seedLegacyDraftRepository() {
         updatedAt: "2026-07-29T12:00:00.000Z",
       },
     ],
-  } as CandidateArtifactBundle);
+  } as unknown as CandidateArtifactBundle);
+  return artifacts;
+}
+
+function seedStatusSafeExternalDraftRepository() {
+  const artifacts = createMemoryUnderwritingArtifactsRepository({
+    now: () => new Date("2026-07-29T13:00:00.000Z"),
+  });
+  artifacts.commitPrepared({
+    candidateRunId: CANDIDATE_RUN_ID,
+    workspaceId: WORKSPACE_ID,
+    dealId: "deal_drafts",
+    candidateAnalysisFingerprint: `sha256:${"f".repeat(64)}`,
+    actionDrafts: [{
+      schemaVersion: "action-draft-v2",
+      safety: "status_safe",
+      deliveryMode: "draft_only",
+      draftPolicyVersion: "status-safe-action-draft-v2",
+      actionPolicyVersion: "belief-action-policy-v1",
+      id: DRAFT_ID,
+      workspaceId: WORKSPACE_ID,
+      candidateRunId: CANDIDATE_RUN_ID,
+      dealStatus: "passed",
+      beliefDirection: "positive",
+      actions: actionsForDealStatusAndDirection("passed", "positive"),
+      missingEvidence: [{
+        fieldId: "customer_evidence",
+        label: "current customer references",
+        reasonCode: "MISSING_CRITICAL_EVIDENCE",
+        mostLikelyDecisionImpact:
+          "Providing accepted evidence may raise or lower the formal decision ceiling.",
+      }],
+      format: "founder_email",
+      channel: "email",
+      audienceType: "founder",
+      body: [
+        "Subject: Draft evidence follow-up",
+        "",
+        "DRAFT ONLY — NOT SENT",
+        "Please share the following current evidence for review:",
+        "- current customer references",
+        "This draft is limited to evidence collection and neutral sharing instructions.",
+      ].join("\n"),
+      createdAt: "2026-07-29T12:00:00.000Z",
+      updatedAt: "2026-07-29T12:00:00.000Z",
+    }],
+  } as unknown as CandidateArtifactBundle);
   return artifacts;
 }
 
@@ -142,6 +201,7 @@ test("action draft list is candidate- and organization-scoped", async () => {
     [{
       id: DRAFT_ID,
       candidateRunId: CANDIDATE_RUN_ID,
+      ...LEGACY_PUBLIC_METADATA,
       channel: "email",
       audienceType: "founder",
       body: "Original source-grounded body.",
@@ -176,6 +236,7 @@ test("PATCH replaces only the current draft body on the same identity", async ()
   assert.deepEqual((await response.json() as { data: unknown }).data, {
     id: DRAFT_ID,
     candidateRunId: CANDIDATE_RUN_ID,
+    ...LEGACY_PUBLIC_METADATA,
     channel: "email",
     audienceType: "founder",
     body: "Revised source-grounded body.",
@@ -203,6 +264,83 @@ test("PATCH replaces only the current draft body on the same identity", async ()
     })).length,
     1,
   );
+});
+
+test("status-safe external PATCH rejects internal posture without mutation and preserves metadata on a safe edit", async () => {
+  const artifacts = seedStatusSafeExternalDraftRepository();
+  const before = (await artifacts.listActionDrafts({
+    workspaceId: WORKSPACE_ID,
+    candidateRunId: CANDIDATE_RUN_ID,
+  }))[0];
+  assert.ok("schemaVersion" in before);
+  const unsafe = await updateDraft(
+    new Request(`https://vsee.test/api/action-drafts/${DRAFT_ID}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        body: "DRAFT ONLY\nDeal status: passed\nBelief direction: positive\nFormal decision: Advance\nReopen internal diligence based on the cited evidence.",
+      }),
+    }),
+    { params: Promise.resolve({ id: DRAFT_ID }) },
+    productDependencies(artifacts),
+  );
+  assert.equal(unsafe.status, 400);
+  assert.deepEqual((await artifacts.listActionDrafts({
+    workspaceId: WORKSPACE_ID,
+    candidateRunId: CANDIDATE_RUN_ID,
+  }))[0], before);
+  for (const body of [
+    "This is not DRAFT ONLY — NOT SENT\nPlease share current customer evidence.",
+    "Please share current customer evidence.\n\nDRAFT ONLY — NOT SENT",
+    "DRAFT ONLY — NOT SENT\nWe previously passed on the company, but our belief has turned positive.",
+    "DRAFT ONLY — NOT SENT\nWe passed on the company last year.",
+    "DRAFT ONLY — NOT SENT\nOur view is now negative.",
+    "DRAFT ONLY — NOT SENT\nYou remain on our watchlist.",
+    "DRAFT ONLY — NOT SENT\nWe chose not to invest.",
+    "DRAFT ONLY — NOT SENT\nWe are revisiting our prior decision.",
+  ]) {
+    const invalidMarker = await updateDraft(
+      new Request(`https://vsee.test/api/action-drafts/${DRAFT_ID}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body }),
+      }),
+      { params: Promise.resolve({ id: DRAFT_ID }) },
+      productDependencies(artifacts),
+    );
+    assert.equal(invalidMarker.status, 400);
+  }
+  assert.deepEqual((await artifacts.listActionDrafts({
+    workspaceId: WORKSPACE_ID,
+    candidateRunId: CANDIDATE_RUN_ID,
+  }))[0], before);
+
+  const safeBody = [
+    "DRAFT ONLY — NOT SENT",
+    "Please share the following current evidence for review:",
+    "- current customer references",
+    "This draft is limited to evidence collection and neutral sharing instructions.",
+  ].join("\n");
+  const safe = await updateDraft(
+    new Request(`https://vsee.test/api/action-drafts/${DRAFT_ID}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: safeBody }),
+    }),
+    { params: Promise.resolve({ id: DRAFT_ID }) },
+    productDependencies(artifacts),
+  );
+  assert.equal(safe.status, 200);
+  const persisted = (await artifacts.listActionDrafts({
+    workspaceId: WORKSPACE_ID,
+    candidateRunId: CANDIDATE_RUN_ID,
+  }))[0];
+  assert.ok("schemaVersion" in persisted);
+  assert.equal(persisted.body, safeBody);
+  assert.equal(persisted.dealStatus, before.dealStatus);
+  assert.equal(persisted.beliefDirection, before.beliefDirection);
+  assert.deepEqual(persisted.actions, before.actions);
+  assert.equal(persisted.safety, "status_safe");
 });
 
 test("PATCH returns 404 when PostgreSQL refuses an unavailable candidate draft", async () => {
@@ -333,6 +471,7 @@ test("the draft Save interaction PATCHes the current identity and persists only 
   assert.deepEqual(updated, {
     id: DRAFT_ID,
     candidateRunId: CANDIDATE_RUN_ID,
+    ...LEGACY_PUBLIC_METADATA,
     channel: "email",
     audienceType: "founder",
     body: "Saved through the editor interaction.",
@@ -414,6 +553,18 @@ test("PostgreSQL draft replacement uses the controlled RPC and no direct table P
     serviceRoleKey: "service-role",
     fetchImpl: async (input, init = {}) => {
       requests.push({ url: new URL(String(input)), init });
+      if (new URL(String(input)).pathname.endsWith("/action_drafts")) {
+        return Response.json([{ payload: {
+          id: DRAFT_ID,
+          workspaceId: WORKSPACE_ID,
+          candidateRunId: CANDIDATE_RUN_ID,
+          channel: "email",
+          audienceType: "founder",
+          body: "Original body",
+          createdAt: "2026-07-29T12:00:00.000Z",
+          updatedAt: "2026-07-29T12:00:00.000Z",
+        } }]);
+      }
       return Response.json([{
         id: DRAFT_ID,
         workspaceId: WORKSPACE_ID,
@@ -432,13 +583,13 @@ test("PostgreSQL draft replacement uses the controlled RPC and no direct table P
     draftId: DRAFT_ID,
     body: "Controlled body",
   });
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 2);
   assert.equal(
-    requests[0].url.pathname,
+    requests[1].url.pathname,
     "/rest/v1/rpc/replace_action_draft_body",
   );
-  assert.equal(requests[0].init.method, "POST");
-  assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
+  assert.equal(requests[1].init.method, "POST");
+  assert.deepEqual(JSON.parse(String(requests[1].init.body)), {
     p_workspace_id: WORKSPACE_ID,
     p_draft_id: DRAFT_ID,
     p_body: "Controlled body",
@@ -449,6 +600,100 @@ test("PostgreSQL draft replacement uses the controlled RPC and no direct table P
     ),
     false,
   );
+});
+
+test("PostgreSQL preflight blocks an unsafe v2 external edit before RPC and permits a safe edit", async () => {
+  const requests: Array<{ url: URL; init: RequestInit }> = [];
+  const actions = actionsForDealStatusAndDirection("passed", "positive");
+  const existing = {
+    schemaVersion: "action-draft-v2",
+    safety: "status_safe",
+    deliveryMode: "draft_only",
+    draftPolicyVersion: "status-safe-action-draft-v2",
+    actionPolicyVersion: "belief-action-policy-v1",
+    id: DRAFT_ID,
+    workspaceId: WORKSPACE_ID,
+    candidateRunId: CANDIDATE_RUN_ID,
+    dealStatus: "passed",
+    beliefDirection: "positive",
+    actions,
+    missingEvidence: [{
+      fieldId: "customer_evidence",
+      label: "current customer references",
+      reasonCode: "MISSING_CRITICAL_EVIDENCE",
+      mostLikelyDecisionImpact:
+        "Providing accepted evidence may raise or lower the formal decision ceiling.",
+    }],
+    format: "founder_email",
+    channel: "email",
+    audienceType: "founder",
+    body: [
+      "Subject: Draft evidence follow-up",
+      "",
+      "DRAFT ONLY — NOT SENT",
+      "Please share the following current evidence for review:",
+      "- current customer references",
+      "This draft is limited to evidence collection and neutral sharing instructions.",
+    ].join("\n"),
+    createdAt: "2026-07-29T12:00:00.000Z",
+    updatedAt: "2026-07-29T12:00:00.000Z",
+  } as const;
+  const repository = createSupabaseUnderwritingArtifactsRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "service-role",
+    fetchImpl: async (input, init = {}) => {
+      const url = new URL(String(input));
+      requests.push({ url, init });
+      if (url.pathname.endsWith("/action_drafts")) {
+        return Response.json([{ payload: existing }]);
+      }
+      return Response.json([{ ...existing, body: [
+        "DRAFT ONLY — NOT SENT",
+        "Please share the following current evidence for review:",
+        "- current customer references",
+        "This draft is limited to evidence collection and neutral sharing instructions.",
+      ].join("\n") }]);
+    },
+  });
+
+  for (const body of [
+    "DRAFT ONLY — NOT SENT\nConfidence: high\nFired rule: decision.matrix.v1\nPortfolio follow-on risk review.",
+    "DRAFT ONLY — NOT SENT\nWe passed on the company last year.",
+    "DRAFT ONLY — NOT SENT\nOur view is now negative.",
+    "DRAFT ONLY — NOT SENT\nYou remain on our watchlist.",
+    "DRAFT ONLY — NOT SENT\nWe chose not to invest.",
+    "DRAFT ONLY — NOT SENT\nWe are revisiting our prior decision.",
+  ]) {
+    requests.length = 0;
+    await assert.rejects(repository.replaceActionDraftBody({
+      workspaceId: WORKSPACE_ID,
+      draftId: DRAFT_ID,
+      body,
+    }), /external|status-safe|neutral evidence/i);
+    assert.equal(requests.length, 1);
+    assert.equal(requests.some(({ url }) =>
+      url.pathname.endsWith("/rpc/replace_action_draft_body")
+    ), false);
+  }
+
+  requests.length = 0;
+  const safeBody = [
+    "DRAFT ONLY — NOT SENT",
+    "Please share the following current evidence for review:",
+    "- current customer references",
+    "This draft is limited to evidence collection and neutral sharing instructions.",
+  ].join("\n");
+  const safe = await repository.replaceActionDraftBody({
+    workspaceId: WORKSPACE_ID,
+    draftId: DRAFT_ID,
+    body: safeBody,
+  });
+  assert.ok(safe && "schemaVersion" in safe);
+  assert.equal(safe.safety, "status_safe");
+  assert.deepEqual(safe.actions, actions);
+  assert.equal(requests.filter(({ url }) =>
+    url.pathname.endsWith("/rpc/replace_action_draft_body")
+  ).length, 1);
 });
 
 test("PostgreSQL finalized-artifact reads require completed non-alias candidates", async () => {

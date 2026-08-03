@@ -289,6 +289,64 @@ test("returns an unavailable result when minimum model input is missing", () => 
   assert.deepEqual(result.blockingEvidenceItemIds, []);
 });
 
+test("core-only unavailable geography abstains instead of matching a global mandate", () => {
+  const result = createDecisionEngine().decide(input({
+    context: {
+      ...context,
+      analysisMode: "core_only",
+      geography: "unavailable",
+      benchmarkPackId: null,
+      benchmarkCompatibility: "unavailable",
+    },
+    valuation: {
+      ...valuation,
+      status: "unavailable",
+      currentAsk: null,
+      maximumAcceptablePreMoney: null,
+      initialOwnership: null,
+      postDilutionOwnership: null,
+      grossMoic: null,
+      grossIrr: null,
+      pricingPremium: null,
+      blockerCodes: ["CORE_ONLY_GEOGRAPHY_UNAVAILABLE"],
+    },
+  }));
+
+  assert.deepEqual({
+    companyQuality: result.companyQuality,
+    priceAttractiveness: result.priceAttractiveness,
+    fundFit: result.fundFit,
+    decision: result.decision,
+    decisionCeiling: result.decisionCeiling,
+    confidence: result.confidence,
+  }, {
+    companyQuality: "unavailable",
+    priceAttractiveness: "unavailable",
+    fundFit: "unavailable",
+    decision: null,
+    decisionCeiling: null,
+    confidence: "low",
+  });
+  assert.equal(result.firedRules.find(({ ruleId }) =>
+    ruleId === "decision.mandate_match.v1"
+  )?.result, "not_applicable");
+});
+
+test("otherwise-complete US core-only analysis cannot reach Invest Candidate", () => {
+  const coreCoverage: EvidenceCoverageResult = {
+    ...completeCoverage,
+    decisionCeiling: "Advance",
+    reasonCodes: ["CORE_ONLY_ANALYSIS_CEILING"],
+  };
+  const result = createDecisionEngine().decide(input({
+    pack: pack(coreCoverage, []),
+    coverage: coreCoverage,
+    context: { ...context, analysisMode: "core_only" },
+  }));
+  assert.equal(result.decisionCeiling, "Advance");
+  assert.equal(result.decision, "Advance");
+});
+
 test("makes a hard veto reproducible and lets it outrank attractive valuation", () => {
   const vetoPolicy: FundPolicySnapshot = {
     ...policy,
