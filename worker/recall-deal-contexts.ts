@@ -25,6 +25,8 @@ export async function recallAllDealContexts(input: {
   runId: string;
   bundles: DealMemoryBundle[];
   service?: DealRecallService;
+  evidenceContextFingerprint?: string;
+  activeParentFingerprints?: ReadonlyMap<string, string>;
 }): Promise<DealRecallResult> {
   const contextsByDeal = new Map<string, MemoryContext[]>();
   const failures: DealRecallResult["failures"] = [];
@@ -42,42 +44,45 @@ export async function recallAllDealContexts(input: {
   const service = input.service;
   type RecallOutcome =
     | { dealId: string; contexts: MemoryContext[] }
-    | { dealId: string; message: string };
-  const outcomes = await mapWithConcurrency(
-    input.bundles,
-    RECALL_CONCURRENCY,
-    async (bundle): Promise<RecallOutcome> => {
-      const recall = () => service.recallDealContext({
+    | { dealId: string; message: string; retryable: boolean };
+  const recallOnce = async (bundle: DealMemoryBundle): Promise<RecallOutcome> => {
+    try {
+      const contexts = await service.recallDealContext({
         workspaceId: input.workspaceId,
-        runId: `${input.runId}:${bundle.dealId}`,
+        runId: input.runId,
         query: dealRecallQuery(bundle),
         candidateDealIds: [bundle.dealId],
         limit: 20,
+        evidenceContextFingerprint: input.evidenceContextFingerprint,
+        activeParentFingerprint: input.activeParentFingerprints?.get(bundle.dealId),
       });
-      try {
-        let contexts: MemoryContext[];
-        try {
-          contexts = await recall();
-        } catch (error) {
-          // One retry absorbs transient provider slowness; a second failure
-          // is reported honestly as an unavailable analysis. Failures the
-          // service marks non-retryable (malformed responses, 4xx) would fail
-          // identically again, so retrying would only burn shared budget.
-          if (error instanceof XTraceUnavailableError && !error.retryable) {
-            throw error;
-          }
-          await delay(RECALL_RETRY_DELAY_MS);
-          contexts = await recall();
-        }
-        return {
-          dealId: bundle.dealId,
-          contexts: contexts.filter((context) => context.dealId === bundle.dealId),
-        };
-      } catch (error) {
-        return { dealId: bundle.dealId, message: safeRecallFailure(error) };
-      }
-    },
+      return {
+        dealId: bundle.dealId,
+        contexts: contexts.filter((context) => context.dealId === bundle.dealId),
+      };
+    } catch (error) {
+      return {
+        dealId: bundle.dealId,
+        message: safeRecallFailure(error),
+        retryable: !(error instanceof XTraceUnavailableError) || error.retryable,
+      };
+    }
+  };
+  const primaryOutcomes = await mapWithConcurrency(
+    input.bundles,
+    RECALL_CONCURRENCY,
+    recallOnce,
   );
+
+  const outcomes = [...primaryOutcomes];
+  let retriesRemaining = 2;
+  for (let index = 0; index < outcomes.length && retriesRemaining > 0; index += 1) {
+    const outcome = outcomes[index];
+    if ("contexts" in outcome || !outcome.retryable) continue;
+    retriesRemaining -= 1;
+    await delay(RECALL_RETRY_DELAY_MS);
+    outcomes[index] = await recallOnce(input.bundles[index]);
+  }
 
   for (const outcome of outcomes) {
     if ("contexts" in outcome) {

@@ -5,6 +5,7 @@ import test from "node:test";
 import { DEMO_FIXTURE_LABEL } from "../../lib/contracts/domain";
 import {
   createXTraceClient,
+  getXTraceClient,
   isXTraceConfigured,
   XTraceHttpError,
 } from "../../lib/xtrace/client";
@@ -20,6 +21,8 @@ import {
   createSupabaseXTraceLineageRepository,
 } from "../../db/repositories/xtrace-lineage";
 import { ingestMemoryStage } from "../../worker/stages/ingest-memory";
+import { recallAllDealContexts } from "../../worker/recall-deal-contexts";
+import type { ExactXTraceParentUnit } from "../../lib/xtrace/exact-parent-planner";
 
 const bundle = {
   dealId: "deal_1",
@@ -44,6 +47,17 @@ const bundle = {
     provenance: "demo_fixture" as const,
     label: DEMO_FIXTURE_LABEL,
   }],
+};
+
+const exactParent: ExactXTraceParentUnit = {
+  workspaceId: "workspace_demo",
+  dealId: "deal_1",
+  sourceId: "source_1",
+  sourceRevisionId: "revision_1",
+  parentKind: "legacy_source_revision",
+  parentFingerprint: `sha256:${"a".repeat(64)}`,
+  payloadFingerprint: `sha256:${"b".repeat(64)}`,
+  bundle,
 };
 
 test("XTrace HTTP client keeps wait out of the memory request body", async () => {
@@ -181,6 +195,42 @@ test("XTrace search accepts the documented search envelope without a success fie
   assert.deepEqual(result.data, []);
 });
 
+test("XTrace search rejects a malformed memory row instead of silently dropping it", async () => {
+  const client = createXTraceClient({
+    apiKey: "mmk_test",
+    fetch: async () => Response.json({
+      success: true,
+      data: [{ id: "memory_1", score: 0.9 }],
+    }),
+  });
+
+  await assert.rejects(
+    client.search({
+      query: "health",
+      user_id: "workspace:demo",
+      mode: "retrieve",
+      limit: 1,
+    }),
+    XTraceHttpError,
+  );
+});
+
+test("XTrace ingest rejects a successful HTTP response without a strict provider job", async () => {
+  const client = createXTraceClient({
+    apiKey: "mmk_test",
+    fetch: async () => Response.json({ status: "pending" }),
+  });
+
+  await assert.rejects(
+    client.ingest({
+      messages: [{ role: "user", content: "Remember this." }],
+      user_id: "workspace:demo",
+      conv_id: "deal:deal_1",
+    }),
+    XTraceHttpError,
+  );
+});
+
 test("XTrace configuration accepts mmk without an organization ID", () => {
   assert.equal(isXTraceConfigured({ XTRACE_API_KEY: "mmk_test" }), true);
   assert.equal(isXTraceConfigured({
@@ -189,6 +239,24 @@ test("XTrace configuration accepts mmk without an organization ID", () => {
   }), true);
   assert.equal(isXTraceConfigured({ XTRACE_API_KEY: "legacy_test" }), false);
   assert.equal(isXTraceConfigured({}), false);
+});
+
+test("ordinary and dry-run paths cannot construct the live XTrace client", () => {
+  assert.throws(
+    () => getXTraceClient(undefined, { XTRACE_API_KEY: "mmk_test" }),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "XTRACE_LIVE_EXECUTION_NOT_AUTHORIZED",
+  );
+  assert.throws(
+    () => getXTraceClient(
+      { stage: "explicit_recall", allowLive: true },
+      { XTRACE_API_KEY: "mmk_test", XTRACE_DRY_RUN: "1" },
+    ),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "XTRACE_LIVE_EXECUTION_NOT_AUTHORIZED",
+  );
 });
 
 test("distributed XTrace limiter coordinates through PostgreSQL before proceeding", async () => {
@@ -702,7 +770,7 @@ test("memory lineage rejects a residual provider memory that is absent from exac
   );
 });
 
-test("Supabase lineage requires an exact job memory id before conv-id recovery", async () => {
+test("Supabase v2 lineage never recovers a missing direct child link from conv-id", async () => {
   const requests: string[] = [];
   const repository = createSupabaseXTraceLineageRepository({
     url: "https://database.example.test",
@@ -736,14 +804,14 @@ test("Supabase lineage requires an exact job memory id before conv-id recovery",
     null,
   );
   assert.equal(
-    (await repository.resolve({
+    await repository.resolve({
       workspaceId: "workspace_demo",
       memoryId: "memory_clean_text",
       convId: "deal:deal_1",
-    }))?.sourceIds[0],
-    "source_clean_text",
+    }),
+    null,
   );
-  assert.equal(requests.length, 4);
+  assert.equal(requests.length, 2);
 });
 
 test("keeps polling through running and throws when the polling budget is exhausted", async () => {
@@ -958,6 +1026,295 @@ test("caches recalls by query fingerprint and excludes memories outside the cand
   assert.equal((await service.recallDealContext(input)).length, 1);
   assert.equal((await service.recallDealContext(input)).length, 1);
   assert.equal(searchCalls, 1);
+});
+
+test("recall cache identity binds evidence context and active-parent fingerprints", async () => {
+  let searchCalls = 0;
+  const service = createXTraceService({
+    search: async () => {
+      searchCalls += 1;
+      return { success: true, data: [] };
+    },
+  } as never, {
+    workspaceId: "demo",
+    limiter: { async acquire() {} },
+  });
+  const base = {
+    workspaceId: "demo",
+    query: "What changed?",
+    candidateDealIds: ["deal_1"],
+    limit: 5,
+    evidenceContextFingerprint: `sha256:${"a".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"b".repeat(64)}`,
+  };
+
+  await service.recallDealContext(base);
+  await service.recallDealContext({
+    ...base,
+    activeParentFingerprint: `sha256:${"c".repeat(64)}`,
+  });
+  await service.recallDealContext({
+    ...base,
+    evidenceContextFingerprint: `sha256:${"d".repeat(64)}`,
+  });
+
+  assert.equal(searchCalls, 3);
+});
+
+test("concurrent exact-parent reserves permit exactly one provider POST", async () => {
+  let posts = 0;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const lineage = createMemoryXTraceLineageRepository();
+  const service = createXTraceService({
+    ingest: async () => {
+      posts += 1;
+      await pending;
+      return { id: "job_exact_1", status: "pending" };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+
+  const first = service.ingestExactParent(exactParent);
+  const second = service.ingestExactParent(exactParent);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(posts, 1);
+  release();
+  const results = await Promise.all([first, second]);
+  assert.equal(results.filter((result) => result.state === "submitted").length, 2);
+});
+
+test("an ambiguous exact-parent POST becomes submission_unknown and is never resent", async () => {
+  let posts = 0;
+  const lineage = createMemoryXTraceLineageRepository();
+  const service = createXTraceService({
+    ingest: async () => {
+      posts += 1;
+      throw new XTraceHttpError(0, true, "private query must not persist");
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+
+  await assert.rejects(service.ingestExactParent(exactParent), (error: unknown) =>
+    error instanceof Error
+    && "code" in error
+    && error.code === "XTRACE_SUBMISSION_UNKNOWN"
+    && !error.message.includes("private query")
+  );
+  const retry = await service.ingestExactParent(exactParent);
+
+  assert.equal(posts, 1);
+  assert.equal(retry.state, "submission_unknown");
+  assert.equal(retry.providerJobId, null);
+});
+
+test("exact-parent polling finalizes a submitted job and creates direct child lineage", async () => {
+  let polls = 0;
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+  });
+  const service = createXTraceService({
+    ingest: async () => ({ id: "job_exact_poll", status: "pending" }),
+    getJob: async () => {
+      polls += 1;
+      return polls === 1
+        ? { id: "job_exact_poll", status: "running" }
+        : {
+            id: "job_exact_poll",
+            status: "succeeded",
+            result: {
+              memories_created: [{ id: "memory_exact_poll", type: "fact", text: "Created" }],
+            },
+          };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+    sleep: async () => undefined,
+  });
+
+  const submitted = await service.ingestExactParent(exactParent);
+  const completed = await service.pollExactIntent({
+    intentId: submitted.intentId,
+    providerJobId: submitted.providerJobId!,
+    maxAttempts: 3,
+    initialDelayMs: 1,
+  });
+
+  assert.equal(completed.state, "succeeded");
+  assert.deepEqual(completed.memoryIds, ["memory_exact_poll"]);
+  assert.equal(polls, 2);
+  assert.deepEqual(await lineage.resolveExact({
+    workspaceId: "workspace_demo",
+    memoryId: "memory_exact_poll",
+    dealId: "deal_1",
+    activeParentFingerprint: `sha256:${"f".repeat(64)}`,
+  }), {
+    memoryId: "memory_exact_poll",
+    workspaceId: "workspace_demo",
+    dealId: "deal_1",
+    sourceRevisionIds: ["revision_1"],
+    sourceIds: ["source_1"],
+    fixtureIds: [],
+    provenance: "source_document",
+  });
+});
+
+test("exact succeeded intent reuses while payload, job, and child collisions fail closed", async () => {
+  let posts = 0;
+  const lineage = createMemoryXTraceLineageRepository();
+  const service = createXTraceService({
+    ingest: async () => {
+      posts += 1;
+      return {
+        id: "job_collision",
+        status: "succeeded",
+        result: {
+          memories_created: [{ id: "memory_collision", type: "fact", text: "Created" }],
+        },
+      };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+
+  const first = await service.ingestExactParent(exactParent);
+  const reused = await service.ingestExactParent(exactParent);
+  assert.equal(first.state, "succeeded");
+  assert.equal(reused.reused, true);
+  assert.equal(posts, 1);
+
+  await assert.rejects(
+    service.ingestExactParent({
+      ...exactParent,
+      payloadFingerprint: `sha256:${"c".repeat(64)}`,
+    }),
+    /different immutable payload/i,
+  );
+  await assert.rejects(
+    service.ingestExactParent({
+      ...exactParent,
+      dealId: "deal_2",
+      sourceId: "source_2",
+      sourceRevisionId: "revision_2",
+      parentFingerprint: `sha256:${"d".repeat(64)}`,
+      payloadFingerprint: `sha256:${"e".repeat(64)}`,
+      bundle: { ...bundle, dealId: "deal_2" },
+    }),
+    /provider job|memory child/i,
+  );
+});
+
+test("recall audit persistence failure blocks matching for only that Deal", async () => {
+  const lineage = createMemoryXTraceLineageRepository({
+    persistRecallAudit: async (audit) => {
+      if (audit.dealId === "deal_1") throw new Error("database unavailable");
+    },
+  });
+  const service = createXTraceService({
+    search: async () => ({ success: true, data: [] }),
+  } as never, {
+    workspaceId: "workspace_demo",
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+
+  await assert.rejects(
+    service.recallDealContext({
+      workspaceId: "workspace_demo",
+      runId: "00000000-0000-4000-8000-000000000001",
+      query: "What changed?",
+      candidateDealIds: ["deal_1"],
+      limit: 5,
+      evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+      activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+    }),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "XTRACE_RECALL_AUDIT_FAILED",
+  );
+});
+
+test("a stale exact parent fails only its Deal while another active parent recalls", async () => {
+  const inactive = new Set(["source_1"]);
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: ({ sourceId }) => !inactive.has(sourceId),
+  });
+  const secondBundle = {
+    ...structuredClone(bundle),
+    dealId: "deal_2",
+    companyName: "Beacon Systems",
+  };
+  const secondParent: ExactXTraceParentUnit = {
+    ...exactParent,
+    dealId: "deal_2",
+    sourceId: "source_2",
+    sourceRevisionId: "revision_2",
+    parentFingerprint: `sha256:${"c".repeat(64)}`,
+    payloadFingerprint: `sha256:${"d".repeat(64)}`,
+    bundle: secondBundle,
+  };
+  const service = createXTraceService({
+    ingest: async (input: { conv_id: string }) => {
+      const isSecond = input.conv_id.includes("deal_2");
+      return {
+        id: isSecond ? "job_2" : "job_1",
+        status: "succeeded",
+        result: {
+          memories_created: [{
+            id: isSecond ? "memory_2" : "memory_1",
+            type: "fact",
+            text: isSecond ? "Beacon context" : "Asteria context",
+          }],
+        },
+      };
+    },
+    search: async (input: { query: string }) => ({
+      success: true,
+      data: input.query.includes("Beacon Systems")
+        ? [{ id: "memory_2", text: "Beacon context", score: 0.9 }]
+        : [{ id: "memory_1", text: "Asteria context", score: 0.9 }],
+    }),
+  } as never, {
+    workspaceId: "workspace_demo",
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+  await service.ingestExactParent(exactParent);
+  await service.ingestExactParent(secondParent);
+
+  const recalled = await recallAllDealContexts({
+    workspaceId: "workspace_demo",
+    runId: "run_1",
+    bundles: [bundle, secondBundle],
+    service,
+    evidenceContextFingerprint: `sha256:${"e".repeat(64)}`,
+    activeParentFingerprints: new Map([
+      ["deal_1", `sha256:${"f".repeat(64)}`],
+      ["deal_2", `sha256:${"0".repeat(64)}`],
+    ]),
+  });
+
+  assert.deepEqual(recalled.failures.map((failure) => failure.dealId), ["deal_1"]);
+  assert.equal(recalled.failures[0].message, "XTRACE_RECALL_LINEAGE_FAILED");
+  assert.deepEqual(recalled.contextsByDeal.get("deal_2")?.map((context) => ({
+    dealId: context.dealId,
+    sourceRevisionIds: context.sourceRevisionIds,
+    sourceIds: context.sourceIds,
+  })), [{
+    dealId: "deal_2",
+    sourceRevisionIds: ["revision_2"],
+    sourceIds: ["source_2"],
+  }]);
 });
 
 test("surfaces provider failures as typed unavailable errors", async () => {

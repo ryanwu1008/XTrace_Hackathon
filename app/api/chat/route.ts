@@ -235,7 +235,10 @@ async function recallExistingMemory(
         candidateDealIds: buildDemoViewModel().deals.map((deal) => deal.id),
       };
   if (scope.candidateDealIds.length === 0) return { status: "unavailable" };
-  const service = createXTraceService(getXTraceClient(), {
+  const service = createXTraceService(getXTraceClient({
+    stage: "explicit_recall",
+    allowLive: true,
+  }), {
     workspaceId,
   });
   try {

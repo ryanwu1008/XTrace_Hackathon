@@ -795,7 +795,7 @@ test("XTrace recall failure never falls back to structured memory and marks the 
   assert.ok(result.run.warnings.every((warning) => !/structured fallback/i.test(warning)));
 });
 
-test("polls pending XTrace ingest jobs before recall", async () => {
+test("normal process-run recall performs zero XTrace ingest-job polling", async () => {
   const runs = createRunsRepository(createMemoryDataClient());
   await runs.create({
     workspaceId: "workspace_demo",
@@ -848,6 +848,7 @@ test("polls pending XTrace ingest jobs before recall", async () => {
     xtrace: {
       async listOpenIngestJobs(workspaceId) {
         assert.equal(workspaceId, "workspace_demo");
+        calls.push("list-open-jobs");
         return [{ jobId: "job_1", dealId: "deal_ably" }];
       },
       async pollIngestJob(jobId, options) {
@@ -861,20 +862,27 @@ test("polls pending XTrace ingest jobs before recall", async () => {
       },
       async recallDealContext(input) {
         calls.push("recall");
-        assert.equal(input.candidateDealIds.length, 19);
-        assert.ok(input.candidateDealIds.includes("deal_ably"));
-        return [];
+        assert.equal(input.candidateDealIds.length, 1);
+        return [{
+          dealId: input.candidateDealIds[0],
+          memoryId: `memory_${input.candidateDealIds[0]}`,
+          memoryType: "fact",
+          text: "Exact active-parent context.",
+          score: 0.9,
+          provenance: "source_document",
+          sourceRevisionIds: [`revision_${input.candidateDealIds[0]}`],
+          sourceIds: [`source_${input.candidateDealIds[0]}`],
+          fixtureIds: [],
+        }];
       },
     },
     now: () => new Date("2026-07-24T12:00:00.000Z"),
   });
 
-  assert.equal(calls[0], "poll:job_1:deal_ably");
-  // Every recall throws, and each Deal gets exactly one retry: 19 * 2 calls.
-  assert.equal(calls.filter((call) => call === "recall").length, 38);
-  assert.equal(result.run.status, "partial");
-  assert.equal(result.report.counts.analysisUnavailable, 19);
-  assert.ok(result.run.warnings.some((warning) => /19 Deals/i.test(warning)));
+  assert.equal(calls.filter((call) => call === "list-open-jobs").length, 0);
+  assert.equal(calls.filter((call) => call.startsWith("poll:")).length, 0);
+  assert.equal(calls.filter((call) => call === "recall").length, 19);
+  assert.equal(result.report.counts.analysisUnavailable, 0);
 });
 
 test("bounds market evidence before XTrace and Claude while preserving all events", async () => {

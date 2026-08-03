@@ -1209,6 +1209,30 @@ test("every Deal's strongest candidate keeps a reserved analysis slot", () => {
   );
 });
 
+test("the default analysis window preserves one relevant event for each of 23 Deals", () => {
+  const portfolio = new Map<string, readonly string[]>();
+  const candidates = Array.from({ length: 23 }, (_, index) => {
+    const token = `companytoken${index}`;
+    portfolio.set(`deal_${index}`, [token, `${token} operating evidence`]);
+    return event({
+      id: `coverage-${index}`,
+      title: `${token} closes a funding round`,
+      summary: `${token} announced company-specific operating evidence.`,
+      confidence: "medium",
+      canonicalUrl: `https://coverage.example/${index}`,
+      contentChecksum: `coverage-${index}`,
+    });
+  });
+
+  const selected = selectMarketEventsForAnalysis(candidates, undefined, portfolio);
+
+  assert.equal(selected.events.length, 23);
+  assert.deepEqual(
+    new Set(selected.events.map((candidate) => candidate.canonicalUrl)),
+    new Set(candidates.map((candidate) => candidate.canonicalUrl)),
+  );
+});
+
 test("excludes generic press releases even when a provider assigns broad market labels", () => {
   const selected = selectMarketEventsForAnalysis([
     event({

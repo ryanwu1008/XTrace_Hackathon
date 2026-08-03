@@ -9,7 +9,10 @@ import { createXTraceService } from "../../lib/xtrace/service";
 const LIVE_POLL_ATTEMPTS = 17;
 
 test("XTrace live memory bridge", { skip: process.env.XTRACE_LIVE_TEST !== "1", timeout: 180_000 }, async (context) => {
-  const client = getXTraceClient();
+  const client = getXTraceClient({
+    stage: "explicit_ingest",
+    allowLive: true,
+  });
   const createdMemoryIds = new Set<string>();
   const submittedJob: { id?: string } = {};
   let completedMemoryIdsKnown = false;

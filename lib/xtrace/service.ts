@@ -4,6 +4,7 @@ import {
   getXTraceLineageRepository,
   type XTraceLineageRepository,
 } from "../../db/repositories/xtrace-lineage";
+import type { ExactXTraceParentUnit } from "./exact-parent-planner";
 import {
   evidenceSourceText,
   type DealMemoryBundle,
@@ -28,6 +29,8 @@ export type RecallDealContextInput = {
   query: string;
   candidateDealIds: string[];
   limit: number;
+  evidenceContextFingerprint?: string;
+  activeParentFingerprint?: string;
 };
 
 export type MemoryContext = {
@@ -47,6 +50,21 @@ export type PersistedIngest = {
   jobId: string;
   status: XTraceJob["status"];
   memoryIds: string[];
+};
+
+export type PersistedExactIngest = {
+  intentId: string;
+  state:
+    | "reserved"
+    | "submitting"
+    | "submitted"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "submission_unknown";
+  providerJobId: string | null;
+  memoryIds: string[];
+  reused: boolean;
 };
 
 export interface XTraceRateLimiter {
@@ -95,6 +113,33 @@ export class XTracePollingTimeoutError extends XTraceUnavailableError {
   }
 }
 
+export class XTraceSubmissionUnknownError extends XTraceUnavailableError {
+  readonly code = "XTRACE_SUBMISSION_UNKNOWN";
+
+  constructor() {
+    super(false, "XTrace submission outcome requires operator reconciliation");
+    this.name = "XTraceSubmissionUnknownError";
+  }
+}
+
+export class XTraceRecallAuditError extends XTraceUnavailableError {
+  readonly code = "XTRACE_RECALL_AUDIT_FAILED";
+
+  constructor() {
+    super(false, "XTrace recall could not be durably audited");
+    this.name = "XTraceRecallAuditError";
+  }
+}
+
+export class XTraceLineageError extends XTraceUnavailableError {
+  readonly code = "XTRACE_RECALL_LINEAGE_FAILED";
+
+  constructor() {
+    super(false, "XTrace recall child lineage did not resolve to one active parent");
+    this.name = "XTraceLineageError";
+  }
+}
+
 const sharedLimiter = createXTraceRateLimiter(Date.now, defaultSleep);
 let persistentLimiter: XTraceRateLimiter | undefined;
 
@@ -121,6 +166,123 @@ export function createXTraceService(
   };
 
   return {
+    async ingestExactParent(
+      parent: ExactXTraceParentUnit,
+    ): Promise<PersistedExactIngest> {
+      if (parent.workspaceId !== workspaceId || parent.bundle.dealId !== parent.dealId) {
+        throw new Error("The exact XTrace parent does not match the scoped workspace and Deal.");
+      }
+      const reservation = await lineage.reserveExactIntent({
+        parent,
+        serializerVersion: "xtrace-parent-v2",
+      });
+      if (reservation.action === "wait") {
+        return exactIngestResult(
+          await lineage.waitForExactIntent(reservation.intent.intentId),
+          true,
+        );
+      }
+      if (reservation.action === "reuse" || reservation.action === "blocked") {
+        return exactIngestResult(reservation.intent, true);
+      }
+      const leaseToken = reservation.intent.leaseToken;
+      if (!leaseToken) throw new Error("The exact XTrace submitter lease is missing.");
+      let response: XTraceJob;
+      try {
+        response = await invoke(async () => {
+          await limiter.acquire();
+          return client.ingest({
+            messages: [{ role: "user", content: serializeExactParent(parent) }],
+            user_id: stableXTraceUserId(workspaceId),
+            conv_id: `deal:${parent.dealId}:parent:${parent.sourceRevisionId}`,
+            app_id: appId,
+          }, { wait: false });
+        });
+      } catch {
+        await lineage.markExactSubmissionUnknown({
+          intentId: reservation.intent.intentId,
+          leaseToken,
+        });
+        throw new XTraceSubmissionUnknownError();
+      }
+      if (!response.id?.trim()) {
+        await lineage.markExactSubmissionUnknown({
+          intentId: reservation.intent.intentId,
+          leaseToken,
+        });
+        throw new XTraceSubmissionUnknownError();
+      }
+      let intent = await lineage.attachExactJob({
+        intentId: reservation.intent.intentId,
+        leaseToken,
+        providerJobId: response.id,
+      });
+      if (response.status === "running") {
+        intent = await lineage.advanceExactIntent({
+          intentId: intent.intentId,
+          providerJobId: response.id,
+          state: "running",
+          memoryIds: [],
+        });
+      } else if (response.status === "succeeded" || response.status === "failed") {
+        intent = await lineage.advanceExactIntent({
+          intentId: intent.intentId,
+          providerJobId: response.id,
+          state: response.status,
+          memoryIds: response.status === "succeeded"
+            ? response.result?.memories_created?.map((memory) => memory.id) ?? []
+            : [],
+        });
+      }
+      return exactIngestResult(intent, false);
+    },
+
+    async pollExactIntent(input: {
+      intentId: string;
+      providerJobId: string;
+      maxAttempts?: number;
+      initialDelayMs?: number;
+    }): Promise<PersistedExactIngest> {
+      const maxAttempts = input.maxAttempts ?? 8;
+      let delay = input.initialDelayMs ?? 500;
+      let latestStatus: XTraceJob["status"] = "pending";
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const response = await invoke(async () => {
+          await limiter.acquire();
+          return client.getJob(input.providerJobId);
+        });
+        if (response.id !== input.providerJobId) {
+          throw new XTraceUnavailableError(
+            false,
+            "XTrace polling returned a different provider job",
+          );
+        }
+        latestStatus = response.status;
+        if (response.status === "running") {
+          await lineage.advanceExactIntent({
+            intentId: input.intentId,
+            providerJobId: input.providerJobId,
+            state: "running",
+            memoryIds: [],
+          });
+        } else if (response.status === "succeeded" || response.status === "failed") {
+          return exactIngestResult(await lineage.advanceExactIntent({
+            intentId: input.intentId,
+            providerJobId: input.providerJobId,
+            state: response.status,
+            memoryIds: response.status === "succeeded"
+              ? response.result?.memories_created?.map((memory) => memory.id) ?? []
+              : [],
+          }), false);
+        }
+        if (attempt < maxAttempts - 1) {
+          await (dependencies.sleep ?? defaultSleep)(delay);
+          delay = Math.min(delay * 1.5, 5_000);
+        }
+      }
+      throw new XTracePollingTimeoutError(input.providerJobId, latestStatus);
+    },
+
     async ingestDealMemory(
       bundle: DealMemoryBundle,
       exactLineage?: {
@@ -262,8 +424,23 @@ export function createXTraceService(
       }
       const allowedDealIds = new Set(scopedInput.candidateDealIds);
       const contexts: MemoryContext[] = [];
+      const v2Recall = Boolean(
+        scopedInput.activeParentFingerprint
+        && scopedInput.candidateDealIds.length === 1,
+      );
+      let lineageFailure = false;
       for (const memory of response.data) {
-        const resolved = dependencies.resolveMemory
+        const v2DealId = scopedInput.candidateDealIds.length === 1
+          ? scopedInput.candidateDealIds[0]
+          : undefined;
+        const resolved = scopedInput.activeParentFingerprint && v2DealId
+          ? await lineage.resolveExact({
+              memoryId: memory.id,
+              workspaceId,
+              dealId: v2DealId,
+              activeParentFingerprint: scopedInput.activeParentFingerprint,
+            })
+          : dependencies.resolveMemory
           ? await dependencies.resolveMemory(memory, {
               workspaceId,
               candidateDealIds: scopedInput.candidateDealIds,
@@ -271,9 +448,11 @@ export function createXTraceService(
           : await lineage.resolve({
               memoryId: memory.id,
               workspaceId,
-              convId: memory.conv_id ?? undefined,
             });
-        if (!resolved || !allowedDealIds.has(resolved.dealId)) continue;
+        if (!resolved || !allowedDealIds.has(resolved.dealId)) {
+          if (v2Recall) lineageFailure = true;
+          continue;
+        }
         const fixtureIds = resolved.fixtureIds ?? [];
         if (!resolved.sourceIds.length && !fixtureIds.length) continue;
         contexts.push({
@@ -288,11 +467,57 @@ export function createXTraceService(
           fixtureIds,
         });
       }
+      if (lineageFailure) throw new XTraceLineageError();
       const result = contexts.slice(0, input.limit);
+      if (v2Recall) {
+        try {
+          await lineage.recordRecallAudit({
+            workspaceId,
+            runId: scopedInput.runId ?? "",
+            dealId: scopedInput.candidateDealIds[0],
+            evidenceContextFingerprint: scopedInput.evidenceContextFingerprint ?? "",
+            activeParentFingerprint: scopedInput.activeParentFingerprint ?? "",
+            queryFingerprint: createHash("sha256")
+              .update(scopedInput.query, "utf8")
+              .digest("hex"),
+            memoryIds: result.map((context) => context.memoryId),
+          });
+        } catch {
+          throw new XTraceRecallAuditError();
+        }
+      }
       cache.set(fingerprint, result);
       return result;
     },
   };
+}
+
+function exactIngestResult(
+  intent: Awaited<ReturnType<XTraceLineageRepository["waitForExactIntent"]>>,
+  reused: boolean,
+): PersistedExactIngest {
+  return {
+    intentId: intent.intentId,
+    state: intent.state,
+    providerJobId: intent.providerJobId,
+    memoryIds: intent.memoryIds,
+    reused,
+  };
+}
+
+function serializeExactParent(parent: ExactXTraceParentUnit): string {
+  return JSON.stringify({
+    schemaVersion: "xtrace-parent-v2",
+    workspaceId: parent.workspaceId,
+    dealId: parent.dealId,
+    parent: {
+      kind: parent.parentKind,
+      sourceId: parent.sourceId,
+      sourceRevisionId: parent.sourceRevisionId,
+      fingerprint: parent.parentFingerprint,
+    },
+    retrievalPayload: parent.bundle,
+  });
 }
 
 function requiredWorkspaceId(workspaceId: string): string {
@@ -416,6 +641,8 @@ function recallFingerprint(input: RecallDealContextInput): string {
     query: input.query.trim().toLocaleLowerCase(),
     candidateDealIds: [...input.candidateDealIds].sort(),
     limit: input.limit,
+    evidenceContextFingerprint: input.evidenceContextFingerprint ?? "",
+    activeParentFingerprint: input.activeParentFingerprint ?? "",
   });
 }
 

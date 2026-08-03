@@ -32,7 +32,6 @@ import type {
 } from "../lib/matching/service";
 import { createMatchingService } from "../lib/matching/service";
 import {
-  MAX_MARKET_EVENTS_FOR_ANALYSIS,
   selectMarketEventsForAnalysis,
   type MarketEventSelection,
 } from "../lib/market/selection";
@@ -83,6 +82,8 @@ export interface ProcessRunDependencies {
       query: string;
       candidateDealIds: string[];
       limit: number;
+      evidenceContextFingerprint?: string;
+      activeParentFingerprint?: string;
     }): Promise<MemoryContext[]>;
   };
   now?: () => Date;
@@ -219,7 +220,7 @@ export async function processClaimedRun(
     ));
     const marketSelection = selectMarketEventsForAnalysis(
       market.events,
-      MAX_MARKET_EVENTS_FOR_ANALYSIS,
+      undefined,
       portfolioTexts,
     );
     const analysisEvents = marketSelection.events;
@@ -286,54 +287,9 @@ export async function processClaimedRun(
     const structuredImageFallbackDealIds = new Set<string>();
 
     if (claimedRun.mode === "xtrace") {
-      await updateStage("memory_ingest_sync", "running");
-      if (dependencies.xtrace) {
-        let failedJobs = 0;
-        try {
-          const openJobs = await dependencies.xtrace.listOpenIngestJobs(
-            claimedRun.workspaceId,
-          );
-          for (const job of openJobs) {
-            try {
-              const completed = await dependencies.xtrace.pollIngestJob(
-                job.jobId,
-                { dealId: job.dealId },
-              );
-              if (completed.status === "failed") failedJobs += 1;
-            } catch {
-              failedJobs += 1;
-            }
-          }
-        } catch {
-          const warning = "Pending XTrace ingest jobs could not be inspected before recall.";
-          warnings.push(warning);
-          await updateStage(
-            "memory_ingest_sync",
-            "failed",
-            warning,
-          );
-          failedJobs = -1;
-        }
-        if (failedJobs > 0) {
-          const warning = `${failedJobs} pending XTrace ingest ${failedJobs === 1 ? "job" : "jobs"} did not complete before recall.`;
-          warnings.push(warning);
-          await updateStage(
-            "memory_ingest_sync",
-            "completed",
-            warning,
-          );
-        } else if (failedJobs === 0) {
-          await updateStage(
-            "memory_ingest_sync",
-            "completed",
-          );
-        }
-      } else {
-        await updateStage(
-          "memory_ingest_sync",
-          "skipped",
-        );
-      }
+      // Ingest submission and job polling are an explicit separate stage.
+      // A normal analysis run spends its provider budget only on recall.
+      await updateStage("memory_ingest_sync", "skipped");
 
       await updateStage("memory_recall", "running");
       const xtraceRecallBundles = bundles.filter((bundle) => {
@@ -348,6 +304,15 @@ export async function processClaimedRun(
         runId: claimedRun.id,
         bundles: xtraceRecallBundles,
         service: dependencies.xtrace,
+        evidenceContextFingerprint:
+          claimedRun.evidenceContext.state === "current"
+            ? claimedRun.evidenceContext.contextFingerprint
+            : undefined,
+        activeParentFingerprints: new Map(eligibleDeals.flatMap((deal) =>
+          deal.activeSourceRevisionFingerprint
+            ? [[deal.id, deal.activeSourceRevisionFingerprint] as const]
+            : []
+        )),
       });
       contextsByDeal = recalled.contextsByDeal;
       for (const failure of recalled.failures) {

@@ -841,6 +841,102 @@ export const xtraceMemoryLinks = pgTable("xtrace_memory_links", {
   }).onDelete("cascade"),
 ]);
 
+export const xtraceIngestIntentsV2 = pgTable("xtrace_ingest_intents_v2", {
+  intentId: text("intent_id").notNull(),
+  workspaceId: text("workspace_id").notNull(),
+  dealId: text("deal_id").notNull(),
+  parentKind: text("parent_kind").notNull(),
+  sourceId: text("source_id").notNull(),
+  sourceRevisionId: text("source_revision_id").notNull(),
+  parentFingerprint: text("parent_fingerprint").notNull(),
+  payloadFingerprint: text("payload_fingerprint").notNull(),
+  serializerVersion: text("serializer_version").notNull(),
+  state: text("state").notNull(),
+  stateHistory: jsonb("state_history").$type<string[]>().notNull(),
+  leaseToken: uuid("lease_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  providerJobId: text("provider_job_id"),
+  memoryIds: jsonb("memory_ids").$type<string[]>().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.intentId] }),
+  unique("xtrace_ingest_intents_v2_parent_unique").on(
+    table.workspaceId,
+    table.dealId,
+    table.parentKind,
+    table.sourceId,
+    table.sourceRevisionId,
+    table.parentFingerprint,
+    table.serializerVersion,
+  ),
+  uniqueIndex("xtrace_ingest_intents_v2_provider_job_unique")
+    .on(table.workspaceId, table.providerJobId)
+    .where(sql`${table.providerJobId} is not null`),
+  foreignKey({
+    columns: [table.workspaceId, table.dealId],
+    foreignColumns: [deals.workspaceId, deals.id],
+    name: "xtrace_ingest_intents_v2_workspace_deal_fkey",
+  }).onDelete("cascade"),
+  foreignKey({
+    columns: [table.workspaceId, table.sourceRevisionId],
+    foreignColumns: [sourceRevisions.workspaceId, sourceRevisions.id],
+    name: "xtrace_ingest_intents_v2_workspace_revision_fkey",
+  }),
+]);
+
+export const xtraceMemoryLinksV2 = pgTable("xtrace_memory_links_v2", {
+  workspaceId: text("workspace_id").notNull(),
+  memoryId: text("memory_id").notNull(),
+  intentId: text("intent_id").notNull(),
+  dealId: text("deal_id").notNull(),
+  parentKind: text("parent_kind").notNull(),
+  sourceId: text("source_id").notNull(),
+  sourceRevisionId: text("source_revision_id").notNull(),
+  parentFingerprint: text("parent_fingerprint").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.memoryId] }),
+  foreignKey({
+    columns: [table.workspaceId, table.intentId],
+    foreignColumns: [xtraceIngestIntentsV2.workspaceId, xtraceIngestIntentsV2.intentId],
+    name: "xtrace_memory_links_v2_intent_fkey",
+  }),
+  foreignKey({
+    columns: [table.workspaceId, table.dealId],
+    foreignColumns: [deals.workspaceId, deals.id],
+    name: "xtrace_memory_links_v2_workspace_deal_fkey",
+  }).onDelete("cascade"),
+  foreignKey({
+    columns: [table.workspaceId, table.sourceRevisionId],
+    foreignColumns: [sourceRevisions.workspaceId, sourceRevisions.id],
+    name: "xtrace_memory_links_v2_workspace_revision_fkey",
+  }),
+]);
+
+export const xtraceRecallAuditsV2 = pgTable("xtrace_recall_audits_v2", {
+  auditId: text("audit_id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  runId: uuid("run_id").notNull(),
+  dealId: text("deal_id").notNull(),
+  evidenceContextFingerprint: text("evidence_context_fingerprint").notNull(),
+  activeParentFingerprint: text("active_parent_fingerprint").notNull(),
+  queryFingerprint: text("query_fingerprint").notNull(),
+  memoryIds: jsonb("memory_ids").$type<string[]>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  foreignKey({
+    columns: [table.workspaceId, table.runId],
+    foreignColumns: [scanRuns.workspaceId, scanRuns.id],
+    name: "xtrace_recall_audits_v2_workspace_run_fkey",
+  }).onDelete("cascade"),
+  foreignKey({
+    columns: [table.workspaceId, table.dealId],
+    foreignColumns: [deals.workspaceId, deals.id],
+    name: "xtrace_recall_audits_v2_workspace_deal_fkey",
+  }).onDelete("cascade"),
+]);
+
 export const uploadedDocuments = pgTable("uploaded_documents", {
   id: text("id").notNull(),
   workspaceId: text("workspace_id").notNull().references(

@@ -11,7 +11,10 @@ export async function ingestMemoryStage(
     service?: IngestMemoryService;
   },
 ): Promise<PersistedIngest> {
-  const service = options.service ?? createXTraceService(getXTraceClient(), {
+  const service = options.service ?? createXTraceService(getXTraceClient({
+    stage: "explicit_ingest",
+    allowLive: true,
+  }), {
     workspaceId: options.workspaceId,
   });
   const submitted = await service.ingestDealMemory(bundle);

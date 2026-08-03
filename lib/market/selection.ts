@@ -78,10 +78,12 @@ export interface MarketEventSelection {
 
 export function selectMarketEventsForAnalysis(
   events: NormalizedMarketEvent[],
-  limit = MAX_MARKET_EVENTS_FOR_ANALYSIS,
+  limit: number | undefined = undefined,
   portfolio: ReadonlyMap<string, readonly string[]> = new Map(),
 ): MarketEventSelection {
-  if (!Number.isInteger(limit) || limit <= 0) {
+  const effectiveLimit = limit
+    ?? Math.min(25, Math.max(MAX_MARKET_EVENTS_FOR_ANALYSIS, portfolio.size));
+  if (!Number.isInteger(effectiveLimit) || effectiveLimit <= 0) {
     throw new TypeError("Market analysis event limit must be a positive integer.");
   }
 
@@ -150,9 +152,14 @@ export function selectMarketEventsForAnalysis(
   const reservedEventIds = new Set(
     [...bestEventForDeal.values()].map((best) => best.eventId),
   );
+  if (reservedEventIds.size > 25) {
+    throw new Error(
+      "Unique Deal market-event coverage exceeds the 25-event analysis capacity.",
+    );
+  }
   const reserved = ranked.filter((event) => reservedEventIds.has(event.id));
   const remainder = ranked.filter((event) => !reservedEventIds.has(event.id));
-  const selected = [...reserved, ...remainder].slice(0, limit);
+  const selected = [...reserved, ...remainder].slice(0, effectiveLimit);
 
   return {
     events: selected,

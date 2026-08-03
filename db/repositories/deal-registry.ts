@@ -103,6 +103,9 @@ export interface DealRegistry {
     dealId: string;
   }): Promise<RegisteredDeal | null>;
   listForWorkspace(workspaceId: string): Promise<RegisteredDeal[]>;
+  listActiveSourceAssignments(
+    workspaceId: string,
+  ): Promise<DealMemoryOwnership[]>;
   confirmSourceAssignment(
     input: ConfirmSourceAssignmentInput,
   ): Promise<{
@@ -849,6 +852,36 @@ export function createMemoryDealRegistry(options: {
           || compareUtf8(left.id, right.id)
         )
         .map(cloneDeal);
+    },
+
+    async listActiveSourceAssignments(workspaceId) {
+      workspaceId = requiredWorkspaceId(workspaceId);
+      const eligibleDealIds = new Set(
+        [...deals.values()]
+          .filter((deal) =>
+            deal.workspaceId === workspaceId
+            && deal.analysisEligibleAt !== null
+            && deal.activeSourceRevisionFingerprint
+              === sourceRevisionFingerprint(deal.activeSourceRevisionIds)
+          )
+          .map((deal) => deal.id),
+      );
+      return assignments
+        .filter((assignment) =>
+          assignment.workspaceId === workspaceId
+          && assignment.supersededAt === null
+          && eligibleDealIds.has(assignment.dealId)
+        )
+        .map(({ workspaceId: ownerWorkspaceId, dealId, sourceId, sourceRevisionId }) => ({
+          workspaceId: ownerWorkspaceId,
+          dealId,
+          sourceId,
+          sourceRevisionId,
+        }))
+        .sort((left, right) =>
+          compareUtf8(left.dealId, right.dealId)
+          || compareUtf8(left.sourceRevisionId, right.sourceRevisionId)
+        );
     },
 
     async confirmSourceAssignmentUnlocked(rawInput) {
@@ -1703,6 +1736,31 @@ export function createSupabaseDealRegistry(options: {
         row,
         (revisions.get(String(row.id)) ?? []).map((value) => value.revisionId),
       ));
+    },
+
+    async listActiveSourceAssignments(workspaceId) {
+      workspaceId = requiredWorkspaceId(workspaceId);
+      const deals = await this.listForWorkspace(workspaceId);
+      const eligible = deals.filter((deal) =>
+        deal.analysisEligibleAt !== null
+        && deal.activeSourceRevisionFingerprint
+          === sourceRevisionFingerprint(deal.activeSourceRevisionIds)
+      );
+      const revisions = await activeRevisionIds(
+        workspaceId,
+        eligible.map((deal) => deal.id),
+      );
+      return eligible.flatMap((deal) =>
+        (revisions.get(deal.id) ?? []).map((revision) => ({
+          workspaceId,
+          dealId: deal.id,
+          sourceId: revision.sourceId,
+          sourceRevisionId: revision.revisionId,
+        }))
+      ).sort((left, right) =>
+        compareUtf8(left.dealId, right.dealId)
+        || compareUtf8(left.sourceRevisionId, right.sourceRevisionId)
+      );
     },
 
     async confirmSourceAssignment(rawInput) {

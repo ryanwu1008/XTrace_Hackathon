@@ -196,7 +196,7 @@ export function requireLoopbackPostgres(options: {
     "postgres",
     "-At",
     "-c",
-    "select coalesce(inet_server_addr()::text, '<unix-socket>')",
+    "select coalesce(host(inet_server_addr()), '<unix-socket>')",
   ], commandOptions);
   const decision = decideLoopbackPostgresTarget({
     optIn: environment.REQUIRE_POSTGRES_MIGRATION_TESTS,
@@ -221,7 +221,9 @@ export function requireLoopbackPostgres(options: {
   ): LoopbackPostgresCommandResult => runner(command, args, {
     ...commandOptions,
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-    ...(options.input === undefined ? {} : { input: options.input }),
+    ...(options.input === undefined
+      ? {}
+      : { input: options.input, stdio: ["pipe", "pipe", "pipe"] }),
     env: commandEnvironment(environment, options.environment),
   });
   return Object.freeze({

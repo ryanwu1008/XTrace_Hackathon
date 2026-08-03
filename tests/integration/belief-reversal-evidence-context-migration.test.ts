@@ -41,15 +41,16 @@ test("0019 evidence-context migration remains the contiguous predecessor to 0020
       breakpoints: boolean;
     }>;
   };
-  assert.deepEqual(journal.entries.at(-2), {
+  assert.deepEqual(journal.entries.at(-3), {
     idx: 19,
     version: "7",
     when: 1785661200000,
     tag: migrationName,
     breakpoints: true,
   });
-  assert.equal(journal.entries.at(-3)?.idx, 18);
-  assert.equal(journal.entries.at(-1)?.idx, 20);
+  assert.equal(journal.entries.at(-4)?.idx, 18);
+  assert.equal(journal.entries.at(-2)?.idx, 20);
+  assert.equal(journal.entries.at(-1)?.idx, 21);
   assert.equal(
     new Set(journal.entries.map(({ idx }) => idx)).size,
     journal.entries.length,
@@ -122,7 +123,7 @@ test(
       const migrations = readdirSync(
         fileURLToPath(new URL("../../drizzle/", import.meta.url)),
       ).filter((name) => /^\d{4}_.+\.sql$/u.test(name)).sort();
-      assert.equal(migrations.length, 21);
+      assert.equal(migrations.length, 22);
       for (const migration of migrations) {
         const prefix = migration.slice(0, 4);
         const path = fileURLToPath(

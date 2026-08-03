@@ -240,7 +240,10 @@ export async function runNextQueuedScan(): Promise<boolean> {
       }),
     });
     const xtraceService = isXTraceConfigured()
-      ? createXTraceService(getXTraceClient(), {
+      ? createXTraceService(getXTraceClient({
+          stage: "explicit_recall",
+          allowLive: true,
+        }), {
           workspaceId: claimed.workspaceId,
           lineageRepository: lineage,
         })
@@ -387,7 +390,10 @@ export async function runNextConfirmedUpload(): Promise<boolean> {
     const deals = getDealRegistry();
     const evidencePacks = getEvidencePacksRepository();
     const xtrace = isXTraceConfigured()
-      ? createXTraceService(getXTraceClient(), {
+      ? createXTraceService(getXTraceClient({
+        stage: "explicit_ingest",
+        allowLive: true,
+      }), {
         workspaceId: claimed.workspaceId,
         lineageRepository: getXTraceLineageRepository(),
       })

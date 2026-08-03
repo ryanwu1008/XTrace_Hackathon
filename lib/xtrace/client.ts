@@ -103,7 +103,10 @@ type FetchLike = typeof fetch;
 
 type XTraceEnvironment = Partial<Pick<
   NodeJS.ProcessEnv,
-  "XTRACE_API_KEY" | "XTRACE_ORG_ID"
+  | "XTRACE_API_KEY"
+  | "XTRACE_ORG_ID"
+  | "XTRACE_API_BASE_URL"
+  | "XTRACE_DRY_RUN"
 >>;
 
 export function isXTraceConfigured(
@@ -150,23 +153,27 @@ export function createXTraceClient(options: {
 
     const payload = await response.json().catch(() => undefined) as unknown;
     if (!response.ok) {
-      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
-      const message = typeof error?.message === "string"
-        ? error.message
-        : "XTrace request failed";
-      throw new XTraceHttpError(response.status, response.status === 429 || response.status >= 500, message);
+      throw new XTraceHttpError(
+        response.status,
+        response.status === 429 || response.status >= 500,
+        "XTrace request failed",
+      );
     }
     return payload as T;
   };
 
   return {
-    ingest: (input, options) => request<XTraceJob>(`/v1/memories${waitQuery(options?.wait)}`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-    getJob: (jobId) => request<XTraceJob>(`/v1/memories/jobs/${encodeURIComponent(jobId)}`, {
-      method: "GET",
-    }),
+    ingest: async (input, options) => normalizeJobResponse(await request<unknown>(
+      `/v1/memories${waitQuery(options?.wait)}`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    )),
+    getJob: async (jobId) => normalizeJobResponse(await request<unknown>(
+      `/v1/memories/jobs/${encodeURIComponent(jobId)}`,
+      { method: "GET" },
+    )),
     search: async (input) => {
       const response = await request<unknown>("/v1/memories/search", {
         method: "POST",
@@ -186,19 +193,37 @@ function waitQuery(wait: boolean | undefined): string {
   return wait ? "?wait=true" : "";
 }
 
-export function getXTraceClient(): XTraceClient {
+export class XTraceLiveExecutionAuthorizationError extends Error {
+  readonly code = "XTRACE_LIVE_EXECUTION_NOT_AUTHORIZED";
+
+  constructor() {
+    super("Live XTrace execution requires an explicit non-dry-run stage");
+    this.name = "XTraceLiveExecutionAuthorizationError";
+  }
+}
+
+export function getXTraceClient(
+  authorization?: {
+    stage: "explicit_ingest" | "explicit_recall";
+    allowLive: true;
+  },
+  environment: XTraceEnvironment | NodeJS.ProcessEnv = process.env,
+): XTraceClient {
   if (typeof window !== "undefined") {
     throw new XTraceConfigurationError("XTrace client may only be created on the server");
   }
-  if (!isXTraceConfigured()) throw new XTraceConfigurationError();
+  if (!authorization?.allowLive || environment.XTRACE_DRY_RUN === "1") {
+    throw new XTraceLiveExecutionAuthorizationError();
+  }
+  if (!isXTraceConfigured(environment)) throw new XTraceConfigurationError();
 
-  const apiKey = process.env.XTRACE_API_KEY!.trim();
+  const apiKey = environment.XTRACE_API_KEY!.trim();
   return createXTraceClient({
     apiKey,
     orgId: apiKey.startsWith("mmk_")
       ? undefined
-      : process.env.XTRACE_ORG_ID?.trim(),
-    baseUrl: process.env.XTRACE_API_BASE_URL,
+      : environment.XTRACE_ORG_ID?.trim(),
+    baseUrl: environment.XTRACE_API_BASE_URL,
   });
 }
 
@@ -230,19 +255,107 @@ function normalizeSearchResponse(response: unknown): XTraceSearchResponse {
   };
 }
 
+function normalizeJobResponse(response: unknown): XTraceJob {
+  if (!isRecord(response)) return invalidJobResponse();
+  const allowedKeys = new Set(["id", "status", "result", "error"]);
+  if (Object.keys(response).some((key) => !allowedKeys.has(key))) {
+    return invalidJobResponse();
+  }
+  if (
+    typeof response.id !== "string"
+    || response.id.trim() === ""
+    || !["pending", "running", "succeeded", "failed"].includes(
+      String(response.status),
+    )
+  ) return invalidJobResponse();
+  const status = response.status as XTraceJob["status"];
+  let result: XTraceJob["result"];
+  if (status === "succeeded") {
+    if (
+      !isRecord(response.result)
+      || Object.keys(response.result).some((key) => key !== "memories_created")
+      || !Array.isArray(response.result.memories_created)
+    ) return invalidJobResponse();
+    const memories = response.result.memories_created;
+    if (!memories.every(isStrictMemoryRef)) return invalidJobResponse();
+    result = { memories_created: memories };
+  } else if (response.result !== undefined && response.result !== null) {
+    return invalidJobResponse();
+  }
+  let error: XTraceJob["error"];
+  if (status === "failed") {
+    if (!isRecord(response.error)) return invalidJobResponse();
+    const allowedErrorKeys = new Set(["code", "message"]);
+    if (
+      Object.keys(response.error).some((key) => !allowedErrorKeys.has(key))
+      || (response.error.code !== undefined && typeof response.error.code !== "string")
+      || (response.error.message !== undefined && typeof response.error.message !== "string")
+    ) return invalidJobResponse();
+    error = {
+      ...(typeof response.error.code === "string" ? { code: response.error.code } : {}),
+      ...(typeof response.error.message === "string"
+        ? { message: response.error.message }
+        : {}),
+    };
+  } else if (response.error !== undefined && response.error !== null) {
+    return invalidJobResponse();
+  }
+  return { id: response.id, status, ...(result ? { result } : {}), ...(error ? { error } : {}) };
+}
+
+function isStrictMemoryRef(value: unknown): value is XTraceMemoryRef {
+  return isRecord(value)
+    && Object.keys(value).every((key) => ["id", "type", "text"].includes(key))
+    && typeof value.id === "string"
+    && value.id.trim() !== ""
+    && typeof value.type === "string"
+    && value.type.trim() !== ""
+    && typeof value.text === "string";
+}
+
+function invalidJobResponse(): never {
+  throw new XTraceHttpError(200, false, "XTrace job response was invalid");
+}
+
 function normalizeSearchResult(row: unknown): XTraceSearchResult[] {
-  if (!isRecord(row) || typeof row.id !== "string" || typeof row.text !== "string") return [];
+  if (!isRecord(row)) return invalidSearchResult();
+  const allowedKeys = new Set([
+    "id", "type", "text", "score", "user_id", "conv_id", "app_id",
+    "agent_id", "metadata",
+  ]);
+  if (
+    Object.keys(row).some((key) => !allowedKeys.has(key))
+    || typeof row.id !== "string"
+    || row.id.trim() === ""
+    || typeof row.text !== "string"
+    || typeof row.score !== "number"
+    || !Number.isFinite(row.score)
+    || (row.type !== undefined && typeof row.type !== "string")
+    || !isOptionalNullableString(row.user_id)
+    || !isOptionalNullableString(row.conv_id)
+    || !isOptionalNullableString(row.app_id)
+    || !isOptionalNullableString(row.agent_id)
+    || (row.metadata !== undefined && !isRecord(row.metadata))
+  ) return invalidSearchResult();
   return [{
     id: row.id,
     text: row.text,
     type: typeof row.type === "string" ? row.type : undefined,
-    score: typeof row.score === "number" ? row.score : 0,
+    score: row.score,
     user_id: typeof row.user_id === "string" ? row.user_id : null,
     conv_id: typeof row.conv_id === "string" ? row.conv_id : null,
     app_id: typeof row.app_id === "string" ? row.app_id : null,
     agent_id: typeof row.agent_id === "string" ? row.agent_id : null,
     metadata: isRecord(row.metadata) ? row.metadata : undefined,
   }];
+}
+
+function isOptionalNullableString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function invalidSearchResult(): never {
+  throw new XTraceHttpError(200, false, "XTrace search response was invalid");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

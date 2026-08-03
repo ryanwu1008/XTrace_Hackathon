@@ -46,7 +46,7 @@ test("0020 is a contiguous local migration without production launcher authoriza
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
     entries: Array<{ idx: number; tag: string }>;
   };
-  assert.deepEqual(journal.entries.at(-1), {
+  assert.deepEqual(journal.entries.at(-2), {
     idx: 20,
     version: "7",
     when: 1785751200000,
@@ -103,7 +103,7 @@ test(
       const migrations = readdirSync(directory)
         .filter((name) => /^\d{4}_.+\.sql$/u.test(name))
         .sort();
-      assert.equal(migrations.length, 21);
+      assert.equal(migrations.length, 22);
       for (const migration of migrations) {
         requireSuccess(postgres.run("psql", [
           "--no-password", "-v", "ON_ERROR_STOP=1", "-d", database,

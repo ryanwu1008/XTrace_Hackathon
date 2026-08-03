@@ -35,6 +35,9 @@ test("recalls one bounded XTrace query for every MVP Deal", async () => {
   assert.ok(queries.every((query) => query.query.length <= 4_000));
   assert.ok(queries.every((query) => query.candidateDealIds.length === 1));
   assert.ok(queries.every((query) => query.limit === 20));
+  assert.ok(queries.every((query) =>
+    query.runId === "00000000-0000-4000-8000-000000000001"
+  ));
   assert.equal(result.contextsByDeal.size, 19);
   assert.equal(result.failures.length, 0);
 });
@@ -176,4 +179,85 @@ test("non-retryable recall failures are not retried", async () => {
   assert.equal(result.failures.length, 1);
   assert.equal(result.failures[0].dealId, failedDealId);
   assert.equal(result.contextsByDeal.size, 18);
+});
+
+test("runs all 23 primary recalls before spending only two global transient retries", async () => {
+  const original = buildPreloadedDealMemoryBundles();
+  const bundles = [
+    ...original,
+    ...original.slice(0, 4).map((bundle, index) => ({
+      ...structuredClone(bundle),
+      dealId: `deal_reversal_${index + 1}`,
+      companyName: `Reversal Company ${index + 1}`,
+    })),
+  ];
+  const transientDealIds = new Set(bundles.slice(0, 3).map((bundle) => bundle.dealId));
+  const attempts = new Map<string, number>();
+  const calls: string[] = [];
+
+  const result = await recallAllDealContexts({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    bundles,
+    service: {
+      async recallDealContext(input) {
+        const dealId = input.candidateDealIds[0];
+        calls.push(dealId);
+        const attempt = (attempts.get(dealId) ?? 0) + 1;
+        attempts.set(dealId, attempt);
+        if (transientDealIds.has(dealId) && attempt === 1) {
+          const { XTraceUnavailableError } = await import("../../lib/xtrace/service");
+          throw new XTraceUnavailableError(true, "temporary outage");
+        }
+        return [];
+      },
+    },
+  });
+
+  assert.deepEqual(
+    calls.slice(0, 23),
+    bundles.map((bundle) => bundle.dealId),
+    "capacity must be available for every primary before any retry",
+  );
+  assert.equal(calls.length, 25, "the entire run has only two retry requests");
+  assert.deepEqual(calls.slice(23), bundles.slice(0, 2).map((bundle) => bundle.dealId));
+  assert.deepEqual(result.failures.map((failure) => failure.dealId), [bundles[2].dealId]);
+});
+
+test("23 successful Deals use exactly 23 search requests", async () => {
+  const original = buildPreloadedDealMemoryBundles();
+  const bundles = [
+    ...original,
+    ...original.slice(0, 4).map((bundle, index) => ({
+      ...structuredClone(bundle),
+      dealId: `deal_success_${index + 1}`,
+      companyName: `Success Company ${index + 1}`,
+    })),
+  ];
+  let calls = 0;
+  const result = await recallAllDealContexts({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    bundles,
+    service: {
+      async recallDealContext(input) {
+        calls += 1;
+        return [{
+          dealId: input.candidateDealIds[0],
+          memoryId: `memory_${input.candidateDealIds[0]}`,
+          memoryType: "fact",
+          text: "Exact context.",
+          score: 0.9,
+          provenance: "source_document",
+          sourceRevisionIds: [`revision_${input.candidateDealIds[0]}`],
+          sourceIds: [`source_${input.candidateDealIds[0]}`],
+          fixtureIds: [],
+        }];
+      },
+    },
+  });
+
+  assert.equal(calls, 23);
+  assert.equal(result.contextsByDeal.size, 23);
+  assert.equal(result.failures.length, 0);
 });

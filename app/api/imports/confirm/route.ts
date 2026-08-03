@@ -89,7 +89,10 @@ export async function POST(
     const xtraceConfigured = isXTraceConfigured();
     const xtraceResults = xtraceConfigured
       ? await Promise.allSettled(result.memoryBundles.map((bundle) =>
-          createXTraceService(getXTraceClient(), {
+          createXTraceService(getXTraceClient({
+            stage: "explicit_ingest",
+            allowLive: true,
+          }), {
             workspaceId: context.workspaceId,
           }).ingestDealMemory(bundle)
         ))
