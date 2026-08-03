@@ -37,6 +37,8 @@ import {
   type MarketEventSelection,
 } from "../lib/market/selection";
 import { classifyMarketEventForAnalysis } from "../lib/market/classification";
+import { canonicalEvidenceJson } from "../lib/contracts/source-evidence";
+import { compareUtf8 } from "../lib/format/canonical-order";
 import type { MarketService } from "../lib/market/service";
 import type { MemoryContext } from "../lib/xtrace/service";
 import type { PersistedIngest } from "../lib/xtrace/service";
@@ -104,6 +106,7 @@ export async function processClaimedRun(
     | "completed"
     | "failed"
     | undefined;
+  let evidenceBindingFingerprint: string | undefined;
   const updateStage = async (
     name: string,
     status: "running" | "skipped" | "completed" | "failed",
@@ -214,6 +217,41 @@ export async function processClaimedRun(
       portfolioTexts,
     );
     const analysisEvents = marketSelection.events;
+    if (claimedRun.evidenceContext.state === "current") {
+      if (claimedRun.evidenceContext.evidenceMode !== "live") {
+        throw new Error(
+          "Pinned demo replay Worker processing is deferred to the pinned-runtime task.",
+        );
+      }
+      await dependencies.runs.bindLiveMarketEvents(
+        claimedRun.workspaceId,
+        claimedRun.id,
+        analysisEvents,
+      );
+      const binding = await dependencies.runs.getEvidenceBinding(
+        claimedRun.workspaceId,
+        claimedRun.id,
+      );
+      const expectedEvents = [...analysisEvents].sort((left, right) =>
+        compareUtf8(left.id, right.id)
+      );
+      if (
+        binding === null
+        || binding.evidenceMode !== "live"
+        || binding.contextFingerprint
+          !== claimedRun.evidenceContext.contextFingerprint
+        || binding.eventCount !== expectedEvents.length
+        || binding.events.some((event, index) =>
+          canonicalEvidenceJson(event)
+            !== canonicalEvidenceJson(expectedEvents[index])
+        )
+      ) {
+        throw new Error(
+          "The current run evidence binding did not reload as the exact sealed event set.",
+        );
+      }
+      evidenceBindingFingerprint = binding.bindingFingerprint;
+    }
     const marketWarnings: string[] = [];
     if (market.status !== "completed") {
       const warning = market.status === "failed"
@@ -414,6 +452,7 @@ export async function processClaimedRun(
       createdAt,
       marketSummary: buildMarketSummary(market, marketSelection),
       opportunities,
+      evidenceBindingFingerprint,
       analysisStatus:
         counts.analysisUnavailable > 0
           || structuredImageFallbackDealIds.size > 0

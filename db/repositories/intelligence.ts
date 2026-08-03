@@ -978,28 +978,17 @@ export function createSupabaseIntelligenceRepository(options: {
         : null,
       companyAnalyses: analyses,
     });
-    const declaresEvidenceContext = [
-      row.evidence_context_version,
-      row.evidence_mode,
-      row.evidence_binding_fingerprint,
-    ].some((value) => value !== null && value !== undefined);
-    return declaresEvidenceContext
-      ? {
-          ...report,
-          evidenceContext: parseReportEvidenceContextRow(row, runContext),
-        }
-      : report;
+    return {
+      ...report,
+      evidenceContext: parseReportEvidenceContextRow(row, runContext),
+    };
   }
 
   async function currentRunContexts(
     workspaceId: string,
     reportRows: readonly Record<string, unknown>[],
   ): Promise<Map<string, RunEvidenceContext>> {
-    const runIds = [...new Set(reportRows.flatMap((row) =>
-      row.evidence_context_version === null || row.evidence_context_version === undefined
-        ? []
-        : [String(row.run_id)]
-    ))];
+    const runIds = [...new Set(reportRows.map((row) => String(row.run_id)))];
     const contexts = new Map<string, RunEvidenceContext>();
     if (runIds.length === 0) return contexts;
     const filter = `(${runIds.map(encodeURIComponent).join(",")})`;

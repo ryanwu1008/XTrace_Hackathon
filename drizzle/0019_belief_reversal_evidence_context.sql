@@ -177,6 +177,554 @@ exception when others then
 end;
 $$;
 
+create or replace function public.jsonb_exact_keys_0019(
+  p_value jsonb,
+  p_expected_keys text[]
+)
+returns boolean
+language sql
+immutable
+strict
+set search_path = ''
+as $$
+  select pg_catalog.jsonb_typeof(p_value) = 'object'
+    and array(
+      select key
+      from pg_catalog.jsonb_object_keys(p_value) as object_key(key)
+      order by key collate "C"
+    ) is not distinct from array(
+      select key
+      from pg_catalog.unnest(p_expected_keys) as expected(key)
+      order by key collate "C"
+    )
+$$;
+
+create or replace function public.canonical_jsonb_text_0019(p_value jsonb)
+returns text
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare rendered text;
+begin
+  if pg_catalog.jsonb_typeof(p_value) = 'object' then
+    select '{' || coalesce(pg_catalog.string_agg(
+      pg_catalog.to_jsonb(key)::text || ':'
+        || public.canonical_jsonb_text_0019(value),
+      ',' order by key collate "C"
+    ), '') || '}'
+    into rendered
+    from pg_catalog.jsonb_each(p_value) as member(key, value);
+    return rendered;
+  elsif pg_catalog.jsonb_typeof(p_value) = 'array' then
+    select '[' || coalesce(pg_catalog.string_agg(
+      public.canonical_jsonb_text_0019(value),
+      ',' order by ordinal
+    ), '') || ']'
+    into rendered
+    from pg_catalog.jsonb_array_elements(p_value)
+      with ordinality as member(value, ordinal);
+    return rendered;
+  end if;
+  return p_value::text;
+end;
+$$;
+
+do $canonical_json_digest$
+declare digest_schema text;
+begin
+  select namespace.nspname into strict digest_schema
+  from pg_catalog.pg_extension as extension_record
+  join pg_catalog.pg_depend as dependency
+    on dependency.refclassid = 'pg_catalog.pg_extension'::regclass
+    and dependency.refobjid = extension_record.oid
+    and dependency.classid = 'pg_catalog.pg_proc'::regclass
+    and dependency.deptype = 'e'
+  join pg_catalog.pg_proc as procedure_record
+    on procedure_record.oid = dependency.objid
+  join pg_catalog.pg_namespace as namespace
+    on namespace.oid = procedure_record.pronamespace
+  where extension_record.extname = 'pgcrypto'
+    and procedure_record.proname = 'digest'
+    and procedure_record.proargtypes = '17 25'::oidvector;
+
+  execute pg_catalog.format(
+    $function$
+create or replace function public.sha256_canonical_jsonb_0019(p_value jsonb)
+returns text
+language sql
+immutable
+strict
+set search_path = ''
+as $body$
+  select 'sha256:' || pg_catalog.encode(
+    %I.digest(
+      pg_catalog.convert_to(public.canonical_jsonb_text_0019(p_value), 'UTF8'),
+      'sha256'
+    ),
+    'hex'
+  )
+$body$;
+    $function$,
+    digest_schema
+  );
+end;
+$canonical_json_digest$;
+
+create or replace function public.jsonb_sorted_unique_text_array_0019(
+  p_value jsonb,
+  p_allow_empty boolean,
+  p_entity_keys boolean default false
+)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare actual text[];
+declare sorted text[];
+declare item_count integer;
+begin
+  if pg_catalog.jsonb_typeof(p_value) <> 'array' then return false; end if;
+  select count(*)::integer,
+    coalesce(array_agg(value #>> '{}' order by ordinal), array[]::text[]),
+    coalesce(array_agg(value #>> '{}' order by value #>> '{}' collate "C"), array[]::text[])
+  into item_count, actual, sorted
+  from pg_catalog.jsonb_array_elements(p_value)
+    with ordinality as item(value, ordinal)
+  where pg_catalog.jsonb_typeof(value) = 'string'
+    and btrim(value #>> '{}') <> ''
+    and (
+      not p_entity_keys
+      or value #>> '{}' ~ '^[a-z0-9]+([._:-][a-z0-9]+)*$'
+    );
+  return item_count = pg_catalog.jsonb_array_length(p_value)
+    and (p_allow_empty or item_count > 0)
+    and cardinality(actual) = cardinality(array(
+      select distinct value from pg_catalog.unnest(actual) as member(value)
+    ))
+    and actual is not distinct from sorted;
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.valid_temporal_pair_0019(
+  p_value jsonb,
+  p_precision jsonb,
+  p_nullable boolean
+)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare temporal_value text;
+declare precision_value text;
+declare parsed_date date;
+declare parsed_timestamp timestamptz;
+begin
+  if p_value = 'null'::jsonb or p_precision = 'null'::jsonb then
+    return p_nullable and p_value = 'null'::jsonb and p_precision = 'null'::jsonb;
+  end if;
+  if pg_catalog.jsonb_typeof(p_value) <> 'string'
+    or pg_catalog.jsonb_typeof(p_precision) <> 'string'
+  then return false; end if;
+  temporal_value := p_value #>> '{}';
+  precision_value := p_precision #>> '{}';
+  if precision_value = 'date' and temporal_value ~ '^\d{4}-\d{2}-\d{2}$' then
+    parsed_date := temporal_value::date;
+    return parsed_date::text = temporal_value;
+  elsif precision_value = 'timestamp'
+    and temporal_value ~ '^\d{4}-\d{2}-\d{2}T'
+  then
+    parsed_timestamp := temporal_value::timestamptz;
+    return parsed_timestamp is not null;
+  end if;
+  return false;
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.temporal_definitely_before_0019(
+  p_left jsonb,
+  p_right jsonb
+)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare left_value text := p_left #>> '{}';
+declare right_value text := p_right #>> '{}';
+declare left_latest timestamptz;
+declare right_earliest timestamptz;
+begin
+  if p_left = 'null'::jsonb or p_right = 'null'::jsonb then return false; end if;
+  left_latest := case
+    when left_value ~ '^\d{4}-\d{2}-\d{2}$'
+      then (left_value::date + 1)::timestamp at time zone 'UTC'
+        - interval '1 millisecond'
+    else left_value::timestamptz
+  end;
+  right_earliest := case
+    when right_value ~ '^\d{4}-\d{2}-\d{2}$'
+      then right_value::date::timestamp at time zone 'UTC'
+    else right_value::timestamptz
+  end;
+  return left_latest < right_earliest;
+exception when others then
+  return true;
+end;
+$$;
+
+create or replace function public.valid_canonical_http_url_0019(p_value jsonb)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare url_value text;
+begin
+  if pg_catalog.jsonb_typeof(p_value) <> 'string' then return false; end if;
+  url_value := p_value #>> '{}';
+  return url_value ~ '^https?://[^/?#@[:space:]]+([^#[:space:]]*)?$'
+    and url_value !~ '/$'
+    and url_value !~* '([?&])(utm_[^=]*|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid)='
+    and url_value !~ '[?&]$';
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.valid_source_ref_v2_0019(p_source jsonb)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare text_payload jsonb;
+declare text_status text;
+declare locator_payload jsonb;
+declare locator_kind text;
+declare provenance_value text;
+declare source_class_value text;
+declare authority_value text;
+declare role_value text;
+begin
+  if not public.jsonb_exact_keys_0019(p_source, array[
+    'adaptation','canonicalUrl','contentFingerprint','documentId','entityKeys',
+    'eventAt','eventAtPrecision','evidenceRole','id','locator','provenance',
+    'providerId','publishedAt','publishedAtPrecision','publisher','retrievedAt',
+    'retrievedAtPrecision','schemaVersion','sourceAuthority','sourceClass',
+    'sourceRevisionId','text','title','updatedAt','updatedAtPrecision'
+  ]) or p_source ->> 'schemaVersion' <> 'source-ref-v2'
+    or p_source ->> 'adaptation' <> 'canonical'
+    or coalesce(btrim(p_source ->> 'id'), '') = ''
+    or coalesce(btrim(p_source ->> 'title'), '') = ''
+    or not public.jsonb_sorted_unique_text_array_0019(
+      p_source -> 'entityKeys', true, true
+    )
+    or not public.valid_temporal_pair_0019(
+      p_source -> 'eventAt', p_source -> 'eventAtPrecision', true
+    )
+    or not public.valid_temporal_pair_0019(
+      p_source -> 'publishedAt', p_source -> 'publishedAtPrecision', true
+    )
+    or not public.valid_temporal_pair_0019(
+      p_source -> 'retrievedAt', p_source -> 'retrievedAtPrecision', true
+    )
+    or not public.valid_temporal_pair_0019(
+      p_source -> 'updatedAt', p_source -> 'updatedAtPrecision', true
+    )
+  then return false; end if;
+
+  provenance_value := p_source ->> 'provenance';
+  source_class_value := p_source ->> 'sourceClass';
+  authority_value := p_source ->> 'sourceAuthority';
+  role_value := p_source ->> 'evidenceRole';
+  if provenance_value not in (
+      'source_document','public_web','demo_fixture','model_inference'
+    ) or source_class_value not in (
+      'company_official','government_or_regulator','court_or_public_filing',
+      'customer_or_partner_official','investor_official','funding_publication',
+      'industry_publication','commercial_database','founder_social',
+      'internal_decision_record','model_output'
+    ) or authority_value not in ('primary','secondary','not_applicable')
+    or role_value not in ('trigger','corroborating','counterevidence','context')
+  then return false; end if;
+
+  if p_source -> 'canonicalUrl' <> 'null'::jsonb
+    and not public.valid_canonical_http_url_0019(p_source -> 'canonicalUrl')
+  then return false; end if;
+  foreach text_payload in array array[
+    p_source -> 'documentId', p_source -> 'publisher', p_source -> 'providerId',
+    p_source -> 'sourceRevisionId'
+  ] loop
+    if text_payload <> 'null'::jsonb and (
+      pg_catalog.jsonb_typeof(text_payload) <> 'string'
+      or coalesce(btrim(text_payload #>> '{}'), '') = ''
+    ) then return false; end if;
+  end loop;
+  if p_source -> 'contentFingerprint' <> 'null'::jsonb and (
+    pg_catalog.jsonb_typeof(p_source -> 'contentFingerprint') <> 'string'
+    or p_source ->> 'contentFingerprint' !~ '^sha256:[0-9a-f]{64}$'
+  ) then return false; end if;
+
+  locator_payload := p_source -> 'locator';
+  if locator_payload <> 'null'::jsonb then
+    locator_kind := locator_payload ->> 'kind';
+    if (locator_kind = 'web_text' and (
+        not public.jsonb_exact_keys_0019(locator_payload,array['kind','selector'])
+        or coalesce(btrim(locator_payload->>'selector'),'')=''
+      )) or (locator_kind = 'document_page' and (
+        not public.jsonb_exact_keys_0019(locator_payload,array['kind','page'])
+        or pg_catalog.jsonb_typeof(locator_payload->'page') <> 'number'
+        or locator_payload->>'page' !~ '^[1-9][0-9]*$'
+      )) or (locator_kind = 'json_pointer' and (
+        not public.jsonb_exact_keys_0019(locator_payload,array['kind','pointer'])
+        or locator_payload->>'pointer'
+          !~ '^/([^~/]|~[01])+(/([^~/]|~[01])+)*$'
+      )) or (locator_kind = 'line_range' and (
+        not public.jsonb_exact_keys_0019(
+          locator_payload,array['endLine','kind','startLine']
+        )
+        or pg_catalog.jsonb_typeof(locator_payload->'startLine') <> 'number'
+        or pg_catalog.jsonb_typeof(locator_payload->'endLine') <> 'number'
+        or locator_payload->>'startLine' !~ '^[1-9][0-9]*$'
+        or locator_payload->>'endLine' !~ '^[1-9][0-9]*$'
+        or (locator_payload->>'endLine')::integer
+          < (locator_payload->>'startLine')::integer
+      )) or locator_kind not in (
+        'web_text','document_page','json_pointer','line_range'
+      ) then return false; end if;
+  end if;
+
+  text_payload := p_source -> 'text';
+  text_status := text_payload ->> 'status';
+  if text_status = 'normalized_only' then
+    if not public.jsonb_exact_keys_0019(
+      text_payload,array['normalizedStatement','status']
+    ) or coalesce(btrim(text_payload->>'normalizedStatement'),'')=''
+      or length(text_payload->>'normalizedStatement') > 2000
+    then return false; end if;
+  elsif text_status = 'verified_exact' then
+    if not (
+      public.jsonb_exact_keys_0019(
+        text_payload,array['status','verbatimExcerpt']
+      ) or public.jsonb_exact_keys_0019(
+        text_payload,array['normalizedStatement','status','verbatimExcerpt']
+      )
+    ) or coalesce(btrim(text_payload->>'verbatimExcerpt'),'')=''
+      or length(text_payload->>'verbatimExcerpt') > 2000
+      or array_length(regexp_split_to_array(btrim(text_payload->>'verbatimExcerpt'),'\s+'),1) > 25
+      or (text_payload ? 'normalizedStatement' and (
+        coalesce(btrim(text_payload->>'normalizedStatement'),'')=''
+        or length(text_payload->>'normalizedStatement') > 2000
+        or text_payload->>'normalizedStatement'=text_payload->>'verbatimExcerpt'
+      ))
+      or p_source -> 'sourceRevisionId' = 'null'::jsonb
+      or locator_payload = 'null'::jsonb
+      or p_source -> 'retrievedAt' = 'null'::jsonb
+      or p_source -> 'contentFingerprint' = 'null'::jsonb
+    then return false; end if;
+  elsif text_status = 'model_inference' then
+    if not public.jsonb_exact_keys_0019(
+      text_payload,array['model','normalizedStatement','status']
+    ) or coalesce(btrim(text_payload->>'normalizedStatement'),'')=''
+      or length(text_payload->>'normalizedStatement') > 2000
+      or not public.jsonb_exact_keys_0019(
+        text_payload->'model',array['generatedAt','inputFingerprint','model','provider']
+      )
+      or coalesce(btrim(text_payload#>>'{model,provider}'),'')=''
+      or coalesce(btrim(text_payload#>>'{model,model}'),'')=''
+      or not public.valid_temporal_pair_0019(
+        text_payload#>'{model,generatedAt}', '"timestamp"'::jsonb, false
+      )
+      or text_payload#>>'{model,inputFingerprint}' !~ '^sha256:[0-9a-f]{64}$'
+    then return false; end if;
+  else return false;
+  end if;
+
+  if provenance_value = 'public_web' and (
+      p_source -> 'canonicalUrl' = 'null'::jsonb
+      or p_source -> 'publisher' = 'null'::jsonb
+      or p_source -> 'providerId' = 'null'::jsonb
+      or p_source -> 'retrievedAt' = 'null'::jsonb
+      or p_source -> 'contentFingerprint' = 'null'::jsonb
+      or source_class_value in ('internal_decision_record','model_output')
+    )
+  then return false; end if;
+  if provenance_value = 'source_document' and (
+      p_source -> 'documentId' = 'null'::jsonb
+      or p_source -> 'sourceRevisionId' = 'null'::jsonb
+      or p_source -> 'retrievedAt' = 'null'::jsonb
+      or p_source -> 'contentFingerprint' = 'null'::jsonb
+    )
+  then return false; end if;
+  if public.temporal_definitely_before_0019(
+      p_source->'retrievedAt',p_source->'publishedAt'
+    ) or public.temporal_definitely_before_0019(
+      p_source->'updatedAt',p_source->'publishedAt'
+    ) or public.temporal_definitely_before_0019(
+      p_source->'retrievedAt',p_source->'updatedAt'
+    )
+  then return false; end if;
+  if provenance_value = 'demo_fixture' and (
+      p_source ->> 'title' <> 'Sample decision record'
+      or source_class_value <> 'internal_decision_record'
+      or authority_value <> 'primary' or role_value <> 'context'
+      or text_status <> 'normalized_only'
+      or p_source#>>'{text,normalizedStatement}'
+        not like 'Sample decision record. %'
+    )
+  then return false; end if;
+  if text_status = 'model_inference' then
+    return provenance_value='model_inference'
+      and source_class_value='model_output'
+      and authority_value='not_applicable' and role_value='context';
+  end if;
+  return provenance_value <> 'model_inference'
+    and source_class_value <> 'model_output'
+    and authority_value <> 'not_applicable';
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.valid_market_event_v2_0019(p_event jsonb)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare source jsonb;
+declare trigger_source jsonb;
+declare source_ids text[] := array[]::text[];
+declare source_entity_keys text[] := array[]::text[];
+declare trigger_count integer := 0;
+declare prior_non_trigger_id text;
+begin
+  if not public.jsonb_exact_keys_0019(p_event,array[
+    'adaptation','canonicalUrl','confidence','contentFingerprint','entityKeys',
+    'eventAt','eventAtPrecision','eventType','id','negativeImplications',
+    'positiveImplications','providerId','publishedAt','publishedAtPrecision',
+    'retrievedAt','retrievedAtPrecision','schemaVersion','sectors','sources',
+    'summary','themes','title','triggerSourceId','updatedAt','updatedAtPrecision'
+  ]) or p_event->>'schemaVersion'<>'market-event-v2'
+    or p_event->>'adaptation'<>'canonical'
+    or coalesce(btrim(p_event->>'id'),'')=''
+    or coalesce(btrim(p_event->>'title'),'')=''
+    or coalesce(btrim(p_event->>'eventType'),'')=''
+    or coalesce(btrim(p_event->>'summary'),'')=''
+    or coalesce(btrim(p_event->>'providerId'),'')=''
+    or p_event->>'confidence' not in ('low','medium','high')
+    or p_event->>'contentFingerprint' !~ '^sha256:[0-9a-f]{64}$'
+    or not public.valid_canonical_http_url_0019(p_event->'canonicalUrl')
+    or not public.jsonb_sorted_unique_text_array_0019(p_event->'sectors',true,false)
+    or not public.jsonb_sorted_unique_text_array_0019(p_event->'themes',true,false)
+    or not public.jsonb_sorted_unique_text_array_0019(
+      p_event->'positiveImplications',true,false
+    ) or not public.jsonb_sorted_unique_text_array_0019(
+      p_event->'negativeImplications',true,false
+    ) or not public.jsonb_sorted_unique_text_array_0019(
+      p_event->'entityKeys',true,true
+    ) or not public.valid_temporal_pair_0019(
+      p_event->'eventAt',p_event->'eventAtPrecision',true
+    ) or not public.valid_temporal_pair_0019(
+      p_event->'publishedAt',p_event->'publishedAtPrecision',false
+    ) or not public.valid_temporal_pair_0019(
+      p_event->'retrievedAt',p_event->'retrievedAtPrecision',false
+    ) or not public.valid_temporal_pair_0019(
+      p_event->'updatedAt',p_event->'updatedAtPrecision',true
+    ) or pg_catalog.jsonb_typeof(p_event->'sources')<>'array'
+      or pg_catalog.jsonb_array_length(p_event->'sources')=0
+  then return false; end if;
+
+  for source in
+    select value from pg_catalog.jsonb_array_elements(p_event->'sources')
+      with ordinality as item(value,ordinal) order by ordinal
+  loop
+    if not public.valid_source_ref_v2_0019(source)
+      or source->>'provenance' in ('demo_fixture','model_inference')
+      or source->>'sourceClass' in ('internal_decision_record','model_output')
+    then return false; end if;
+    if source->>'id'=any(source_ids) then return false; end if;
+    source_ids := source_ids || source->>'id';
+    select source_entity_keys || coalesce(array_agg(value#>>'{}'),array[]::text[])
+    into source_entity_keys
+    from pg_catalog.jsonb_array_elements(source->'entityKeys') as key(value);
+    if source->>'evidenceRole'='trigger' then
+      trigger_count := trigger_count+1;
+      trigger_source := source;
+      if cardinality(source_ids)<>1 then return false; end if;
+    else
+      if prior_non_trigger_id is not null
+        and prior_non_trigger_id collate "C" >= source->>'id' collate "C"
+      then return false; end if;
+      prior_non_trigger_id := source->>'id';
+    end if;
+  end loop;
+  if trigger_count<>1 or trigger_source->>'id'<>p_event->>'triggerSourceId'
+    or trigger_source->>'provenance'<>'public_web'
+    or trigger_source->'canonicalUrl' is distinct from p_event->'canonicalUrl'
+    or trigger_source->'eventAt' is distinct from p_event->'eventAt'
+    or trigger_source->'eventAtPrecision' is distinct from p_event->'eventAtPrecision'
+    or trigger_source->'publishedAt' is distinct from p_event->'publishedAt'
+    or trigger_source->'publishedAtPrecision' is distinct from p_event->'publishedAtPrecision'
+    or trigger_source->'retrievedAt' is distinct from p_event->'retrievedAt'
+    or trigger_source->'retrievedAtPrecision' is distinct from p_event->'retrievedAtPrecision'
+    or trigger_source->'updatedAt' is distinct from p_event->'updatedAt'
+    or trigger_source->'updatedAtPrecision' is distinct from p_event->'updatedAtPrecision'
+    or trigger_source->'providerId' is distinct from p_event->'providerId'
+  then return false; end if;
+  if public.temporal_definitely_before_0019(
+      p_event->'retrievedAt',p_event->'publishedAt'
+    ) or public.temporal_definitely_before_0019(
+      p_event->'updatedAt',p_event->'publishedAt'
+    ) or public.temporal_definitely_before_0019(
+      p_event->'retrievedAt',p_event->'updatedAt'
+    )
+  then return false; end if;
+  select coalesce(array_agg(distinct entity_key order by entity_key collate "C"),array[]::text[])
+  into source_entity_keys from pg_catalog.unnest(source_entity_keys) as key(entity_key);
+  if source_entity_keys is distinct from array(
+      select value#>>'{}' from pg_catalog.jsonb_array_elements(p_event->'entityKeys')
+        with ordinality as item(value,ordinal) order by ordinal
+    ) or p_event->>'contentFingerprint' is distinct from
+      public.sha256_canonical_jsonb_0019(p_event-'id'-'contentFingerprint')
+  then return false; end if;
+  return true;
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.market_event_sources_are_verified_0019(
+  p_event jsonb
+)
+returns boolean
+language sql
+immutable
+strict
+set search_path = ''
+as $$
+  select public.valid_market_event_v2_0019(p_event)
+    and not exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(p_event->'sources') as source(value)
+      where value#>>'{text,status}' <> 'verified_exact'
+    )
+$$;
+
 create table public.market_evidence_snapshots (
   workspace_id text not null,
   id text not null,
@@ -216,7 +764,8 @@ create table public.market_evidence_snapshot_events (
   check (payload ->> 'publishedAt' = published_value),
   check (payload ->> 'publishedAtPrecision' = published_precision),
   check (payload ->> 'schemaVersion' = 'market-event-v2'),
-  check (payload ->> 'adaptation' = 'canonical')
+  check (payload ->> 'adaptation' = 'canonical'),
+  check (public.valid_market_event_v2_0019(payload) is true)
 );
 
 alter table public.scan_runs
@@ -304,7 +853,8 @@ create table public.run_market_events (
   check (payload ->> 'publishedAt' = published_value),
   check (payload ->> 'publishedAtPrecision' = published_precision),
   check (payload ->> 'schemaVersion' = 'market-event-v2'),
-  check (payload ->> 'adaptation' = 'canonical')
+  check (payload ->> 'adaptation' = 'canonical'),
+  check (public.valid_market_event_v2_0019(payload) is true)
 );
 
 alter table public.intelligence_reports
@@ -359,31 +909,437 @@ alter table public.company_analyses
   add column belief_gate_results jsonb,
   add column belief_actions jsonb;
 
-alter table public.company_analyses add constraint company_analyses_belief_assessment_check check (
-  (belief_assessment_version is null and belief_direction is null
-    and belief_score_breakdown is null and belief_gate_context is null
-    and belief_gate_results is null and belief_actions is null)
-  or
-  (belief_assessment_version = 'belief-change-assessment-v1'
-    and belief_direction in ('positive', 'mixed', 'negative', 'none', 'unavailable')
-    and jsonb_typeof(belief_score_breakdown) = 'object'
-    and jsonb_typeof(belief_gate_context) = 'object'
-    and jsonb_typeof(belief_gate_results) = 'object'
-    and jsonb_typeof(belief_actions) = 'array'
-    and jsonb_array_length(belief_actions) > 0
-    and (belief_score_breakdown ->> 'finalScore')::double precision = score
-    and belief_score_breakdown ->> 'confidence' = confidence
-    and belief_gate_results ?& array['chronology','revisitConditionMapping','counterevidence','actionDelta','allPassed']
-    and (belief_gate_results ->> 'allPassed')::boolean =
-      ((belief_gate_results #>> '{chronology,passed}')::boolean
-      and (belief_gate_results #>> '{revisitConditionMapping,passed}')::boolean
-      and (belief_gate_results #>> '{counterevidence,passed}')::boolean
-      and (belief_gate_results #>> '{actionDelta,passed}')::boolean)
-    and (outcome <> 'belief_revised' or (
-      belief_direction in ('positive', 'mixed', 'negative')
-      and confidence in ('medium', 'high')
-      and (belief_gate_results ->> 'allPassed')::boolean)))
-);
+create or replace function public.valid_belief_action_0019(p_action jsonb)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare action_kind text := p_action->>'kind';
+declare expected_scope text;
+declare expected_priority text;
+begin
+  if not public.jsonb_exact_keys_0019(
+      p_action,array['kind','priority','scope','visibility']
+    ) or action_kind not in (
+      'advance_diligence','continue_monitoring','deprioritize',
+      'reopen_diligence','evaluate_follow_on','pause_follow_on',
+      'portfolio_risk_review','no_new_action','review_analysis_failure'
+    )
+  then return false; end if;
+  expected_scope := case
+    when action_kind='review_analysis_failure' then 'analysis'
+    when action_kind in (
+      'evaluate_follow_on','pause_follow_on','portfolio_risk_review'
+    ) then 'portfolio'
+    else 'deal'
+  end;
+  expected_priority := case when action_kind in (
+    'pause_follow_on','portfolio_risk_review'
+  ) then 'high' else 'standard' end;
+  return p_action->>'scope'=expected_scope
+    and p_action->>'priority'=expected_priority
+    and p_action->>'visibility'='internal_only';
+exception when others then return false;
+end;
+$$;
+
+create or replace function public.expected_belief_actions_0019(
+  p_status text,p_direction text
+)
+returns jsonb
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare kinds text[];
+declare action_kind text;
+declare actions jsonb := '[]'::jsonb;
+begin
+  kinds := case
+    when p_direction='positive' and p_status='passed' then array['reopen_diligence']
+    when p_direction='positive' and p_status='invested' then array['evaluate_follow_on']
+    when p_direction='positive' then array['advance_diligence']
+    when p_direction='mixed' then array['continue_monitoring']
+    when p_direction='negative' and p_status='invested'
+      then array['pause_follow_on','portfolio_risk_review']
+    when p_direction='negative' then array['deprioritize']
+    when p_direction='none' then array['no_new_action']
+    when p_direction='unavailable' then array['review_analysis_failure']
+    else null
+  end;
+  if p_status not in ('screening','watchlist','evaluating','passed','invested')
+    or kinds is null
+  then return null; end if;
+  foreach action_kind in array kinds loop
+    actions := actions || pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'kind',action_kind,
+      'scope',case
+        when action_kind='review_analysis_failure' then 'analysis'
+        when action_kind in (
+          'evaluate_follow_on','pause_follow_on','portfolio_risk_review'
+        ) then 'portfolio'
+        else 'deal' end,
+      'priority',case when action_kind in (
+        'pause_follow_on','portfolio_risk_review'
+      ) then 'high' else 'standard' end,
+      'visibility','internal_only'
+    ));
+  end loop;
+  return actions;
+end;
+$$;
+
+create or replace function public.valid_belief_action_list_0019(p_actions jsonb)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare action jsonb;
+begin
+  if pg_catalog.jsonb_typeof(p_actions)<>'array'
+    or pg_catalog.jsonb_array_length(p_actions)=0
+  then return false; end if;
+  for action in select value from pg_catalog.jsonb_array_elements(p_actions) value loop
+    if not public.valid_belief_action_0019(action) then return false; end if;
+  end loop;
+  return true;
+exception when others then return false;
+end;
+$$;
+
+create or replace function public.jsonb_unique_nonempty_text_array_0019(
+  p_value jsonb,p_allow_empty boolean default false
+)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare item_count integer;
+declare distinct_count integer;
+begin
+  if pg_catalog.jsonb_typeof(p_value)<>'array' then return false; end if;
+  select count(*)::integer,count(distinct value#>>'{}')::integer
+  into item_count,distinct_count
+  from pg_catalog.jsonb_array_elements(p_value) item(value)
+  where pg_catalog.jsonb_typeof(value)='string' and btrim(value#>>'{}')<>'';
+  return item_count=pg_catalog.jsonb_array_length(p_value)
+    and item_count=distinct_count and (p_allow_empty or item_count>0);
+exception when others then return false;
+end;
+$$;
+
+create or replace function public.belief_action_compatibility_text_0019(
+  p_actions jsonb
+)
+returns text
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare result text;
+begin
+  if not public.valid_belief_action_list_0019(p_actions) then return null; end if;
+  select pg_catalog.string_agg(case value->>'kind'
+    when 'advance_diligence' then 'Advance internal diligence based on the cited evidence.'
+    when 'continue_monitoring' then 'Continue internal monitoring based on the cited evidence.'
+    when 'deprioritize' then 'Deprioritize this Deal based on the cited evidence.'
+    when 'reopen_diligence' then 'Reopen internal diligence based on the cited evidence.'
+    when 'evaluate_follow_on' then 'Evaluate a follow-on investment based on the cited evidence.'
+    when 'pause_follow_on' then 'Pause follow-on investment activity based on the cited evidence.'
+    when 'portfolio_risk_review' then 'Begin an internal portfolio-risk review based on the cited evidence.'
+    when 'no_new_action' then 'No new internal action is recommended.'
+    when 'review_analysis_failure' then 'Review the analysis failure before relying on this company analysis.'
+  end,' ' order by ordinal)
+  into result
+  from pg_catalog.jsonb_array_elements(p_actions)
+    with ordinality as action(value,ordinal);
+  return result;
+end;
+$$;
+
+create or replace function public.valid_belief_assessment_shape_0019(
+  p_version text,p_direction text,p_score_breakdown jsonb,
+  p_gate_context jsonb,p_gate_results jsonb,p_actions jsonb,
+  p_deal_status text,p_outcome text,p_confidence text,p_score double precision,
+  p_recommended_next_move text
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare prior jsonb;
+declare trigger_event jsonb;
+declare sources jsonb;
+declare source jsonb;
+declare source_ids text[] := array[]::text[];
+declare trigger_source_ids text[];
+declare prior_actions jsonb;
+declare chronology jsonb;
+declare revisit jsonb;
+declare counter jsonb;
+declare action_delta jsonb;
+declare expected_actions jsonb;
+declare expected_score numeric;
+declare expected_confidence text;
+declare chronology_passed boolean;
+declare revisit_passed boolean;
+declare counter_passed boolean;
+declare action_passed boolean;
+declare all_passed boolean;
+declare qualified boolean;
+declare mapped_condition text;
+declare citation text;
+declare counter_words integer;
+begin
+  if p_version<>'belief-change-assessment-v1'
+    or p_direction not in ('positive','mixed','negative','none','unavailable')
+    or p_deal_status not in ('screening','watchlist','evaluating','passed','invested')
+    or p_outcome not in (
+      'belief_revised','monitor','no_material_change','analysis_unavailable'
+    ) or p_confidence not in ('low','medium','high')
+    or p_score is null or p_score<'0'::double precision or p_score>'1'::double precision
+  then return false; end if;
+
+  if not public.jsonb_exact_keys_0019(p_score_breakdown,array[
+      'confidence','dealRelevance','eventRelevance','evidenceQuality',
+      'finalScore','priorContextStrength'
+    ]) or exists (
+      select 1 from pg_catalog.unnest(array[
+        'eventRelevance','dealRelevance','priorContextStrength','evidenceQuality','finalScore'
+      ]) field
+      where pg_catalog.jsonb_typeof(p_score_breakdown->field)<>'number'
+        or (p_score_breakdown->>field)::numeric<0
+        or (p_score_breakdown->>field)::numeric>1
+    )
+  then return false; end if;
+  expected_score := pg_catalog.round((
+    (p_score_breakdown->>'eventRelevance')::numeric*0.35
+    +(p_score_breakdown->>'dealRelevance')::numeric*0.30
+    +(p_score_breakdown->>'priorContextStrength')::numeric*0.20
+    +(p_score_breakdown->>'evidenceQuality')::numeric*0.15
+  ),4);
+  expected_confidence := case when expected_score>=0.78 then 'high'
+    when expected_score>=0.5 then 'medium' else 'low' end;
+  if (p_score_breakdown->>'finalScore')::numeric<>expected_score
+    or p_score_breakdown->>'confidence'<>expected_confidence
+    or p_score<>expected_score::double precision
+    or p_confidence<>expected_confidence
+  then return false; end if;
+
+  if not public.jsonb_exact_keys_0019(
+      p_gate_context,array['priorInteraction','sources','triggerEvent']
+    )
+  then return false; end if;
+  prior := p_gate_context->'priorInteraction';
+  trigger_event := p_gate_context->'triggerEvent';
+  sources := p_gate_context->'sources';
+  if not public.jsonb_exact_keys_0019(prior,array[
+      'id','label','occurredAt','priorActions','provenance',
+      'revisitConditions','sourceIds'
+    ]) or not public.jsonb_exact_keys_0019(
+      trigger_event,array['eventAt','id','sourceIds']
+    ) or coalesce(btrim(prior->>'id'),'')=''
+      or prior->>'provenance'<>'demo_fixture'
+      or prior->>'label'<>'Sample decision record'
+      or not public.valid_temporal_pair_0019(
+        prior->'occurredAt','"timestamp"'::jsonb,false
+      ) or not public.jsonb_unique_nonempty_text_array_0019(
+        prior->'sourceIds',false
+      ) or pg_catalog.jsonb_array_length(prior->'sourceIds')<>1
+      or prior#>>'{sourceIds,0}'<>prior->>'id'
+      or not public.jsonb_unique_nonempty_text_array_0019(
+        prior->'revisitConditions',false
+      ) or not public.valid_belief_action_list_0019(prior->'priorActions')
+      or coalesce(btrim(trigger_event->>'id'),'')=''
+      or not public.valid_temporal_pair_0019(
+        trigger_event->'eventAt',
+        case when (trigger_event->>'eventAt')~'^\d{4}-\d{2}-\d{2}$'
+          then '"date"'::jsonb else '"timestamp"'::jsonb end,false
+      ) or not public.jsonb_unique_nonempty_text_array_0019(
+        trigger_event->'sourceIds',false
+      ) or pg_catalog.jsonb_typeof(sources)<>'array'
+      or pg_catalog.jsonb_array_length(sources)<2
+  then return false; end if;
+
+  for source in select value from pg_catalog.jsonb_array_elements(sources) value loop
+    if not public.valid_source_ref_v2_0019(source)
+      or source->>'id'=any(source_ids)
+    then return false; end if;
+    source_ids:=source_ids||source->>'id';
+  end loop;
+  trigger_source_ids:=array(
+    select value#>>'{}' from pg_catalog.jsonb_array_elements(
+      trigger_event->'sourceIds'
+    ) with ordinality as item(value,ordinal) order by ordinal
+  );
+  if cardinality(source_ids)<>cardinality(trigger_source_ids)+1
+    or not (prior->>'id'=any(source_ids))
+    or exists(select 1 from pg_catalog.unnest(trigger_source_ids) id
+      where not id=any(source_ids))
+    or not exists(select 1 from pg_catalog.jsonb_array_elements(sources) value
+      where value->>'id'=prior->>'id' and value->>'provenance'='demo_fixture'
+        and value->>'title'='Sample decision record'
+        and value->>'sourceClass'='internal_decision_record'
+        and value->>'sourceAuthority'='primary'
+        and value->>'evidenceRole'='context'
+        and value->>'eventAt'=prior->>'occurredAt')
+  then return false; end if;
+
+  if not public.jsonb_exact_keys_0019(p_gate_results,array[
+      'actionDelta','allPassed','chronology','counterevidence',
+      'revisitConditionMapping'
+    ]) then return false; end if;
+  chronology:=p_gate_results->'chronology';
+  revisit:=p_gate_results->'revisitConditionMapping';
+  counter:=p_gate_results->'counterevidence';
+  action_delta:=p_gate_results->'actionDelta';
+  if not public.jsonb_exact_keys_0019(chronology,array[
+      'failureReason','passed','priorInteractionAt','priorInteractionId',
+      'triggerEventAt','triggerEventId'
+    ]) or not public.jsonb_exact_keys_0019(revisit,array[
+      'citedSourceIds','failureReason','passed','priorInteractionId',
+      'revisitConditionIndex','revisitConditionText','triggerEventId'
+    ]) or not public.jsonb_exact_keys_0019(counter,array[
+      'citedSourceIds','failureReason','passed','statement'
+    ]) or not public.jsonb_exact_keys_0019(action_delta,array[
+      'failureReason','passed','priorActions','proposedActions'
+    ]) or pg_catalog.jsonb_typeof(p_gate_results->'allPassed')<>'boolean'
+      or pg_catalog.jsonb_typeof(chronology->'passed')<>'boolean'
+      or pg_catalog.jsonb_typeof(revisit->'passed')<>'boolean'
+      or pg_catalog.jsonb_typeof(counter->'passed')<>'boolean'
+      or pg_catalog.jsonb_typeof(action_delta->'passed')<>'boolean'
+  then return false; end if;
+
+  chronology_passed:=case
+    when (trigger_event->>'eventAt')~'^\d{4}-\d{2}-\d{2}$'
+      then (prior->>'occurredAt')::timestamptz::date
+        < (trigger_event->>'eventAt')::date
+    else (prior->>'occurredAt')::timestamptz
+      < (trigger_event->>'eventAt')::timestamptz end;
+  if chronology->>'priorInteractionId'<>prior->>'id'
+    or chronology->>'priorInteractionAt'<>prior->>'occurredAt'
+    or chronology->>'triggerEventId'<>trigger_event->>'id'
+    or chronology->>'triggerEventAt'<>trigger_event->>'eventAt'
+    or (chronology->>'passed')::boolean<>chronology_passed
+    or chronology->'failureReason' is distinct from (case when chronology_passed
+      then 'null'::jsonb else pg_catalog.to_jsonb(
+        'The selected prior interaction must predate the selected trigger event.'::text
+      ) end)
+  then return false; end if;
+
+  if pg_catalog.jsonb_typeof(revisit->'revisitConditionIndex')<>'number'
+    or (revisit->>'revisitConditionIndex')::integer<0
+  then return false; end if;
+  mapped_condition:=prior#>>array[
+    'revisitConditions',(revisit->>'revisitConditionIndex')::integer::text
+  ];
+  revisit_passed:=revisit->>'priorInteractionId'=prior->>'id'
+    and revisit->>'triggerEventId'=trigger_event->>'id'
+    and mapped_condition is not null
+    and revisit->>'revisitConditionText'=mapped_condition
+    and public.jsonb_unique_nonempty_text_array_0019(
+      revisit->'citedSourceIds',false
+    );
+  if revisit_passed then
+    for citation in select value#>>'{}' from pg_catalog.jsonb_array_elements(
+      revisit->'citedSourceIds'
+    ) item(value) loop
+      if not citation=any(trigger_source_ids) then revisit_passed:=false; end if;
+    end loop;
+  end if;
+  if (revisit->>'passed')::boolean<>revisit_passed
+    or revisit->'failureReason' is distinct from (case when revisit_passed
+      then 'null'::jsonb else pg_catalog.to_jsonb(
+        'The claimed revisit condition must exactly bind the selected Sample decision record, trigger event, and resolvable trigger citations.'::text
+      ) end)
+  then return false; end if;
+
+  counter_words:=coalesce(array_length(regexp_split_to_array(
+    btrim(counter->>'statement'),'\s+'
+  ),1),0);
+  counter_passed:=length(btrim(counter->>'statement'))>=20
+    and counter_words>=3
+    and public.jsonb_unique_nonempty_text_array_0019(
+      counter->'citedSourceIds',false
+    );
+  if counter_passed then
+    for citation in select value#>>'{}' from pg_catalog.jsonb_array_elements(
+      counter->'citedSourceIds'
+    ) item(value) loop
+      if not exists(select 1 from pg_catalog.jsonb_array_elements(sources) value
+        where value->>'id'=citation and value->>'adaptation'='canonical'
+          and value->>'evidenceRole'='counterevidence'
+          and value#>>'{text,status}' in ('verified_exact','normalized_only')
+          and (value#>>'{text,verbatimExcerpt}'=counter->>'statement'
+            or value#>>'{text,normalizedStatement}'=counter->>'statement'))
+      then counter_passed:=false; end if;
+    end loop;
+  end if;
+  if (counter->>'passed')::boolean<>counter_passed
+    or counter->'failureReason' is distinct from (case when counter_passed
+      then 'null'::jsonb else pg_catalog.to_jsonb(
+        'Counterevidence must be substantive and cite canonical evidence that supports the complete statement.'::text
+      ) end)
+  then return false; end if;
+
+  expected_actions:=public.expected_belief_actions_0019(
+    p_deal_status,p_direction
+  );
+  prior_actions:=prior->'priorActions';
+  if not public.valid_belief_action_list_0019(p_actions)
+    or p_actions is distinct from expected_actions
+    or not public.valid_belief_action_list_0019(action_delta->'priorActions')
+    or action_delta->'priorActions' is distinct from prior_actions
+    or action_delta->'proposedActions' is distinct from p_actions
+  then return false; end if;
+  action_passed:=p_actions is not distinct from expected_actions
+    and prior_actions is distinct from p_actions;
+  if (action_delta->>'passed')::boolean<>action_passed
+    or action_delta->'failureReason' is distinct from (case when action_passed
+      then 'null'::jsonb else pg_catalog.to_jsonb(
+        'Proposed actions must materially differ from the selected prior action and exactly match the deterministic status-direction policy.'::text
+      ) end)
+  then return false; end if;
+  all_passed:=chronology_passed and revisit_passed
+    and counter_passed and action_passed;
+  if (p_gate_results->>'allPassed')::boolean<>all_passed then return false; end if;
+  qualified:=p_direction in ('positive','mixed','negative')
+    and p_confidence in ('medium','high') and all_passed;
+  return (p_outcome='belief_revised')=qualified
+    and p_recommended_next_move=
+      public.belief_action_compatibility_text_0019(p_actions);
+exception when others then
+  return false;
+end;
+$$;
+
+alter table public.company_analyses
+  add constraint company_analyses_belief_assessment_check check (
+    (pg_catalog.num_nonnulls(
+      belief_assessment_version,belief_direction,belief_score_breakdown,
+      belief_gate_context,belief_gate_results,belief_actions
+    )=0)
+    or (
+      pg_catalog.num_nonnulls(
+        belief_assessment_version,belief_direction,belief_score_breakdown,
+        belief_gate_context,belief_gate_results,belief_actions
+      )=6
+      and public.valid_belief_assessment_shape_0019(
+        belief_assessment_version,belief_direction,belief_score_breakdown,
+        belief_gate_context,belief_gate_results,belief_actions,deal_status,
+        outcome,confidence,score,recommended_next_move
+      ) is true
+    )
+  );
 
 alter table public.reasoner_judgments
   add column judgment_schema_version text,
@@ -444,16 +1400,20 @@ declare actual_count integer;
 declare actual_ids text[];
 declare expected_ids text[];
 declare actual_fingerprint text;
+declare minimum_ordinal integer;
+declare maximum_ordinal integer;
 begin
   select * into strict snapshot from public.market_evidence_snapshots
   where workspace_id = p_workspace_id and id = p_snapshot_id;
-  select count(*)::integer,
+  select count(*)::integer,min(ordinal),max(ordinal),
     array_agg(event_id order by ordinal),
     array_agg(event_id order by event_id collate "C")
-  into actual_count, actual_ids, expected_ids
+  into actual_count,minimum_ordinal,maximum_ordinal,actual_ids,expected_ids
   from public.market_evidence_snapshot_events
   where workspace_id = p_workspace_id and snapshot_id = p_snapshot_id;
   if actual_count <> snapshot.event_count
+    or minimum_ordinal is distinct from 0
+    or maximum_ordinal is distinct from snapshot.event_count-1
     or actual_ids is distinct from expected_ids
     or exists (
       select 1 from public.market_evidence_snapshot_events as event
@@ -461,7 +1421,12 @@ begin
         and (event.ordinal < 0 or event.ordinal >= snapshot.event_count
           or not public.evidence_event_in_window_0019(
             event.published_value, event.published_precision,
-            snapshot.window_start_at, snapshot.window_end_at, snapshot.window_timezone))
+            snapshot.window_start_at, snapshot.window_end_at, snapshot.window_timezone)
+          or not public.market_event_sources_are_verified_0019(event.payload)
+          or event.event_id<>event.payload->>'id'
+          or event.event_content_fingerprint<>event.payload->>'contentFingerprint'
+          or event.published_value<>event.payload->>'publishedAt'
+          or event.published_precision<>event.payload->>'publishedAtPrecision')
     ) then
     raise exception 'INVALID_MARKET_EVIDENCE_SNAPSHOT';
   end if;
@@ -474,7 +1439,8 @@ begin
     public.canonical_utc_iso_milliseconds(snapshot.window_end_at),
     snapshot.window_timezone
   ] || coalesce(array(
-    select payload::text from public.market_evidence_snapshot_events
+    select public.canonical_jsonb_text_0019(payload)
+    from public.market_evidence_snapshot_events
     where workspace_id = p_workspace_id and snapshot_id = p_snapshot_id
     order by ordinal
   ), array[]::text[])) into actual_fingerprint;
@@ -500,6 +1466,21 @@ after insert or update or delete on public.market_evidence_snapshot_events
 deferrable initially deferred for each row
 execute function public.validate_snapshot_deferred_0019();
 
+create or replace function public.validate_snapshot_parent_deferred_0019()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  perform public.validate_snapshot_0019(
+    coalesce(new.workspace_id,old.workspace_id),coalesce(new.id,old.id)
+  );
+  return null;
+end;
+$$;
+
+create constraint trigger market_evidence_snapshots_validate
+after insert or update or delete on public.market_evidence_snapshots
+deferrable initially deferred for each row
+execute function public.validate_snapshot_parent_deferred_0019();
+
 create or replace function public.create_market_evidence_snapshot(p_request jsonb)
 returns setof public.market_evidence_snapshots
 language plpgsql security definer set search_path = '' as $$
@@ -516,6 +1497,10 @@ begin
     or (p_request ->> 'windowDays')::integer <> 14
     or jsonb_typeof(events) <> 'array' or jsonb_array_length(events) = 0
   then raise exception 'INVALID_MARKET_EVIDENCE_SNAPSHOT_REQUEST'; end if;
+  if exists(
+    select 1 from pg_catalog.jsonb_array_elements(events) event(value)
+    where not public.market_event_sources_are_verified_0019(value)
+  ) then raise exception 'INVALID_MARKET_EVENT_V2'; end if;
   perform pg_catalog.pg_advisory_xact_lock(
     pg_catalog.hashtextextended(jsonb_build_array(workspace, snapshot_id)::text, 0)
   );
@@ -528,7 +1513,8 @@ begin
     public.canonical_utc_iso_milliseconds((p_request ->> 'windowStartAt')::timestamptz),
     public.canonical_utc_iso_milliseconds((p_request ->> 'windowEndAt')::timestamptz),
     p_request ->> 'windowTimezone'
-  ] || array(select value::text from jsonb_array_elements(events) value order by value ->> 'id' collate "C"))
+  ] || array(select public.canonical_jsonb_text_0019(value)
+    from jsonb_array_elements(events) value order by value ->> 'id' collate "C"))
   into fingerprint;
   select * into existing from public.market_evidence_snapshots
   where workspace_id = workspace and id = snapshot_id;
@@ -585,10 +1571,23 @@ declare snapshot_id text;
 declare snapshot_fingerprint text;
 declare context_fingerprint text;
 begin
-  if workspace = '' or run_mode not in ('xtrace','structured')
+  if not public.jsonb_exact_keys_0019(
+      p_request,array['evidenceRequest','mode','windowDays','workspaceId']
+    ) or workspace = '' or run_mode not in ('xtrace','structured')
     or (p_request ->> 'windowDays')::integer <> 14
     or evidence ->> 'schemaVersion' <> 'run-evidence-request-v1'
     or evidence_mode not in ('live','pinned')
+    or (
+      evidence_mode='live' and not public.jsonb_exact_keys_0019(
+        evidence,array['evidenceMode','schemaVersion']
+      )
+    ) or (
+      evidence_mode='pinned' and (
+        not public.jsonb_exact_keys_0019(
+          evidence,array['evidenceMode','schemaVersion','snapshotId']
+        ) or coalesce(btrim(evidence->>'snapshotId'),'')=''
+      )
+    )
   then raise exception 'INVALID_RUN_EVIDENCE_REQUEST'; end if;
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
     jsonb_build_array(workspace,run_mode,14,'active-run')::text,0));
@@ -640,28 +1639,89 @@ create or replace function public.validate_run_binding_0019(
 returns void language plpgsql security definer set search_path = '' as $$
 declare binding public.run_evidence_bindings%rowtype;
 declare run public.scan_runs%rowtype;
+declare snapshot public.market_evidence_snapshots%rowtype;
 declare actual_count integer;
 declare ids_by_ordinal text[];
 declare ids_by_name text[];
 declare event_fingerprint text;
 declare binding_digest text;
+declare minimum_ordinal integer;
+declare maximum_ordinal integer;
 begin
-  select * into strict binding from public.run_evidence_bindings
+  select * into binding from public.run_evidence_bindings
     where workspace_id=p_workspace_id and run_id=p_run_id;
-  select * into strict run from public.scan_runs
+  if not found then raise exception 'INVALID_RUN_EVIDENCE_BINDING'; end if;
+  select * into run from public.scan_runs
     where workspace_id=p_workspace_id and id=p_run_id;
-  select count(*)::integer,array_agg(event_id order by ordinal),
+  if not found then raise exception 'INVALID_RUN_EVIDENCE_BINDING'; end if;
+  select count(*)::integer,min(ordinal),max(ordinal),
+    array_agg(event_id order by ordinal),
     array_agg(event_id order by event_id collate "C")
-  into actual_count,ids_by_ordinal,ids_by_name from public.run_market_events
+  into actual_count,minimum_ordinal,maximum_ordinal,ids_by_ordinal,ids_by_name
+  from public.run_market_events
     where workspace_id=p_workspace_id and run_id=p_run_id;
-  if binding.event_count <> actual_count or ids_by_ordinal is distinct from ids_by_name
-    or binding.evidence_context_fingerprint <> run.evidence_context_fingerprint
-    or binding.evidence_mode <> run.evidence_mode
+  if binding.event_count <> actual_count
+    or (actual_count=0 and (
+      minimum_ordinal is not null or maximum_ordinal is not null
+    )) or (actual_count>0 and (
+      minimum_ordinal is distinct from 0
+      or maximum_ordinal is distinct from actual_count-1
+    )) or ids_by_ordinal is distinct from ids_by_name
+    or binding.schema_version <> 'run-evidence-binding-v1'
+    or binding.evidence_context_version is distinct from run.evidence_context_version
+    or binding.evidence_context_version <> 'run-evidence-context-v1'
+    or binding.evidence_context_fingerprint is distinct from run.evidence_context_fingerprint
+    or binding.evidence_mode is distinct from run.evidence_mode
+    or binding.window_days is distinct from run.window_days
+    or binding.anchor_at is distinct from run.evidence_anchor_at
+    or binding.window_start_at is distinct from run.evidence_window_start_at
+    or binding.window_end_at is distinct from run.evidence_window_end_at
+    or binding.window_timezone is distinct from run.evidence_window_timezone
     or binding.snapshot_id is distinct from run.evidence_snapshot_id
     or binding.snapshot_fingerprint is distinct from run.evidence_snapshot_fingerprint
+    or exists(select 1 from public.run_market_events event
+      where event.workspace_id=p_workspace_id and event.run_id=p_run_id
+        and (not public.valid_market_event_v2_0019(event.payload)
+          or event.event_id<>event.payload->>'id'
+          or event.event_content_fingerprint<>event.payload->>'contentFingerprint'
+          or event.published_value<>event.payload->>'publishedAt'
+          or event.published_precision<>event.payload->>'publishedAtPrecision'
+          or not public.evidence_event_in_window_0019(
+            event.published_value,event.published_precision,
+            binding.window_start_at,binding.window_end_at,binding.window_timezone)))
   then raise exception 'INVALID_RUN_EVIDENCE_BINDING'; end if;
+  if binding.evidence_mode='pinned' then
+    select * into strict snapshot from public.market_evidence_snapshots
+      where workspace_id=p_workspace_id and id=binding.snapshot_id
+        and snapshot_fingerprint=binding.snapshot_fingerprint;
+    if binding.display_label is distinct from snapshot.display_label
+      or binding.event_count is distinct from snapshot.event_count
+      or binding.event_count=0
+      or exists(
+        select 1 from public.market_evidence_snapshot_events snapshot_event
+        full join public.run_market_events run_event
+          on run_event.workspace_id=snapshot_event.workspace_id
+          and run_event.run_id=p_run_id
+          and run_event.ordinal=snapshot_event.ordinal
+        where coalesce(snapshot_event.workspace_id,run_event.workspace_id)=p_workspace_id
+          and snapshot_event.snapshot_id=binding.snapshot_id
+          and (snapshot_event.event_id is distinct from run_event.event_id
+            or snapshot_event.event_content_fingerprint
+              is distinct from run_event.event_content_fingerprint
+            or snapshot_event.published_value is distinct from run_event.published_value
+            or snapshot_event.published_precision is distinct from run_event.published_precision
+            or snapshot_event.payload is distinct from run_event.payload)
+      )
+    then raise exception 'INVALID_PINNED_RUN_EVIDENCE_BINDING'; end if;
+  elsif binding.evidence_mode='live' then
+    if binding.snapshot_id is not null or binding.snapshot_fingerprint is not null
+      or binding.display_label is distinct from
+        'Live evidence window ending '
+          || public.canonical_utc_iso_milliseconds(binding.window_end_at)
+    then raise exception 'INVALID_LIVE_RUN_EVIDENCE_BINDING'; end if;
+  else raise exception 'INVALID_RUN_EVIDENCE_BINDING'; end if;
   event_fingerprint := public.sha256_length_framed(array['run-event-set-v1'] || coalesce(array(
-    select payload::text from public.run_market_events
+    select public.canonical_jsonb_text_0019(payload) from public.run_market_events
     where workspace_id=p_workspace_id and run_id=p_run_id order by ordinal
   ),array[]::text[]));
   binding_digest := public.sha256_length_framed(array[
@@ -672,6 +1732,27 @@ begin
   then raise exception 'INVALID_RUN_EVIDENCE_BINDING_FINGERPRINT'; end if;
 end;
 $$;
+
+create or replace function public.validate_run_binding_deferred_0019()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  perform public.validate_run_binding_0019(
+    coalesce(new.workspace_id,old.workspace_id),
+    coalesce(new.run_id,old.run_id)
+  );
+  return null;
+end;
+$$;
+
+create constraint trigger run_evidence_bindings_validate_0019
+after insert or update or delete on public.run_evidence_bindings
+deferrable initially deferred for each row
+execute function public.validate_run_binding_deferred_0019();
+
+create constraint trigger run_market_events_validate_0019
+after insert or update or delete on public.run_market_events
+deferrable initially deferred for each row
+execute function public.validate_run_binding_deferred_0019();
 
 create or replace function public.bind_pinned_run_market_events(
   p_workspace_id text,p_run_id uuid
@@ -689,7 +1770,8 @@ begin
     return query select * from public.run_evidence_bindings where workspace_id=p_workspace_id and run_id=p_run_id; return;
   end if;
   event_set_digest := public.sha256_length_framed(array['run-event-set-v1'] || array(
-    select payload::text from public.market_evidence_snapshot_events
+    select public.canonical_jsonb_text_0019(payload)
+    from public.market_evidence_snapshot_events
     where workspace_id=p_workspace_id and snapshot_id=run.evidence_snapshot_id order by ordinal));
   binding_digest := public.sha256_length_framed(array['run-evidence-binding-v1',p_workspace_id,p_run_id::text,
     run.evidence_context_fingerprint,event_set_digest,
@@ -718,19 +1800,38 @@ declare requested integer := coalesce(cardinality(p_event_ids),0);
 declare resolved integer;
 declare event_set_digest text;
 declare binding_digest text;
+declare selected_events jsonb;
 begin
   select * into strict run from public.scan_runs where workspace_id=p_workspace_id and id=p_run_id for update;
   if run.evidence_mode <> 'live' then raise exception 'LIVE_BINDING_REQUIRES_LIVE_RUN'; end if;
-  if requested <> coalesce((select count(distinct value) from unnest(p_event_ids) value),0) then
+  if requested <> coalesce((select count(distinct value) from unnest(p_event_ids) value),0)
+    or exists(select 1 from unnest(coalesce(p_event_ids,array[]::text[])) value
+      where value is null or btrim(value)='')
+  then
     raise exception 'DUPLICATE_LIVE_EVENT_ID'; end if;
-  select count(*)::integer into resolved from public.market_events event
-    where event.workspace_id=p_workspace_id and event.id=any(coalesce(p_event_ids,array[]::text[]))
-      and public.evidence_event_in_window_0019(event.payload->>'publishedAt',event.payload->>'publishedAtPrecision',
-        run.evidence_window_start_at,run.evidence_window_end_at,run.evidence_window_timezone);
+  select coalesce(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+    'id',locked.id,'payload',locked.payload
+  ) order by locked.id collate "C"),'[]'::jsonb)
+  into selected_events
+  from (
+    select event.id,event.payload from public.market_events event
+    where event.workspace_id=p_workspace_id
+      and event.id=any(coalesce(p_event_ids,array[]::text[]))
+    order by event.id collate "C" for share
+  ) locked;
+  resolved:=pg_catalog.jsonb_array_length(selected_events);
   if resolved <> requested then raise exception 'UNKNOWN_OR_OUT_OF_WINDOW_LIVE_EVENT'; end if;
+  if exists(select 1 from pg_catalog.jsonb_array_elements(selected_events) item
+    where not public.valid_market_event_v2_0019(item->'payload')
+      or not public.evidence_event_in_window_0019(
+        item#>>'{payload,publishedAt}',item#>>'{payload,publishedAtPrecision}',
+        run.evidence_window_start_at,run.evidence_window_end_at,
+        run.evidence_window_timezone))
+  then raise exception 'UNKNOWN_OR_OUT_OF_WINDOW_LIVE_EVENT'; end if;
   event_set_digest := public.sha256_length_framed(array['run-event-set-v1'] || coalesce(array(
-    select payload::text from public.market_events where workspace_id=p_workspace_id
-      and id=any(coalesce(p_event_ids,array[]::text[])) order by id collate "C"),array[]::text[]));
+    select public.canonical_jsonb_text_0019(item->'payload')
+    from pg_catalog.jsonb_array_elements(selected_events) item
+    order by item->>'id' collate "C"),array[]::text[]));
   binding_digest := public.sha256_length_framed(array['run-evidence-binding-v1',p_workspace_id,p_run_id::text,
     run.evidence_context_fingerprint,event_set_digest,requested::text]);
   if exists(select 1 from public.run_evidence_bindings where workspace_id=p_workspace_id and run_id=p_run_id) then
@@ -745,9 +1846,11 @@ begin
     'Live evidence window ending '||public.canonical_utc_iso_milliseconds(run.evidence_window_end_at),
     requested,event_set_digest,binding_digest,pg_catalog.clock_timestamp());
   insert into public.run_market_events select p_workspace_id,p_run_id,
-    (row_number() over(order by id collate "C")-1)::integer,id,payload->>'contentFingerprint',
-    payload->>'publishedAt',payload->>'publishedAtPrecision',payload
-  from public.market_events where workspace_id=p_workspace_id and id=any(coalesce(p_event_ids,array[]::text[]));
+    (row_number() over(order by item->>'id' collate "C")-1)::integer,
+    item->>'id',item#>>'{payload,contentFingerprint}',
+    item#>>'{payload,publishedAt}',item#>>'{payload,publishedAtPrecision}',
+    item->'payload'
+  from pg_catalog.jsonb_array_elements(selected_events) item;
   perform public.validate_run_binding_0019(p_workspace_id,p_run_id);
   return query select * from public.run_evidence_bindings where workspace_id=p_workspace_id and run_id=p_run_id;
 end;
@@ -816,6 +1919,10 @@ execute function public.protect_scan_run_identity_0019();
 
 create or replace function public.protect_report_evidence_0019()
 returns trigger language plpgsql set search_path = '' as $$
+declare old_count integer;
+declare new_count integer;
+declare evidence_changed boolean;
+declare non_evidence_changed boolean;
 begin
   if tg_op = 'DELETE' then
     if old.evidence_context_version is not null then
@@ -823,7 +1930,21 @@ begin
     end if;
     return old;
   end if;
-  if row(old.evidence_context_version,old.evidence_mode,old.evidence_window_days,
+  old_count:=pg_catalog.num_nonnulls(
+    old.evidence_context_version,old.evidence_mode,old.evidence_window_days,
+    old.evidence_anchor_at,old.evidence_window_start_at,old.evidence_window_end_at,
+    old.evidence_window_timezone,old.evidence_snapshot_id,old.evidence_snapshot_fingerprint,
+    old.evidence_context_fingerprint,old.evidence_display_label,old.evidence_event_count,
+    old.evidence_event_set_fingerprint,old.evidence_binding_fingerprint
+  );
+  new_count:=pg_catalog.num_nonnulls(
+    new.evidence_context_version,new.evidence_mode,new.evidence_window_days,
+    new.evidence_anchor_at,new.evidence_window_start_at,new.evidence_window_end_at,
+    new.evidence_window_timezone,new.evidence_snapshot_id,new.evidence_snapshot_fingerprint,
+    new.evidence_context_fingerprint,new.evidence_display_label,new.evidence_event_count,
+    new.evidence_event_set_fingerprint,new.evidence_binding_fingerprint
+  );
+  evidence_changed:=row(old.evidence_context_version,old.evidence_mode,old.evidence_window_days,
       old.evidence_anchor_at,old.evidence_window_start_at,old.evidence_window_end_at,
       old.evidence_window_timezone,old.evidence_snapshot_id,old.evidence_snapshot_fingerprint,
       old.evidence_context_fingerprint,old.evidence_display_label,old.evidence_event_count,
@@ -833,12 +1954,40 @@ begin
       new.evidence_anchor_at,new.evidence_window_start_at,new.evidence_window_end_at,
       new.evidence_window_timezone,new.evidence_snapshot_id,new.evidence_snapshot_fingerprint,
       new.evidence_context_fingerprint,new.evidence_display_label,new.evidence_event_count,
-      new.evidence_event_set_fingerprint,new.evidence_binding_fingerprint)
-  then
-    if old.evidence_context_version is not null
+      new.evidence_event_set_fingerprint,new.evidence_binding_fingerprint);
+  non_evidence_changed:=(pg_catalog.to_jsonb(old)-array[
+    'evidence_context_version','evidence_mode','evidence_window_days',
+    'evidence_anchor_at','evidence_window_start_at','evidence_window_end_at',
+    'evidence_window_timezone','evidence_snapshot_id','evidence_snapshot_fingerprint',
+    'evidence_context_fingerprint','evidence_display_label','evidence_event_count',
+    'evidence_event_set_fingerprint','evidence_binding_fingerprint'
+  ]) is distinct from (pg_catalog.to_jsonb(new)-array[
+    'evidence_context_version','evidence_mode','evidence_window_days',
+    'evidence_anchor_at','evidence_window_start_at','evidence_window_end_at',
+    'evidence_window_timezone','evidence_snapshot_id','evidence_snapshot_fingerprint',
+    'evidence_context_fingerprint','evidence_display_label','evidence_event_count',
+    'evidence_event_set_fingerprint','evidence_binding_fingerprint'
+  ]);
+  if old_count=14 and (evidence_changed or non_evidence_changed) then
+    raise exception 'CURRENT_REPORT_LINEAGE_IS_IMMUTABLE';
+  end if;
+  if evidence_changed then
+    if old_count<>0 or new_count<>14 or non_evidence_changed
       or new.evidence_context_version <> 'run-evidence-context-v1'
-      or pg_catalog.current_setting('vsee.0019_finalizer',true) <> 'on'
+      or pg_catalog.current_setting('vsee.0019_finalizer',true) is distinct from 'on'
+      or not exists(select 1 from public.intelligence_reports stored
+        where stored.workspace_id=old.workspace_id and stored.id=old.id
+          and stored.xmin::text=pg_catalog.pg_current_xact_id()::text)
     then raise exception 'REPORT_EVIDENCE_CONTEXT_IS_IMMUTABLE'; end if;
+  elsif old_count=0 and not exists(
+    select 1 from public.intelligence_reports stored
+    where stored.workspace_id=old.workspace_id and stored.id=old.id
+      and stored.xmin::text=pg_catalog.pg_current_xact_id()::text
+  ) then
+    if non_evidence_changed then
+      raise exception 'COMMITTED_LEGACY_REPORT_IS_IMMUTABLE';
+    end if;
+    return null;
   end if;
   return new;
 end;
@@ -850,6 +1999,10 @@ execute function public.protect_report_evidence_0019();
 
 create or replace function public.protect_analysis_assessment_0019()
 returns trigger language plpgsql set search_path = '' as $$
+declare old_count integer;
+declare new_count integer;
+declare assessment_changed boolean;
+declare non_assessment_changed boolean;
 begin
   if tg_op = 'DELETE' then
     if exists(select 1 from public.intelligence_reports report
@@ -858,17 +2011,40 @@ begin
     then raise exception 'CURRENT_ANALYSIS_LINEAGE_IS_IMMUTABLE'; end if;
     return old;
   end if;
-  if row(old.belief_assessment_version,old.belief_direction,
+  old_count:=pg_catalog.num_nonnulls(
+    old.belief_assessment_version,old.belief_direction,
+    old.belief_score_breakdown,old.belief_gate_context,
+    old.belief_gate_results,old.belief_actions
+  );
+  new_count:=pg_catalog.num_nonnulls(
+    new.belief_assessment_version,new.belief_direction,
+    new.belief_score_breakdown,new.belief_gate_context,
+    new.belief_gate_results,new.belief_actions
+  );
+  assessment_changed:=row(old.belief_assessment_version,old.belief_direction,
       old.belief_score_breakdown,old.belief_gate_context,
       old.belief_gate_results,old.belief_actions)
     is distinct from
     row(new.belief_assessment_version,new.belief_direction,
       new.belief_score_breakdown,new.belief_gate_context,
-      new.belief_gate_results,new.belief_actions)
-  then
-    if old.belief_assessment_version is not null
+      new.belief_gate_results,new.belief_actions);
+  non_assessment_changed:=(pg_catalog.to_jsonb(old)-array[
+    'belief_assessment_version','belief_direction','belief_score_breakdown',
+    'belief_gate_context','belief_gate_results','belief_actions'
+  ]) is distinct from (pg_catalog.to_jsonb(new)-array[
+    'belief_assessment_version','belief_direction','belief_score_breakdown',
+    'belief_gate_context','belief_gate_results','belief_actions'
+  ]);
+  if old_count=6 and (assessment_changed or non_assessment_changed) then
+    raise exception 'CURRENT_ANALYSIS_LINEAGE_IS_IMMUTABLE';
+  end if;
+  if assessment_changed then
+    if old_count<>0 or new_count<>6 or non_assessment_changed
       or new.belief_assessment_version <> 'belief-change-assessment-v1'
-      or pg_catalog.current_setting('vsee.0019_finalizer',true) <> 'on'
+      or pg_catalog.current_setting('vsee.0019_finalizer',true) is distinct from 'on'
+      or not exists(select 1 from public.company_analyses stored
+        where stored.workspace_id=old.workspace_id and stored.id=old.id
+          and stored.xmin::text=pg_catalog.pg_current_xact_id()::text)
     then raise exception 'BELIEF_ASSESSMENT_IS_IMMUTABLE'; end if;
   end if;
   return new;
@@ -931,7 +2107,7 @@ begin
       then raise exception 'PARTIAL_BELIEF_ASSESSMENT'; end if;
       if not exists(select 1 from public.run_market_events event
         where event.workspace_id=p_workspace_id and event.run_id=p_run_id
-          and event.event_id=analysis#>>'{beliefGateContext,selectedTriggerEventId}')
+          and event.event_id=analysis#>>'{beliefGateContext,triggerEvent,id}')
       then raise exception 'ASSESSMENT_TRIGGER_EVENT_OUTSIDE_RUN'; end if;
       update public.company_analyses stored set
         belief_assessment_version=analysis->>'beliefAssessmentVersion',
@@ -992,8 +2168,20 @@ declare report_id text := btrim(p_report->>'id');
 declare run_id uuid := (p_report->>'runId')::uuid;
 declare binding_fingerprint text := nullif(btrim(p_report->>'evidenceBindingFingerprint'),'');
 declare existing public.intelligence_reports%rowtype;
+declare run public.scan_runs%rowtype;
 begin
+  select * into run from public.scan_runs
+  where workspace_id=workspace and id=run_id for share;
+  if not found then raise exception 'REPORT_RUN_NOT_FOUND'; end if;
   if binding_fingerprint is null then
+    if pg_catalog.num_nonnulls(
+      run.evidence_context_version,run.evidence_mode,run.evidence_anchor_at,
+      run.evidence_window_start_at,run.evidence_window_end_at,
+      run.evidence_window_timezone,run.evidence_snapshot_id,
+      run.evidence_snapshot_fingerprint,run.evidence_context_fingerprint
+    ) <> 0 then
+      raise exception 'CURRENT_RUN_REQUIRES_EVIDENCE_BINDING';
+    end if;
     return query select * from public.save_intelligence_report_legacy_0019(p_report,p_analyses);
     return;
   end if;
@@ -1102,6 +2290,9 @@ create policy run_market_events_registry_owner_0019
 create policy reasoner_judgments_registry_owner_0019
   on public.reasoner_judgments for all to vsee_registry_owner
   using (true) with check (true);
+create policy scan_runs_registry_owner_0019
+  on public.scan_runs for all to vsee_registry_owner
+  using (true) with check (true);
 
 revoke all on table public.market_evidence_snapshots, public.market_evidence_snapshot_events,
   public.run_evidence_bindings, public.run_market_events, public.reasoner_judgments from public, anon, authenticated, service_role;
@@ -1120,13 +2311,31 @@ declare function_identity regprocedure;
 begin
   foreach function_identity in array array[
     'public.evidence_event_in_window_0019(text,text,timestamptz,timestamptz,text)'::regprocedure,
+    'public.jsonb_exact_keys_0019(jsonb,text[])'::regprocedure,
+    'public.canonical_jsonb_text_0019(jsonb)'::regprocedure,
+    'public.sha256_canonical_jsonb_0019(jsonb)'::regprocedure,
+    'public.jsonb_sorted_unique_text_array_0019(jsonb,boolean,boolean)'::regprocedure,
+    'public.valid_temporal_pair_0019(jsonb,jsonb,boolean)'::regprocedure,
+    'public.temporal_definitely_before_0019(jsonb,jsonb)'::regprocedure,
+    'public.valid_canonical_http_url_0019(jsonb)'::regprocedure,
+    'public.valid_source_ref_v2_0019(jsonb)'::regprocedure,
+    'public.valid_market_event_v2_0019(jsonb)'::regprocedure,
+    'public.market_event_sources_are_verified_0019(jsonb)'::regprocedure,
+    'public.valid_belief_action_0019(jsonb)'::regprocedure,
+    'public.expected_belief_actions_0019(text,text)'::regprocedure,
+    'public.valid_belief_action_list_0019(jsonb)'::regprocedure,
+    'public.jsonb_unique_nonempty_text_array_0019(jsonb,boolean)'::regprocedure,
+    'public.belief_action_compatibility_text_0019(jsonb)'::regprocedure,
+    'public.valid_belief_assessment_shape_0019(text,text,jsonb,jsonb,jsonb,jsonb,text,text,text,double precision,text)'::regprocedure,
     'public.reject_immutable_row_0019()'::regprocedure,
     'public.reject_immutable_statement_0019()'::regprocedure,
     'public.validate_snapshot_0019(text,text)'::regprocedure,
     'public.validate_snapshot_deferred_0019()'::regprocedure,
+    'public.validate_snapshot_parent_deferred_0019()'::regprocedure,
     'public.create_market_evidence_snapshot(jsonb)'::regprocedure,
     'public.create_scan_run_with_evidence_context(jsonb)'::regprocedure,
     'public.validate_run_binding_0019(text,uuid)'::regprocedure,
+    'public.validate_run_binding_deferred_0019()'::regprocedure,
     'public.bind_pinned_run_market_events(text,uuid)'::regprocedure,
     'public.bind_live_run_market_events(text,uuid,text[])'::regprocedure,
     'public.save_reasoner_judgment_immutable(jsonb)'::regprocedure
@@ -1139,7 +2348,10 @@ begin
     ,'public.reset_intelligence_products(text)'::regprocedure
   ] loop
     execute pg_catalog.format('alter function %s owner to vsee_registry_owner',function_identity);
-    execute pg_catalog.format('revoke all on function %s from public, anon, authenticated',function_identity);
+    execute pg_catalog.format(
+      'revoke all on function %s from public, anon, authenticated, service_role',
+      function_identity
+    );
   end loop;
 end;
 $ownership$;
@@ -1162,6 +2374,7 @@ grant usage on schema public to vsee_registry_owner;
 grant select,insert on public.scan_runs,public.market_evidence_snapshots,
   public.market_evidence_snapshot_events,public.run_evidence_bindings,
   public.run_market_events,public.reasoner_judgments to vsee_registry_owner;
+grant update(status) on public.scan_runs to vsee_registry_owner;
 grant select on public.workspaces,public.deals,public.market_events,
   public.workspace_test_generations to vsee_registry_owner;
 grant select,insert,delete on public.intelligence_reports,

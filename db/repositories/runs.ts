@@ -4,6 +4,7 @@ import {
   RunEvidenceRequestV1Schema,
   type RunEvidenceRequestV1,
 } from "../../lib/contracts/evidence-context";
+import type { WritableMarketEventV2 } from "../../lib/contracts/source-evidence";
 
 export function createRunsRepository(client: DataClient) {
   return {
@@ -27,8 +28,15 @@ export function createRunsRepository(client: DataClient) {
     bindPinnedMarketEvents(workspaceId: string, runId: string) {
       return client.bindPinnedRunMarketEvents(workspaceId, runId);
     },
-    bindLiveMarketEvents(workspaceId: string, runId: string, eventIds: string[]) {
-      return client.bindLiveRunMarketEvents(workspaceId, runId, eventIds);
+    bindLiveMarketEvents(
+      workspaceId: string,
+      runId: string,
+      events: WritableMarketEventV2[],
+    ) {
+      return client.bindLiveRunMarketEvents(workspaceId, runId, events);
+    },
+    getEvidenceBinding(workspaceId: string, runId: string) {
+      return client.getRunEvidenceBinding(workspaceId, runId);
     },
     renewLease(workspaceId: string, runId: string, workerId: string) {
       return client.renewRunLease(workspaceId, runId, workerId);

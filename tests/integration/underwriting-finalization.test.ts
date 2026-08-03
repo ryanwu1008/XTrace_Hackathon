@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -55,7 +54,7 @@ const migrations = [
   fileURLToPath(new URL(`../../drizzle/${filename}`, import.meta.url))
 );
 const postgresSafety = requireLoopbackPostgres();
-const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
+const postgresAvailable = postgresSafety.state === "verified" ? postgresSafety.run(
   "psql",
   [
     "-d",
@@ -63,14 +62,26 @@ const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
     "-Atqc",
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
-  { encoding: "utf8" },
 ) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
-  postgresAvailable.status === 0
+  postgresSafety.state === "verified"
+  && postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
-  && spawnSync("createdb", ["--version"]).status === 0
-  && spawnSync("dropdb", ["--version"]).status === 0;
-const requirePostgres = process.env.REQUIRE_POSTGRES_MIGRATION_TESTS === "1";
+  && postgresSafety.run("createdb", ["--version"]).status === 0
+  && postgresSafety.run("dropdb", ["--version"]).status === 0;
+const requirePostgres = postgresSafety.state === "verified";
+
+function postgresExec(
+  command: "psql" | "createdb" | "dropdb",
+  args: readonly string[],
+  options: { input?: string; encoding?: "utf8"; stdio?: unknown } = {},
+): string {
+  assert.equal(postgresSafety.state, "verified");
+  if (postgresSafety.state !== "verified") throw new Error("unreachable");
+  return postgresSafety.exec(command, args, {
+    ...(options.input === undefined ? {} : { input: options.input }),
+  });
+}
 
 function deterministicOptions() {
   let sequence = 0;
@@ -2241,11 +2252,11 @@ function setupSqlUnderwritingWorkspace(database: string): void {
 
 function withTemporaryDatabase(run: (database: string) => void): void {
   const database = makeDisposableDatabaseName("underwriting_runs");
-  execFileSync("createdb", [database], { stdio: "pipe" });
+  postgresExec("createdb", [database], { stdio: "pipe" });
   try {
     run(database);
   } finally {
-    execFileSync("dropdb", ["--if-exists", database], { stdio: "pipe" });
+    postgresExec("dropdb", ["--if-exists", database], { stdio: "pipe" });
   }
 }
 
@@ -2253,16 +2264,16 @@ async function withTemporaryDatabaseAsync(
   run: (database: string) => Promise<void>,
 ): Promise<void> {
   const database = makeDisposableDatabaseName("underwriting_async");
-  execFileSync("createdb", [database], { stdio: "pipe" });
+  postgresExec("createdb", [database], { stdio: "pipe" });
   try {
     await run(database);
   } finally {
-    execFileSync("dropdb", ["--if-exists", database], { stdio: "pipe" });
+    postgresExec("dropdb", ["--if-exists", database], { stdio: "pipe" });
   }
 }
 
 function applySql(database: string, path: string): void {
-  execFileSync(
+  postgresExec(
     "psql",
     ["-v", "ON_ERROR_STOP=1", "-d", database, "-f", path],
     { stdio: "pipe" },
@@ -2270,7 +2281,7 @@ function applySql(database: string, path: string): void {
 }
 
 function executeSql(database: string, sql: string): string {
-  return execFileSync(
+  return postgresExec(
     "psql",
     ["-q", "-v", "ON_ERROR_STOP=1", "-d", database, "-AtF", "|", "-c", sql],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
@@ -2279,10 +2290,11 @@ function executeSql(database: string, sql: string): string {
 
 function executeSqlAsync(database: string, sql: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
+    assert.equal(postgresSafety.state, "verified");
+    if (postgresSafety.state !== "verified") throw new Error("unreachable");
+    const child = postgresSafety.spawn(
       "psql",
       ["-q", "-v", "ON_ERROR_STOP=1", "-d", database, "-AtF", "|", "-c", sql],
-      { stdio: ["ignore", "pipe", "pipe"] },
     );
     let stdout = "";
     let stderr = "";

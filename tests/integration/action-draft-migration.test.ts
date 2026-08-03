@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -13,7 +12,7 @@ const journalPath = fileURLToPath(
   new URL("../../drizzle/meta/_journal.json", import.meta.url),
 );
 const postgresSafety = requireLoopbackPostgres();
-const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
+const postgresAvailable = postgresSafety.state === "verified" ? postgresSafety.run(
   "psql",
   [
     "-d",
@@ -21,14 +20,26 @@ const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
     "-Atqc",
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
-  { encoding: "utf8" },
 ) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
-  postgresAvailable.status === 0
+  postgresSafety.state === "verified"
+  && postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
-  && spawnSync("createdb", ["--version"]).status === 0
-  && spawnSync("dropdb", ["--version"]).status === 0;
-const requirePostgres = process.env.REQUIRE_POSTGRES_MIGRATION_TESTS === "1";
+  && postgresSafety.run("createdb", ["--version"]).status === 0
+  && postgresSafety.run("dropdb", ["--version"]).status === 0;
+const requirePostgres = postgresSafety.state === "verified";
+
+function postgresExec(
+  command: "psql" | "createdb" | "dropdb",
+  args: readonly string[],
+  options: { input?: string; encoding?: "utf8"; stdio?: unknown } = {},
+): string {
+  assert.equal(postgresSafety.state, "verified");
+  if (postgresSafety.state !== "verified") throw new Error("unreachable");
+  return postgresSafety.exec(command, args, {
+    ...(options.input === undefined ? {} : { input: options.input }),
+  });
+}
 
 test("0014 action-draft operation is journaled after confirmed upload ingest", () => {
   assert.equal(existsSync(migrationPath), true);
@@ -83,9 +94,9 @@ test(
       "PostgreSQL with temporary-database privileges is required.",
     );
     const database = makeDisposableDatabaseName("draft");
-    execFileSync("createdb", [database], { stdio: "pipe" });
+    postgresExec("createdb", [database], { stdio: "pipe" });
     try {
-      execFileSync("psql", [
+      postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -117,7 +128,7 @@ test(
         "0013_confirmed_upload_ingest.sql",
         migrationName,
       ]) {
-        execFileSync("psql", [
+        postgresExec("psql", [
           "-v",
           "ON_ERROR_STOP=1",
           "-d",
@@ -126,7 +137,7 @@ test(
           fileURLToPath(new URL(`../../drizzle/${migration}`, import.meta.url)),
         ], { stdio: "pipe" });
       }
-      const output = execFileSync("psql", [
+      const output = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -231,7 +242,7 @@ test(
         "t",
       ]);
     } finally {
-      execFileSync("dropdb", ["--if-exists", database], { stdio: "pipe" });
+      postgresExec("dropdb", ["--if-exists", database], { stdio: "pipe" });
     }
   },
 );

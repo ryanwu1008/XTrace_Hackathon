@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -171,7 +170,7 @@ function readMigrationJournalEntries(): MigrationJournalEntry[] {
   return journal.entries;
 }
 const postgresSafety = requireLoopbackPostgres();
-const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
+const postgresAvailable = postgresSafety.state === "verified" ? postgresSafety.run(
   "psql",
   [
     "-d",
@@ -179,14 +178,26 @@ const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
     "-Atqc",
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
-  { encoding: "utf8" },
 ) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
-  postgresAvailable.status === 0
+  postgresSafety.state === "verified"
+  && postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
-  && spawnSync("createdb", ["--version"]).status === 0
-  && spawnSync("dropdb", ["--version"]).status === 0;
-const requirePostgres = process.env.REQUIRE_POSTGRES_MIGRATION_TESTS === "1";
+  && postgresSafety.run("createdb", ["--version"]).status === 0
+  && postgresSafety.run("dropdb", ["--version"]).status === 0;
+const requirePostgres = postgresSafety.state === "verified";
+
+function postgresExec(
+  command: "psql" | "createdb" | "dropdb",
+  args: readonly string[],
+  options: { input?: string; encoding?: "utf8"; stdio?: unknown } = {},
+): string {
+  assert.equal(postgresSafety.state, "verified");
+  if (postgresSafety.state !== "verified") throw new Error("unreachable");
+  return postgresSafety.exec(command, args, {
+    ...(options.input === undefined ? {} : { input: options.input }),
+  });
+}
 
 test("task migration journal guard rejects malformed metadata and physical order", () => {
   const validEntries = [
@@ -289,7 +300,7 @@ test(
       "PostgreSQL with temporary-database privileges is required.",
     );
     const database = makeDisposableDatabaseName("upload");
-    execFileSync("createdb", [database], { stdio: "pipe" });
+    postgresExec("createdb", [database], { stdio: "pipe" });
     try {
       const taskMigrations = validatedTaskMigrationNames(
         readMigrationJournalEntries(),
@@ -313,7 +324,7 @@ test(
         "0015_framework_catalog_checkpoint.sql",
         sourceEvidenceBridgeMigrationName,
       ]) {
-        execFileSync("psql", [
+        postgresExec("psql", [
           "-v",
           "ON_ERROR_STOP=1",
           "-d",
@@ -322,7 +333,7 @@ test(
           fileURLToPath(new URL(`../../drizzle/${migration}`, import.meta.url)),
         ], { stdio: "pipe" });
         if (migration === task13MigrationName) {
-          execFileSync("psql", [
+          postgresExec("psql", [
             "-v",
             "ON_ERROR_STOP=1",
             "-d",
@@ -383,7 +394,7 @@ test(
           ], { stdio: "pipe" });
         }
       }
-      const output = execFileSync("psql", [
+      const output = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1079,7 +1090,7 @@ test(
           + "|image:0:ARR:true",
       );
     } finally {
-      execFileSync("dropdb", ["--if-exists", database], { stdio: "pipe" });
+      postgresExec("dropdb", ["--if-exists", database], { stdio: "pipe" });
     }
   },
 );
@@ -1094,10 +1105,10 @@ test(
       "PostgreSQL with temporary-database privileges is required.",
     );
     const database = makeDisposableDatabaseName("upload_legacy");
-    execFileSync("createdb", [database], { stdio: "pipe" });
+    postgresExec("createdb", [database], { stdio: "pipe" });
     try {
       for (const migration of migrationsThroughImmutableUploadConfirmation) {
-        execFileSync("psql", [
+        postgresExec("psql", [
           "-v",
           "ON_ERROR_STOP=1",
           "-d",
@@ -1107,7 +1118,7 @@ test(
         ], { stdio: "pipe" });
       }
 
-      execFileSync("psql", [
+      postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1501,7 +1512,7 @@ test(
         "0015_framework_catalog_checkpoint.sql",
         sourceEvidenceBridgeMigrationName,
       ]) {
-        execFileSync("psql", [
+        postgresExec("psql", [
           "-v",
           "ON_ERROR_STOP=1",
           "-d",
@@ -1511,7 +1522,7 @@ test(
         ], { stdio: "pipe" });
       }
 
-      execFileSync("psql", [
+      postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1546,7 +1557,7 @@ test(
         `,
       ], { stdio: "pipe" });
 
-      const draftEditBoundary = execFileSync("psql", [
+      const draftEditBoundary = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1584,7 +1595,7 @@ test(
         "null|Quarantined image draft|Clean revised draft",
       );
 
-      const retainedUnderwritingProducts = execFileSync("psql", [
+      const retainedUnderwritingProducts = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1669,7 +1680,7 @@ test(
           + "build_pack_legacy_image,build_pack_legacy_text|O",
       );
 
-      const invalidatedLegacyProducts = execFileSync("psql", [
+      const invalidatedLegacyProducts = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1717,7 +1728,7 @@ test(
           + "|confirmed|-",
       );
 
-      execFileSync("psql", [
+      postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1736,7 +1747,7 @@ test(
           );
         `,
       ], { stdio: "pipe" });
-      execFileSync("psql", [
+      postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1752,7 +1763,7 @@ test(
           commit;
         `,
       ], { stdio: "pipe" });
-      const firstClaim = execFileSync("psql", [
+      const firstClaim = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-qAtF",
@@ -1773,7 +1784,7 @@ test(
         firstLeaseToken ?? "",
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
       );
-      execFileSync("psql", [
+      postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1786,7 +1797,7 @@ test(
             and id = 'upload_worker_rpc';
         `,
       ], { stdio: "pipe" });
-      execFileSync("psql", [
+      postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1802,7 +1813,7 @@ test(
           commit;
         `,
       ], { stdio: "pipe" });
-      const reclaimed = execFileSync("psql", [
+      const reclaimed = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-qAtF",
@@ -1820,7 +1831,7 @@ test(
       const [reclaimedId, secondLeaseToken] = reclaimed.split("|");
       assert.equal(reclaimedId, "upload_worker_rpc");
       assert.notEqual(secondLeaseToken, firstLeaseToken);
-      execFileSync("psql", [
+      postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -1841,7 +1852,7 @@ test(
           commit;
         `,
       ], { stdio: "pipe" });
-      const failedStatus = execFileSync("psql", [
+      const failedStatus = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-qAt",
@@ -1857,7 +1868,7 @@ test(
       ], { encoding: "utf8" }).trim();
       assert.equal(failedStatus, "failed");
 
-      const output = execFileSync("psql", [
+      const output = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -2037,7 +2048,7 @@ test(
           + "t|t|t|t",
       );
 
-      const privilegeMatrix = execFileSync("psql", [
+      const privilegeMatrix = postgresExec("psql", [
         "-v",
         "ON_ERROR_STOP=1",
         "-d",
@@ -2118,7 +2129,7 @@ test(
         ].join("\n"),
       );
     } finally {
-      execFileSync("dropdb", ["--if-exists", database], { stdio: "pipe" });
+      postgresExec("dropdb", ["--if-exists", database], { stdio: "pipe" });
     }
   },
 );

@@ -25,6 +25,18 @@ import { withinPublicationWindow } from "../lib/market/dedupe";
 export type RunMode = "xtrace" | "structured";
 export type StageStatus = "queued" | "running" | "skipped" | "completed" | "failed";
 
+export const ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT =
+  "ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT" as const;
+
+export class ActiveRunEvidenceContextConflictError extends Error {
+  readonly code = ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT;
+
+  constructor() {
+    super(ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT);
+    this.name = "ActiveRunEvidenceContextConflictError";
+  }
+}
+
 export interface RunRecord {
   id: string;
   workspaceId: string;
@@ -79,8 +91,12 @@ export interface DataClient {
   bindLiveRunMarketEvents(
     workspaceId: string,
     runId: string,
-    eventIds: string[],
+    events: WritableMarketEventV2[],
   ): Promise<RunEvidenceBindingV1>;
+  getRunEvidenceBinding(
+    workspaceId: string,
+    runId: string,
+  ): Promise<RunEvidenceBindingV1 | null>;
   findActiveRun(input: CreateRunRow): Promise<RunRecord | null>;
   insertRun(input: CreateRunRow): Promise<RunRecord>;
   // Global worker-only queue claim. Every mutation after claim is scoped by
@@ -314,7 +330,7 @@ export function createMemoryDataClient(options: {
             || active.evidenceContext.snapshotId === request.snapshotId
           );
         if (!same) {
-          throw new Error("ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT");
+          throw new ActiveRunEvidenceContextConflictError();
         }
         return structuredClone(active);
       }
@@ -341,28 +357,29 @@ export function createMemoryDataClient(options: {
       evidenceBindings.set(bindingKey(workspaceId, runId), stored);
       return structuredClone(stored);
     },
-    async bindLiveRunMarketEvents(workspaceId, runId, eventIds) {
+    async bindLiveRunMarketEvents(workspaceId, runId, eventsInput) {
       const run = runs.get(runId);
       if (!run || run.workspaceId !== workspaceId) throw new Error(`Run ${runId} was not found.`);
       if (run.evidenceContext.state !== "current" || run.evidenceContext.evidenceMode !== "live") {
         throw new Error("Live event binding requires a live run.");
       }
       const context = run.evidenceContext;
-      if (new Set(eventIds).size !== eventIds.length) throw new Error("Live event IDs must be unique.");
-      const catalog = await options.getLiveMarketEvents?.(workspaceId) ?? [];
-      const byId = new Map(catalog.map((event) => [event.id, event]));
-      const events = eventIds.map((id) => {
-        const event = byId.get(id);
-        if (!event || !withinPublicationWindow({
+      const events = eventsInput.map((event) =>
+        WritableMarketEventV2Schema.parse(event)
+      );
+      if (new Set(events.map(({ id }) => id)).size !== events.length) {
+        throw new Error("Live event IDs must be unique.");
+      }
+      for (const event of events) {
+        if (!withinPublicationWindow({
           publishedAt: event.publishedAt,
           publishedAtPrecision: event.publishedAtPrecision,
         }, {
           windowStartAt: context.windowStartAt,
           windowEndAt: context.windowEndAt,
           windowTimezone: context.windowTimezone,
-        })) throw new Error(`Live event ${id} was not found in the run window.`);
-        return event;
-      });
+        })) throw new Error(`Live event ${event.id} was not found in the run window.`);
+      }
       const proposed = createBinding(
         run,
         events,
@@ -371,6 +388,10 @@ export function createMemoryDataClient(options: {
       const stored = exactBindingRetry(evidenceBindings.get(bindingKey(workspaceId, runId)), proposed);
       evidenceBindings.set(bindingKey(workspaceId, runId), stored);
       return structuredClone(stored);
+    },
+    async getRunEvidenceBinding(workspaceId, runId) {
+      const binding = evidenceBindings.get(bindingKey(workspaceId, runId));
+      return binding ? structuredClone(binding) : null;
     },
     async findActiveRun(input) {
       return [...runs.values()].find((run) =>
@@ -515,6 +536,23 @@ export function createSupabaseDataClient(options: SupabaseOptions): DataClient {
       throw new IntegrationTransportError({ retryable: true });
     }
     if (!response.ok) {
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (
+        payload
+        && typeof payload === "object"
+        && !Array.isArray(payload)
+        && "code" in payload
+        && payload.code === "55006"
+        && "message" in payload
+        && payload.message === ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT
+      ) {
+        throw new ActiveRunEvidenceContextConflictError();
+      }
       throw new IntegrationTransportError({
         retryable: isRetryableTransportStatus(response.status),
       });
@@ -580,13 +618,38 @@ export function createSupabaseDataClient(options: SupabaseOptions): DataClient {
       if (!rows[0]) throw new Error("Pinned event binding returned no row.");
       return toBinding(rows[0]);
     },
-    async bindLiveRunMarketEvents(workspaceId, runId, eventIds) {
+    async bindLiveRunMarketEvents(workspaceId, runId, events) {
+      const parsedEvents = events.map((event) =>
+        WritableMarketEventV2Schema.parse(event)
+      );
       const rows = await request("/rpc/bind_live_run_market_events", {
         method: "POST",
-        body: JSON.stringify({ p_workspace_id: workspaceId, p_run_id: runId, p_event_ids: eventIds }),
+        body: JSON.stringify({
+          p_workspace_id: workspaceId,
+          p_run_id: runId,
+          p_event_ids: parsedEvents.map(({ id }) => id),
+        }),
       }) as Record<string, unknown>[];
       if (!rows[0]) throw new Error("Live event binding returned no row.");
-      return toBinding(rows[0]);
+      const binding = await toBinding(rows[0]);
+      const expectedById = new Map(parsedEvents.map((event) => [event.id, event]));
+      if (
+        binding.events.length !== parsedEvents.length
+        || binding.events.some((event) =>
+          canonicalEvidenceJson(event)
+            !== canonicalEvidenceJson(expectedById.get(event.id))
+        )
+      ) {
+        throw new Error("The sealed live binding does not equal the submitted event set.");
+      }
+      return binding;
+    },
+    async getRunEvidenceBinding(workspaceId, runId) {
+      const rows = await request(
+        `/run_evidence_bindings?workspace_id=eq.${encodeURIComponent(workspaceId)}`
+        + `&run_id=eq.${encodeURIComponent(runId)}&select=*&limit=1`,
+      ) as Record<string, unknown>[];
+      return rows[0] ? toBinding(rows[0]) : null;
     },
     async findActiveRun(input) {
       const params = new URLSearchParams({

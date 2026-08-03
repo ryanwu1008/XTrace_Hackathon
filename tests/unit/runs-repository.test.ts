@@ -6,6 +6,7 @@ import {
   createSupabaseDataClient,
 } from "../../db/client";
 import { createRunsRepository } from "../../db/repositories/runs";
+import { IntegrationTransportError } from "../../lib/api/errors";
 import { marketEventV2, exactSourceV2 } from "../helpers/source-evidence-v2";
 import { createMemoryMarketEvidenceSnapshotsRepository } from "../../db/repositories/market-evidence-snapshots";
 
@@ -89,7 +90,59 @@ test("different active evidence contexts fail with the typed single-run conflict
       },
     }),
     (error: unknown) => error instanceof Error
-      && error.message.includes("ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT"),
+      && "code" in error
+      && error.code === "ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT"
+      && error.message.includes("ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT")
+      && !(error instanceof IntegrationTransportError),
+  );
+});
+
+test("Supabase preserves the typed active-run evidence conflict instead of collapsing it into a transport error", async () => {
+  const runs = createRunsRepository(createSupabaseDataClient({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    fetchImpl: async () => Response.json({
+      code: "55006",
+      details: null,
+      hint: null,
+      message: "ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT",
+    }, { status: 500 }),
+  }));
+
+  await assert.rejects(
+    runs.create({
+      workspaceId: "workspace_demo",
+      mode: "structured",
+      windowDays: 14,
+    }),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT"
+      && error.message === "ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT"
+      && !(error instanceof IntegrationTransportError),
+  );
+});
+
+test("Supabase keeps non-conflict run failures behind the transport error boundary", async () => {
+  const runs = createRunsRepository(createSupabaseDataClient({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    fetchImpl: async () => Response.json({
+      code: "55006",
+      details: null,
+      hint: null,
+      message: "database-secret unrelated failure",
+    }, { status: 500 }),
+  }));
+
+  await assert.rejects(
+    runs.create({
+      workspaceId: "workspace_demo",
+      mode: "structured",
+      windowDays: 14,
+    }),
+    (error: unknown) => error instanceof IntegrationTransportError
+      && error.retryable,
   );
 });
 
@@ -148,6 +201,50 @@ test("live binding accepts an explicit empty accepted set and rejects pinned/liv
   assert.equal(binding.eventCount, 0);
   assert.deepEqual(binding.events, []);
   await assert.rejects(runs.bindPinnedMarketEvents("demo", live.id), /pinned run/i);
+});
+
+test("live binding seals supplied canonical payloads, reloads them, and retries idempotently", async () => {
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => new Date("2026-08-02T06:59:59.999Z"),
+  }));
+  const live = await runs.create({
+    workspaceId: "demo",
+    mode: "structured",
+    windowDays: 14,
+  });
+  const source = exactSourceV2("source_live_binding", {
+    publishedAt: "2026-07-29T18:00:00.000Z",
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+  });
+  const event = marketEventV2(source) as Extract<
+    ReturnType<typeof marketEventV2>,
+    { adaptation: "canonical" }
+  >;
+
+  const first = await runs.bindLiveMarketEvents(
+    "demo",
+    live.id,
+    [event] as never,
+  );
+  assert.deepEqual(first.events, [event]);
+  assert.deepEqual(
+    await (runs as typeof runs & {
+      getEvidenceBinding(workspaceId: string, runId: string): Promise<typeof first | null>;
+    }).getEvidenceBinding("demo", live.id),
+    first,
+  );
+  assert.deepEqual(
+    await runs.bindLiveMarketEvents("demo", live.id, [event] as never),
+    first,
+  );
+
+  await assert.rejects(
+    runs.bindLiveMarketEvents("demo", live.id, [{
+      ...event,
+      id: "market_changed_after_crash",
+    }] as never),
+    /collision/i,
+  );
 });
 
 test("records stage progress and partial-run warnings", async () => {

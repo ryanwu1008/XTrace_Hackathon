@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -16,7 +15,7 @@ const migrationPaths = [
 ));
 
 const postgresSafety = requireLoopbackPostgres();
-const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
+const postgresAvailable = postgresSafety.state === "verified" ? postgresSafety.run(
   "psql",
   [
     "-d",
@@ -24,26 +23,38 @@ const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
     "-Atqc",
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
-  { encoding: "utf8" },
 ) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
-  postgresAvailable.status === 0
+  postgresSafety.state === "verified"
+  && postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
-  && spawnSync("createdb", ["--version"]).status === 0
-  && spawnSync("dropdb", ["--version"]).status === 0;
+  && postgresSafety.run("createdb", ["--version"]).status === 0
+  && postgresSafety.run("dropdb", ["--version"]).status === 0;
+
+function postgresExec(
+  command: "psql" | "createdb" | "dropdb",
+  args: readonly string[],
+  options: { input?: string; encoding?: "utf8"; stdio?: unknown } = {},
+): string {
+  assert.equal(postgresSafety.state, "verified");
+  if (postgresSafety.state !== "verified") throw new Error("unreachable");
+  return postgresSafety.exec(command, args, {
+    ...(options.input === undefined ? {} : { input: options.input }),
+  });
+}
 
 function withTemporaryDatabase(run: (database: string) => void): void {
   const database = makeDisposableDatabaseName("company_analysis");
-  execFileSync("createdb", [database], { stdio: "pipe" });
+  postgresExec("createdb", [database], { stdio: "pipe" });
   try {
     run(database);
   } finally {
-    execFileSync("dropdb", ["--if-exists", database], { stdio: "pipe" });
+    postgresExec("dropdb", ["--if-exists", database], { stdio: "pipe" });
   }
 }
 
 function applySql(database: string, path: string): void {
-  execFileSync(
+  postgresExec(
     "psql",
     ["-v", "ON_ERROR_STOP=1", "-d", database, "-f", path],
     { stdio: "pipe" },
@@ -51,7 +62,7 @@ function applySql(database: string, path: string): void {
 }
 
 function executeSql(database: string, sql: string): string {
-  return execFileSync(
+  return postgresExec(
     "psql",
     ["-v", "ON_ERROR_STOP=1", "-d", database, "-AtF", "|", "-c", sql],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },

@@ -1,5 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptionsWithoutStdio,
+  type SpawnSyncOptionsWithStringEncoding,
+} from "node:child_process";
 
 const OPT_IN_ERROR =
   "PostgreSQL migration tests require explicit REQUIRE_POSTGRES_MIGRATION_TESTS=1 opt-in.";
@@ -20,17 +26,49 @@ export interface VerifiedLoopbackDecision {
   endpoint: VerifiedLoopbackEndpoint;
 }
 
-type SpawnResult = { status: number | null; stdout: string; stderr: string };
+export type LoopbackPostgresCommandResult = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+};
 type SpawnRunner = (
   command: string,
   args: readonly string[],
   options: SpawnSyncOptionsWithStringEncoding,
-) => SpawnResult;
+) => LoopbackPostgresCommandResult;
+type AsyncSpawnRunner = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptionsWithoutStdio,
+) => ChildProcessWithoutNullStreams;
+
+export type LoopbackPostgresCommand = "psql" | "createdb" | "dropdb" | "zsh";
+
+export interface LoopbackPostgresCommandOptions {
+  cwd?: string;
+  input?: string;
+  environment?: Readonly<Record<string, string | undefined>>;
+}
 
 export interface VerifiedLoopbackPostgresContext {
   state: "verified";
   endpoint: VerifiedLoopbackEndpoint;
-  run(command: "psql" | "createdb" | "dropdb", args: readonly string[]): SpawnResult;
+  environment: Readonly<NodeJS.ProcessEnv>;
+  run(
+    command: LoopbackPostgresCommand,
+    args: readonly string[],
+    options?: LoopbackPostgresCommandOptions,
+  ): LoopbackPostgresCommandResult;
+  exec(
+    command: LoopbackPostgresCommand,
+    args: readonly string[],
+    options?: LoopbackPostgresCommandOptions,
+  ): string;
+  spawn(
+    command: "psql",
+    args: readonly string[],
+    options?: Omit<LoopbackPostgresCommandOptions, "input">,
+  ): ChildProcessWithoutNullStreams;
 }
 
 export interface SkippedLoopbackPostgresContext {
@@ -90,7 +128,7 @@ function defaultSpawnRunner(
   command: string,
   args: readonly string[],
   options: SpawnSyncOptionsWithStringEncoding,
-): SpawnResult {
+): LoopbackPostgresCommandResult {
   const result = spawnSync(command, [...args], options);
   return {
     status: result.status,
@@ -99,9 +137,46 @@ function defaultSpawnRunner(
   };
 }
 
+function defaultAsyncSpawnRunner(
+  command: string,
+  args: readonly string[],
+  options: SpawnOptionsWithoutStdio,
+): ChildProcessWithoutNullStreams {
+  return spawn(command, [...args], options);
+}
+
+const CONNECTION_ENVIRONMENT_KEYS = [
+  "PGDATABASE",
+  "PGHOST",
+  "PGHOSTADDR",
+  "PGPASSWORD",
+  "PGPORT",
+  "PGSERVICE",
+  "PGSERVICEFILE",
+  "PGSSLMODE",
+  "PGUSER",
+] as const;
+
+function commandEnvironment(
+  verifiedEnvironment: Readonly<NodeJS.ProcessEnv>,
+  additionalEnvironment: Readonly<Record<string, string | undefined>> = {},
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    ...verifiedEnvironment,
+    ...additionalEnvironment,
+  };
+  for (const key of CONNECTION_ENVIRONMENT_KEYS) {
+    const verifiedValue = verifiedEnvironment[key];
+    if (verifiedValue === undefined) delete environment[key];
+    else environment[key] = verifiedValue;
+  }
+  return Object.freeze(environment);
+}
+
 export function requireLoopbackPostgres(options: {
   environment?: Readonly<Record<string, string | undefined>>;
   runner?: SpawnRunner;
+  asyncRunner?: AsyncSpawnRunner;
 } = {}): LoopbackPostgresContext {
   const environment = Object.freeze({
     ...(options.environment ?? process.env),
@@ -109,6 +184,7 @@ export function requireLoopbackPostgres(options: {
   const skip = postgresMigrationSkipReason(environment);
   if (skip) return { state: "skipped", reason: skip };
   const runner = options.runner ?? defaultSpawnRunner;
+  const asyncRunner = options.asyncRunner ?? defaultAsyncSpawnRunner;
   const commandOptions: SpawnSyncOptionsWithStringEncoding = {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -138,11 +214,51 @@ export function requireLoopbackPostgres(options: {
   if (privilege.status !== 0 || privilege.stdout.trim() !== "true") {
     throw new Error("The verified loopback PostgreSQL role cannot create a disposable database.");
   }
+  const runVerified = (
+    command: LoopbackPostgresCommand,
+    args: readonly string[],
+    options: LoopbackPostgresCommandOptions = {},
+  ): LoopbackPostgresCommandResult => runner(command, args, {
+    ...commandOptions,
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.input === undefined ? {} : { input: options.input }),
+    env: commandEnvironment(environment, options.environment),
+  });
   return Object.freeze({
     state: "verified" as const,
     endpoint: decision.endpoint,
-    run(command: "psql" | "createdb" | "dropdb", args: readonly string[]) {
-      return runner(command, args, commandOptions);
+    environment,
+    run(
+      command: LoopbackPostgresCommand,
+      args: readonly string[],
+      options: LoopbackPostgresCommandOptions = {},
+    ) {
+      return runVerified(command, args, options);
+    },
+    exec(
+      command: LoopbackPostgresCommand,
+      args: readonly string[],
+      options: LoopbackPostgresCommandOptions = {},
+    ) {
+      const result = runVerified(command, args, options);
+      if (result.status !== 0) {
+        throw new Error(
+          result.stderr.trim()
+            || `${command} exited with status ${result.status ?? "unknown"}.`,
+        );
+      }
+      return result.stdout;
+    },
+    spawn(
+      command: "psql",
+      args: readonly string[],
+      options: Omit<LoopbackPostgresCommandOptions, "input"> = {},
+    ) {
+      return asyncRunner(command, args, {
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        env: commandEnvironment(environment, options.environment),
+        stdio: ["pipe", "pipe", "pipe"],
+      });
     },
   });
 }

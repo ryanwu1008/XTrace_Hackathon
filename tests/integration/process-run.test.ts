@@ -5,11 +5,13 @@ import { createMemoryDataClient } from "../../db/client";
 import {
   eligibleDealSnapshotFingerprint,
   sourceRevisionFingerprint,
+  type DealRegistry,
   type RegisteredDeal,
 } from "../../db/repositories/deal-registry";
 import { createMemoryIntelligenceRepository } from "../../db/repositories/intelligence";
 import { createRunsRepository } from "../../db/repositories/runs";
 import type { DealMemoryBundle } from "../../lib/contracts/domain";
+import type { RunEvidenceBindingV1 } from "../../lib/contracts/evidence-context";
 import { buildPreloadedDealMemoryBundles } from "../../lib/corpus/service";
 import { classifyMarketEventForAnalysis } from "../../lib/market/classification";
 import { refingerprintMarketEvent } from "../../lib/market/identity";
@@ -44,6 +46,10 @@ function authoritativeDeals(bundles: DealMemoryBundle[]) {
   );
   return {
     dealRegistry: {
+      async listForWorkspace(workspaceId: string) {
+        assert.equal(workspaceId, "workspace_demo");
+        return structuredClone([...deals.values()]);
+      },
       async listAnalysisEligibleBundles(workspaceId: string) {
         assert.equal(workspaceId, "workspace_demo");
         return structuredClone(bundles);
@@ -92,9 +98,77 @@ function authoritativeDeals(bundles: DealMemoryBundle[]) {
 }
 
 function createTestIntelligenceRepository() {
+  const dealRegistry = authoritativeDeals(
+    buildPreloadedDealMemoryBundles(),
+  ).dealRegistry as DealRegistry;
   return createMemoryIntelligenceRepository({
     now: () => new Date("2026-07-24T12:00:00.000Z"),
+    dealRegistry,
   });
+}
+
+function observeCurrentEvidenceSeams(
+  baseRuns: ReturnType<typeof createRunsRepository>,
+  baseIntelligence: ReturnType<typeof createTestIntelligenceRepository>,
+) {
+  let binding: RunEvidenceBindingV1 | null = null;
+  let submittedBindingFingerprint: string | undefined;
+  const runs = {
+    ...baseRuns,
+    async bindLiveMarketEvents(
+      workspaceId: string,
+      runId: string,
+      events: readonly unknown[],
+    ) {
+      const run = await baseRuns.get(workspaceId, runId);
+      assert.ok(run);
+      assert.equal(run.evidenceContext.state, "current");
+      if (run.evidenceContext.state !== "current") {
+        throw new Error("A current run is required by this test seam.");
+      }
+      binding = {
+        schemaVersion: "run-evidence-binding-v1",
+        workspaceId,
+        runId,
+        evidenceMode: "live",
+        windowDays: 14,
+        anchorAt: run.evidenceContext.anchorAt,
+        windowStartAt: run.evidenceContext.windowStartAt,
+        windowEndAt: run.evidenceContext.windowEndAt,
+        windowTimezone: run.evidenceContext.windowTimezone,
+        snapshotId: null,
+        snapshotFingerprint: null,
+        contextFingerprint: run.evidenceContext.contextFingerprint,
+        eventCount: events.length,
+        eventSetFingerprint: `sha256:${"e".repeat(64)}`,
+        bindingFingerprint: `sha256:${"b".repeat(64)}`,
+        displayLabel: `Live evidence window ending ${run.evidenceContext.windowEndAt}`,
+        boundAt: "2026-07-24T12:00:00.000Z",
+        events: structuredClone(events) as RunEvidenceBindingV1["events"],
+      };
+      return structuredClone(binding);
+    },
+    async getEvidenceBinding(workspaceId: string, runId: string) {
+      assert.equal(binding?.workspaceId, workspaceId);
+      assert.equal(binding?.runId, runId);
+      return binding === null ? null : structuredClone(binding);
+    },
+  };
+  const intelligence = {
+    ...baseIntelligence,
+    async saveReport(
+      report: Parameters<typeof baseIntelligence.saveReport>[0],
+    ) {
+      submittedBindingFingerprint = report.evidenceBindingFingerprint;
+      return baseIntelligence.saveReport(report);
+    },
+  };
+  return {
+    runs,
+    intelligence,
+    binding: () => binding,
+    submittedBindingFingerprint: () => submittedBindingFingerprint,
+  };
 }
 
 function marketEventFixture(input: {
@@ -351,8 +425,11 @@ test("a new analysis run rejects a Deal registry snapshot that changes during st
   assert.equal(marketCalled, false);
 });
 
-test("a claimed run persists market evidence while legacy untyped matching stays unranked", async () => {
-  const runs = createRunsRepository(createMemoryDataClient());
+test("a current live Worker seals the exact selected events before saving its report", async () => {
+  const baseRuns = createRunsRepository(createMemoryDataClient());
+  const intelligenceBase = createTestIntelligenceRepository();
+  const observed = observeCurrentEvidenceSeams(baseRuns, intelligenceBase);
+  const { runs, intelligence } = observed;
   const queued = await runs.create({
     workspaceId: "workspace_demo",
     mode: "structured",
@@ -360,7 +437,6 @@ test("a claimed run persists market evidence while legacy untyped matching stays
   });
   const run = await runs.claimNext("test-worker");
   assert.equal(run?.id, queued.id);
-  const intelligence = createTestIntelligenceRepository();
   const bundles = buildPreloadedDealMemoryBundles();
   const ably = bundles.find(({ dealId }) => dealId === "deal_ably");
   assert.ok(ably);
@@ -484,6 +560,15 @@ test("a claimed run persists market evidence while legacy untyped matching stays
     persistedEvents,
     "the Worker must give matching the exact canonical payload it persisted",
   );
+  assert.deepEqual(
+    observed.binding()?.events,
+    downstreamEvents,
+    "the Worker must seal the exact selected canonical payload before report persistence",
+  );
+  assert.equal(
+    observed.submittedBindingFingerprint(),
+    observed.binding()?.bindingFingerprint,
+  );
   const reportEvent = result.report.companyAnalyses.find(
     (analysis) => analysis.dealId === "deal_ably",
   )?.marketEvidence.events[0];
@@ -499,8 +584,11 @@ test("a claimed run persists market evidence while legacy untyped matching stays
   );
 });
 
-test("persists a generic public item but excludes it from downstream analysis without failing the run", async () => {
-  const runs = createRunsRepository(createMemoryDataClient());
+test("a current live Worker persists an explicit empty binding when no event is analysis-eligible", async () => {
+  const baseRuns = createRunsRepository(createMemoryDataClient());
+  const intelligenceBase = createTestIntelligenceRepository();
+  const observed = observeCurrentEvidenceSeams(baseRuns, intelligenceBase);
+  const { runs, intelligence } = observed;
   await runs.create({
     workspaceId: "workspace_demo",
     mode: "structured",
@@ -508,7 +596,6 @@ test("persists a generic public item but excludes it from downstream analysis wi
   });
   const run = await runs.claimNext("test-worker");
   assert.ok(run);
-  const intelligence = createTestIntelligenceRepository();
   let downstreamEventCount = -1;
 
   const result = await processClaimedRun(run, {
@@ -565,6 +652,11 @@ test("persists a generic public item but excludes it from downstream analysis wi
     1,
   );
   assert.equal(downstreamEventCount, 0);
+  assert.deepEqual(observed.binding()?.events, []);
+  assert.equal(
+    observed.submittedBindingFingerprint(),
+    observed.binding()?.bindingFingerprint,
+  );
   assert.equal(result.run.status, "completed");
   assert.equal(result.report.companyAnalyses.length, 19);
   assert.equal(result.report.counts.noMaterialChange, 19);
@@ -573,7 +665,9 @@ test("persists a generic public item but excludes it from downstream analysis wi
 });
 
 test("XTrace recall failure never falls back to structured memory and marks the run partial", async () => {
-  const runs = createRunsRepository(createMemoryDataClient());
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => new Date("2026-07-23T12:00:00.000Z"),
+  }));
   await runs.create({
     workspaceId: "workspace_demo",
     mode: "xtrace",

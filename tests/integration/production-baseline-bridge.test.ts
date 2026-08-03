@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -15,7 +14,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { makeDisposableDatabaseName, requireLoopbackPostgres } from "../helpers/require-loopback-postgres";
+import {
+  makeDisposableDatabaseName,
+  requireLoopbackPostgres,
+  type LoopbackPostgresCommandResult,
+} from "../helpers/require-loopback-postgres";
 
 const bootstrapPath = fileURLToPath(
   new URL("../../scripts/bootstrap-production-baseline.zsh", import.meta.url),
@@ -75,7 +78,7 @@ const baselineMigrations = [
 );
 
 const postgresSafety = requireLoopbackPostgres();
-const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
+const postgresAvailable = postgresSafety.state === "verified" ? postgresSafety.run(
   "psql",
   [
     "-d",
@@ -83,17 +86,32 @@ const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
     "-Atqc",
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
-  { encoding: "utf8" },
 ) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
-  postgresAvailable.status === 0
+  postgresSafety.state === "verified"
+  && postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
-  && spawnSync("createdb", ["--version"]).status === 0
-  && spawnSync("dropdb", ["--version"]).status === 0;
-const requirePostgres = process.env.REQUIRE_POSTGRES_MIGRATION_TESTS === "1";
+  && postgresSafety.run("createdb", ["--version"]).status === 0
+  && postgresSafety.run("dropdb", ["--version"]).status === 0;
+const verifiedEnvironment: Readonly<NodeJS.ProcessEnv> = postgresSafety.state === "verified"
+  ? postgresSafety.environment
+  : Object.freeze({}) as Readonly<NodeJS.ProcessEnv>;
+const requirePostgres = postgresSafety.state === "verified";
 const requireSupabasePg176 =
-  process.env.REQUIRE_SUPABASE_PG176_MIGRATION_TESTS === "1";
+  verifiedEnvironment.REQUIRE_SUPABASE_PG176_MIGRATION_TESTS === "1";
 let requiredSupabasePg176Executions = 0;
+
+function postgresExec(
+  command: "psql" | "createdb" | "dropdb",
+  args: readonly string[],
+  options: { input?: string; encoding?: "utf8"; stdio?: unknown } = {},
+): string {
+  assert.equal(postgresSafety.state, "verified");
+  if (postgresSafety.state !== "verified") throw new Error("unreachable");
+  return postgresSafety.exec(command, args, {
+    ...(options.input === undefined ? {} : { input: options.input }),
+  });
+}
 
 test.after(() => {
   if (requireSupabasePg176) {
@@ -105,14 +123,14 @@ test.after(() => {
   }
 });
 const localDatabaseUser = canCreateTemporaryDatabase
-  ? execFileSync(
+  ? postgresExec(
     "psql",
     ["-d", "postgres", "-Atqc", "select current_user"],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   ).trim()
   : "";
 const localServerVersionNumber = canCreateTemporaryDatabase
-  ? execFileSync(
+  ? postgresExec(
     "psql",
     ["-d", "postgres", "-Atqc", "show server_version_num"],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
@@ -128,18 +146,18 @@ const nonSuperExecutorCredentials: DatabaseCredentials = {
   password: "test-only-migration-password",
 };
 const localDatabaseCredentials: DatabaseCredentials =
-  process.env.PGPASSWORD === undefined
+  verifiedEnvironment.PGPASSWORD === undefined
     ? { user: localDatabaseUser }
-    : { user: localDatabaseUser, password: process.env.PGPASSWORD };
+    : { user: localDatabaseUser, password: verifiedEnvironment.PGPASSWORD };
 
 function databaseUrl(
   database: string,
   credentials: DatabaseCredentials,
 ): string {
-  const host = process.env.PGHOST && !process.env.PGHOST.startsWith("/")
-    ? process.env.PGHOST
+  const host = verifiedEnvironment.PGHOST && !verifiedEnvironment.PGHOST.startsWith("/")
+    ? verifiedEnvironment.PGHOST
     : "localhost";
-  const port = process.env.PGPORT ? `:${process.env.PGPORT}` : "";
+  const port = verifiedEnvironment.PGPORT ? `:${verifiedEnvironment.PGPORT}` : "";
   const password = credentials.password === undefined
     ? ""
     : `:${encodeURIComponent(credentials.password)}`;
@@ -149,11 +167,11 @@ function databaseUrl(
 
 function withTemporaryDatabase(run: (database: string) => void): void {
   const database = makeDisposableDatabaseName("production_bridge");
-  execFileSync("createdb", [database], { stdio: "pipe" });
+  postgresExec("createdb", [database], { stdio: "pipe" });
   try {
     run(database);
   } finally {
-    execFileSync("dropdb", ["--if-exists", database], { stdio: "pipe" });
+    postgresExec("dropdb", ["--if-exists", database], { stdio: "pipe" });
   }
 }
 
@@ -162,11 +180,11 @@ function withTemporaryDatabaseOwnedBy(
   run: (database: string) => void,
 ): void {
   const database = makeDisposableDatabaseName("production_bridge");
-  execFileSync("createdb", ["--owner", owner, database], { stdio: "pipe" });
+  postgresExec("createdb", ["--owner", owner, database], { stdio: "pipe" });
   try {
     run(database);
   } finally {
-    execFileSync("dropdb", ["--if-exists", database], { stdio: "pipe" });
+    postgresExec("dropdb", ["--if-exists", database], { stdio: "pipe" });
   }
 }
 
@@ -175,7 +193,7 @@ function applySql(
   path: string,
   credentials?: DatabaseCredentials,
 ): void {
-  execFileSync(
+  postgresExec(
     "psql",
     [
       "-v",
@@ -194,7 +212,7 @@ function executeSql(
   sql: string,
   credentials?: DatabaseCredentials,
 ): string {
-  return execFileSync(
+  return postgresExec(
     "psql",
     [
       "-v",
@@ -211,7 +229,7 @@ function executeSql(
 }
 
 function readCatalogManifestJson(database: string): string {
-  return execFileSync(
+  return postgresExec(
     "psql",
     [
       "-q",
@@ -249,7 +267,9 @@ function readBaselineStateSql(migrationId: "0007" | "0008" | "0009"): string {
 }
 
 function dropRegistryOwnerRole(): void {
-  const result = spawnSync(
+  assert.equal(postgresSafety.state, "verified");
+  if (postgresSafety.state !== "verified") throw new Error("unreachable");
+  const result = postgresSafety.run(
     "psql",
     [
       "-v",
@@ -260,7 +280,6 @@ function dropRegistryOwnerRole(): void {
       "drop role if exists vsee_underwriting_owner; "
         + "drop role if exists vsee_registry_owner",
     ],
-    { encoding: "utf8", stdio: "pipe" },
   );
   assert.equal(
     result.status,
@@ -320,7 +339,7 @@ function runProductionScript(
   database: string,
   path: string,
   credentials: DatabaseCredentials = localDatabaseCredentials,
-): ReturnType<typeof spawnSync> {
+): LoopbackPostgresCommandResult {
   const fixtureDirectory = mkdtempSync(join(tmpdir(), "vsee-security-fixture-"));
   const securityPath = join(fixtureDirectory, "security");
   const targetDatabaseUrl = databaseUrl(database, credentials);
@@ -331,14 +350,13 @@ function runProductionScript(
   );
   chmodSync(securityPath, 0o755);
   try {
-    return spawnSync("zsh", [path], {
-      env: {
-        ...process.env,
-        PATH: `${fixtureDirectory}:${process.env.PATH ?? ""}`,
+    assert.equal(postgresSafety.state, "verified");
+    if (postgresSafety.state !== "verified") throw new Error("unreachable");
+    return postgresSafety.run("zsh", [path], {
+      environment: {
+        PATH: `${fixtureDirectory}:${verifiedEnvironment.PATH ?? ""}`,
         USER: "fixture-user",
       },
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
     });
   } finally {
     rmSync(fixtureDirectory, { recursive: true, force: true });
@@ -349,12 +367,12 @@ function runBootstrap(
   database: string,
   path: string = bootstrapPath,
   credentials?: DatabaseCredentials,
-): ReturnType<typeof spawnSync> {
+): LoopbackPostgresCommandResult {
   return runProductionScript(database, path, credentials);
 }
 
 function assertBootstrapRefused(
-  result: ReturnType<typeof spawnSync>,
+  result: LoopbackPostgresCommandResult,
   pattern: RegExp = /partial|refus|unsafe|prototype|baseline|catalog|reviewed/i,
 ): void {
   assert.notEqual(result.status, 0);

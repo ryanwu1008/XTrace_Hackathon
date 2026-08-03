@@ -245,6 +245,90 @@ function authoritativeDealsFor(
   } as unknown as DealRegistry;
 }
 
+const CURRENT_REPORT_EVIDENCE_COLUMNS = {
+  evidence_context_version: "run-evidence-context-v1",
+  evidence_mode: "live",
+  evidence_window_days: 14,
+  evidence_anchor_at: "2026-07-24T12:00:00.000Z",
+  evidence_window_start_at: "2026-07-10T12:00:00.000Z",
+  evidence_window_end_at: "2026-07-24T12:00:00.000Z",
+  evidence_window_timezone: "America/Los_Angeles",
+  evidence_snapshot_id: null,
+  evidence_snapshot_fingerprint: null,
+  evidence_context_fingerprint: `sha256:${"c".repeat(64)}`,
+  evidence_display_label: "Live evidence window",
+  evidence_event_count: 0,
+  evidence_event_set_fingerprint: `sha256:${"d".repeat(64)}`,
+  evidence_binding_fingerprint: `sha256:${"e".repeat(64)}`,
+} as const;
+
+function durableReportRow(
+  evidenceColumns: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    id: "report_evidence_context",
+    workspace_id: "workspace_demo",
+    run_id: "00000000-0000-4000-8000-000000000001",
+    created_at: "2026-07-24T12:00:00.000Z",
+    market_summary: "Evidence-context repository fixture.",
+    opportunities: [],
+    analysis_status: "completed",
+    company_count: 0,
+    belief_revised_count: 0,
+    monitor_count: 0,
+    no_material_change_count: 0,
+    analysis_unavailable_count: 0,
+    priority_deal_id: null,
+    evidence_coverage: {
+      acceptedPublicEvents: 0,
+      excludedPublicItems: 0,
+      truncatedPublicEvents: 0,
+      recalledDealCount: 0,
+      unavailableDealCount: 0,
+    },
+    ...evidenceColumns,
+  };
+}
+
+function legacyScanRunRow(runId: string): Record<string, unknown> {
+  return {
+    id: runId,
+    evidence_context_version: null,
+    evidence_mode: null,
+    evidence_anchor_at: null,
+    evidence_window_start_at: null,
+    evidence_window_end_at: null,
+    evidence_window_timezone: null,
+    evidence_snapshot_id: null,
+    evidence_snapshot_fingerprint: null,
+    evidence_context_fingerprint: null,
+  };
+}
+
+function supabaseReportReadRepository(
+  reportRow: Record<string, unknown>,
+  runEvidenceColumns: Record<string, unknown> = CURRENT_REPORT_EVIDENCE_COLUMNS,
+) {
+  return createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      const url = String(input);
+      if (url.includes("/intelligence_reports?")) {
+        return Response.json([reportRow]);
+      }
+      if (url.includes("/company_analyses?")) return Response.json([]);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([{
+          id: reportRow.run_id,
+          ...runEvidenceColumns,
+        }]);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+}
+
 test("market event upserts are idempotent", async () => {
   const repository = createMemoryIntelligenceRepository({
     now: () => new Date("2026-07-24T12:00:00.000Z"),
@@ -1114,6 +1198,9 @@ test("every report repository egress sanitizes a malicious legacy next step", as
     url: "https://example.supabase.co",
     serviceRoleKey: "test-service-role-key",
     async fetchImpl(input) {
+      if (String(input).includes("/scan_runs?")) {
+        return Response.json([legacyScanRunRow(report.runId)]);
+      }
       return String(input).includes("/company_analyses")
         ? Response.json([])
         : Response.json([durableRow]);
@@ -1170,6 +1257,9 @@ test("report repository reads normalize malformed durable opportunity shapes", a
       url: "https://example.supabase.co",
       serviceRoleKey: "test-service-role-key",
       async fetchImpl(input) {
+        if (String(input).includes("/scan_runs?")) {
+          return Response.json([legacyScanRunRow(row.run_id)]);
+        }
         return String(input).includes("/company_analyses")
           ? Response.json([])
           : Response.json([row]);
@@ -1823,6 +1913,94 @@ test("lists a Deal's analyses newest first", async () => {
   );
 });
 
+test("Supabase report reads expose an all-null evidence context as explicit legacy_unbound state", async () => {
+  const allNullEvidenceColumns = Object.fromEntries(
+    Object.keys(CURRENT_REPORT_EVIDENCE_COLUMNS).map((field) => [field, null]),
+  );
+  const repository = supabaseReportReadRepository(
+    durableReportRow(allNullEvidenceColumns),
+    allNullEvidenceColumns,
+  );
+
+  const stored = await repository.getReport(
+    "workspace_demo",
+    "report_evidence_context",
+  );
+
+  assert.ok(stored);
+  assert.deepEqual(stored.evidenceContext, { state: "legacy_unbound" });
+});
+
+test("Supabase report reads reject an all-null report attached to a current run", async () => {
+  const allNullEvidenceColumns = Object.fromEntries(
+    Object.keys(CURRENT_REPORT_EVIDENCE_COLUMNS).map((field) => [field, null]),
+  );
+  const repository = supabaseReportReadRepository(
+    durableReportRow(allNullEvidenceColumns),
+  );
+
+  await assert.rejects(
+    repository.getReport("workspace_demo", "report_evidence_context"),
+    /current run cannot resolve through a legacy report/i,
+  );
+});
+
+test("Supabase report reads strictly parse a complete current evidence context", async () => {
+  const repository = supabaseReportReadRepository(
+    durableReportRow(CURRENT_REPORT_EVIDENCE_COLUMNS),
+  );
+
+  const stored = await repository.getReport(
+    "workspace_demo",
+    "report_evidence_context",
+  );
+
+  assert.ok(stored);
+  assert.deepEqual(stored.evidenceContext, {
+    state: "current",
+    schemaVersion: "run-evidence-context-v1",
+    evidenceMode: "live",
+    windowDays: 14,
+    anchorAt: "2026-07-24T12:00:00.000Z",
+    windowStartAt: "2026-07-10T12:00:00.000Z",
+    windowEndAt: "2026-07-24T12:00:00.000Z",
+    windowTimezone: "America/Los_Angeles",
+    snapshotId: null,
+    snapshotFingerprint: null,
+    contextFingerprint:
+      "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    displayLabel: "Live evidence window",
+    eventCount: 0,
+    eventSetFingerprint:
+      "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    bindingFingerprint:
+      "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  });
+});
+
+test("Supabase report reads reject every one-column partial evidence context", async () => {
+  const allNullEvidenceColumns = Object.fromEntries(
+    Object.keys(CURRENT_REPORT_EVIDENCE_COLUMNS).map((field) => [field, null]),
+  );
+  const declaredValues = {
+    ...CURRENT_REPORT_EVIDENCE_COLUMNS,
+    evidence_snapshot_id: "snapshot_partial",
+    evidence_snapshot_fingerprint: `sha256:${"f".repeat(64)}`,
+  };
+
+  for (const [field, value] of Object.entries(declaredValues)) {
+    const repository = supabaseReportReadRepository(durableReportRow({
+      ...allNullEvidenceColumns,
+      [field]: value,
+    }));
+    await assert.rejects(
+      repository.getReport("workspace_demo", "report_evidence_context"),
+      /partial|invalid.*report evidence context/i,
+      field,
+    );
+  }
+});
+
 test("Supabase report writes use the atomic report RPC", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const report = {
@@ -1964,6 +2142,9 @@ test("Supabase reads accept PostgREST timestamptz offset timestamps", async () =
     serviceRoleKey: "test-service-role-key",
     fetchImpl: async (input) => {
       const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([legacyScanRunRow(report.runId)]);
+      }
       if (url.includes("/intelligence_reports")) {
         return Response.json([{
           id: report.id,
@@ -2045,7 +2226,11 @@ test("Supabase analysis reads recursively adapt legacy sources without inventing
     url: "https://example.supabase.co",
     serviceRoleKey: "test-service-role-key",
     async fetchImpl(input) {
-      return String(input).includes("/company_analyses")
+      const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([legacyScanRunRow(report.runId)]);
+      }
+      return url.includes("/company_analyses")
         ? Response.json([row])
         : Response.json([{
             id: report.id,
@@ -2124,6 +2309,9 @@ test("Supabase report reads reject cross-analysis source-ID collisions", async (
     serviceRoleKey: "test-service-role-key",
     async fetchImpl(input) {
       const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([legacyScanRunRow(report.runId)]);
+      }
       if (url.includes("/company_analyses")) {
         return Response.json([toRow(first), toRow(second)]);
       }
@@ -2230,6 +2418,12 @@ test("workspace report catalog validation cannot be bypassed by reset or direct 
     serviceRoleKey: "test-service-role-key",
     async fetchImpl(input) {
       const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([
+          legacyScanRunRow(firstReport.runId),
+          legacyScanRunRow(secondReport.runId),
+        ]);
+      }
       if (url.includes("/company_analyses")) {
         return Response.json([
           toAnalysisRow(firstReport.companyAnalyses[0]),
@@ -2308,6 +2502,9 @@ test("report writers reject workspace catalog collisions before persistence or m
     serviceRoleKey: "test-service-role-key",
     async fetchImpl(input, init) {
       const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([legacyScanRunRow(existing.runId)]);
+      }
       if (url.includes("/rpc/save_intelligence_report")) {
         mutationRpcCalls += 1;
         return Response.json([]);
@@ -2426,6 +2623,12 @@ test("Deal analysis history validation cannot be bypassed by cross-Deal filterin
     serviceRoleKey: "test-service-role-key",
     async fetchImpl(input) {
       const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([
+          legacyScanRunRow(firstReport.runId),
+          legacyScanRunRow(secondReport.runId),
+        ]);
+      }
       if (url.includes("/company_analyses")) {
         return Response.json([
           toRow(firstReport.companyAnalyses[0]),
@@ -2506,6 +2709,9 @@ test("Supabase reads quarantine malformed legacy analyses without hiding valid r
     serviceRoleKey: "test-service-role-key",
     fetchImpl: async (input) => {
       const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([legacyScanRunRow(report.runId)]);
+      }
       if (url.includes("/intelligence_reports")) {
         return Response.json([{
           id: report.id,
@@ -2571,6 +2777,9 @@ test("Supabase reads fail closed when any declared belief assessment column is p
     serviceRoleKey: "test-service-role-key",
     async fetchImpl(input) {
       const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([legacyScanRunRow(report.runId)]);
+      }
       if (url.includes("/intelligence_reports")) {
         return Response.json([{
           id: report.id,
@@ -2669,6 +2878,9 @@ test("Supabase reads never synthesize an analysis after every durable row is qua
     serviceRoleKey: "test-service-role-key",
     fetchImpl: async (input) => {
       const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([legacyScanRunRow(report.runId)]);
+      }
       if (url.includes("/intelligence_reports")) {
         return Response.json([{
           id: report.id,
