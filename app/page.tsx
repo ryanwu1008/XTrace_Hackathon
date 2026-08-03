@@ -32,10 +32,6 @@ import type {
   UploadRecoveryDto,
   UploadRecoveryDetailDto,
 } from "../lib/uploads/confirmation";
-import type {
-  UnderwritingSearchResult,
-} from "../lib/underwriting/read-model";
-import { toProductSearchMessage } from "./product-search-view-model";
 import {
   resolveReportAppOrigin,
   SAFE_UI_SESSION,
@@ -186,6 +182,25 @@ interface ChatMessage {
 interface ChatReportScope {
   reportId: string;
   runId: string;
+  dealId?: string;
+}
+
+export function buildChatApiRequest(input: {
+  question: string;
+  xtraceEnabled: boolean;
+  scope: ChatReportScope | null;
+}): { url: "/api/chat"; init: RequestInit } {
+  return {
+    url: "/api/chat",
+    init: {
+      method: "POST",
+      body: JSON.stringify({
+        question: input.question,
+        xtraceEnabled: input.xtraceEnabled,
+        ...(input.scope ?? {}),
+      }),
+    },
+  };
 }
 
 export function evidenceContextLabel(
@@ -753,38 +768,17 @@ export default function Home() {
     setBusy("chat");
     setError("");
     try {
-      if (isDurableWorkspaceUiMode(uiSession.deploymentMode)) {
-        const searchUrl = new URL("/api/search", window.location.origin);
-        searchUrl.searchParams.set("q", question);
-        if (chatScope) {
-          searchUrl.searchParams.set("reportId", chatScope.reportId);
-          searchUrl.searchParams.set("runId", chatScope.runId);
-        }
-        const search = await api<{
-          query: string;
-          results: UnderwritingSearchResult[];
-        }>(`${searchUrl.pathname}${searchUrl.search}`);
-        const message = toProductSearchMessage(search.results);
-        setChatMessages((current) => [
-          ...current,
-          {
-            role: "assistant",
-            text: message.text,
-            citations: message.citations,
-            memoryStatus: "disabled",
-          },
-        ]);
-        return;
-      }
+      const chatRequest = buildChatApiRequest({
+        question,
+        xtraceEnabled,
+        scope: chatScope,
+      });
       const answer = await api<{
         answer: string;
         citations: Source[];
         memoryStatus: ChatMemoryStatus;
         insufficientEvidence: boolean;
-      }>("/api/chat", {
-        method: "POST",
-        body: JSON.stringify({ question, xtraceEnabled }),
-      });
+      }>(chatRequest.url, chatRequest.init);
       setChatMessages((current) => [
         ...current,
         {
@@ -1758,10 +1752,12 @@ export function ChatView({
       <SectionTitle
         eyebrow="READ-ONLY QUERY"
         title={isDurableWorkspaceUiMode(deploymentMode)
-          ? "Search finalized underwriting."
+          ? reportScope
+            ? "Ask this exact report."
+            : "Ask finalized underwriting."
           : "Ask the evidence already in VSee."}
         copy={isDurableWorkspaceUiMode(deploymentMode)
-          ? "Search reads finalized persisted Facts, Assumptions, Calculations, Framework Judgments, and Decisions. It cannot browse, run analysis, change policy, or create drafts."
+          ? "Chat reads finalized persisted Facts, Assumptions, Calculations, Framework Judgments, and Decisions. It cannot browse, run analysis, change policy, or create drafts."
           : `Chat never browses the web and never changes Deal state. XTrace recall is ${
               xtraceEnabled ? "enabled" : "disabled"
             } for this query.`}
@@ -1776,7 +1772,7 @@ export function ChatView({
           <Empty
             title="Try a grounded question"
             copy={isDurableWorkspaceUiMode(deploymentMode)
-              ? "Search for a finalized company, framework conclusion, valuation input, or decision."
+              ? "Ask about a finalized company, framework conclusion, valuation input, or decision."
               : "For example: Which supplied companies relate to AI infrastructure? Why did we mark 7bridges as passed?"}
           />
         )}

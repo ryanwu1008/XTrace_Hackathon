@@ -26,6 +26,10 @@ import {
 } from "../../../lib/contracts/domain";
 import type { MarketEventV2 } from "../../../lib/contracts/source-evidence";
 import {
+  SAMPLE_DECISION_RECORD_LABEL,
+  SAMPLE_DECISION_RECORD_PREFIX,
+} from "../../../lib/contracts/source-evidence";
+import {
   validateEvidenceSourceCatalog,
 } from "../../../lib/contracts/evidence-catalog";
 import { DEMO_DEAL_EVIDENCE } from "../../../lib/corpus/evidence";
@@ -52,6 +56,101 @@ import {
 } from "../../../lib/reports/evidence-scope";
 
 export const dynamic = "force-dynamic";
+
+export interface ScopedRecallSourceIndex {
+  parentClaims: Map<string, Map<string, EvidenceSourceRef[]>>;
+  fixtureClaims: Map<string, EvidenceSourceRef>;
+}
+
+export function buildScopedRecallSourceIndex(
+  sources: readonly EvidenceSourceRef[],
+  mode: DeploymentMode,
+): ScopedRecallSourceIndex {
+  const catalog = validateEvidenceSourceCatalog(
+    [...sources],
+    "Chat scoped recall source",
+  );
+  const parentClaims = new Map<string, Map<string, EvidenceSourceRef[]>>();
+  const fixtureClaims = new Map<string, EvidenceSourceRef>();
+  for (const source of catalog) {
+    if (!isAllowedScopedChatSource(source, mode)) continue;
+    if (source.provenance === "demo_fixture") {
+      fixtureClaims.set(source.id, source);
+      continue;
+    }
+    if (
+      !("schemaVersion" in source)
+      || source.adaptation !== "canonical"
+      || source.documentId === null
+      || source.sourceRevisionId === null
+    ) continue;
+    const byRevision = parentClaims.get(source.documentId) ?? new Map();
+    byRevision.set(source.sourceRevisionId, [
+      ...(byRevision.get(source.sourceRevisionId) ?? []),
+      source,
+    ]);
+    parentClaims.set(source.documentId, byRevision);
+  }
+  return { parentClaims, fixtureClaims };
+}
+
+export function resolveScopedRecallContextSources(
+  index: ScopedRecallSourceIndex,
+  context: {
+    provenance: EvidenceSourceRef["provenance"];
+    sourceIds: readonly string[];
+    sourceRevisionIds?: readonly string[];
+    fixtureIds: readonly string[];
+  },
+  mode: DeploymentMode,
+): EvidenceSourceRef[] {
+  if (
+    mode === "product"
+    && (context.provenance === "demo_fixture" || context.fixtureIds.length > 0)
+  ) return [];
+  const revisions = context.sourceRevisionIds ?? [];
+  const resolved: EvidenceSourceRef[] = [];
+  const matchedRevisions = new Set<string>();
+  for (const documentId of context.sourceIds) {
+    const byRevision = index.parentClaims.get(documentId);
+    const claims = revisions.flatMap((revisionId) => {
+      const revisionClaims = byRevision?.get(revisionId) ?? [];
+      if (revisionClaims.length > 0) matchedRevisions.add(revisionId);
+      return revisionClaims;
+    });
+    if (claims.length === 0) return [];
+    resolved.push(...claims);
+  }
+  if (matchedRevisions.size !== new Set(revisions).size) return [];
+  for (const fixtureId of context.fixtureIds) {
+    const fixture = index.fixtureClaims.get(fixtureId);
+    if (!fixture || mode !== "public_sandbox") return [];
+    resolved.push(fixture);
+  }
+  if (context.sourceIds.length === 0 && context.fixtureIds.length === 0) {
+    return [];
+  }
+  return [...new Map(resolved.map((source) => [source.id, source])).values()];
+}
+
+function isAllowedScopedChatSource(
+  source: EvidenceSourceRef,
+  mode: DeploymentMode,
+): boolean {
+  if (source.provenance !== "demo_fixture") return true;
+  return mode === "public_sandbox"
+    && "schemaVersion" in source
+    && source.adaptation === "canonical"
+    && source.title === SAMPLE_DECISION_RECORD_LABEL
+    && source.providerId === "deal-registry"
+    && source.sourceClass === "internal_decision_record"
+    && source.sourceAuthority === "primary"
+    && source.evidenceRole === "context"
+    && source.text.status === "normalized_only"
+    && source.text.normalizedStatement.startsWith(
+      SAMPLE_DECISION_RECORD_PREFIX,
+    );
+}
 
 function allDemoSources() {
   const candidates: EvidenceSourceRef[] = [];
@@ -190,7 +289,7 @@ async function productMemoryScope(
   dealId: string,
   mode: DeploymentMode,
 ): Promise<{
-  sourceById: Map<string, EvidenceSourceRef>;
+  sourceIndex: ScopedRecallSourceIndex;
   candidateDealIds: string[];
 }> {
   validateEvidenceSourceCatalog(
@@ -207,7 +306,7 @@ async function productMemoryScope(
     sources: readonly EvidenceSourceRef[],
   ) => {
     const durableSources = sources.filter((source) =>
-      source.provenance !== "demo_fixture"
+      isAllowedScopedChatSource(source, mode)
     );
     if (durableSources.length === 0) return;
     dealIds.add(dealId);
@@ -228,7 +327,7 @@ async function productMemoryScope(
     "Chat durable source",
   );
   return {
-    sourceById: new Map(durableSources.map((source) => [source.id, source])),
+    sourceIndex: buildScopedRecallSourceIndex(durableSources, mode),
     candidateDealIds: [...dealIds],
   };
 }
@@ -252,7 +351,7 @@ async function recallExistingMemory(
   const scope = isDurableWorkspaceMode(mode) && report && dealId
     ? await productMemoryScope(report, dealId, mode)
     : {
-        sourceById: allDemoSources(),
+        sourceIndex: null,
         candidateDealIds: buildDemoViewModel().deals.map((deal) => deal.id),
       };
   if (scope.candidateDealIds.length === 0) return { status: "unavailable" };
@@ -276,7 +375,7 @@ async function recallExistingMemory(
     });
     const evidence = contexts.flatMap((context) => {
       if (
-        isDurableWorkspaceMode(mode)
+        mode === "product"
         && (
           context.fixtureIds.length > 0
           || context.provenance === "demo_fixture"
@@ -284,13 +383,16 @@ async function recallExistingMemory(
       ) {
         return [];
       }
-      const evidenceIds = isDurableWorkspaceMode(mode)
-        ? context.sourceIds
-        : [...context.sourceIds, ...context.fixtureIds];
-      const sources = evidenceIds.flatMap((sourceId) => {
-        const source = scope.sourceById.get(sourceId);
-        return source ? [source] : [];
-      });
+      const sources = isDurableWorkspaceMode(mode) && scope.sourceIndex
+        ? resolveScopedRecallContextSources(
+            scope.sourceIndex,
+            context,
+            mode,
+          )
+        : [...context.sourceIds, ...context.fixtureIds].flatMap((sourceId) => {
+            const source = allDemoSources().get(sourceId);
+            return source ? [source] : [];
+          });
       return sources.map((source) => ({
         text: evidenceSourceText(source),
         sources: [source],

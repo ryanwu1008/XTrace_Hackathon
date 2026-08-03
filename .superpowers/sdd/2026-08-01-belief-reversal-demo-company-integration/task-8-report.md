@@ -70,3 +70,18 @@ workspace-wide mixture.
 
 No production migration execution, deployment, remote provider execution,
 localization, or arbitrary snapshot administration was performed.
+
+## Independent-review follow-up
+
+- The UI's normal Chat path now always posts to `/api/chat`. Report-launched
+  questions include the exact `reportId` and `runId` (plus `dealId` when a
+  Deal-scoped launcher supplies it); public-demo questions use the same POST
+  contract, and main navigation still clears report scope.
+- Product alone removes `demo_fixture` evidence. Public sandbox retains only
+  schema-valid canonical Sample decision records with the permanent exact
+  marker and internal registry authority.
+- Exact XTrace recall citations now resolve parent `sourceIds` through a
+  `(documentId, sourceRevisionId)` index over the resolved report. This
+  supports multiple in-report claim sources for one parent revision and rejects
+  stale/mismatched revisions. Product fixture contexts remain rejected;
+  sandbox Sample fixture contexts resolve only through the exact in-report ID.
