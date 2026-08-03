@@ -18,5 +18,6 @@ export function toPublicRun(run: RunRecord): PublicRunRecord {
     createdAt: run.createdAt,
     startedAt: run.startedAt,
     completedAt: run.completedAt,
+    evidenceContext: run.evidenceContext,
   };
 }

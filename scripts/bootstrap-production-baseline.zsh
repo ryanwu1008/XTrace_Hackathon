@@ -1334,6 +1334,58 @@ forward_sentinel_sql() {
     0016) print -- "-- vsee-sentinel: 0016\nselect to_regclass('public.source_evidence_items') is not null and exists (select 1 from pg_catalog.pg_attribute where attrelid = to_regclass('public.source_evidence_items') and attname = 'source_id' and attnotnull and not attisdropped);" ;;
     0017) print -- "-- vsee-sentinel: 0017\nselect to_regclass('public.workspace_test_generations') is not null and to_regprocedure('public.reset_test_view(text,text)') is not null;" ;;
     0018) print -- "-- vsee-sentinel: 0018\nselect to_regclass('public.workspace_test_generations') is not null and to_regprocedure('public.reset_test_view(text,text)') is not null and exists (select 1 from pg_catalog.pg_extension as extension_record join pg_catalog.pg_depend as dependency on dependency.refclassid = 'pg_catalog.pg_extension'::regclass and dependency.refobjid = extension_record.oid and dependency.classid = 'pg_catalog.pg_proc'::regclass and dependency.deptype = 'e' join pg_catalog.pg_proc as procedure_record on procedure_record.oid = dependency.objid join pg_catalog.pg_namespace as namespace on namespace.oid = procedure_record.pronamespace where extension_record.extname = 'pgcrypto' and procedure_record.proname = 'digest' and procedure_record.proargtypes = '17 25'::oidvector and pg_catalog.has_schema_privilege(to_regrole('vsee_registry_owner'), namespace.oid, 'USAGE'));" ;;
+    0019)
+      cat <<'SQL'
+-- vsee-sentinel: 0019
+with state as (
+  select array[
+    to_regclass('public.market_evidence_snapshots'),
+    to_regclass('public.market_evidence_snapshot_events'),
+    to_regclass('public.run_evidence_bindings'),
+    to_regclass('public.run_market_events')
+  ] as relations,
+  array[
+    to_regprocedure('public.create_market_evidence_snapshot(jsonb)'),
+    to_regprocedure('public.create_scan_run_with_evidence_context(jsonb)'),
+    to_regprocedure('public.bind_pinned_run_market_events(text,uuid)'),
+    to_regprocedure('public.bind_live_run_market_events(text,uuid,text[])'),
+    to_regprocedure('public.save_reasoner_judgment_immutable(jsonb)')
+  ] as functions
+), completeness as (
+  select
+    array_position(relations, null) is null
+      and array_position(functions, null) is null
+      and (select count(*) from pg_catalog.pg_trigger
+        where not tgisinternal and tgname in (
+          'market_evidence_snapshot_events_validate',
+          'scan_runs_protect_identity_0019',
+          'intelligence_reports_protect_evidence_0019',
+          'company_analyses_protect_assessment_0019')) = 4
+      and (select count(*) from pg_catalog.pg_attribute
+        where attrelid = to_regclass('public.scan_runs') and not attisdropped
+          and attname in ('evidence_context_version','evidence_mode',
+            'evidence_anchor_at','evidence_window_start_at','evidence_window_end_at',
+            'evidence_window_timezone','evidence_snapshot_id',
+            'evidence_snapshot_fingerprint','evidence_context_fingerprint')) = 9
+      and (select count(*) from pg_catalog.pg_attribute
+        where attrelid = to_regclass('public.company_analyses') and not attisdropped
+          and attname like 'belief_%') >= 6
+      and (select count(*) from pg_catalog.pg_attribute
+        where attrelid = to_regclass('public.reasoner_judgments') and not attisdropped
+          and attname in ('judgment_schema_version','judgment_record_fingerprint',
+            'evidence_context_fingerprint','evidence_binding_fingerprint')) = 4
+      as complete,
+    cardinality(array_remove(relations, null)) = 0
+      and cardinality(array_remove(functions, null)) = 0
+      and not exists (select 1 from pg_catalog.pg_attribute
+        where attrelid = to_regclass('public.scan_runs') and not attisdropped
+          and attname = 'evidence_context_version') as absent
+  from state
+)
+select case when complete then true when absent then false else null end
+from completeness;
+SQL
+      ;;
     *)
       print -u2 "Unknown forward sentinel: $1"
       return 1
@@ -1511,7 +1563,7 @@ fi
 
 # Baseline bootstrap never mutates a database already carrying a forward
 # migration. The forward launcher validates those reviewed states separately.
-forward_ids=(0010 0011 0012 0013 0014 0015 0016 0017 0018)
+forward_ids=(0010 0011 0012 0013 0014 0015 0016 0017 0018 0019)
 for migration_id in "${forward_ids[@]}"; do
   if ! inspect_forward_sentinel "$migration_id"; then
     exit 1
@@ -1598,4 +1650,4 @@ while true; do
 done
 
 print "Production baseline through 0009 matches the reviewed catalog and data invariants."
-print "Continue with ./scripts/apply-production-migrations.zsh for 0010 through 0018."
+print "Continue with ./scripts/apply-production-migrations.zsh for 0010 through 0019."

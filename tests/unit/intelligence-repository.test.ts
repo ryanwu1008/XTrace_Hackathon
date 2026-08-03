@@ -9,6 +9,7 @@ import {
 } from "../../db/repositories/intelligence";
 import * as intelligenceRepositoryModule from "../../db/repositories/intelligence";
 import type { CompanyAnalysis } from "../../lib/contracts/domain";
+import type { DealRegistry } from "../../db/repositories/deal-registry";
 import { parseMarketEventV2Read } from "../../lib/contracts/legacy-evidence-adapter";
 import {
   createMarketService,
@@ -223,6 +224,25 @@ function completeReportWithIdentity(input: {
     workspaceId: input.workspaceId ?? "workspace_demo",
     companyAnalyses: [analysis],
   };
+}
+
+function authoritativeDealsFor(
+  analyses: readonly CompanyAnalysis[],
+): DealRegistry {
+  return {
+    async listForWorkspace(workspaceId: string) {
+      return analyses.map((analysis) => ({
+        id: analysis.dealId,
+        workspaceId,
+        companyId: `company_${analysis.dealId}`,
+        companyName: analysis.companyName,
+        status: analysis.dealStatus,
+        analysisEligibleAt: "2026-07-24T00:00:00.000Z",
+        activeSourceRevisionFingerprint: `sha256:${"a".repeat(64)}`,
+        activeSourceRevisionIds: [`revision_${analysis.dealId}`],
+      }));
+    },
+  } as unknown as DealRegistry;
 }
 
 test("market event upserts are idempotent", async () => {
@@ -543,6 +563,31 @@ test("Supabase market event reads adapt legacy rows without inventing v2 provena
   assert.equal(adapted.retrievedAt, null);
   assert.equal(adapted.sources[0].text.status, "legacy_unverified");
   assert.equal(adapted.sources[0].sourceAuthority, "unknown_legacy");
+});
+
+test("current report writes reject missing authoritative registry Deals before network", async () => {
+  const report = {
+    ...completeReport(),
+    evidenceBindingFingerprint:
+      `sha256:${"b".repeat(64)}`,
+  };
+  let fetches = 0;
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    dealRegistry: {
+      async listForWorkspace() {
+        return [];
+      },
+    } as unknown as DealRegistry,
+    fetchImpl: async () => {
+      fetches += 1;
+      throw new Error("network must not be reached");
+    },
+  });
+
+  await assert.rejects(repository.saveReport(report), /authoritative.*Deal/i);
+  assert.equal(fetches, 0);
 });
 
 test("Supabase market event reads reject declared malformed v2 payloads", async () => {
@@ -1780,7 +1825,11 @@ test("lists a Deal's analyses newest first", async () => {
 
 test("Supabase report writes use the atomic report RPC", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
-  const report = completeReport();
+  const report = {
+    ...completeReport(),
+    evidenceBindingFingerprint:
+      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  };
   const firstAnalysis = report.companyAnalyses[0];
   firstAnalysis.claimSupport = [{
     text: "Company 1 source evidence.",
@@ -1790,10 +1839,25 @@ test("Supabase report writes use the atomic report RPC", async () => {
   const repository = createSupabaseIntelligenceRepository({
     url: "https://example.supabase.co",
     serviceRoleKey: "test-service-role-key",
+    dealRegistry: authoritativeDealsFor(report.companyAnalyses),
     fetchImpl: async (input, init = {}) => {
       const url = String(input);
       requests.push({ url, init });
       if (url.includes("/intelligence_reports")) return Response.json([]);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([{
+          id: report.runId,
+          evidence_context_version: "run-evidence-context-v1",
+          evidence_mode: "live",
+          evidence_anchor_at: "2026-07-24T12:00:00.000Z",
+          evidence_window_start_at: "2026-07-10T12:00:00.000Z",
+          evidence_window_end_at: "2026-07-24T12:00:00.000Z",
+          evidence_window_timezone: "America/Los_Angeles",
+          evidence_snapshot_id: null,
+          evidence_snapshot_fingerprint: null,
+          evidence_context_fingerprint: `sha256:${"c".repeat(64)}`,
+        }]);
+      }
       if (!url.includes("/rpc/save_intelligence_report")) {
         throw new Error(`Unexpected request: ${url}`);
       }
@@ -1812,6 +1876,20 @@ test("Supabase report writes use the atomic report RPC", async () => {
         analysis_unavailable_count: 0,
         priority_deal_id: null,
         evidence_coverage: report.evidenceCoverage,
+        evidence_context_version: "run-evidence-context-v1",
+        evidence_mode: "live",
+        evidence_window_days: 14,
+        evidence_anchor_at: "2026-07-24T12:00:00.000Z",
+        evidence_window_start_at: "2026-07-10T12:00:00.000Z",
+        evidence_window_end_at: "2026-07-24T12:00:00.000Z",
+        evidence_window_timezone: "America/Los_Angeles",
+        evidence_snapshot_id: null,
+        evidence_snapshot_fingerprint: null,
+        evidence_context_fingerprint: `sha256:${"c".repeat(64)}`,
+        evidence_display_label: "Live evidence window",
+        evidence_event_count: 0,
+        evidence_event_set_fingerprint: `sha256:${"d".repeat(64)}`,
+        evidence_binding_fingerprint: report.evidenceBindingFingerprint,
       }]);
     },
   });
@@ -1835,10 +1913,15 @@ test("Supabase report writes use the atomic report RPC", async () => {
   assert.equal(body.p_report.companyCount, 19);
   assert.equal(body.p_report.eligibleSnapshotCount, 19);
   assert.equal(
+    body.p_report.evidenceBindingFingerprint,
+    report.evidenceBindingFingerprint,
+  );
+  assert.equal(
     body.p_report.eligibleSnapshotFingerprint,
     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   );
   assert.equal(stored.companyAnalyses.length, 19);
+  assert.equal(stored.evidenceContext?.state, "current");
   assert.equal(
     JSON.stringify(stored).includes("test-service-role-key"),
     false,
@@ -2480,6 +2563,67 @@ test("Supabase reads quarantine malformed legacy analyses without hiding valid r
   );
 });
 
+test("Supabase reads fail closed when any declared belief assessment column is partial", async () => {
+  const report = completeReport([companyAnalysis(1)]);
+  const analysis = report.companyAnalyses[0];
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      const url = String(input);
+      if (url.includes("/intelligence_reports")) {
+        return Response.json([{
+          id: report.id,
+          workspace_id: report.workspaceId,
+          run_id: report.runId,
+          created_at: report.createdAt,
+          market_summary: report.marketSummary,
+          opportunities: [],
+          company_count: 1,
+          belief_revised_count: 0,
+          monitor_count: 0,
+          no_material_change_count: 1,
+          analysis_unavailable_count: 0,
+          evidence_coverage: report.evidenceCoverage,
+        }]);
+      }
+      if (url.includes("/company_analyses")) {
+        return Response.json([{
+          id: analysis.id,
+          workspace_id: report.workspaceId,
+          report_id: report.id,
+          run_id: analysis.runId,
+          deal_id: analysis.dealId,
+          company_name: analysis.companyName,
+          deal_status: analysis.dealStatus,
+          outcome: analysis.outcome,
+          confidence: analysis.confidence,
+          score: analysis.score,
+          investment_memory: analysis.investmentMemory,
+          market_evidence: analysis.marketEvidence,
+          implications: analysis.implications,
+          recommended_next_move: analysis.recommendedNextMove,
+          company_brief: analysis.companyBrief,
+          source_refs: analysis.sources,
+          created_at: analysis.createdAt,
+          belief_assessment_version: "belief-change-assessment-v1",
+          belief_direction: null,
+          belief_score_breakdown: null,
+          belief_gate_context: null,
+          belief_gate_results: null,
+          belief_actions: null,
+        }]);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    repository.listReports(report.workspaceId),
+    /partial.*belief assessment/i,
+  );
+});
+
 test("Supabase reads never synthesize an analysis after every durable row is quarantined", async () => {
   const report = completeReport([companyAnalysis(1)]);
   const analysis = report.companyAnalyses[0];
@@ -2557,7 +2701,7 @@ test("Supabase reads never synthesize an analysis after every durable row is qua
   assert.deepEqual(fetched?.companyAnalyses, []);
 });
 
-test("resetScanProducts wipes reports and market events but nothing else is reachable", async () => {
+test("resetScanProducts logically hides reports and market events without deleting durable lineage", async () => {
   const repository = createMemoryIntelligenceRepository({
     now: () => new Date("2026-07-24T12:00:00.000Z"),
   });
@@ -2575,7 +2719,7 @@ test("resetScanProducts wipes reports and market events but nothing else is reac
   assert.deepEqual(await repository.listMarketEvents("workspace_demo"), []);
 });
 
-test("Supabase resetScanProducts keeps queued and running scans alive", async () => {
+test("Supabase resetScanProducts advances the logical generation without destructive REST calls", async () => {
   const deletePaths: string[] = [];
   const postPaths: string[] = [];
   const repository = intelligenceRepositoryModule.createSupabaseIntelligenceRepository({
@@ -2590,19 +2734,12 @@ test("Supabase resetScanProducts keeps queued and running scans alive", async ()
 
   await repository.resetScanProducts("workspace_demo");
 
-  assert.equal(deletePaths.length, 2);
+  assert.equal(deletePaths.length, 0);
   assert.deepEqual(postPaths, [
     "https://example.supabase.co/rest/v1/rpc/reset_intelligence_products",
   ]);
   assert.doesNotMatch(
     deletePaths.join("\n"),
     /company_analyses|intelligence_reports/,
-  );
-  const runsDelete = deletePaths.find((path) => path.includes("/scan_runs"));
-  assert.ok(runsDelete, "finished scan runs must be wiped");
-  assert.match(
-    runsDelete!,
-    /status=in\.\(completed,partial,failed\)/,
-    "queued and running scans must survive the reset",
   );
 });

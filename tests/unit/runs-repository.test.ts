@@ -6,6 +6,8 @@ import {
   createSupabaseDataClient,
 } from "../../db/client";
 import { createRunsRepository } from "../../db/repositories/runs";
+import { marketEventV2, exactSourceV2 } from "../helpers/source-evidence-v2";
+import { createMemoryMarketEvidenceSnapshotsRepository } from "../../db/repositories/market-evidence-snapshots";
 
 test("claims a queued run once and persists completion", async () => {
   const client = createMemoryDataClient();
@@ -46,6 +48,106 @@ test("reuses an active run for the same workspace, mode, and window", async () =
   });
 
   assert.equal(second.id, first.id);
+  assert.equal(second.evidenceContext.state, "current");
+  assert.equal(second.evidenceContext.state === "current" && second.evidenceContext.evidenceMode, "live");
+});
+
+test("different active evidence contexts fail with the typed single-run conflict", async () => {
+  const now = new Date("2026-08-02T06:59:59.999Z");
+  const snapshots = createMemoryMarketEvidenceSnapshotsRepository({ now: () => now });
+  const source = exactSourceV2("source_pinned", {
+    publishedAt: "2026-07-29T18:00:00.000Z",
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+  });
+  const snapshot = await snapshots.create({
+    schemaVersion: "market-evidence-snapshot-v1",
+    workspaceId: "demo",
+    id: "snapshot_demo",
+    snapshotAsOfDate: "2026-08-01",
+    windowDays: 14,
+    anchorAt: "2026-08-02T06:59:59.999Z",
+    windowStartAt: "2026-07-19T07:00:00.000Z",
+    windowEndAt: "2026-08-02T06:59:59.999Z",
+    windowTimezone: "America/Los_Angeles",
+    events: [marketEventV2(source) as Extract<ReturnType<typeof marketEventV2>, { adaptation: "canonical" }>],
+  });
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => now,
+    getEvidenceSnapshot: (workspaceId, id) => snapshots.get(workspaceId, id),
+  }));
+  await runs.create({ workspaceId: "demo", mode: "xtrace", windowDays: 14 });
+
+  await assert.rejects(
+    runs.create({
+      workspaceId: "demo",
+      mode: "xtrace",
+      windowDays: 14,
+      evidenceRequest: {
+        schemaVersion: "run-evidence-request-v1",
+        evidenceMode: "pinned",
+        snapshotId: snapshot.id,
+      },
+    }),
+    (error: unknown) => error instanceof Error
+      && error.message.includes("ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT"),
+  );
+});
+
+test("a terminal run permits a later pinned context while exact pinned retries reuse", async () => {
+  const now = new Date("2026-08-02T06:59:59.999Z");
+  const snapshots = createMemoryMarketEvidenceSnapshotsRepository({ now: () => now });
+  const source = exactSourceV2("source_pinned_terminal", {
+    publishedAt: "2026-07-29T18:00:00.000Z",
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+  });
+  const snapshot = await snapshots.create({
+    schemaVersion: "market-evidence-snapshot-v1",
+    workspaceId: "demo",
+    id: "snapshot_terminal",
+    snapshotAsOfDate: "2026-08-01",
+    windowDays: 14,
+    anchorAt: "2026-08-02T06:59:59.999Z",
+    windowStartAt: "2026-07-19T07:00:00.000Z",
+    windowEndAt: "2026-08-02T06:59:59.999Z",
+    windowTimezone: "America/Los_Angeles",
+    events: [marketEventV2(source) as Extract<ReturnType<typeof marketEventV2>, { adaptation: "canonical" }>],
+  });
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => now,
+    getEvidenceSnapshot: (workspaceId, id) => snapshots.get(workspaceId, id),
+  }));
+  const live = await runs.create({ workspaceId: "demo", mode: "structured", windowDays: 14 });
+  await runs.finish({ workspaceId: "demo", runId: live.id, status: "completed" });
+  const request = {
+    workspaceId: "demo",
+    mode: "structured" as const,
+    windowDays: 14 as const,
+    evidenceRequest: {
+      schemaVersion: "run-evidence-request-v1" as const,
+      evidenceMode: "pinned" as const,
+      snapshotId: snapshot.id,
+    },
+  };
+  const pinned = await runs.create(request);
+  assert.equal(pinned.evidenceContext.state, "current");
+  assert.equal(pinned.evidenceContext.state === "current" && pinned.evidenceContext.snapshotId, snapshot.id);
+  assert.equal((await runs.create(request)).id, pinned.id);
+  const binding = await runs.bindPinnedMarketEvents("demo", pinned.id);
+  assert.equal(binding.evidenceMode, "pinned");
+  assert.deepEqual(binding.events.map(({ id }) => id), ["market_acme_series_b_1"]);
+  assert.deepEqual(await runs.bindPinnedMarketEvents("demo", pinned.id), binding);
+});
+
+test("live binding accepts an explicit empty accepted set and rejects pinned/live API crossing", async () => {
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => new Date("2026-08-02T06:59:59.999Z"),
+  }));
+  const live = await runs.create({ workspaceId: "demo", mode: "xtrace", windowDays: 14 });
+  const binding = await runs.bindLiveMarketEvents("demo", live.id, []);
+  assert.equal(binding.evidenceMode, "live");
+  assert.equal(binding.eventCount, 0);
+  assert.deepEqual(binding.events, []);
+  await assert.rejects(runs.bindPinnedMarketEvents("demo", live.id), /pinned run/i);
 });
 
 test("records stage progress and partial-run warnings", async () => {

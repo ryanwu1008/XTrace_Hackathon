@@ -32,6 +32,9 @@ export function createClaudeMatchingReasoner(
   return {
     async reason(input: MatchingInput): Promise<ReasonedMatch[]> {
       if (!input.events.length || !input.deals.length) return [];
+      if (options.judgments && options.refreshJudgments) {
+        throw new Error("IMMUTABLE_JUDGMENT_REFRESH_REQUIRES_REVISION");
+      }
       const system = [
           "You are an evidence-constrained venture-capital research analyst.",
           "Find overlaps between recent public market events and previously reviewed Deals.",
@@ -128,13 +131,11 @@ export function createClaudeMatchingReasoner(
       }
       const matches = normalizeMatches(parsed, input);
       if (options.judgments) {
-        try {
-          await options.judgments.save({ fingerprint, model, payload: matches });
-        } catch (error) {
-          // Persistence is an optimization; the live judgment still stands,
-          // but the operator must know determinism is currently off.
-          warnJudgmentPersistence(error);
-        }
+        const stored = await options.judgments.save({ fingerprint, model, payload: matches });
+        return normalizeMatches(
+          ClaudeReasonedMatchesSchema.parse(stored.payload),
+          input,
+        );
       }
       return matches;
     },
@@ -146,27 +147,9 @@ async function replayJudgment(
   fingerprint: string,
   input: MatchingInput,
 ): Promise<ReasonedMatch[] | null> {
-  try {
-    const record = await judgments.find(fingerprint);
-    if (!record) return null;
-    return normalizeMatches(ClaudeReasonedMatchesSchema.parse(record.payload), input);
-  } catch (error) {
-    // An unreadable stored judgment falls through to a live model call.
-    warnJudgmentPersistence(error);
-    return null;
-  }
-}
-
-let judgmentPersistenceWarned = false;
-
-function warnJudgmentPersistence(error: unknown) {
-  if (judgmentPersistenceWarned) return;
-  judgmentPersistenceWarned = true;
-  const message = error instanceof Error ? error.message : String(error);
-  console.warn(
-    "[reasoner] judgment persistence unavailable; scans will re-judge every "
-    + `time (is migration 0006 applied?): ${message.slice(0, 200)}`,
-  );
+  const record = await judgments.find(fingerprint);
+  if (!record) return null;
+  return normalizeMatches(ClaudeReasonedMatchesSchema.parse(record.payload), input);
 }
 
 function normalizeMatches(

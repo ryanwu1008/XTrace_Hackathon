@@ -231,3 +231,10 @@ vsee_catalog_matches_stage() {
     *) return 1 ;;
   esac
 }
+
+# 0019 intentionally remains closed until its exact PostgreSQL 17.6 Supabase
+# and CREATEROLE profile manifests have been generated and reviewed. Never
+# alias a catalog-changing migration to the 0017/0018 constants.
+vsee_catalog_stage_is_reviewed() {
+  [[ "$1" != "0019" ]]
+}

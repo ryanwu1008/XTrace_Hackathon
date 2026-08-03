@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { makeDisposableDatabaseName, requireLoopbackPostgres } from "../helpers/require-loopback-postgres";
 
 import {
   createMemoryUnderwritingArtifactsRepository,
@@ -54,7 +54,8 @@ const migrations = [
 ].map((filename) =>
   fileURLToPath(new URL(`../../drizzle/${filename}`, import.meta.url))
 );
-const postgresAvailable = spawnSync(
+const postgresSafety = requireLoopbackPostgres();
+const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
   "psql",
   [
     "-d",
@@ -63,7 +64,7 @@ const postgresAvailable = spawnSync(
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
   { encoding: "utf8" },
-);
+) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
   postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
@@ -2239,10 +2240,7 @@ function setupSqlUnderwritingWorkspace(database: string): void {
 }
 
 function withTemporaryDatabase(run: (database: string) => void): void {
-  const database =
-    `vsee_underwriting_runs_${process.pid}_${
-      randomUUID().replaceAll("-", "")
-    }`;
+  const database = makeDisposableDatabaseName("underwriting_runs");
   execFileSync("createdb", [database], { stdio: "pipe" });
   try {
     run(database);
@@ -2254,10 +2252,7 @@ function withTemporaryDatabase(run: (database: string) => void): void {
 async function withTemporaryDatabaseAsync(
   run: (database: string) => Promise<void>,
 ): Promise<void> {
-  const database =
-    `vsee_underwriting_runs_${process.pid}_${
-      randomUUID().replaceAll("-", "")
-    }`;
+  const database = makeDisposableDatabaseName("underwriting_async");
   execFileSync("createdb", [database], { stdio: "pipe" });
   try {
     await run(database);

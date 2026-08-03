@@ -1,8 +1,26 @@
 import type { RunStatus } from "../lib/contracts/domain";
+import { createHash } from "node:crypto";
 import {
   IntegrationTransportError,
   isRetryableTransportStatus,
 } from "../lib/api/errors";
+import {
+  RunEvidenceRequestV1Schema,
+  RunEvidenceBindingV1Schema,
+  parseRunEvidenceContextRow,
+  type CurrentRunEvidenceContextV1,
+  type MarketEvidenceSnapshotV1,
+  type RunEvidenceContext,
+  type RunEvidenceRequestV1,
+  type RunEvidenceBindingV1,
+} from "../lib/contracts/evidence-context";
+import {
+  canonicalEvidenceJson,
+  WritableMarketEventV2Schema,
+  type WritableMarketEventV2,
+} from "../lib/contracts/source-evidence";
+import { compareUtf8 } from "../lib/format/canonical-order";
+import { withinPublicationWindow } from "../lib/market/dedupe";
 
 export type RunMode = "xtrace" | "structured";
 export type StageStatus = "queued" | "running" | "skipped" | "completed" | "failed";
@@ -21,6 +39,7 @@ export interface RunRecord {
   startedAt: string | null;
   completedAt: string | null;
   leaseExpiresAt: string | null;
+  evidenceContext: RunEvidenceContext;
 }
 
 export interface RunStageRecord {
@@ -40,12 +59,28 @@ export interface CreateRunRow {
   windowDays: 14;
 }
 
+export interface CreateRunWithEvidenceContextRow extends CreateRunRow {
+  evidenceRequest: RunEvidenceRequestV1;
+}
+
 export type RunUpdatePatch = Partial<Omit<
   RunRecord,
   "id" | "workspaceId" | "mode" | "windowDays" | "createdAt"
 >>;
 
 export interface DataClient {
+  createRunWithEvidenceContext(
+    input: CreateRunWithEvidenceContextRow,
+  ): Promise<RunRecord>;
+  bindPinnedRunMarketEvents(
+    workspaceId: string,
+    runId: string,
+  ): Promise<RunEvidenceBindingV1>;
+  bindLiveRunMarketEvents(
+    workspaceId: string,
+    runId: string,
+    eventIds: string[],
+  ): Promise<RunEvidenceBindingV1>;
   findActiveRun(input: CreateRunRow): Promise<RunRecord | null>;
   insertRun(input: CreateRunRow): Promise<RunRecord>;
   // Global worker-only queue claim. Every mutation after claim is scoped by
@@ -73,7 +108,11 @@ export interface DataClient {
 
 const DEFAULT_LEASE_DURATION_MS = 120_000;
 
-function makeRun(input: CreateRunRow, now: Date): RunRecord {
+function makeRun(
+  input: CreateRunRow,
+  now: Date,
+  evidenceContext: RunEvidenceContext = { state: "legacy_unbound" },
+): RunRecord {
   return {
     id: crypto.randomUUID(),
     workspaceId: input.workspaceId,
@@ -88,6 +127,7 @@ function makeRun(input: CreateRunRow, now: Date): RunRecord {
     startedAt: null,
     completedAt: null,
     leaseExpiresAt: null,
+    evidenceContext,
   };
 }
 
@@ -101,14 +141,237 @@ function assertRunIdentityIsImmutable(patch: RunUpdatePatch): void {
 export function createMemoryDataClient(options: {
   now?: () => Date;
   leaseDurationMs?: number;
+  getEvidenceSnapshot?: (
+    workspaceId: string,
+    snapshotId: string,
+  ) => Promise<MarketEvidenceSnapshotV1 | null>;
+  getLiveMarketEvents?: (
+    workspaceId: string,
+  ) => Promise<WritableMarketEventV2[]>;
 } = {}): DataClient {
   const runs = new Map<string, RunRecord>();
   const stages: RunStageRecord[] = [];
   const workerHeartbeats = new Map<string, string>();
+  const evidenceBindings = new Map<string, RunEvidenceBindingV1>();
   const now = options.now ?? (() => new Date());
   const leaseDurationMs = options.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS;
 
+  function fingerprint(frames: readonly string[]): string {
+    const hash = createHash("sha256");
+    for (const frame of frames) {
+      const bytes = Buffer.from(frame, "utf8");
+      hash.update(`${bytes.length}:`);
+      hash.update(bytes);
+    }
+    return `sha256:${hash.digest("hex")}`;
+  }
+
+  async function resolveEvidenceContext(
+    input: CreateRunWithEvidenceContextRow,
+  ): Promise<CurrentRunEvidenceContextV1> {
+    const request = RunEvidenceRequestV1Schema.parse(input.evidenceRequest);
+    if (request.evidenceMode === "pinned") {
+      const snapshot = await options.getEvidenceSnapshot?.(
+        input.workspaceId,
+        request.snapshotId,
+      );
+      if (!snapshot) throw new Error(`Evidence snapshot ${request.snapshotId} was not found.`);
+      const context = {
+        state: "current" as const,
+        schemaVersion: "run-evidence-context-v1" as const,
+        evidenceMode: "pinned" as const,
+        windowDays: 14 as const,
+        anchorAt: snapshot.anchorAt,
+        windowStartAt: snapshot.windowStartAt,
+        windowEndAt: snapshot.windowEndAt,
+        windowTimezone: snapshot.windowTimezone,
+        snapshotId: snapshot.id,
+        snapshotFingerprint: snapshot.snapshotFingerprint,
+        contextFingerprint: "",
+      };
+      context.contextFingerprint = fingerprint([
+        context.schemaVersion,
+        input.workspaceId,
+        input.mode,
+        String(input.windowDays),
+        context.evidenceMode,
+        context.anchorAt,
+        context.windowStartAt,
+        context.windowEndAt,
+        context.windowTimezone,
+        context.snapshotId,
+        context.snapshotFingerprint,
+      ]);
+      return context;
+    }
+    const anchor = now();
+    if (!Number.isFinite(anchor.getTime())) throw new Error("A valid database clock is required.");
+    const anchorAt = anchor.toISOString();
+    const windowStartAt = new Date(anchor.getTime() - 14 * 86_400_000).toISOString();
+    const context = {
+      state: "current" as const,
+      schemaVersion: "run-evidence-context-v1" as const,
+      evidenceMode: "live" as const,
+      windowDays: 14 as const,
+      anchorAt,
+      windowStartAt,
+      windowEndAt: anchorAt,
+      windowTimezone: "America/Los_Angeles",
+      snapshotId: null,
+      snapshotFingerprint: null,
+      contextFingerprint: "",
+    };
+    context.contextFingerprint = fingerprint([
+      context.schemaVersion,
+      input.workspaceId,
+      input.mode,
+      String(input.windowDays),
+      context.evidenceMode,
+      context.anchorAt,
+      context.windowStartAt,
+      context.windowEndAt,
+      context.windowTimezone,
+      "",
+      "",
+    ]);
+    return context;
+  }
+
+  function bindingKey(workspaceId: string, runId: string) {
+    return `${workspaceId}\0${runId}`;
+  }
+
+  function createBinding(
+    run: RunRecord,
+    eventsInput: readonly WritableMarketEventV2[],
+    displayLabel: string,
+  ): RunEvidenceBindingV1 {
+    if (run.evidenceContext.state !== "current") {
+      throw new Error("A current evidence context is required before binding events.");
+    }
+    const events = [...eventsInput]
+      .map((event) => WritableMarketEventV2Schema.parse(event))
+      .sort((left, right) => compareUtf8(left.id, right.id));
+    const eventSetFingerprint = fingerprint([
+      "run-event-set-v1",
+      ...events.map(canonicalEvidenceJson),
+    ]);
+    const bindingFingerprint = fingerprint([
+      "run-evidence-binding-v1",
+      run.workspaceId,
+      run.id,
+      run.evidenceContext.contextFingerprint,
+      eventSetFingerprint,
+      String(events.length),
+    ]);
+    return RunEvidenceBindingV1Schema.parse({
+      schemaVersion: "run-evidence-binding-v1",
+      workspaceId: run.workspaceId,
+      runId: run.id,
+      evidenceMode: run.evidenceContext.evidenceMode,
+      windowDays: 14,
+      anchorAt: run.evidenceContext.anchorAt,
+      windowStartAt: run.evidenceContext.windowStartAt,
+      windowEndAt: run.evidenceContext.windowEndAt,
+      windowTimezone: run.evidenceContext.windowTimezone,
+      snapshotId: run.evidenceContext.snapshotId,
+      snapshotFingerprint: run.evidenceContext.snapshotFingerprint,
+      contextFingerprint: run.evidenceContext.contextFingerprint,
+      eventCount: events.length,
+      eventSetFingerprint,
+      bindingFingerprint,
+      displayLabel,
+      boundAt: now().toISOString(),
+      events,
+    });
+  }
+
+  function exactBindingRetry(
+    existing: RunEvidenceBindingV1 | undefined,
+    proposed: RunEvidenceBindingV1,
+  ): RunEvidenceBindingV1 {
+    if (!existing) return proposed;
+    if (existing.bindingFingerprint !== proposed.bindingFingerprint) {
+      throw new Error("Run evidence binding collision.");
+    }
+    return existing;
+  }
+
   return {
+    async createRunWithEvidenceContext(input) {
+      const request = RunEvidenceRequestV1Schema.parse(input.evidenceRequest);
+      const active = [...runs.values()].find((run) =>
+        run.workspaceId === input.workspaceId
+        && run.mode === input.mode
+        && run.windowDays === input.windowDays
+        && (run.status === "queued" || run.status === "running")
+      );
+      if (active) {
+        const same = active.evidenceContext.state === "current"
+          && active.evidenceContext.evidenceMode === request.evidenceMode
+          && (
+            request.evidenceMode === "live"
+            || active.evidenceContext.snapshotId === request.snapshotId
+          );
+        if (!same) {
+          throw new Error("ACTIVE_RUN_EVIDENCE_CONTEXT_CONFLICT");
+        }
+        return structuredClone(active);
+      }
+      const context = await resolveEvidenceContext(input);
+      const run = makeRun(input, now(), context);
+      runs.set(run.id, run);
+      return structuredClone(run);
+    },
+    async bindPinnedRunMarketEvents(workspaceId, runId) {
+      const run = runs.get(runId);
+      if (!run || run.workspaceId !== workspaceId) throw new Error(`Run ${runId} was not found.`);
+      if (run.evidenceContext.state !== "current" || run.evidenceContext.evidenceMode !== "pinned") {
+        throw new Error("Pinned event binding requires a pinned run.");
+      }
+      const snapshot = await options.getEvidenceSnapshot?.(
+        workspaceId,
+        run.evidenceContext.snapshotId!,
+      );
+      if (!snapshot || snapshot.snapshotFingerprint !== run.evidenceContext.snapshotFingerprint) {
+        throw new Error("The pinned run snapshot was not found.");
+      }
+      const proposed = createBinding(run, snapshot.events, snapshot.displayLabel);
+      const stored = exactBindingRetry(evidenceBindings.get(bindingKey(workspaceId, runId)), proposed);
+      evidenceBindings.set(bindingKey(workspaceId, runId), stored);
+      return structuredClone(stored);
+    },
+    async bindLiveRunMarketEvents(workspaceId, runId, eventIds) {
+      const run = runs.get(runId);
+      if (!run || run.workspaceId !== workspaceId) throw new Error(`Run ${runId} was not found.`);
+      if (run.evidenceContext.state !== "current" || run.evidenceContext.evidenceMode !== "live") {
+        throw new Error("Live event binding requires a live run.");
+      }
+      const context = run.evidenceContext;
+      if (new Set(eventIds).size !== eventIds.length) throw new Error("Live event IDs must be unique.");
+      const catalog = await options.getLiveMarketEvents?.(workspaceId) ?? [];
+      const byId = new Map(catalog.map((event) => [event.id, event]));
+      const events = eventIds.map((id) => {
+        const event = byId.get(id);
+        if (!event || !withinPublicationWindow({
+          publishedAt: event.publishedAt,
+          publishedAtPrecision: event.publishedAtPrecision,
+        }, {
+          windowStartAt: context.windowStartAt,
+          windowEndAt: context.windowEndAt,
+          windowTimezone: context.windowTimezone,
+        })) throw new Error(`Live event ${id} was not found in the run window.`);
+        return event;
+      });
+      const proposed = createBinding(
+        run,
+        events,
+        `Live evidence window ending ${run.evidenceContext.windowEndAt}`,
+      );
+      const stored = exactBindingRetry(evidenceBindings.get(bindingKey(workspaceId, runId)), proposed);
+      evidenceBindings.set(bindingKey(workspaceId, runId), stored);
+      return structuredClone(stored);
+    },
     async findActiveRun(input) {
       return [...runs.values()].find((run) =>
         run.workspaceId === input.workspaceId
@@ -227,6 +490,7 @@ function toRunRecord(row: Record<string, unknown>): RunRecord {
     startedAt: row.started_at ? String(row.started_at) : null,
     completedAt: row.completed_at ? String(row.completed_at) : null,
     leaseExpiresAt: row.lease_expires_at ? String(row.lease_expires_at) : null,
+    evidenceContext: parseRunEvidenceContextRow(row),
   };
 }
 
@@ -260,7 +524,70 @@ export function createSupabaseDataClient(options: SupabaseOptions): DataClient {
     return body.trim() ? JSON.parse(body) : null;
   }
 
+  async function toBinding(
+    row: Record<string, unknown>,
+  ): Promise<RunEvidenceBindingV1> {
+    const workspaceId = String(row.workspace_id);
+    const runId = String(row.run_id);
+    const eventRows = await request(
+      `/run_market_events?workspace_id=eq.${encodeURIComponent(workspaceId)}`
+      + `&run_id=eq.${encodeURIComponent(runId)}&select=payload&order=ordinal.asc`,
+    ) as Array<{ payload: unknown }>;
+    return RunEvidenceBindingV1Schema.parse({
+      schemaVersion: row.schema_version,
+      workspaceId,
+      runId,
+      evidenceMode: row.evidence_mode,
+      windowDays: row.window_days,
+      anchorAt: row.anchor_at,
+      windowStartAt: row.window_start_at,
+      windowEndAt: row.window_end_at,
+      windowTimezone: row.window_timezone,
+      snapshotId: row.snapshot_id ?? null,
+      snapshotFingerprint: row.snapshot_fingerprint ?? null,
+      contextFingerprint: row.evidence_context_fingerprint,
+      eventCount: row.event_count,
+      eventSetFingerprint: row.event_set_fingerprint,
+      bindingFingerprint: row.binding_fingerprint,
+      displayLabel: row.display_label,
+      boundAt: row.bound_at,
+      events: eventRows.map(({ payload }) => payload),
+    });
+  }
+
   return {
+    async createRunWithEvidenceContext(input) {
+      const evidenceRequest = RunEvidenceRequestV1Schema.parse(input.evidenceRequest);
+      const rows = await request("/rpc/create_scan_run_with_evidence_context", {
+        method: "POST",
+        body: JSON.stringify({
+          p_request: {
+            workspaceId: input.workspaceId,
+            mode: input.mode,
+            windowDays: input.windowDays,
+            evidenceRequest,
+          },
+        }),
+      }) as Record<string, unknown>[];
+      if (!rows[0]) throw new Error("Run creation returned no row.");
+      return toRunRecord(rows[0]);
+    },
+    async bindPinnedRunMarketEvents(workspaceId, runId) {
+      const rows = await request("/rpc/bind_pinned_run_market_events", {
+        method: "POST",
+        body: JSON.stringify({ p_workspace_id: workspaceId, p_run_id: runId }),
+      }) as Record<string, unknown>[];
+      if (!rows[0]) throw new Error("Pinned event binding returned no row.");
+      return toBinding(rows[0]);
+    },
+    async bindLiveRunMarketEvents(workspaceId, runId, eventIds) {
+      const rows = await request("/rpc/bind_live_run_market_events", {
+        method: "POST",
+        body: JSON.stringify({ p_workspace_id: workspaceId, p_run_id: runId, p_event_ids: eventIds }),
+      }) as Record<string, unknown>[];
+      if (!rows[0]) throw new Error("Live event binding returned no row.");
+      return toBinding(rows[0]);
+    },
     async findActiveRun(input) {
       const params = new URLSearchParams({
         workspace_id: `eq.${input.workspaceId}`,

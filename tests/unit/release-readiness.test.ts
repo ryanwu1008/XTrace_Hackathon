@@ -38,6 +38,10 @@ const registryInvariantsSourcePath = new URL(
   "../../scripts/sql/production-registry-data-invariants.sql",
   import.meta.url,
 ).pathname;
+const evidenceInvariantsSourcePath = new URL(
+  "../../scripts/sql/production-belief-reversal-evidence-data-invariants.sql",
+  import.meta.url,
+).pathname;
 const catalogFingerprintsSourcePath = new URL(
   "../../scripts/production-catalog-fingerprints.zsh",
   import.meta.url,
@@ -79,6 +83,7 @@ const productionMigrationFiles = [
   "0016_confirmed_upload_source_evidence_bridge.sql",
   "0017_public_sandbox_test_generations.sql",
   "0018_pgcrypto_registry_schema_usage.sql",
+  "0019_belief_reversal_evidence_context.sql",
 ];
 
 test("the production migration launcher remains directly executable", async () => {
@@ -304,6 +309,13 @@ async function createMigrationRepositoryFixture(t: test.TestContext): Promise<{
     registryInvariantsSourcePath,
     join(scriptsSqlDirectory, "production-registry-data-invariants.sql"),
   );
+  await copyFile(
+    evidenceInvariantsSourcePath,
+    join(
+      scriptsSqlDirectory,
+      "production-belief-reversal-evidence-data-invariants.sql",
+    ),
+  );
   const fixtureFingerprint = `sha256:${
     createHash("sha256").update("t").digest("hex")
   }`;
@@ -319,6 +331,7 @@ readonly VSEE_CATALOG_0009="${fixtureFingerprint}"
 readonly VSEE_CATALOG_BRIDGED_0009="${fixtureFingerprint}"
 vsee_catalog_variant() { [[ "$1" == "${fixtureFingerprint}" ]] && print -- fixture; }
 vsee_catalog_matches_stage() { [[ "$2" == "${fixtureFingerprint}" ]]; }
+vsee_catalog_stage_is_reviewed() { return 0; }
 `,
     "utf8",
   );
@@ -349,6 +362,7 @@ const migrationNames = [
   "0016_confirmed_upload_source_evidence_bridge.sql",
   "0017_public_sandbox_test_generations.sql",
   "0018_pgcrypto_registry_schema_usage.sql",
+  "0019_belief_reversal_evidence_context.sql",
 ];
 
 const migrationTestNames = [
@@ -363,6 +377,7 @@ const migrationTestNames = [
   "tests/integration/framework-catalog-checkpoint-migration.test.ts",
   "tests/integration/public-sandbox-reset-migration.test.ts",
   "tests/integration/pgcrypto-registry-schema-usage-migration.test.ts",
+  "tests/integration/belief-reversal-evidence-context-migration.test.ts",
 ];
 
 test("release migration verification is serial and includes every migration suite", async () => {
@@ -413,7 +428,7 @@ test("release verification has a mandatory PostgreSQL 17.6 Supabase profile gate
   }
 });
 
-test("the physical migration chain is contiguous from 0000 through 0018", async () => {
+test("the physical migration chain is contiguous from 0000 through 0019", async () => {
   const actual = (await readdir(new URL("drizzle/", repositoryRoot)))
     .filter((filename) => /^\d{4}_.+\.sql$/.test(filename))
     .sort();
@@ -421,7 +436,7 @@ test("the physical migration chain is contiguous from 0000 through 0018", async 
   assert.deepEqual(actual, migrationNames);
 });
 
-test("journaled forward migrations preserve physical order and include 0010 through 0018", async () => {
+test("journaled forward migrations preserve physical order and include 0010 through 0019", async () => {
   const journal = JSON.parse(
     await readFile(
       new URL("drizzle/meta/_journal.json", repositoryRoot),
@@ -434,7 +449,7 @@ test("journaled forward migrations preserve physical order and include 0010 thro
   );
 
   assert.deepEqual(
-    actualForwardEntries.filter((tag) => /^001[0-8]_/.test(tag)),
+    actualForwardEntries.filter((tag) => /^001[0-9]_/.test(tag)),
     physicalTags.slice(10),
   );
   let previousPhysicalPosition = -1;
@@ -484,7 +499,7 @@ test("production migration launcher inventories sentinels, applies from the firs
   assert.equal(result.exitCode, 0);
   assert.doesNotMatch(result.output, new RegExp(databaseUrl));
   const trace = (await readFile(tracePath, "utf8")).trim().split("\n");
-  assert.deepEqual(trace.slice(0, 11), [
+  assert.deepEqual(trace.slice(0, 12), [
     "security vsee-supabase-db-url",
     "query 0009",
     "query 0010",
@@ -496,8 +511,9 @@ test("production migration launcher inventories sentinels, applies from the firs
     "query 0016",
     "query 0017",
     "query 0018",
+    "query 0019",
   ]);
-  for (const id of ["0012", "0013", "0014", "0015", "0016", "0017", "0018"]) {
+  for (const id of ["0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019"]) {
     const applyIndex = trace.indexOf(`apply ${id}`);
     assert.ok(applyIndex > 0, `${id} must be applied`);
     assert.equal(trace[applyIndex + 1], `query ${id}`, `${id} must be verified after apply`);

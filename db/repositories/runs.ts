@@ -1,5 +1,9 @@
 import type { RunStatus } from "../../lib/contracts/domain";
 import type { DataClient, RunMode } from "../client";
+import {
+  RunEvidenceRequestV1Schema,
+  type RunEvidenceRequestV1,
+} from "../../lib/contracts/evidence-context";
 
 export function createRunsRepository(client: DataClient) {
   return {
@@ -7,12 +11,24 @@ export function createRunsRepository(client: DataClient) {
       workspaceId: string;
       mode: RunMode;
       windowDays: 14;
+      evidenceRequest?: RunEvidenceRequestV1;
     }) {
-      const active = await client.findActiveRun(input);
-      return active ?? client.insertRun(input);
+      const evidenceRequest = RunEvidenceRequestV1Schema.parse(
+        input.evidenceRequest ?? {
+          schemaVersion: "run-evidence-request-v1",
+          evidenceMode: "live",
+        },
+      );
+      return client.createRunWithEvidenceContext({ ...input, evidenceRequest });
     },
     claimNext(workerId: string) {
       return client.claimNextRun(workerId);
+    },
+    bindPinnedMarketEvents(workspaceId: string, runId: string) {
+      return client.bindPinnedRunMarketEvents(workspaceId, runId);
+    },
+    bindLiveMarketEvents(workspaceId: string, runId: string, eventIds: string[]) {
+      return client.bindLiveRunMarketEvents(workspaceId, runId, eventIds);
     },
     renewLease(workspaceId: string, runId: string, workerId: string) {
       return client.renewRunLease(workspaceId, runId, workerId);

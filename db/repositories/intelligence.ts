@@ -37,12 +37,24 @@ import { assertMarketEventFingerprint } from "../../lib/market/identity";
 import { canonicalMarketObservationKey } from "../../lib/market/observation";
 import { compareUtf8 } from "../../lib/format/canonical-order";
 import { sanitizeReportOpportunities } from "../../lib/reports/next-step-policy";
+import { rankBeliefRevisionCandidates } from "../../lib/matching/ranking";
 import { afterReset, filterAfterReset } from "./test-generations";
+import {
+  getDealRegistry,
+  type DealRegistry,
+} from "./deal-registry";
+import {
+  parseReportEvidenceContextRow,
+  parseRunEvidenceContextRow,
+  type ReportEvidenceContext,
+  type RunEvidenceContext,
+} from "../../lib/contracts/evidence-context";
 
 const MARKET_EVENT_WINDOW_DAYS = 14;
 
 interface IntelligenceRepositoryClockOptions {
   now?: () => Date;
+  dealRegistry?: DealRegistry;
 }
 
 interface IntelligenceReportIdentity {
@@ -55,6 +67,7 @@ interface IntelligenceReportIdentity {
 
 export interface IntelligenceReportWrite extends IntelligenceReportIdentity {
   opportunities: OpportunityReportItem[];
+  evidenceBindingFingerprint?: string;
   // Internal write-time snapshot. It validates that every Deal selected by the
   // authoritative registry received an analysis, but is not added to legacy
   // report response shapes.
@@ -74,6 +87,7 @@ export interface IntelligenceReportRecord extends IntelligenceReportIdentity {
   counts: CompanyAnalysisCounts;
   priorityDealId: string | null;
   companyAnalyses: CompanyAnalysis[];
+  evidenceContext?: ReportEvidenceContext;
 }
 
 export interface IntelligenceRepository {
@@ -457,6 +471,12 @@ function validateCanonicalReportWrite(report: IntelligenceReportWrite): {
   if (!Array.isArray(report.opportunities)) {
     throw new Error("New report writes require an opportunity array.");
   }
+  if (
+    report.evidenceBindingFingerprint !== undefined
+    && !/^sha256:[0-9a-f]{64}$/u.test(report.evidenceBindingFingerprint)
+  ) {
+    throw new Error("A report evidence binding fingerprint must be canonical SHA-256.");
+  }
   // Preserve source-contract diagnostics (unsafe URL, spoofed Sample record,
   // stale event fingerprint) before the aggregate schema reports a generic
   // declared-evidence failure. Both checks remain pre-mutation/pre-network.
@@ -475,6 +495,54 @@ function validateCanonicalReportWrite(report: IntelligenceReportWrite): {
     throw new Error("New report writes require an eligible Deal snapshot.");
   }
   return { canonicalReport, snapshot };
+}
+
+async function validateAuthoritativeCurrentReport(
+  report: IntelligenceReportWrite,
+  dealRegistry: DealRegistry,
+): Promise<void> {
+  if (report.evidenceBindingFingerprint === undefined) return;
+  const analyses = report.companyAnalyses ?? [];
+  const deals = await dealRegistry.listForWorkspace(report.workspaceId);
+  const historicalStatusByDeal = new Map<string, (typeof deals)[number]["status"]>();
+  for (const deal of deals) {
+    if (deal.workspaceId !== report.workspaceId) {
+      throw new Error("The authoritative Deal registry crossed workspace identity.");
+    }
+    if (historicalStatusByDeal.has(deal.id)) {
+      throw new Error(`The authoritative Deal registry duplicated ${deal.id}.`);
+    }
+    historicalStatusByDeal.set(deal.id, deal.status);
+  }
+  for (const analysis of analyses) {
+    const status = historicalStatusByDeal.get(analysis.dealId);
+    if (status === undefined) {
+      throw new Error(`The authoritative Deal registry is missing ${analysis.dealId}.`);
+    }
+    if (
+      status !== analysis.dealStatus
+      || (
+        analysis.beliefAssessment !== undefined
+        && analysis.beliefAssessment.dealStatus !== status
+      )
+    ) {
+      throw new Error(`The authoritative Deal status does not match ${analysis.dealId}.`);
+    }
+  }
+  const rankedIds = rankBeliefRevisionCandidates(analyses, {
+    historicalStatusByDeal,
+    limit: 5,
+  }).map(({ dealId }) => dealId);
+  const opportunityIds = report.opportunities.map(({ dealId }) => dealId);
+  if (
+    rankedIds.length !== opportunityIds.length
+    || rankedIds.some((dealId, index) => opportunityIds[index] !== dealId)
+  ) {
+    throw new Error("The report opportunities do not equal the authoritative Top 5.");
+  }
+  if ((report.priorityDealId ?? null) !== (rankedIds[0] ?? null)) {
+    throw new Error("The report priority Deal does not equal the authoritative Top 5.");
+  }
 }
 
 function validateEligibleSnapshot(report: IntelligenceReportWrite): {
@@ -525,6 +593,7 @@ function projectReportRead(
   const legacyShape = { ...cloned };
   delete legacyShape.eligibleDealCount;
   delete legacyShape.eligibleSnapshotFingerprint;
+  delete legacyShape.evidenceBindingFingerprint;
   const workspaceId = requiredWorkspaceId(cloned.workspaceId);
   const opportunities = adaptOpportunityEvidenceRead(
     sanitizeReportOpportunities(cloned.opportunities),
@@ -633,13 +702,21 @@ export function createMemoryIntelligenceRepository(
     runId: string;
     count: number | null;
     fingerprint: string | null;
+    evidenceBindingFingerprint: string | null;
   }>();
+  const resetAtByWorkspace = new Map<string, string>();
   const now = options.now ?? (() => new Date());
+  const dealRegistry = options.dealRegistry ?? getDealRegistry();
   function reportCatalogForWorkspace(
     workspaceId: string,
+    includeHidden = false,
   ): IntelligenceReportRecord[] {
+    const resetAt = resetAtByWorkspace.get(workspaceId) ?? null;
     const catalog = [...reports.values()]
-      .filter((report) => report.workspaceId === workspaceId)
+      .filter((report) =>
+        report.workspaceId === workspaceId
+        && (includeHidden || afterReset(report.createdAt, resetAt))
+      )
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .map((report) => structuredClone(report));
     return validateReportReadBatch(catalog);
@@ -674,10 +751,11 @@ export function createMemoryIntelligenceRepository(
     },
     async listMarketEvents(workspaceId, resetAt = null) {
       const { to } = currentMarketWindow(now);
+      const logicalResetAt = resetAtByWorkspace.get(workspaceId) ?? resetAt;
       const rows = [...events.values()]
         .filter((row) =>
           row.workspaceId === workspaceId
-          && afterReset(row.observedAt, resetAt)
+          && afterReset(row.observedAt, logicalResetAt)
           && withinPublicationWindow(
             row.event.publishedAt,
             to,
@@ -692,10 +770,11 @@ export function createMemoryIntelligenceRepository(
     },
     async saveReport(report) {
       const { canonicalReport, snapshot } = validateCanonicalReportWrite(report);
+      await validateAuthoritativeCurrentReport(canonicalReport, dealRegistry);
       const validated = projectReportRead(canonicalReport);
       const key = workspaceIdentity(validated.workspaceId, validated.id);
       validateReportReadBatch([
-        ...reportCatalogForWorkspace(validated.workspaceId).filter(
+        ...reportCatalogForWorkspace(validated.workspaceId, true).filter(
           (existing) => existing.id !== validated.id,
         ),
         validated,
@@ -705,6 +784,8 @@ export function createMemoryIntelligenceRepository(
         runId: validated.runId,
         count: snapshot.count,
         fingerprint: snapshot.fingerprint,
+        evidenceBindingFingerprint:
+          canonicalReport.evidenceBindingFingerprint ?? null,
       };
       if (
         existingSnapshot
@@ -713,6 +794,8 @@ export function createMemoryIntelligenceRepository(
           || existingSnapshot.count !== submittedSnapshot.count
           || existingSnapshot.fingerprint
             !== submittedSnapshot.fingerprint
+          || existingSnapshot.evidenceBindingFingerprint
+            !== submittedSnapshot.evidenceBindingFingerprint
         )
       ) {
         throw new Error(
@@ -749,15 +832,7 @@ export function createMemoryIntelligenceRepository(
     },
     async resetScanProducts(workspaceId) {
       workspaceId = requiredWorkspaceId(workspaceId);
-      for (const [key, row] of events) {
-        if (row.workspaceId === workspaceId) events.delete(key);
-      }
-      for (const [key, report] of reports) {
-        if (report.workspaceId === workspaceId) {
-          reports.delete(key);
-          snapshots.delete(key);
-        }
-      }
+      resetAtByWorkspace.set(workspaceId, now().toISOString());
     },
   };
 }
@@ -767,10 +842,12 @@ export function createSupabaseIntelligenceRepository(options: {
   serviceRoleKey: string;
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  dealRegistry?: DealRegistry;
 }): IntelligenceRepository {
   const base = `${options.url.replace(/\/$/, "")}/rest/v1`;
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => new Date());
+  const dealRegistry = options.dealRegistry ?? getDealRegistry();
   const headers = {
     apikey: options.serviceRoleKey,
     authorization: `Bearer ${options.serviceRoleKey}`,
@@ -808,8 +885,23 @@ export function createSupabaseIntelligenceRepository(options: {
         && "claimSupport" in storedMarketEvidence
       ? storedMarketEvidence.claimSupport
       : undefined;
-    const parsed = CompanyAnalysisSchema.safeParse(
-      adaptCompanyAnalysisEvidenceRead({
+    const assessmentColumns = [
+      row.belief_assessment_version,
+      row.belief_direction,
+      row.belief_score_breakdown,
+      row.belief_gate_context,
+      row.belief_gate_results,
+      row.belief_actions,
+    ];
+    const declaresAssessment = assessmentColumns.some(
+      (value) => value !== null && value !== undefined,
+    );
+    if (declaresAssessment && assessmentColumns.some(
+      (value) => value === null || value === undefined,
+    )) {
+      throw new Error("Partial declared belief assessment is not readable.");
+    }
+    const candidate = adaptCompanyAnalysisEvidenceRead({
       id: row.id,
       reportId: row.report_id,
       runId: row.run_id,
@@ -833,16 +925,33 @@ export function createSupabaseIntelligenceRepository(options: {
       companyBrief: row.company_brief,
       sources,
       claimSupport,
+      beliefAssessment: declaresAssessment ? {
+        schemaVersion: row.belief_assessment_version,
+        dealStatus: row.deal_status,
+        direction: row.belief_direction,
+        scoreBreakdown: row.belief_score_breakdown,
+        gateContext: row.belief_gate_context,
+        gates: row.belief_gate_results,
+        actions: row.belief_actions,
+      } : undefined,
       createdAt: row.created_at,
-      }),
-    );
+    });
+    if (declaresAssessment) {
+      try {
+        return CompanyAnalysisSchema.parse(candidate);
+      } catch (error) {
+        throw new Error("Invalid declared belief assessment.", { cause: error });
+      }
+    }
+    const parsed = CompanyAnalysisSchema.safeParse(candidate);
     return parsed.success ? parsed.data : null;
   }
   function toReport(
     row: Record<string, unknown>,
     analyses: CompanyAnalysis[] = [],
+    runContext: RunEvidenceContext = { state: "legacy_unbound" },
   ): IntelligenceReportRecord {
-    return projectReportRead({
+    const report = projectReportRead({
       id: String(row.id),
       workspaceId: String(row.workspace_id),
       runId: String(row.run_id),
@@ -869,6 +978,49 @@ export function createSupabaseIntelligenceRepository(options: {
         : null,
       companyAnalyses: analyses,
     });
+    const declaresEvidenceContext = [
+      row.evidence_context_version,
+      row.evidence_mode,
+      row.evidence_binding_fingerprint,
+    ].some((value) => value !== null && value !== undefined);
+    return declaresEvidenceContext
+      ? {
+          ...report,
+          evidenceContext: parseReportEvidenceContextRow(row, runContext),
+        }
+      : report;
+  }
+
+  async function currentRunContexts(
+    workspaceId: string,
+    reportRows: readonly Record<string, unknown>[],
+  ): Promise<Map<string, RunEvidenceContext>> {
+    const runIds = [...new Set(reportRows.flatMap((row) =>
+      row.evidence_context_version === null || row.evidence_context_version === undefined
+        ? []
+        : [String(row.run_id)]
+    ))];
+    const contexts = new Map<string, RunEvidenceContext>();
+    if (runIds.length === 0) return contexts;
+    const filter = `(${runIds.map(encodeURIComponent).join(",")})`;
+    const rows = await request(
+      `/scan_runs?workspace_id=eq.${encodeURIComponent(workspaceId)}`
+      + `&id=in.${filter}&select=id,evidence_context_version,evidence_mode,`
+      + "evidence_anchor_at,evidence_window_start_at,evidence_window_end_at,"
+      + "evidence_window_timezone,evidence_snapshot_id,"
+      + "evidence_snapshot_fingerprint,evidence_context_fingerprint",
+    ) as Record<string, unknown>[];
+    for (const row of rows) {
+      const runId = String(row.id);
+      if (contexts.has(runId)) throw new Error(`Duplicate current run ${runId}.`);
+      contexts.set(runId, parseRunEvidenceContextRow(row));
+    }
+    for (const runId of runIds) {
+      if (!contexts.has(runId)) {
+        throw new Error(`Current report run ${runId} was not found.`);
+      }
+    }
+    return contexts;
   }
   async function analysesForReportIds(
     workspaceId: string,
@@ -900,9 +1052,14 @@ export function createSupabaseIntelligenceRepository(options: {
     ) as Record<string, unknown>[];
     const reportIds = rows.map((row) => String(row.id));
     const analyses = await analysesForReportIds(workspaceId, reportIds);
+    const runContexts = await currentRunContexts(workspaceId, rows);
     return validateReportReadBatch(rows.map((row) => {
       const reportId = String(row.id);
-      return toReport(row, analyses.get(reportId) ?? []);
+      return toReport(
+        row,
+        analyses.get(reportId) ?? [],
+        runContexts.get(String(row.run_id)) ?? { state: "legacy_unbound" },
+      );
     }));
   }
   return {
@@ -966,6 +1123,7 @@ export function createSupabaseIntelligenceRepository(options: {
     },
     async saveReport(report) {
       const { canonicalReport, snapshot } = validateCanonicalReportWrite(report);
+      await validateAuthoritativeCurrentReport(canonicalReport, dealRegistry);
       const validated = projectReportRead(canonicalReport);
       const analysesToPersist = canonicalReport.companyAnalyses === undefined
         ? []
@@ -999,6 +1157,8 @@ export function createSupabaseIntelligenceRepository(options: {
             evidenceCoverage: validated.evidenceCoverage,
             eligibleSnapshotCount: snapshot.count,
             eligibleSnapshotFingerprint: snapshot.fingerprint,
+            evidenceBindingFingerprint:
+              canonicalReport.evidenceBindingFingerprint ?? null,
           },
           p_analyses: analysesToPersist.map((analysis) => ({
             ...analysis,
@@ -1008,10 +1168,25 @@ export function createSupabaseIntelligenceRepository(options: {
               claimSupport: analysis.claimSupport ?? [],
             },
             sourceRefs: analysis.sources,
+            beliefAssessmentVersion: analysis.beliefAssessment?.schemaVersion ?? null,
+            beliefDirection: analysis.beliefAssessment?.direction ?? null,
+            beliefScoreBreakdown: analysis.beliefAssessment?.scoreBreakdown ?? null,
+            beliefGateContext: analysis.beliefAssessment?.gateContext ?? null,
+            beliefGateResults: analysis.beliefAssessment?.gates ?? null,
+            beliefActions: analysis.beliefAssessment?.actions ?? null,
           })),
         }),
       }) as Record<string, unknown>[];
-      return toReport(rows[0], validated.companyAnalyses);
+      if (!rows[0]) throw new Error("Report save returned no row.");
+      const runContexts = await currentRunContexts(
+        validated.workspaceId,
+        rows,
+      );
+      return toReport(
+        rows[0],
+        validated.companyAnalyses,
+        runContexts.get(validated.runId) ?? { state: "legacy_unbound" },
+      );
     },
     async getReport(workspaceId, reportId) {
       return (await reportCatalogForWorkspace(workspaceId)).find(
@@ -1039,25 +1214,11 @@ export function createSupabaseIntelligenceRepository(options: {
     },
     async resetScanProducts(workspaceId) {
       workspaceId = requiredWorkspaceId(workspaceId);
-      const workspace = encodeURIComponent(workspaceId);
       await request("/rpc/reset_intelligence_products", {
         method: "POST",
         headers: { Prefer: "return=minimal" },
         body: JSON.stringify({ p_workspace_id: workspaceId }),
       });
-      // Children first; deleting finished runs also cascades their steps.
-      // Queued and running scans survive so an in-flight demo scan can still
-      // land its report after the wipe.
-      const deletions = [
-        `/scan_runs?workspace_id=eq.${workspace}&status=in.(completed,partial,failed)`,
-        `/market_events?workspace_id=eq.${workspace}`,
-      ];
-      for (const path of deletions) {
-        await request(path, {
-          method: "DELETE",
-          headers: { Prefer: "return=minimal" },
-        });
-      }
     },
   };
 }

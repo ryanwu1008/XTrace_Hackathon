@@ -113,13 +113,13 @@ Web request or Worker process can write to PostgreSQL.
    ```
 
    The forward launcher also never prints the database URL. It requires the
-   complete `0009` boundary, inventories the `0010`–`0018` sentinels before
+   complete `0009` boundary, inventories the `0010`–`0019` sentinels before
    changing anything, refuses any gap, applies only from the first missing
    migration in order, and re-verifies every sentinel. Resolve a failed
    sentinel or gap before retrying; do not skip a file or run a later migration
    manually.
-6. Verify `0018` before restoring traffic. The forward launcher must report
-   that every production sentinel through `0018` is complete. `0018` repairs
+6. Verify `0019` before restoring traffic. The forward launcher must report
+   that every production sentinel through `0019` is complete. `0018` repairs
    only the internal pgcrypto schema dependency used by canonical fingerprints.
    Rerun it once
    after the first successful pass and require the same all-complete result
@@ -187,4 +187,4 @@ If the public-sandbox cutover fails, stop the Worker, restore the previously
 saved Sites version, and change the Sites runtime mode back to
 `VSEE_DEPLOYMENT_MODE=public_demo`. Verify the restored public site is the
 anonymous synthetic read-only demo. **Do not roll back database migrations:**
-the `0010`–`0018` forward migrations remain applied during a Sites rollback.
+the `0010`–`0019` forward migrations remain applied during a Sites rollback.

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
+import { makeDisposableDatabaseName, requireLoopbackPostgres } from "../helpers/require-loopback-postgres";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,7 +24,8 @@ const registryMigrationPath = fileURLToPath(
     import.meta.url,
   ),
 );
-const postgresAvailable = spawnSync(
+const postgresSafety = requireLoopbackPostgres();
+const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
   "psql",
   [
     "-d",
@@ -32,7 +34,7 @@ const postgresAvailable = spawnSync(
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
   { encoding: "utf8" },
-);
+) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
   postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
@@ -41,7 +43,7 @@ const canCreateTemporaryDatabase =
 const requirePostgres = process.env.REQUIRE_POSTGRES_MIGRATION_TESTS === "1";
 
 function withTemporaryDatabase(run: (database: string) => void): void {
-  const database = `vsee_migration_${process.pid}_${randomUUID().replaceAll("-", "")}`;
+  const database = makeDisposableDatabaseName("migration");
   execFileSync("createdb", [database], { stdio: "pipe" });
   try {
     run(database);
@@ -53,9 +55,7 @@ function withTemporaryDatabase(run: (database: string) => void): void {
 async function withTemporaryDatabaseAsync(
   run: (database: string) => Promise<void>,
 ): Promise<void> {
-  const database = `vsee_migration_${process.pid}_${
-    randomUUID().replaceAll("-", "")
-  }`;
+  const database = makeDisposableDatabaseName("migration_async");
   execFileSync("createdb", [database], { stdio: "pipe" });
   try {
     await run(database);

@@ -351,7 +351,7 @@ test("a new analysis run rejects a Deal registry snapshot that changes during st
   assert.equal(marketCalled, false);
 });
 
-test("a claimed run persists market evidence, an always-present summary, and ranked matches", async () => {
+test("a claimed run persists market evidence while legacy untyped matching stays unranked", async () => {
   const runs = createRunsRepository(createMemoryDataClient());
   const queued = await runs.create({
     workspaceId: "workspace_demo",
@@ -472,11 +472,11 @@ test("a claimed run persists market evidence, an always-present summary, and ran
 
   assert.equal(result.run.status, "completed", JSON.stringify(result.run.warnings));
   assert.match(result.report.marketSummary, /1 source-backed market event/i);
-  assert.equal(result.report.opportunities.length, 1);
+  assert.equal(result.report.opportunities.length, 0);
   assert.equal(result.report.companyAnalyses.length, 19);
   assert.equal(result.report.counts.companyCount, 19);
-  assert.equal(result.report.counts.beliefRevised, 1);
-  assert.equal(result.report.priorityDealId, "deal_ably");
+  assert.equal(result.report.counts.beliefRevised, 0);
+  assert.equal(result.report.priorityDealId, null);
   const persistedEvents = await intelligence.listMarketEvents("workspace_demo");
   assert.equal(persistedEvents.length, 1);
   assert.deepEqual(
@@ -487,10 +487,10 @@ test("a claimed run persists market evidence, an always-present summary, and ran
   const reportEvent = result.report.companyAnalyses.find(
     (analysis) => analysis.dealId === "deal_ably",
   )?.marketEvidence.events[0];
-  assert.deepEqual(
+  assert.equal(
     reportEvent,
-    persistedEvents[0],
-    "the report must embed the exact same-ID canonical event payload",
+    undefined,
+    "an untyped legacy match must not promote event evidence into a ranked company analysis",
   );
   assert.notEqual(
     persistedEvents[0].id,

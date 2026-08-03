@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { makeDisposableDatabaseName, requireLoopbackPostgres } from "../helpers/require-loopback-postgres";
 
 const migrationName = "0015_framework_catalog_checkpoint";
 const migrationPath = fileURLToPath(
@@ -12,7 +12,8 @@ const migrationPath = fileURLToPath(
 const journalPath = fileURLToPath(
   new URL("../../drizzle/meta/_journal.json", import.meta.url),
 );
-const postgresAvailable = spawnSync(
+const postgresSafety = requireLoopbackPostgres();
+const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
   "psql",
   [
     "-d",
@@ -21,7 +22,7 @@ const postgresAvailable = spawnSync(
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
   { encoding: "utf8" },
-);
+) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
   postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
@@ -67,8 +68,7 @@ test(
       true,
       "PostgreSQL with temporary-database privileges is required.",
     );
-    const database =
-      `vsee_framework_catalog_${process.pid}_${randomUUID().replaceAll("-", "")}`;
+    const database = makeDisposableDatabaseName("framework_catalog");
     execFileSync("createdb", [database], { stdio: "pipe" });
     try {
       execFileSync(

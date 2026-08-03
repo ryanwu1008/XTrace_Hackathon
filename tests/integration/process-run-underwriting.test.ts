@@ -240,6 +240,7 @@ const scanRun: RunRecord = {
   startedAt: "2026-07-29T11:00:01.000Z",
   completedAt: null,
   leaseExpiresAt: "2026-07-29T12:05:00.000Z",
+  evidenceContext: { state: "legacy_unbound" },
 };
 
 function analysis(

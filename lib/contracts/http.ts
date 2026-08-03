@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 import { DealStatusSchema, RunStatusSchema } from "./domain";
+import {
+  CurrentRunEvidenceContextV1Schema,
+  LegacyUnboundEvidenceContextSchema,
+} from "./evidence-context";
 
 export const ConfirmUploadSchema = z.strictObject({
   companyName: z.string().trim().min(1).max(160),
@@ -16,7 +20,7 @@ export const ConfirmUploadSchema = z.strictObject({
   ]),
 });
 
-export const CreateRunRequestSchema = z.object({
+export const CreateRunRequestSchema = z.strictObject({
   xtraceEnabled: z.boolean().default(true),
 });
 
@@ -28,6 +32,10 @@ export const RunSummarySchema = z.object({
   createdAt: z.string().datetime(),
   currentStage: z.string().nullable(),
   warningCount: z.number().int().nonnegative(),
+  evidenceContext: z.union([
+    LegacyUnboundEvidenceContextSchema,
+    CurrentRunEvidenceContextV1Schema,
+  ]),
 });
 
 export const ChatRequestSchema = z.object({

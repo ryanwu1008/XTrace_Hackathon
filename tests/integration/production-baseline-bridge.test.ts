@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { makeDisposableDatabaseName, requireLoopbackPostgres } from "../helpers/require-loopback-postgres";
 
 const bootstrapPath = fileURLToPath(
   new URL("../../scripts/bootstrap-production-baseline.zsh", import.meta.url),
@@ -73,7 +74,8 @@ const baselineMigrations = [
   fileURLToPath(new URL(`../../drizzle/${filename}`, import.meta.url))
 );
 
-const postgresAvailable = spawnSync(
+const postgresSafety = requireLoopbackPostgres();
+const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
   "psql",
   [
     "-d",
@@ -82,7 +84,7 @@ const postgresAvailable = spawnSync(
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
   { encoding: "utf8" },
-);
+) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
   postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
@@ -146,8 +148,7 @@ function databaseUrl(
 }
 
 function withTemporaryDatabase(run: (database: string) => void): void {
-  const database =
-    `vsee_production_bridge_${process.pid}_${randomUUID().replaceAll("-", "")}`;
+  const database = makeDisposableDatabaseName("production_bridge");
   execFileSync("createdb", [database], { stdio: "pipe" });
   try {
     run(database);
@@ -160,8 +161,7 @@ function withTemporaryDatabaseOwnedBy(
   owner: string,
   run: (database: string) => void,
 ): void {
-  const database =
-    `vsee_production_bridge_${process.pid}_${randomUUID().replaceAll("-", "")}`;
+  const database = makeDisposableDatabaseName("production_bridge");
   execFileSync("createdb", ["--owner", owner, database], { stdio: "pipe" });
   try {
     run(database);

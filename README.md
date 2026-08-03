@@ -125,6 +125,7 @@ without gaps:
 17. [`drizzle/0016_confirmed_upload_source_evidence_bridge.sql`](drizzle/0016_confirmed_upload_source_evidence_bridge.sql)
 18. [`drizzle/0017_public_sandbox_test_generations.sql`](drizzle/0017_public_sandbox_test_generations.sql)
 19. [`drizzle/0018_pgcrypto_registry_schema_usage.sql`](drizzle/0018_pgcrypto_registry_schema_usage.sql)
+20. [`drizzle/0019_belief_reversal_evidence_context.sql`](drizzle/0019_belief_reversal_evidence_context.sql)
 
 `0008` introduces workspace-composite identities, `0009` adds immutable source
 revisions, `0010`–`0012` add versioned underwriting references and artifacts,
@@ -136,7 +137,12 @@ backfill, byte-checksum preservation, immutable image evidence locators, and
 least-privilege upload/source-table grants. Legacy image summaries are not
 promoted as quotations. `0017` adds the durable public-sandbox generation
 marker and controlled reset boundary. `0018` repairs only the internal pgcrypto
-schema dependency used by canonical fingerprints. The bundled corpus loader retains only exact
+schema dependency used by canonical fingerprints. `0019` adds immutable
+market-evidence snapshots, run evidence bindings, persisted belief assessments,
+report evidence lineage, and immutable reasoner judgments. Its production
+launcher remains fail-closed until the exact reviewed PostgreSQL 17.6 catalog
+fingerprints are generated; do not alias them to `0018`. The bundled corpus
+loader retains only exact
 column-level immutable INSERT grants and uses conflict-ignore writes; canonical
 runtime-upload evidence remains writable only through controlled RPCs. Do not
 start Web or Worker against a partial chain.
@@ -146,7 +152,7 @@ point from table names alone. Run the guarded baseline bootstrap followed by
 the forward launcher only inside the no-traffic maintenance window documented
 in [`docs/demo-runbook.md`](docs/demo-runbook.md). Stop all Web and Worker
 writes, prove the scan/upload queues are quiet, take a restorable database
-snapshot, run both launchers, and verify the chain through `0018` before
+snapshot, run both launchers, and verify the chain through `0019` before
 restoring traffic:
 
 ```bash
@@ -173,7 +179,7 @@ server and execute both the Supabase-shaped superuser and non-superuser
 `CREATEROLE` guarded-launcher paths with zero skips. It fails closed on any
 other server version or when either E2E is not executed. Together they avoid
 races between tests that exercise cluster-global roles, apply the complete
-`0000`–`0018` path, and fail when a disposable PostgreSQL database cannot be
+`0000`–`0019` path, and fail when a disposable PostgreSQL database cannot be
 created.
 
 ### Product authentication
@@ -251,7 +257,7 @@ worker heartbeat.
 
 ### Worker runbook
 
-1. For a new database, apply migrations `0000` through `0018` in order; for an
+1. For a new database, apply migrations `0000` through `0019` in order; for an
    existing database, apply the migrations it is missing in order. Then seed
    the corpus before starting the Worker.
 2. Start the Worker and wait for the container health status to become

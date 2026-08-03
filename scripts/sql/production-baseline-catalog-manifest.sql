@@ -17,6 +17,10 @@ with tracked_relation_names(name) as (
     ('source_evidence'),
     ('deal_interactions'),
     ('market_events'),
+    ('market_evidence_snapshots'),
+    ('market_evidence_snapshot_events'),
+    ('run_evidence_bindings'),
+    ('run_market_events'),
     ('intelligence_reports'),
     ('xtrace_ingest_jobs'),
     ('xtrace_memory_links'),
@@ -44,6 +48,22 @@ with tracked_relation_names(name) as (
     ('source_assignment_result'),
     ('confirm_source_assignment'),
     ('reset_intelligence_products')
+    ,('evidence_event_in_window_0019')
+    ,('reject_immutable_row_0019')
+    ,('reject_immutable_statement_0019')
+    ,('validate_snapshot_0019')
+    ,('validate_snapshot_deferred_0019')
+    ,('create_market_evidence_snapshot')
+    ,('create_scan_run_with_evidence_context')
+    ,('validate_run_binding_0019')
+    ,('bind_pinned_run_market_events')
+    ,('bind_live_run_market_events')
+    ,('save_reasoner_judgment_immutable')
+    ,('protect_scan_run_identity_0019')
+    ,('protect_report_evidence_0019')
+    ,('protect_analysis_assessment_0019')
+    ,('save_intelligence_report_legacy_0019')
+    ,('finalize_new_report_current_fields_0019')
 ), restricted_role_names(name) as (
   values
     ('anon'),

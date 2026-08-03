@@ -28,7 +28,9 @@ import type {
   EvidenceCoverage,
   InvestmentMemorySnapshot,
   OpportunityReportItem,
+  CompanyAnalysis,
 } from "../lib/contracts/domain";
+import type { WritableMarketEventV2 } from "../lib/contracts/source-evidence";
 import type {
   Calculation,
   ClaimEdge,
@@ -93,6 +95,15 @@ export const scanRuns = pgTable("scan_runs", {
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  evidenceContextVersion: text("evidence_context_version"),
+  evidenceMode: text("evidence_mode"),
+  evidenceAnchorAt: timestamp("evidence_anchor_at", { withTimezone: true }),
+  evidenceWindowStartAt: timestamp("evidence_window_start_at", { withTimezone: true }),
+  evidenceWindowEndAt: timestamp("evidence_window_end_at", { withTimezone: true }),
+  evidenceWindowTimezone: text("evidence_window_timezone"),
+  evidenceSnapshotId: text("evidence_snapshot_id"),
+  evidenceSnapshotFingerprint: text("evidence_snapshot_fingerprint"),
+  evidenceContextFingerprint: text("evidence_context_fingerprint"),
 }, (table) => [
   unique("scan_runs_workspace_id_id_unique").on(table.workspaceId, table.id),
 ]);
@@ -539,6 +550,103 @@ export const marketEvents = pgTable("market_events", {
   primaryKey({ columns: [table.workspaceId, table.id] }),
 ]);
 
+export const marketEvidenceSnapshots = pgTable("market_evidence_snapshots", {
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  id: text("id").notNull(),
+  schemaVersion: text("schema_version").notNull(),
+  snapshotAsOfDate: date("snapshot_as_of_date").notNull(),
+  windowDays: integer("window_days").notNull(),
+  anchorAt: timestamp("anchor_at", { withTimezone: true }).notNull(),
+  windowStartAt: timestamp("window_start_at", { withTimezone: true }).notNull(),
+  windowEndAt: timestamp("window_end_at", { withTimezone: true }).notNull(),
+  windowTimezone: text("window_timezone").notNull(),
+  displayLabel: text("display_label").notNull(),
+  eventCount: integer("event_count").notNull(),
+  snapshotFingerprint: text("snapshot_fingerprint").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.id] }),
+  unique("market_evidence_snapshots_identity_fingerprint_unique").on(
+    table.workspaceId,
+    table.id,
+    table.snapshotFingerprint,
+  ),
+]);
+
+export const marketEvidenceSnapshotEvents = pgTable("market_evidence_snapshot_events", {
+  workspaceId: text("workspace_id").notNull(),
+  snapshotId: text("snapshot_id").notNull(),
+  ordinal: integer("ordinal").notNull(),
+  eventId: text("event_id").notNull(),
+  eventContentFingerprint: text("event_content_fingerprint").notNull(),
+  publishedValue: text("published_value").notNull(),
+  publishedPrecision: text("published_precision").notNull(),
+  payload: jsonb("payload").$type<WritableMarketEventV2>().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.snapshotId, table.ordinal] }),
+  unique("market_evidence_snapshot_events_event_unique").on(
+    table.workspaceId,
+    table.snapshotId,
+    table.eventId,
+  ),
+  foreignKey({
+    columns: [table.workspaceId, table.snapshotId],
+    foreignColumns: [marketEvidenceSnapshots.workspaceId, marketEvidenceSnapshots.id],
+    name: "market_evidence_snapshot_events_parent_fkey",
+  }),
+]);
+
+export const runEvidenceBindings = pgTable("run_evidence_bindings", {
+  workspaceId: text("workspace_id").notNull(),
+  runId: uuid("run_id").notNull(),
+  schemaVersion: text("schema_version").notNull(),
+  evidenceContextVersion: text("evidence_context_version").notNull(),
+  evidenceMode: text("evidence_mode").notNull(),
+  windowDays: integer("window_days").notNull(),
+  anchorAt: timestamp("anchor_at", { withTimezone: true }).notNull(),
+  windowStartAt: timestamp("window_start_at", { withTimezone: true }).notNull(),
+  windowEndAt: timestamp("window_end_at", { withTimezone: true }).notNull(),
+  windowTimezone: text("window_timezone").notNull(),
+  snapshotId: text("snapshot_id"),
+  snapshotFingerprint: text("snapshot_fingerprint"),
+  evidenceContextFingerprint: text("evidence_context_fingerprint").notNull(),
+  displayLabel: text("display_label").notNull(),
+  eventCount: integer("event_count").notNull(),
+  eventSetFingerprint: text("event_set_fingerprint").notNull(),
+  bindingFingerprint: text("binding_fingerprint").notNull(),
+  boundAt: timestamp("bound_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.runId] }),
+  unique("run_evidence_bindings_fingerprint_unique").on(
+    table.workspaceId,
+    table.bindingFingerprint,
+  ),
+  unique("run_evidence_bindings_run_fingerprint_unique").on(
+    table.workspaceId,
+    table.runId,
+    table.bindingFingerprint,
+  ),
+]);
+
+export const runMarketEvents = pgTable("run_market_events", {
+  workspaceId: text("workspace_id").notNull(),
+  runId: uuid("run_id").notNull(),
+  ordinal: integer("ordinal").notNull(),
+  eventId: text("event_id").notNull(),
+  eventContentFingerprint: text("event_content_fingerprint").notNull(),
+  publishedValue: text("published_value").notNull(),
+  publishedPrecision: text("published_precision").notNull(),
+  payload: jsonb("payload").$type<WritableMarketEventV2>().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.runId, table.ordinal] }),
+  unique("run_market_events_event_unique").on(table.workspaceId, table.runId, table.eventId),
+  foreignKey({
+    columns: [table.workspaceId, table.runId],
+    foreignColumns: [runEvidenceBindings.workspaceId, runEvidenceBindings.runId],
+    name: "run_market_events_binding_fkey",
+  }),
+]);
+
 export const intelligenceReports = pgTable("intelligence_reports", {
   id: text("id").notNull(),
   workspaceId: text("workspace_id").notNull().references(
@@ -573,6 +681,20 @@ export const intelligenceReports = pgTable("intelligence_reports", {
     }),
   eligibleSnapshotCount: integer("eligible_snapshot_count"),
   eligibleSnapshotFingerprint: text("eligible_snapshot_fingerprint"),
+  evidenceContextVersion: text("evidence_context_version"),
+  evidenceMode: text("evidence_mode"),
+  evidenceWindowDays: integer("evidence_window_days"),
+  evidenceAnchorAt: timestamp("evidence_anchor_at", { withTimezone: true }),
+  evidenceWindowStartAt: timestamp("evidence_window_start_at", { withTimezone: true }),
+  evidenceWindowEndAt: timestamp("evidence_window_end_at", { withTimezone: true }),
+  evidenceWindowTimezone: text("evidence_window_timezone"),
+  evidenceSnapshotId: text("evidence_snapshot_id"),
+  evidenceSnapshotFingerprint: text("evidence_snapshot_fingerprint"),
+  evidenceContextFingerprint: text("evidence_context_fingerprint"),
+  evidenceDisplayLabel: text("evidence_display_label"),
+  evidenceEventCount: integer("evidence_event_count"),
+  evidenceEventSetFingerprint: text("evidence_event_set_fingerprint"),
+  evidenceBindingFingerprint: text("evidence_binding_fingerprint"),
 }, (table) => [
   primaryKey({ columns: [table.workspaceId, table.id] }),
   unique("intelligence_reports_one_per_run").on(
@@ -616,6 +738,16 @@ export const companyAnalyses = pgTable("company_analyses", {
   recommendedNextMove: text("recommended_next_move").notNull(),
   companyBrief: jsonb("company_brief").$type<CompanyBrief>().notNull(),
   sourceRefs: jsonb("source_refs").$type<EvidenceSourceRef[]>().notNull(),
+  beliefAssessmentVersion: text("belief_assessment_version"),
+  beliefDirection: text("belief_direction"),
+  beliefScoreBreakdown: jsonb("belief_score_breakdown")
+    .$type<NonNullable<CompanyAnalysis["beliefAssessment"]>["scoreBreakdown"]>(),
+  beliefGateContext: jsonb("belief_gate_context")
+    .$type<NonNullable<CompanyAnalysis["beliefAssessment"]>["gateContext"]>(),
+  beliefGateResults: jsonb("belief_gate_results")
+    .$type<NonNullable<CompanyAnalysis["beliefAssessment"]>["gates"]>(),
+  beliefActions: jsonb("belief_actions")
+    .$type<NonNullable<CompanyAnalysis["beliefAssessment"]>["actions"]>(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   primaryKey({ columns: [table.workspaceId, table.id] }),
@@ -640,6 +772,18 @@ export const companyAnalyses = pgTable("company_analyses", {
     name: "company_analyses_workspace_deal_fkey",
   }).onDelete("cascade"),
 ]);
+
+export const reasonerJudgments = pgTable("reasoner_judgments", {
+  fingerprint: text("fingerprint").primaryKey(),
+  model: text("model").notNull(),
+  payload: jsonb("payload").notNull(),
+  judgmentSchemaVersion: text("judgment_schema_version"),
+  judgmentRecordFingerprint: text("judgment_record_fingerprint"),
+  evidenceContextFingerprint: text("evidence_context_fingerprint"),
+  evidenceBindingFingerprint: text("evidence_binding_fingerprint"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 export const xtraceIngestJobs = pgTable("xtrace_ingest_jobs", {
   jobId: text("job_id").notNull(),

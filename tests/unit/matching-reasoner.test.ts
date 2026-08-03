@@ -332,13 +332,26 @@ test("a reasoner v2 judgment cannot replay under the strict v3 schema", async ()
         requestedFingerprints.push(fingerprint);
         return /^[0-9a-f]{64}$/.test(fingerprint)
           ? {
+              state: "legacy_unbound" as const,
               fingerprint,
               model: "claude-opus-4-8",
               payload: JSON.parse(REPLAY_COMPLETION),
+              evidenceContextFingerprint: null,
+              evidenceBindingFingerprint: null,
+              judgmentRecordFingerprint: null,
             }
           : null;
       },
-      async save() {},
+      async save(record) {
+        return {
+          state: "current" as const,
+          judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
+          ...record,
+          evidenceContextFingerprint: null,
+          evidenceBindingFingerprint: null,
+          judgmentRecordFingerprint: `sha256:${"a".repeat(64)}`,
+        };
+      },
     },
   });
 
@@ -464,7 +477,41 @@ test("identical evidence replays the stored judgment without a new model call", 
   assert.equal(first[0].dealId, "deal_ably");
 });
 
-test("refresh mode re-rolls the model and later replays the refreshed judgment", async () => {
+test("configured judgment read failure is hard and never invokes the provider", async () => {
+  let modelCalls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      modelCalls += 1;
+      return REPLAY_COMPLETION;
+    },
+  }, {
+    judgments: {
+      async find() { throw new Error("configured repository read failed"); },
+      async save() { throw new Error("unreachable"); },
+    },
+  });
+  await assert.rejects(reasoner.reason(replayInput()), /repository read failed/);
+  assert.equal(modelCalls, 0);
+});
+
+test("configured judgment save failure is hard and cannot return an unpersisted result", async () => {
+  let modelCalls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      modelCalls += 1;
+      return REPLAY_COMPLETION;
+    },
+  }, {
+    judgments: {
+      async find() { return null; },
+      async save() { throw new Error("configured repository save failed"); },
+    },
+  });
+  await assert.rejects(reasoner.reason(replayInput()), /repository save failed/);
+  assert.equal(modelCalls, 1);
+});
+
+test("immutable refresh mode fails before provider invocation with a typed revision error", async () => {
   const { createMemoryReasonerJudgmentsRepository } = await import(
     "../../db/repositories/reasoner-judgments"
   );
@@ -477,20 +524,11 @@ test("refresh mode re-rolls the model and later replays the refreshed judgment",
     },
   }, { judgments, refreshJudgments: true });
 
-  await refreshing.reason(replayInput());
-  await refreshing.reason(replayInput());
-  assert.equal(refreshCalls, 2, "refresh mode must bypass replay");
-
-  let frozenCalls = 0;
-  const frozen = createClaudeMatchingReasoner({
-    async complete() {
-      frozenCalls += 1;
-      return REPLAY_COMPLETION;
-    },
-  }, { judgments });
-  const replayed = await frozen.reason(replayInput());
-  assert.equal(frozenCalls, 0, "frozen mode must replay the stored judgment");
-  assert.equal(replayed[0].dealId, "deal_ably");
+  await assert.rejects(
+    refreshing.reason(replayInput()),
+    /IMMUTABLE_JUDGMENT_REFRESH_REQUIRES_REVISION/,
+  );
+  assert.equal(refreshCalls, 0);
 });
 
 test("retrieval metadata changes invalidate v2 judgment replay", async () => {

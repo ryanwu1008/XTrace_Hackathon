@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { makeDisposableDatabaseName, requireLoopbackPostgres } from "../helpers/require-loopback-postgres";
 
 interface MigrationJournalEntry {
   idx: number;
@@ -170,7 +170,8 @@ function readMigrationJournalEntries(): MigrationJournalEntry[] {
   };
   return journal.entries;
 }
-const postgresAvailable = spawnSync(
+const postgresSafety = requireLoopbackPostgres();
+const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
   "psql",
   [
     "-d",
@@ -179,7 +180,7 @@ const postgresAvailable = spawnSync(
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
   { encoding: "utf8" },
-);
+) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
   postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
@@ -287,9 +288,7 @@ test(
       true,
       "PostgreSQL with temporary-database privileges is required.",
     );
-    const database = `vsee_upload_${process.pid}_${
-      randomUUID().replaceAll("-", "")
-    }`;
+    const database = makeDisposableDatabaseName("upload");
     execFileSync("createdb", [database], { stdio: "pipe" });
     try {
       const taskMigrations = validatedTaskMigrationNames(
@@ -1094,9 +1093,7 @@ test(
       true,
       "PostgreSQL with temporary-database privileges is required.",
     );
-    const database = `vsee_upload_legacy_${process.pid}_${
-      randomUUID().replaceAll("-", "")
-    }`;
+    const database = makeDisposableDatabaseName("upload_legacy");
     execFileSync("createdb", [database], { stdio: "pipe" });
     try {
       for (const migration of migrationsThroughImmutableUploadConfirmation) {

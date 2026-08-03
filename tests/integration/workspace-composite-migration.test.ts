@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { makeDisposableDatabaseName, requireLoopbackPostgres } from "../helpers/require-loopback-postgres";
 
 const migrationPaths = Array.from({ length: 9 }, (_, index) => {
   const prefix = String(index).padStart(4, "0");
@@ -24,7 +24,8 @@ const migrationPaths = Array.from({ length: 9 }, (_, index) => {
   );
 });
 
-const postgresAvailable = spawnSync(
+const postgresSafety = requireLoopbackPostgres();
+const postgresAvailable = postgresSafety.state === "verified" ? spawnSync(
   "psql",
   [
     "-d",
@@ -33,7 +34,7 @@ const postgresAvailable = spawnSync(
     "select (rolsuper or rolcreatedb)::text from pg_roles where rolname = current_user",
   ],
   { encoding: "utf8" },
-);
+) : { status: null, stdout: "" };
 const canCreateTemporaryDatabase =
   postgresAvailable.status === 0
   && postgresAvailable.stdout.trim() === "true"
@@ -197,7 +198,7 @@ test(
   },
 );
 
-test("operator instructions require every migration through 0018", () => {
+test("operator instructions require every migration through 0019", () => {
   const readme = readFileSync(
     fileURLToPath(new URL("../../README.md", import.meta.url)),
     "utf8",
@@ -216,21 +217,21 @@ test("operator instructions require every migration through 0018", () => {
     },
   ];
   let previous = -1;
-  for (let index = 0; index <= 18; index += 1) {
+  for (let index = 0; index <= 19; index += 1) {
     const marker = `drizzle/${String(index).padStart(4, "0")}_`;
     const position = readme.indexOf(marker);
     assert.ok(position > previous, `${marker} must appear in migration order`);
     previous = position;
   }
   const staleMigrationRange =
-    /\bmigrations?\b[^\n.]{0,160}(?:through|to|套到|到|`?0000`?\s*(?:-|–|—|→))\s*`?(?:000[0-9]|001[0-6])`?/iu;
+    /\bmigrations?\b[^\n.]{0,160}(?:through|to|套到|到|`?0000`?\s*(?:-|–|—|→))\s*`?(?:000[0-9]|001[0-8])`?/iu;
   assert.match(
     "migrations 必須依序套用 0000 到 0006",
     staleMigrationRange,
     "operator-doc regression must recognize the active Chinese range syntax",
   );
   assert.match(
-    "apply migrations 0000 through 0016 in order",
+    "apply migrations 0000 through 0018 in order",
     staleMigrationRange,
     "operator-doc regression must recognize the immediately previous release range",
   );
@@ -249,7 +250,7 @@ test("operator instructions require every migration through 0018", () => {
     /database snapshot/i,
     /bootstrap-production-baseline\.zsh/i,
     /apply-production-migrations\.zsh/i,
-    /verify[^\n.]{0,100}`?0018`?/i,
+    /verify[^\n.]{0,100}`?0019`?/i,
     /resume (?:the )?Web and (?:the )?Worker/i,
   ];
   let previousMaintenanceStep = -1;
@@ -276,8 +277,7 @@ test("operator instructions require every migration through 0018", () => {
 });
 
 function withTemporaryDatabase(run: (database: string) => void): void {
-  const database =
-    `vsee_workspace_identity_${process.pid}_${randomUUID().replaceAll("-", "")}`;
+  const database = makeDisposableDatabaseName("workspace_identity");
   execFileSync("createdb", [database], { stdio: "pipe" });
   try {
     run(database);
