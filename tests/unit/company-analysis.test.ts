@@ -23,6 +23,119 @@ const REPORT_ID = "report_1";
 const RUN_ID = "00000000-0000-4000-8000-000000000001";
 const CREATED_AT = "2026-07-24T12:00:00.000Z";
 
+function semanticBundle(input: {
+  sourceIds?: readonly [string, string];
+} = {}): {
+  bundle: DealMemoryBundle;
+  structuredFields: NonNullable<DealMemoryBundle["facts"][number]["semanticFields"]>;
+} {
+  const [primaryId, corroboratingId] = input.sourceIds ?? [
+    "semantic_primary_source",
+    "semantic_corroborating_source",
+  ];
+  const primary = normalizedSourceV2(primaryId, {
+    title: "Reviewed company profile",
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "Structured Metrics is a reviewed Series A company.",
+    },
+  });
+  const corroborating = normalizedSourceV2(corroboratingId, {
+    title: "Corroborating company profile",
+    text: {
+      status: "normalized_only",
+      normalizedStatement: "A second source reports a conflicting founding year.",
+    },
+  });
+  const structuredFields: NonNullable<
+    DealMemoryBundle["facts"][number]["semanticFields"]
+  > = [{
+    id: "semantic-field-111111111111111111111111",
+    schemaVersion: "deal-semantic-field-v1",
+    fieldId: "stage",
+    classification: "fact",
+    availability: "available",
+    value: "Series A",
+    basis: "company-reported",
+    asOfDate: "2026-07-29",
+    sourceIds: [primary.id],
+  }, {
+    id: "semantic-field-222222222222222222222222",
+    schemaVersion: "deal-semantic-field-v1",
+    fieldId: "arr",
+    classification: "unavailable",
+    availability: "unavailable",
+    reason: "No public ARR disclosure was found.",
+    checkedSourceIds: [primary.id, corroborating.id],
+  }, {
+    id: "semantic-field-333333333333333333333333",
+    schemaVersion: "deal-semantic-field-v1",
+    fieldId: "founding_date",
+    classification: "conflicting",
+    observations: [{ value: "2022", sourceId: primary.id }, {
+      value: "2023",
+      sourceId: corroborating.id,
+    }],
+  }, {
+    id: "semantic-field-444444444444444444444444",
+    schemaVersion: "deal-semantic-field-v1",
+    fieldId: "security_type",
+    classification: "assumption",
+    value: "preferred",
+    basis: "assumption",
+    requiresConfirmation: true,
+    assumptionPolicyVersion: "belief-reversal-demo-context-v1",
+    rationale: "Scenario policy requires a security type.",
+    sourceBoundary: "This is not a company-reported term.",
+  }, {
+    id: "semantic-field-555555555555555555555555",
+    schemaVersion: "deal-semantic-field-v1",
+    fieldId: "unknowns",
+    classification: "unknown",
+    reason: "Current net retention is unknown.",
+  }];
+  return {
+    bundle: {
+      dealId: "deal_structured_metrics",
+      companyName: "Structured Metrics",
+      status: "watchlist",
+      facts: [{
+        text: "Structured Metrics is a reviewed Series A company.",
+        sources: [primary],
+        semanticFields: structuredFields,
+      }, {
+        text: "A second source reports a conflicting founding year.",
+        sources: [corroborating],
+      }],
+      interactions: [],
+    },
+    structuredFields,
+  };
+}
+
+function buildSingleCompanyAnalysis(bundle: DealMemoryBundle) {
+  return buildCompanyAnalyses({
+    reportId: REPORT_ID,
+    runId: RUN_ID,
+    createdAt: CREATED_AT,
+    bundles: [bundle],
+    contextsByDeal: new Map([[bundle.dealId, [{
+      dealId: bundle.dealId,
+      memoryId: `memory_${bundle.dealId}`,
+      memoryType: "fact",
+      text: bundle.facts.map((fact) => fact.text).join("\n"),
+      score: 1,
+      provenance: "source_document",
+      sourceIds: bundle.facts.flatMap((fact) =>
+        fact.sources.map((source) => source.id)
+      ),
+      fixtureIds: [],
+    }]]]),
+    recallFailures: new Set(),
+    groundedMatches: [],
+  })[0];
+}
+
 function contextsForEveryDeal(
   bundles: DealMemoryBundle[],
 ): Map<string, MemoryContext[]> {
@@ -492,4 +605,42 @@ test("does not promote unverified or source-unrelated Deal facts into the factua
     ],
     "unverified sources remain available as visibly classified lineage/context",
   );
+});
+
+test("projects persisted semantic fields exactly while preserving every classification", () => {
+  const { bundle, structuredFields } = semanticBundle();
+
+  const analysis = buildSingleCompanyAnalysis(bundle);
+  const brief = analysis.companyBrief as typeof analysis.companyBrief & {
+    structuredFields?: unknown[];
+  };
+
+  assert.deepEqual(brief.structuredFields, structuredFields);
+});
+
+test("rejects a Company Brief semantic field whose source ID is not in canonical lineage", () => {
+  const { bundle } = semanticBundle();
+  const semantic = bundle.facts[0].semanticFields![0];
+  assert.equal(semantic.classification, "fact");
+  if (semantic.classification !== "fact") {
+    throw new Error("The fixture requires a semantic fact.");
+  }
+  semantic.sourceIds = ["missing_semantic_source"];
+
+  assert.throws(
+    () => buildSingleCompanyAnalysis(bundle),
+    /semantic field source IDs must resolve to Company Brief lineage/i,
+  );
+});
+
+test("labels every synthetic decision-history entry as Sample decision record", () => {
+  const input = baseInput();
+  const analysis = buildCompanyAnalyses(input).find((candidate) =>
+    candidate.companyBrief.decisionHistory.length > 0
+  );
+
+  assert.ok(analysis);
+  assert.ok(analysis.companyBrief.decisionHistory.every((entry) =>
+    entry.title === "Sample decision record"
+  ));
 });

@@ -220,6 +220,7 @@ function unavailableAnalysis(input: {
       risks: [],
       decisionHistory: [],
       sourceLineage: [],
+      structuredFields: [],
     },
     sources: [],
     createdAt: input.createdAt,
@@ -232,6 +233,9 @@ function buildCompanyBrief(
 ): CompanyAnalysis["companyBrief"] {
   const interaction = latestInteraction(bundle);
   const fixtureId = interaction?.id;
+  const structuredFields = bundle.facts.flatMap((fact) =>
+    fact.semanticFields ?? []
+  );
   const groundedFact = bundle.facts.map((fact) => ({
     fact,
     sourceIds: fact.sources.map(parseSourceRefV2Read)
@@ -282,12 +286,13 @@ function buildCompanyBrief(
     decisionHistory: interaction
       ? [{
           occurredAt: interaction.occurredAt,
-          title: `${bundle.status} decision`,
+          title: "Sample decision record",
           summary: interaction.decisionReason,
           sourceIds: [interaction.id],
         }]
       : [],
     sourceLineage: sources,
+    structuredFields,
   };
 }
 

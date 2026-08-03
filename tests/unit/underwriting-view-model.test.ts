@@ -375,10 +375,14 @@ test("product search presents only finalized artifact results with exact Source 
       + "calculation: venture_method: 19200000 money",
   );
   assert.deepEqual(
-    message.citations.map(({ id, url }) => [id, url]),
+    message.citations.map(({ id, sourceRevisionId, url }) => [
+      id,
+      sourceRevisionId,
+      url,
+    ]),
     [
-      ["revision_1", "/api/source-revisions/revision_1/access"],
-      ["revision_2", "/api/source-revisions/revision_2/access"],
+      ["revision_1", "revision_1", "/api/source-revisions/revision_1/access"],
+      ["revision_2", "revision_2", "/api/source-revisions/revision_2/access"],
     ],
   );
 });

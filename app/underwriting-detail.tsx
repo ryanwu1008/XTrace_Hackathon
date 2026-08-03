@@ -3,9 +3,10 @@
 import { useEffect, useRef } from "react";
 
 import type { CompanyAnalysis } from "../lib/contracts/domain";
+import type { ReportEvidenceContext } from "../lib/contracts/evidence-context";
 import type {
+  CandidateUnderwritingDetail,
   PublicActionDraft,
-  PublicCandidateVersionSnapshot,
 } from "../lib/underwriting/read-model";
 import { SourceRevisionLink } from "./source-revision-link";
 import { formatTemporalForDisplay } from "../lib/format/temporal";
@@ -16,215 +17,8 @@ import {
   versionRows,
 } from "./underwriting-view-model";
 
-type EvidenceFactView = {
-  id: string;
-  field: string;
-  value: string;
-  unit: string | null;
-  currency: string | null;
-  publishedAt: string | null;
-  eventAt: string | null;
-  retrievedAt: string;
-  sourceRevisionId: string;
-  provenanceOrigin: string;
-  sourceRole: string;
-  assertionStatus: string;
-  freshness: string;
-  acceptedForGate: boolean;
-};
-
-type EvidenceAssumptionView = {
-  id: string;
-  field: string;
-  value: string;
-  unit: string | null;
-  scenario: string;
-  rationale: string;
-  inputRefIds: string[];
-  provenanceOrigin: string;
-  sensitivity: string;
-  requiresConfirmation: boolean;
-};
-
-type CalculationView = {
-  id: string;
-  formulaId: string;
-  formulaVersion: string;
-  inputRefs: Array<{ itemId: string; type: string }>;
-  output: string;
-  unit: string;
-  currency: string | null;
-  status: string;
-};
-
-type JudgmentView = {
-  id: string;
-  frameworkCardId: string;
-  frameworkVersion: string;
-  applicability: string;
-  conclusion: string;
-  strongestSupport: string | null;
-  strongestCounterargument: string | null;
-  supportEvidenceItemIds: string[];
-  counterEvidenceItemIds: string[];
-  unknowns: string[];
-  limitations: string[];
-  confidence: {
-    sourceReliability: string;
-    evidenceStrength: string;
-    evidenceCoverage: string;
-    applicability: string;
-    judgment: string;
-  };
-  frameworkMetadata?: {
-    packId: string;
-    packName: string;
-    packVersion: string;
-    sourceCatalogId: string;
-    researchCutoff: string;
-    components: Array<{
-      frameworkId: string;
-      version: string;
-      name: string;
-      attribution: {
-        display: string;
-      };
-      sourceRefs: Array<{
-        sourceId: string;
-        claimIds: string[];
-        locator: {
-          kind: string;
-          value: string;
-        };
-        attributionScope: string;
-        supportType: string;
-      }>;
-    }>;
-    sources: Array<{
-      sourceId: string;
-      title: string;
-      authorOrSpeaker: string[];
-      publisher: string;
-      sourceClass: string;
-      sourceType: string;
-      url: string;
-      edition: string;
-      publishedAt: string | null;
-      eventAt: string | null;
-      accessedAt: string;
-      language: string;
-      rightsStatus: string;
-      attributionScope: string;
-      attributionNotes: string;
-      immutableRevision: {
-        status: string;
-        hashAlgorithm: string | null;
-        contentHash: string | null;
-        reviewedPdfPages?: number[];
-        reviewedTimestampRanges?: string[];
-        videoId?: string;
-      };
-    }>;
-    formalDecisionWeight: string;
-  };
-};
-
-type DecisionView = {
-  id: string;
-  companyQuality: string;
-  priceAttractiveness: string;
-  fundFit: string;
-  decision: string | null;
-  decisionCeiling: string | null;
-  hardVeto: boolean;
-  firedRules: Array<{
-    ruleId: string;
-    inputRefs: string[];
-    result: string;
-    appliedCeiling: string | null;
-    veto: boolean;
-  }>;
-  blockingEvidenceItemIds: string[];
-  confidence: string;
-};
-
-export interface CandidateUnderwritingDetailDto {
-  candidateRunId: string;
-  dealId: string;
-  evidencePack: {
-    asOfDate: string;
-    sourceRevisionIds: string[];
-    facts: EvidenceFactView[];
-    assumptions: EvidenceAssumptionView[];
-    conflicts: Array<{
-      id: string;
-      field: string;
-      material: boolean;
-      status: string;
-    }>;
-    coverage: {
-      minimumModelInputsComplete: boolean;
-      criticalEvidenceComplete: boolean;
-      missingFieldIds: string[];
-      blockingConflictIds: string[];
-      decisionCeiling: string | null;
-      underwritingStatus: string;
-      reasonCodes: string[];
-    };
-  };
-  context: {
-    contextVersion: string;
-    stage: string;
-    businessModel: string;
-    geography: string;
-    securityType: string;
-    asOfDate: string;
-    benchmarkCompatibility: string;
-  };
-  calculations: CalculationView[];
-  judgments: JudgmentView[];
-  disagreements: Array<{
-    id: string;
-    leftJudgmentId: string;
-    rightJudgmentId: string;
-    topic: string;
-    explanation: string;
-    evidenceItemIds: string[];
-  }>;
-  valuation: {
-    status: string;
-    scenarios: Array<{
-      name: string;
-      valuation: string | null;
-      calculationIds: string[];
-    }>;
-    currentAsk: string | null;
-    maximumAcceptablePreMoney: string | null;
-    initialOwnership: string | null;
-    postDilutionOwnership: string | null;
-    grossMoic: string | null;
-    grossIrr: string | null;
-    pricingPremium: string | null;
-    calculationIds: string[];
-    blockerCodes: string[];
-  };
-  decision: DecisionView;
-  narrative: string;
-  claimEdges: Array<{
-    claimItemId: string;
-    dependencyItemId: string;
-    dependencyType:
-      | "fact"
-      | "assumption"
-      | "calculation"
-      | "framework_judgment"
-      | "policy_ref"
-      | "benchmark_ref"
-      | "framework_ref";
-  }>;
-  sourceRevisionIds: string[];
-  versionSnapshot: PublicCandidateVersionSnapshot;
-}
+/** @deprecated Import CandidateUnderwritingDetail from the read model. */
+export type CandidateUnderwritingDetailDto = CandidateUnderwritingDetail;
 
 export interface UnderwritingAnalysisContext {
   companyName: string;
@@ -239,11 +33,15 @@ export interface UnderwritingAnalysisContext {
     positive: string[];
     negative: string[];
   };
-  investmentMemory: {
-    previousMeetingSummary: string;
-    decisionReason: string;
-  };
+  investmentMemory: Pick<
+    CompanyAnalysis["investmentMemory"],
+    "previousMeetingSummary" | "decisionReason" | "fixtureIds"
+  >;
   sources: CompanyAnalysis["sources"];
+  beliefAssessment?: Pick<
+    NonNullable<CompanyAnalysis["beliefAssessment"]>,
+    "direction" | "actions"
+  >;
 }
 
 export function UnderwritingDetailDialog({
@@ -252,6 +50,7 @@ export function UnderwritingDetailDialog({
   analysis,
   detail,
   drafts,
+  evidenceContext,
   canSaveDrafts,
   onClose,
   onEditDraft,
@@ -259,8 +58,9 @@ export function UnderwritingDetailDialog({
   open: boolean;
   companyName: string;
   analysis: UnderwritingAnalysisContext | null;
-  detail: CandidateUnderwritingDetailDto | null;
+  detail: CandidateUnderwritingDetail | null;
   drafts: PublicActionDraft[];
+  evidenceContext?: ReportEvidenceContext;
   canSaveDrafts: boolean;
   onClose(): void;
   onEditDraft(draft: PublicActionDraft): void;
@@ -297,6 +97,7 @@ export function UnderwritingDetailDialog({
             analysis={analysis}
             detail={detail}
             drafts={drafts}
+            evidenceContext={evidenceContext}
             canSaveDrafts={canSaveDrafts}
             onEditDraft={onEditDraft}
           />
@@ -315,25 +116,33 @@ export function UnderwritingDetailPanel({
   analysis,
   detail,
   drafts,
+  evidenceContext,
   canSaveDrafts,
   onEditDraft,
 }: {
   companyName: string;
   analysis: UnderwritingAnalysisContext | null;
-  detail: CandidateUnderwritingDetailDto;
+  detail: CandidateUnderwritingDetail;
   drafts: PublicActionDraft[];
+  evidenceContext?: ReportEvidenceContext;
   canSaveDrafts: boolean;
   onEditDraft(draft: PublicActionDraft): void;
 }) {
-  const factForAsk = detail.evidencePack.facts.find((fact) =>
-    /reported_valuation|current_ask|pre_money|post_money/.test(fact.field)
+  const acceptedAskFacts = detail.evidencePack.facts.filter((fact) =>
+    fact.field === "reported_valuation"
+    && fact.acceptedForGate
+    && fact.value === detail.valuation.currentAsk
   );
+  const factForAsk = acceptedAskFacts.length === 1
+    ? acceptedAskFacts[0]
+    : undefined;
   const capitalFlowFact = detail.evidencePack.facts.find((fact) =>
     /capital.*flow|funding.*flow/.test(fact.field)
   );
 
   return (
     <div className="vsee-underwriting-detail">
+      <EvidenceContextNotice context={evidenceContext} />
       <DetailSection number="01" title="What happened?">
         <div className="vsee-detail-meta">
           <span>14-DAY EVENT WINDOW</span>
@@ -385,23 +194,27 @@ export function UnderwritingDetailPanel({
           />
         </div>
         <h4>Evidence</h4>
-        <div className="vsee-evidence-ledger">
-          {detail.evidencePack.facts.map((fact) => (
-            <article key={fact.id}>
-              <span>Fact</span>
-              <strong>{humanize(fact.field)}</strong>
-              <p>{fact.value}{fact.unit ? ` ${fact.unit}` : ""}</p>
-              <small>
-                {humanize(fact.provenanceOrigin)} · {fact.assertionStatus}
-                {" · "}{fact.freshness} ·{" "}
-                {formatDate(
-                  fact.publishedAt ?? fact.eventAt ?? fact.retrievedAt,
-                )}
-              </small>
-            <SourceRevisionLink revisionId={fact.sourceRevisionId} />
-            </article>
-          ))}
-        </div>
+        {detail.evidencePack.facts.length ? (
+          <div className="vsee-evidence-ledger">
+            {detail.evidencePack.facts.map((fact) => (
+              <article key={fact.id}>
+                <span>Fact</span>
+                <strong>{humanize(fact.field)}</strong>
+                <p>{fact.value}{fact.unit ? ` ${fact.unit}` : ""}</p>
+                <small>
+                  {humanize(fact.provenanceOrigin)} · {fact.assertionStatus}
+                  {" · "}{fact.freshness} ·{" "}
+                  {formatDate(
+                    fact.publishedAt ?? fact.eventAt ?? fact.retrievedAt,
+                  )}
+                </small>
+                <SourceRevisionLink revisionId={fact.sourceRevisionId} />
+              </article>
+            ))}
+          </div>
+        ) : (
+          <Unavailable copy="No persisted Evidence Pack Facts are available." />
+        )}
       </DetailSection>
 
       <DetailSection number="02" title="What is the impact?">
@@ -443,6 +256,8 @@ export function UnderwritingDetailPanel({
             ))}
           </div>
         ) : <Unavailable copy="No changed assumptions were persisted." />}
+        <EvidenceCoveragePanel detail={detail} />
+        <EvidenceConflictsPanel detail={detail} />
       </DetailSection>
 
       <DetailSection
@@ -450,6 +265,18 @@ export function UnderwritingDetailPanel({
         title="Which historical companies are affected?"
       >
         <h4>Context</h4>
+        {!!analysis?.investmentMemory.fixtureIds.length && (
+          <aside className="vsee-sample-decision-record" role="note">
+            <strong>Sample decision record · synthetic demo history</strong>
+            <p>
+              The prior context and decision below are simulated product-demo
+              records, not a real VC meeting or investment interaction.
+            </p>
+            <small>
+              Fixture lineage · {analysis.investmentMemory.fixtureIds.join(" · ")}
+            </small>
+          </aside>
+        )}
         <dl className="vsee-affected-company">
           <div><dt>Identity</dt><dd>{companyName}</dd></div>
           <div>
@@ -475,8 +302,9 @@ export function UnderwritingDetailPanel({
       </DetailSection>
 
       <DetailSection number="04" title="Company underwriting">
-        <div className="vsee-framework-list">
-          {detail.judgments.map((judgment) => (
+        {detail.judgments.length ? (
+          <div className="vsee-framework-list">
+            {detail.judgments.map((judgment) => (
             <article key={judgment.id}>
               <header>
                 <div>
@@ -534,9 +362,12 @@ export function UnderwritingDetailPanel({
               />
               <ClaimTrace claimItemId={judgment.id} detail={detail} />
             </article>
-          ))}
-        </div>
-        {!!detail.disagreements.length && (
+            ))}
+          </div>
+        ) : (
+          <Unavailable copy="No persisted framework judgments are available." />
+        )}
+        {detail.disagreements.length ? (
           <section className="vsee-disagreements">
             <h4>Independent disagreements</h4>
             {detail.disagreements.map((disagreement) => (
@@ -560,6 +391,8 @@ export function UnderwritingDetailPanel({
               </article>
             ))}
           </section>
+        ) : (
+          <Unavailable copy="No framework disagreements were persisted." />
         )}
       </DetailSection>
 
@@ -570,35 +403,44 @@ export function UnderwritingDetailPanel({
             ? ` · ${detail.valuation.blockerCodes.join(" · ")}`
             : ""}
         </p>
-        <div className="vsee-calculation-states">
-          {detail.calculations.map((calculation) => (
-            <article className={calculation.status} key={calculation.id}>
-              <span>{humanize(calculation.status)}</span>
-              <strong>{humanize(calculation.formulaId)}</strong>
-              <small>
-                Formula {calculation.formulaVersion} · {calculation.id}
-              </small>
-              <ClaimTrace claimItemId={calculation.id} detail={detail} />
-            </article>
-          ))}
-        </div>
-        <div className="vsee-scenario-grid">
-          {detail.valuation.scenarios.map((scenario) => (
-            <LineageValue
-              key={scenario.name}
-              label={humanize(scenario.name)}
-              value={scenario.valuation}
-              display={formatMoney(scenario.valuation)}
-              lineage={scenario.calculationIds.length
-                ? {
-                    kind: "Calculation",
-                    itemId: scenario.calculationIds[0],
-                  }
-                : null}
-              detail={detail}
-            />
-          ))}
-        </div>
+        {detail.calculations.length ? (
+          <div className="vsee-calculation-states">
+            {detail.calculations.map((calculation) => (
+              <article className={calculation.status} key={calculation.id}>
+                <span>{humanize(calculation.status)}</span>
+                <strong>{humanize(calculation.formulaId)}</strong>
+                <small>
+                  Formula {calculation.formulaVersion} · {calculation.id}
+                </small>
+                <ClaimTrace claimItemId={calculation.id} detail={detail} />
+              </article>
+            ))}
+          </div>
+        ) : (
+          <Unavailable copy="No persisted calculations are available." />
+        )}
+        <ScenarioModelPanel detail={detail} />
+        {detail.valuation.scenarios.length ? (
+          <div className="vsee-scenario-grid">
+            {detail.valuation.scenarios.map((scenario) => (
+              <LineageValue
+                key={scenario.name}
+                label={humanize(scenario.name)}
+                value={scenario.valuation}
+                display={formatMoney(scenario.valuation)}
+                lineage={scenario.calculationIds.length
+                  ? {
+                      kind: "Calculation",
+                      itemId: scenario.calculationIds[0],
+                    }
+                  : null}
+                detail={detail}
+              />
+            ))}
+          </div>
+        ) : (
+          <Unavailable copy="No persisted valuation scenarios are available." />
+        )}
         <div className="vsee-financial-grid">
           <LineageValue
             label="Ask"
@@ -671,6 +513,18 @@ export function UnderwritingDetailPanel({
             })}
             detail={detail}
           />
+          <LineageValue
+            label="Pricing premium"
+            value={detail.valuation.pricingPremium}
+            display={formatPercent(detail.valuation.pricingPremium)}
+            lineage={financialCalculationLineage({
+              field: "pricingPremium",
+              value: detail.valuation.pricingPremium,
+              calculations: detail.calculations,
+              valuationCalculationIds: detail.valuation.calculationIds,
+            })}
+            detail={detail}
+          />
         </div>
       </DetailSection>
 
@@ -687,7 +541,7 @@ export function UnderwritingDetailPanel({
           <Definition label="Fund Fit" value={detail.decision.fundFit} />
         </div>
         <div className="vsee-formal-decision">
-          <span>FORMAL DECISION</span>
+          <span>FORMAL UNDERWRITING DECISION</span>
           <strong>{detail.decision.decision ?? "Unavailable"}</strong>
           <p>
             Advance authorizes continued diligence. Invest Candidate means
@@ -700,6 +554,7 @@ export function UnderwritingDetailPanel({
           </small>
           <ClaimTrace claimItemId={detail.decision.id} detail={detail} />
         </div>
+        <StatusAwareActionPanel analysis={analysis} />
         <details className="vsee-details">
           <summary>Open decision trace</summary>
           {detail.decision.firedRules.length ? (
@@ -742,14 +597,18 @@ export function UnderwritingDetailPanel({
           ))}
         </div>
         <h4>Sources</h4>
-        <div className="vsee-source-revisions">
-          {detail.sourceRevisionIds.map((revisionId) => (
-            <SourceRevisionLink
-              revisionId={revisionId}
-              key={revisionId}
-            />
-          ))}
-        </div>
+        {detail.sourceRevisionIds.length ? (
+          <div className="vsee-source-revisions">
+            {detail.sourceRevisionIds.map((revisionId) => (
+              <SourceRevisionLink
+                revisionId={revisionId}
+                key={revisionId}
+              />
+            ))}
+          </div>
+        ) : (
+          <Unavailable copy="No Source Revision lineage was persisted." />
+        )}
         <h4>Versions</h4>
         <dl className="vsee-version-grid">
           {versionRows(detail.versionSnapshot).map((row) => (
@@ -775,7 +634,48 @@ export function UnderwritingDetailPanel({
           <div className="vsee-action-draft-list">
             {drafts.map((draft) => (
               <article key={draft.id}>
+                <b>DRAFT ONLY — NOT SENT OR PUBLISHED</b>
                 <span>{humanize(draft.audienceType)} draft</span>
+                <small>
+                  {humanize(draft.safety)} · {humanize(draft.deliveryMode)}
+                </small>
+                {draft.schemaVersion === "action-draft-v2" ? (
+                  <>
+                    <small>
+                      {humanize(draft.dealStatus ?? "unavailable")} ·{" "}
+                      {humanize(draft.beliefDirection ?? "unavailable")}
+                    </small>
+                    <small>
+                      {humanize(draft.format ?? "unavailable")} ·{" "}
+                      {humanize(draft.channel)} ·{" "}
+                      {humanize(draft.audienceType)}
+                    </small>
+                    <small>
+                      Actions · {draft.actions.map((action) =>
+                        `${humanize(action.kind)} (${humanize(action.scope)}, ${humanize(action.priority)})`
+                      ).join(" · ")}
+                    </small>
+                    {draft.missingEvidence.length ? (
+                      <dl>
+                        {draft.missingEvidence.map((item) => (
+                          <div key={`${draft.id}:${item.fieldId}`}>
+                            <dt>{item.label} · {item.reasonCode}</dt>
+                            <dd>{item.mostLikelyDecisionImpact}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    ) : (
+                      <small>
+                        No additional evidence request was persisted for this draft.
+                      </small>
+                    )}
+                  </>
+                ) : (
+                  <small>
+                    Legacy draft safety classification and status-aware action
+                    metadata are unavailable.
+                  </small>
+                )}
                 <p>{draft.body}</p>
                 <small>
                   Current body updated {formatDate(draft.updatedAt)}
@@ -789,6 +689,237 @@ export function UnderwritingDetailPanel({
         ) : <Unavailable copy="No action draft was finalized." />}
       </DetailSection>
     </div>
+  );
+}
+
+function EvidenceContextNotice({
+  context,
+}: {
+  context?: ReportEvidenceContext;
+}) {
+  if (!context || context.state === "legacy_unbound") {
+    return (
+      <aside className="vsee-evidence-context legacy" role="note">
+        <strong>Evidence context unavailable</strong>
+        <p>
+          Legacy report was not bound to a live or pinned evidence frame.
+        </p>
+      </aside>
+    );
+  }
+  const pinned = context.evidenceMode === "pinned";
+  return (
+    <aside
+      className={`vsee-evidence-context ${context.evidenceMode}`}
+      role="note"
+    >
+      <strong>{pinned ? "PINNED DEMO REPLAY" : "LIVE EVIDENCE"}</strong>
+      <p>{context.displayLabel}</p>
+      {pinned && <p>Historical evidence snapshot—not current news.</p>}
+      <small>
+        14-day window · {formatDate(context.windowStartAt)} to{" "}
+        {formatDate(context.windowEndAt)} · {context.windowTimezone} ·{" "}
+        {context.eventCount} events
+      </small>
+    </aside>
+  );
+}
+
+function EvidenceCoveragePanel({
+  detail,
+}: {
+  detail: CandidateUnderwritingDetail;
+}) {
+  const coverage = detail.evidencePack.coverage;
+  return (
+    <section className="vsee-evidence-coverage">
+      <h4>Evidence coverage</h4>
+      <div className="vsee-decision-dimensions">
+        <Definition
+          label="Minimum model inputs complete"
+          value={coverage.minimumModelInputsComplete ? "Yes" : "No"}
+        />
+        <Definition
+          label="Critical evidence complete"
+          value={coverage.criticalEvidenceComplete ? "Yes" : "No"}
+        />
+        <Definition
+          label="Missing field IDs"
+          value={joinRaw(coverage.missingFieldIds)}
+        />
+        <Definition
+          label="Blocking conflict IDs"
+          value={joinRaw(coverage.blockingConflictIds)}
+        />
+        <Definition
+          label="Decision ceiling"
+          value={coverage.decisionCeiling ?? "Unavailable"}
+        />
+        <Definition
+          label="Underwriting status"
+          value={humanize(coverage.underwritingStatus)}
+        />
+        <Definition
+          label="Reason codes"
+          value={joinRaw(coverage.reasonCodes)}
+        />
+      </div>
+    </section>
+  );
+}
+
+function EvidenceConflictsPanel({
+  detail,
+}: {
+  detail: CandidateUnderwritingDetail;
+}) {
+  return (
+    <section className="vsee-evidence-conflicts">
+      <h4>Evidence conflicts</h4>
+      {detail.evidencePack.conflicts.length ? (
+        detail.evidencePack.conflicts.map((conflict) => {
+          const left = detail.evidencePack.facts.find((fact) =>
+            fact.id === conflict.leftFactId
+          );
+          const right = detail.evidencePack.facts.find((fact) =>
+            fact.id === conflict.rightFactId
+          );
+          return (
+            <article key={conflict.id}>
+              <header>
+                <strong>{humanize(conflict.field)}</strong>
+                <span>
+                  {humanize(conflict.status)} ·{" "}
+                  {conflict.material ? "Material" : "Immaterial"}
+                </span>
+              </header>
+              <p>
+                Left · {conflict.leftFactId} ·{" "}
+                {left ? `${left.value}${left.unit ? ` ${left.unit}` : ""}` : "Fact unavailable"}
+              </p>
+              <p>
+                Right · {conflict.rightFactId} ·{" "}
+                {right ? `${right.value}${right.unit ? ` ${right.unit}` : ""}` : "Fact unavailable"}
+              </p>
+              <small>Materiality rule · {conflict.materialityRuleId}</small>
+              {conflict.resolutionFactId && conflict.resolutionReason ? (
+                <p>
+                  Resolved by {conflict.resolutionFactId} ·{" "}
+                  {conflict.resolutionReason}
+                </p>
+              ) : (
+                <p>Resolution unavailable — conflict remains open</p>
+              )}
+            </article>
+          );
+        })
+      ) : (
+        <Unavailable copy="No persisted Evidence Pack conflicts are available." />
+      )}
+    </section>
+  );
+}
+
+function ScenarioModelPanel({
+  detail,
+}: {
+  detail: CandidateUnderwritingDetail;
+}) {
+  const model = detail.scenarioModel;
+  return (
+    <section className="vsee-scenario-model">
+      <h4>Bear / Base / Bull scenario inputs</h4>
+      <p>
+        Formula policy · {model.formulaPolicyVersion}
+        {" · "}Probability weighted · {model.probabilityWeighted ? "Yes" : "No"}
+      </p>
+      {model.scenarios.length ? (
+        <div className="vsee-scenario-model-grid">
+          {model.scenarios.map((scenario) => (
+            <section key={scenario.name}>
+              <h5>{humanize(scenario.name)}</h5>
+              {scenario.inputs.map((input) => (
+                <article
+                  key={input.id}
+                  data-scenario-input={`${scenario.name}:${input.field}`}
+                  className={input.value === null ? "unavailable" : ""}
+                >
+                  <span>{humanize(input.field)}</span>
+                  <strong>
+                    {input.value === null
+                      ? "Unavailable"
+                      : `${input.value}${input.unit ? ` ${input.unit}` : ""}`}
+                  </strong>
+                  {input.evidenceItemId ? (
+                    <>
+                      <small>Fact · {input.evidenceItemId}</small>
+                      <ItemLineage itemId={input.evidenceItemId} detail={detail} />
+                    </>
+                  ) : input.assumptionItemId ? (
+                    <>
+                      <small>Assumption · {input.assumptionItemId}</small>
+                      <ItemLineage
+                        itemId={input.assumptionItemId}
+                        detail={detail}
+                      />
+                    </>
+                  ) : (
+                    <small>
+                      {input.unavailableReason
+                        ? humanize(input.unavailableReason)
+                        : "Unavailable reason not persisted"}
+                    </small>
+                  )}
+                </article>
+              ))}
+            </section>
+          ))}
+        </div>
+      ) : (
+        <Unavailable copy="No Bear/Base/Bull scenario model was persisted." />
+      )}
+    </section>
+  );
+}
+
+function StatusAwareActionPanel({
+  analysis,
+}: {
+  analysis: UnderwritingAnalysisContext | null;
+}) {
+  const assessment = analysis?.beliefAssessment;
+  if (!assessment) {
+    return (
+      <section className="vsee-status-aware-actions">
+        <h4>STATUS-AWARE DEAL ACTION</h4>
+        <Unavailable copy="Belief-change direction and status-aware actions are unavailable." />
+      </section>
+    );
+  }
+  const portfolio = assessment.actions.some((action) =>
+    action.scope === "portfolio"
+  );
+  return (
+    <section className="vsee-status-aware-actions">
+      <h4>
+        {portfolio
+          ? "STATUS-AWARE PORTFOLIO ACTION"
+          : "STATUS-AWARE DEAL ACTION"}
+      </h4>
+      <p>{humanize(assessment.direction)} belief change</p>
+      <small>Deal status · {humanize(analysis.dealStatus)}</small>
+      <div className="vsee-action-list">
+        {assessment.actions.map((action) => (
+          <article key={`${action.kind}:${action.scope}`}>
+            <strong>{humanize(action.kind)}</strong>
+            <small>
+              {humanize(action.scope)} · {humanize(action.priority)} priority ·{" "}
+              {humanize(action.visibility)}
+            </small>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -822,7 +953,9 @@ function AdvisoryFrameworkProvenance({
 }: {
   judgmentCardId: string;
   judgmentCardVersion: string;
-  metadata: NonNullable<JudgmentView["frameworkMetadata"]>;
+  metadata: NonNullable<
+    CandidateUnderwritingDetail["judgments"][number]["frameworkMetadata"]
+  >;
 }) {
   return (
     <details className="vsee-details vsee-advisory-provenance">
@@ -953,7 +1086,7 @@ function LineageValue({
   display: string;
   lineage: { kind: "Fact" | "Assumption" | "Calculation"; itemId: string }
     | null;
-  detail: CandidateUnderwritingDetailDto;
+  detail: CandidateUnderwritingDetail;
 }) {
   const effectiveLineage = value === null ? null : lineage;
   return (
@@ -968,6 +1101,7 @@ function LineageValue({
       {effectiveLineage && (
         <details className="vsee-details">
           <summary>Open value lineage</summary>
+          <p>{effectiveLineage.kind} · {effectiveLineage.itemId}</p>
           <ItemLineage itemId={effectiveLineage.itemId} detail={detail} />
         </details>
       )}
@@ -980,7 +1114,7 @@ function ClaimTrace({
   detail,
 }: {
   claimItemId: string;
-  detail: CandidateUnderwritingDetailDto;
+  detail: CandidateUnderwritingDetail;
 }) {
   return (
     <details className="vsee-details">
@@ -995,7 +1129,7 @@ function ItemLineage({
   detail,
 }: {
   itemId: string;
-  detail: CandidateUnderwritingDetailDto;
+  detail: CandidateUnderwritingDetail;
 }) {
   const directFact = detail.evidencePack.facts.find(
     (fact) => fact.id === itemId,
@@ -1030,24 +1164,52 @@ function AnalysisSourceLink({
 }: {
   source: UnderwritingAnalysisContext["sources"][number];
 }) {
-  const page = "schemaVersion" in source
-    && source.locator?.kind === "document_page"
-    ? source.locator.page
-    : !("schemaVersion" in source)
-    ? source.page
-    : undefined;
-  const href = source.documentId
-    ? `/api/documents/${encodeURIComponent(source.documentId)}/access${
-        page ? `#page=${page}` : ""
-      }`
-    : safeExternalHttpUrl("schemaVersion" in source
-      ? source.canonicalUrl ?? undefined
-      : source.url);
-  return href ? (
-    <a href={href} target="_blank" rel="noreferrer">
-      {source.publisher ?? source.title} ↗
-    </a>
-  ) : <span>{source.title}</span>;
+  const canonical = "schemaVersion" in source;
+  const revisionId = source.sourceRevisionId ?? null;
+  const label = source.publisher ?? source.title;
+  const page = canonical
+    ? source.locator?.kind === "document_page"
+      ? source.locator.page
+      : undefined
+    : source.page;
+
+  if (source.provenance === "public_web") {
+    const href = safeExternalHttpUrl(
+      canonical ? source.canonicalUrl ?? undefined : source.url,
+    );
+    return (
+      <span className="vsee-analysis-source-links">
+        {href ? (
+          <a href={href} target="_blank" rel="noreferrer">
+            {label} ↗
+          </a>
+        ) : <span>{source.title} · canonical URL unavailable</span>}
+        {revisionId && (
+          <SourceRevisionLink revisionId={revisionId} page={page} />
+        )}
+      </span>
+    );
+  }
+
+  if (source.provenance === "source_document") {
+    return revisionId ? (
+      <span className="vsee-analysis-source-links">
+        <span>{source.title}</span>
+        <SourceRevisionLink revisionId={revisionId} page={page} />
+      </span>
+    ) : (
+      <span>{source.title} · exact Source Revision unavailable</span>
+    );
+  }
+
+  return (
+    <span className="vsee-analysis-source-links">
+      <span>{source.title}</span>
+      {revisionId && (
+        <SourceRevisionLink revisionId={revisionId} page={page} />
+      )}
+    </span>
+  );
 }
 
 function Definition({ label, value }: { label: string; value: string }) {
@@ -1122,4 +1284,8 @@ function humanize(value: string): string {
 
 function join(values: string[]): string {
   return values.length ? values.join(" · ") : "None recorded";
+}
+
+function joinRaw(values: string[]): string {
+  return values.length ? values.join(" · ") : "None";
 }

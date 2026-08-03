@@ -12,16 +12,17 @@ import type {
   CompanyAnalysisConfidence,
   CompanyAnalysisOutcome,
   CompanyAnalysisCounts,
+  DealSemanticField,
   DealStatus,
   EvidenceCoverage,
   EvidenceField,
   EvidenceSourceRef,
   OpportunityReportItem,
 } from "../lib/contracts/domain";
-import { evidenceSourceText } from "../lib/contracts/domain";
 import { formatTemporalForDisplay } from "../lib/format/temporal";
 import { safeExternalHttpUrl } from "../lib/security/safe-url";
 import type { ReportEvidenceContext } from "../lib/contracts/evidence-context";
+import { SourceRevisionLink } from "./source-revision-link";
 
 export interface IntelligenceReportView {
   id: string;
@@ -117,7 +118,7 @@ export function CompanyIntelligenceReport({
   focused,
   allowDraft,
   onDraft,
-  showDemoProfiles = true,
+  showDemoProfiles = false,
   underwritingEnabled = false,
   canSaveActionDrafts = false,
   companyNames = {},
@@ -166,6 +167,7 @@ export function CompanyIntelligenceReport({
         )}
       </header>
 
+      <ReportEvidenceContextDetail context={report.evidenceContext} />
       <ReportCoverage report={report} />
 
       {underwritingEnabled && (
@@ -282,10 +284,58 @@ function ReportCoverage({ report }: { report: IntelligenceReportView }) {
   );
 }
 
+function ReportEvidenceContextDetail({
+  context,
+}: {
+  context: ReportEvidenceContext | undefined;
+}) {
+  if (!context || context.state === "legacy_unbound") {
+    return (
+      <section className="vsee-evidence-context-detail" role="note">
+        <strong>LEGACY REPORT</strong>
+        <span>Evidence context unavailable</span>
+      </section>
+    );
+  }
+  const pinned = context.evidenceMode === "pinned";
+  return (
+    <section className="vsee-evidence-context-detail" role="note">
+      <header>
+        <strong>{pinned ? "PINNED DEMO REPLAY" : "LIVE EVIDENCE"}</strong>
+        <span>{context.displayLabel}</span>
+        {pinned && (
+          <small>Historical evidence snapshot · Not current news</small>
+        )}
+      </header>
+      <details className="vsee-details">
+        <summary>Evidence context and immutable identity</summary>
+        <Definition label="Evidence mode" value={context.evidenceMode} />
+        <Definition label="Anchor" value={formatReportDate(context.anchorAt)} />
+        <Definition
+          label="Evidence window"
+          value={`${formatReportDate(context.windowStartAt)} → ${formatReportDate(context.windowEndAt)} · ${context.windowTimezone}`}
+        />
+        <Definition label="Accepted events" value={String(context.eventCount)} />
+        <Definition
+          label="Snapshot ID"
+          value={context.snapshotId ?? "Not applicable to live evidence"}
+        />
+        <Definition
+          label="Snapshot fingerprint"
+          value={context.snapshotFingerprint ?? "Not applicable to live evidence"}
+        />
+        <Definition label="Context fingerprint" value={context.contextFingerprint} />
+        <Definition label="Event-set fingerprint" value={context.eventSetFingerprint} />
+        <Definition label="Binding fingerprint" value={context.bindingFingerprint} />
+      </details>
+    </section>
+  );
+}
+
 export function PriorityResult({
   analysis,
   onOpenBrief,
-  showDemoProfiles = true,
+  showDemoProfiles = false,
 }: {
   analysis: CompanyAnalysis;
   onOpenBrief(): void;
@@ -313,6 +363,11 @@ export function PriorityResult({
         <section>
           <span>THEN / INVESTMENT MEMORY</span>
           <h3>What the fund believed</h3>
+          {analysis.investmentMemory.fixtureIds.length > 0 && (
+            <strong className="vsee-sample-decision-label">
+              Sample decision record
+            </strong>
+          )}
           <p className="vsee-priority-lead">
             {analysis.investmentMemory.decisionReason}
           </p>
@@ -351,11 +406,15 @@ export function PriorityResult({
                 const eventSourceIds = "schemaVersion" in event
                   ? event.sources.map((source) => source.id)
                   : event.sourceIds;
-                const sourceUrl = eventSourceIds
+                const resolvedSources = eventSourceIds
                   .map((sourceId) => analysis.sources.find(
                     (source) => source.id === sourceId,
                   ))
-                  .map((source) => source ? sourceHref(source) : undefined)
+                  .filter((source): source is EvidenceSourceRef =>
+                    source !== undefined
+                  );
+                const sourceUrl = resolvedSources
+                  .map((source) => sourceHref(source))
                   .find(Boolean);
                 return (
                   <li key={event.id}>
@@ -376,6 +435,14 @@ export function PriorityResult({
                         ? formatReportDate(event.publishedAt)
                         : "Publication date unknown"}
                     </small>
+                    <EventProvenanceDetail event={event} />
+                    {resolvedSources.length > 0 && (
+                      <footer>
+                        {resolvedSources.map((source) => (
+                          <CompanySourceLink key={source.id} source={source} />
+                        ))}
+                      </footer>
+                    )}
                   </li>
                 );
               })}
@@ -391,6 +458,8 @@ export function PriorityResult({
         </section>
       </div>
 
+      <BeliefAssessmentDetail analysis={analysis} />
+
       {showDemoProfiles && (
         <SampleProfileSections dealId={analysis.dealId} />
       )}
@@ -404,6 +473,202 @@ export function PriorityResult({
       <footer>
         <button className="primary" onClick={onOpenBrief}>OPEN FULL COMPANY BRIEF →</button>
       </footer>
+    </section>
+  );
+}
+
+function formatProvenanceTemporal(
+  value: string | null,
+  precision: "date" | "timestamp" | null,
+): string {
+  return value === null || precision === null
+    ? "Unavailable"
+    : formatReportDate(value);
+}
+
+function EventProvenanceDetail({
+  event,
+}: {
+  event: CompanyAnalysis["marketEvidence"]["events"][number];
+}) {
+  if (!("schemaVersion" in event)) {
+    return (
+      <details className="vsee-details">
+        <summary>Event provenance</summary>
+        <Definition
+          label="Publication date · legacy timestamp precision"
+          value={formatReportDate(event.publishedAt)}
+        />
+        <Definition
+          label="Trigger lineage"
+          value={event.sourceIds.join(" · ")}
+        />
+        <p>Legacy event provenance is incomplete.</p>
+      </details>
+    );
+  }
+  if (event.adaptation === "legacy_read") {
+    return (
+      <details className="vsee-details">
+        <summary>Event provenance</summary>
+        <Definition label="Event date · unknown precision" value="Unavailable" />
+        <Definition
+          label={`Publication date · ${event.publishedAtPrecision ?? "unknown"} precision`}
+          value={formatProvenanceTemporal(
+            event.publishedAt,
+            event.publishedAtPrecision,
+          )}
+        />
+        <Definition
+          label={`Retrieval date · ${event.retrievedAtPrecision ?? "unknown"} precision`}
+          value={formatProvenanceTemporal(
+            event.retrievedAt,
+            event.retrievedAtPrecision,
+          )}
+        />
+        <Definition
+          label={`Update date · ${event.updatedAtPrecision ?? "unknown"} precision`}
+          value={formatProvenanceTemporal(
+            event.updatedAt,
+            event.updatedAtPrecision,
+          )}
+        />
+        <Definition label="Provider" value={event.providerId ?? "Unavailable"} />
+        <Definition
+          label="Entity keys"
+          value={event.entityKeys.length ? event.entityKeys.join(" · ") : "Unavailable"}
+        />
+        <Definition
+          label="Content fingerprint"
+          value={event.contentFingerprint ?? "Unavailable"}
+        />
+        <p>Legacy trigger lineage unavailable.</p>
+      </details>
+    );
+  }
+  return (
+    <details className="vsee-details">
+      <summary>Event provenance</summary>
+      <Definition
+        label={`Event date · ${event.eventAtPrecision ?? "unknown"} precision`}
+        value={formatProvenanceTemporal(event.eventAt, event.eventAtPrecision)}
+      />
+      <Definition
+        label={`Publication date · ${event.publishedAtPrecision} precision`}
+        value={formatProvenanceTemporal(
+          event.publishedAt,
+          event.publishedAtPrecision,
+        )}
+      />
+      <Definition
+        label={`Retrieval date · ${event.retrievedAtPrecision} precision`}
+        value={formatProvenanceTemporal(
+          event.retrievedAt,
+          event.retrievedAtPrecision,
+        )}
+      />
+      <Definition
+        label={`Update date · ${event.updatedAtPrecision ?? "unknown"} precision`}
+        value={formatProvenanceTemporal(event.updatedAt, event.updatedAtPrecision)}
+      />
+      <Definition label="Provider" value={event.providerId ?? "Unavailable"} />
+      <Definition label="Entity keys" value={event.entityKeys.join(" · ")} />
+      <Definition
+        label="Content fingerprint"
+        value={event.contentFingerprint ?? "Unavailable"}
+      />
+      <p>Trigger source · {event.triggerSourceId}</p>
+    </details>
+  );
+}
+
+function percentage(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function actionListLabel(
+  actions: NonNullable<CompanyAnalysis["beliefAssessment"]>["actions"],
+): string {
+  return actions.map((action) =>
+    `${action.kind.replaceAll("_", " ")} · ${action.scope} · ${action.priority}`
+  ).join(" | ");
+}
+
+function BeliefAssessmentDetail({ analysis }: { analysis: CompanyAnalysis }) {
+  const assessment = analysis.beliefAssessment;
+  if (!assessment) {
+    return (
+      <section className="vsee-belief-assessment" role="note">
+        <strong>Weighted match assessment unavailable</strong>
+        <p>This legacy analysis does not contain persisted score dimensions or hard-gate results.</p>
+      </section>
+    );
+  }
+  const score = assessment.scoreBreakdown;
+  const gates = assessment.gates;
+  const gateRows = [
+    {
+      label: "Chronology",
+      result: gates.chronology,
+      detail:
+        `${gates.chronology.priorInteractionId ?? "No prior interaction"} → ${gates.chronology.triggerEventId ?? "No trigger event"}`,
+    },
+    {
+      label: "Revisit-condition mapping",
+      result: gates.revisitConditionMapping,
+      detail: gates.revisitConditionMapping.revisitConditionText
+        ? `Condition #${(gates.revisitConditionMapping.revisitConditionIndex ?? 0) + 1}: ${gates.revisitConditionMapping.revisitConditionText} · Sources: ${gates.revisitConditionMapping.citedSourceIds.join(" · ")}`
+        : "No exact revisit condition was mapped.",
+    },
+    {
+      label: "Counterevidence",
+      result: gates.counterevidence,
+      detail: gates.counterevidence.statement
+        ? `${gates.counterevidence.statement} · Sources: ${gates.counterevidence.citedSourceIds.join(" · ") || "None"}`
+        : "No counterevidence statement was retained.",
+    },
+    {
+      label: "Action delta",
+      result: gates.actionDelta,
+      detail:
+        `Before: ${actionListLabel(gates.actionDelta.priorActions)} · After: ${actionListLabel(gates.actionDelta.proposedActions)}`,
+    },
+  ];
+  return (
+    <section className="vsee-belief-assessment" aria-label="Match confidence and hard gates">
+      <header>
+        <span>WEIGHTED MATCH CONFIDENCE</span>
+        <strong>{percentage(score.finalScore)} · {score.confidence}</strong>
+      </header>
+      <div className="vsee-score-breakdown">
+        <Definition label="Event relevance · 35%" value={percentage(score.eventRelevance)} />
+        <Definition label="Deal relevance · 30%" value={percentage(score.dealRelevance)} />
+        <Definition
+          label="Prior decision-context strength · 20%"
+          value={percentage(score.priorContextStrength)}
+        />
+        <Definition label="Evidence quality · 15%" value={percentage(score.evidenceQuality)} />
+        <Definition label="Medium threshold" value="50%" />
+        <Definition label="High threshold" value="78%" />
+      </div>
+      <div className="vsee-hard-gates">
+        <h3>Belief-revision hard gates</h3>
+        {gateRows.map(({ label, result, detail }) => (
+          <article key={label}>
+            <header>
+              <strong>{label}</strong>
+              <span>{result.passed ? "Passed" : "Failed"}</span>
+            </header>
+            <p>{detail}</p>
+            {!result.passed && (
+              <p><strong>Exact failure reason:</strong> {result.failureReason}</p>
+            )}
+          </article>
+        ))}
+        <p>
+          Overall hard-gate result · {gates.allPassed ? "Passed" : "Failed"}
+        </p>
+      </div>
     </section>
   );
 }
@@ -528,7 +793,7 @@ export function CompanyBrief({
   activeTab,
   onTab,
   onClose,
-  showDemoProfiles = true,
+  showDemoProfiles = false,
 }: {
   analysis: CompanyAnalysis;
   activeTab: BriefTab;
@@ -566,14 +831,25 @@ export function CompanyBrief({
         </nav>
         <div className="vsee-company-brief-body">
           {activeTab === "IC Snapshot" && (
-            <EvidenceFields
+            <BeliefAssessmentDetail analysis={analysis} />
+          )}
+          {activeTab === "IC Snapshot" && (
+            <CompanyBriefFieldSet
               fields={analysis.companyBrief.icSnapshot}
+              structuredFields={structuredFieldsForTab(
+                analysis.companyBrief.structuredFields ?? [],
+                "IC Snapshot",
+              )}
               sources={analysis.sources}
             />
           )}
           {activeTab === "Traction" && (
-            <BriefFieldsWithSample
+            <CompanyBriefFieldSet
               fields={analysis.companyBrief.traction}
+              structuredFields={structuredFieldsForTab(
+                analysis.companyBrief.structuredFields ?? [],
+                "Traction",
+              )}
               sources={analysis.sources}
               profile={showDemoProfiles
                 ? SAMPLE_DEAL_PROFILES[analysis.dealId]
@@ -582,8 +858,12 @@ export function CompanyBrief({
             />
           )}
           {activeTab === "Deal Terms" && (
-            <BriefFieldsWithSample
+            <CompanyBriefFieldSet
               fields={analysis.companyBrief.dealTerms}
+              structuredFields={structuredFieldsForTab(
+                analysis.companyBrief.structuredFields ?? [],
+                "Deal Terms",
+              )}
               sources={analysis.sources}
               profile={showDemoProfiles
                 ? SAMPLE_DEAL_PROFILES[analysis.dealId]
@@ -608,14 +888,26 @@ export function CompanyBrief({
           {activeTab === "Decision History" && (
             <div className="vsee-decision-history">
               {analysis.companyBrief.decisionHistory.length
-                ? analysis.companyBrief.decisionHistory.map((entry) => (
-                    <article key={`${entry.occurredAt}-${entry.title}`}>
-                      <time>{formatReportDate(entry.occurredAt)}</time>
-                      <h3>{entry.title}</h3>
-                      <p>{entry.summary}</p>
-                      <SourceIds ids={entry.sourceIds} sources={analysis.sources} />
-                    </article>
-                  ))
+                ? analysis.companyBrief.decisionHistory.map((entry) => {
+                    const sampleDecision = entry.sourceIds.some((sourceId) =>
+                      analysis.investmentMemory.fixtureIds.includes(sourceId)
+                    );
+                    return (
+                      <article key={`${entry.occurredAt}-${entry.title}`}>
+                        <time>{formatReportDate(entry.occurredAt)}</time>
+                        {sampleDecision && (
+                          <strong className="vsee-sample-decision-label">
+                            Sample decision record
+                          </strong>
+                        )}
+                        {entry.title !== "Sample decision record" && (
+                          <h3>{entry.title}</h3>
+                        )}
+                        <p>{entry.summary}</p>
+                        <SourceIds ids={entry.sourceIds} sources={analysis.sources} />
+                      </article>
+                    );
+                  })
                 : <Unavailable />}
             </div>
           )}
@@ -626,7 +918,8 @@ export function CompanyBrief({
                     <article key={source.id}>
                       <span>{source.provenance.replace("_", " ")}</span>
                       <h3>{source.title}</h3>
-                      <p>{evidenceSourceText(source)}</p>
+                      <SourceEvidenceText source={source} />
+                      <SourceProvenance source={source} />
                       <CompanySourceLink source={source} />
                     </article>
                   ))
@@ -668,27 +961,142 @@ function Unavailable() {
   );
 }
 
-function BriefFieldsWithSample({
+const structuredFieldTabs: Record<BriefTab, ReadonlySet<DealSemanticField["fieldId"]>> = {
+  "IC Snapshot": new Set([
+    "company_identity",
+    "legal_name",
+    "official_domain",
+    "founders",
+    "founding_date",
+    "stage",
+    "business_model",
+    "geography",
+    "security_type",
+    "unknowns",
+  ]),
+  Traction: new Set([
+    "arr",
+    "revenue",
+    "customer_evidence",
+    "customer_count",
+    "cash",
+    "burn",
+    "runway",
+    "retention",
+  ]),
+  "Deal Terms": new Set([
+    "reported_valuation",
+    "reported_valuation_basis",
+    "round",
+    "raise",
+  ]),
+  Risks: new Set(),
+  "Decision History": new Set(),
+  "Source Lineage": new Set(),
+};
+
+function structuredFieldsForTab(
+  fields: DealSemanticField[],
+  tab: BriefTab,
+): DealSemanticField[] {
+  const allowed = structuredFieldTabs[tab];
+  return fields.filter((field) => allowed.has(field.fieldId));
+}
+
+function semanticFieldLabel(fieldId: DealSemanticField["fieldId"]): string {
+  const words = fieldId.replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function StructuredFields({
   fields,
+  sources,
+}: {
+  fields: DealSemanticField[];
+  sources: EvidenceSourceRef[];
+}) {
+  if (!fields.length) return null;
+  return (
+    <div className="vsee-evidence-fields vsee-structured-fields">
+      {fields.map((field) => (
+        <article key={field.id}>
+          <span>{semanticFieldLabel(field.fieldId)}</span>
+          {field.classification === "fact" && (
+            <>
+              <strong>{field.value}</strong>
+              {field.basis && <small>Fact basis · {field.basis}</small>}
+              {field.asOfDate && (
+                <small>As of · {formatReportDate(field.asOfDate)}</small>
+              )}
+              <SourceIds ids={field.sourceIds} sources={sources} />
+            </>
+          )}
+          {field.classification === "unavailable" && (
+            <>
+              <strong>Unavailable</strong>
+              <p>{field.reason}</p>
+              <SourceIds ids={field.checkedSourceIds} sources={sources} />
+            </>
+          )}
+          {field.classification === "conflicting" && (
+            <>
+              <strong>Conflicting evidence</strong>
+              {field.observations.map((observation) => (
+                <div key={`${field.id}-${observation.sourceId}`}>
+                  <p>{observation.value}</p>
+                  <SourceIds ids={[observation.sourceId]} sources={sources} />
+                </div>
+              ))}
+            </>
+          )}
+          {field.classification === "assumption" && (
+            <>
+              <strong>Assumption · Requires confirmation</strong>
+              <p>{field.value}</p>
+              <small>{field.rationale}</small>
+              <small>Source boundary · {field.sourceBoundary}</small>
+            </>
+          )}
+          {field.classification === "unknown" && (
+            <>
+              <strong>Unknown</strong>
+              <p>{field.reason}</p>
+            </>
+          )}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function CompanyBriefFieldSet({
+  fields,
+  structuredFields,
   sources,
   profile,
   section,
 }: {
   fields: EvidenceField[];
+  structuredFields: DealSemanticField[];
   sources: EvidenceSourceRef[];
-  profile: SampleDealProfile | undefined;
-  section: "traction" | "dealTerms";
+  profile?: SampleDealProfile;
+  section?: "traction" | "dealTerms";
 }) {
-  if (!profile) return <EvidenceFields fields={fields} sources={sources} />;
-  // With a sample profile present, empty evidence placeholders add nothing:
-  // show only evidence fields that actually carry a cited value.
-  const populated = fields.filter((field) => field.value);
+  const visibleFields = profile
+    ? fields.filter((field) => field.value)
+    : fields;
+  const hasCanonicalEvidence = structuredFields.length > 0
+    || visibleFields.length > 0;
   return (
     <>
-      {populated.length > 0 && (
-        <EvidenceFields fields={populated} sources={sources} />
+      <StructuredFields fields={structuredFields} sources={sources} />
+      {visibleFields.length > 0 && (
+        <EvidenceFields fields={visibleFields} sources={sources} />
       )}
-      <SampleProfileFields profile={profile} section={section} />
+      {profile && section && (
+        <SampleProfileFields profile={profile} section={section} />
+      )}
+      {!hasCanonicalEvidence && !profile && <Unavailable />}
     </>
   );
 }
@@ -767,23 +1175,199 @@ function sourcePage(source: EvidenceSourceRef): number | undefined {
     : undefined;
 }
 
+function exactSourceRevisionId(
+  source: EvidenceSourceRef,
+): string | undefined {
+  if ("schemaVersion" in source) {
+    return source.sourceRevisionId ?? undefined;
+  }
+  return source.sourceRevisionId;
+}
+
+function publicCanonicalHref(
+  source: EvidenceSourceRef,
+): string | undefined {
+  const value = "schemaVersion" in source
+    ? source.provenance === "public_web"
+      ? source.canonicalUrl ?? undefined
+      : undefined
+    : source.provenance === "public_web"
+    ? source.url
+    : undefined;
+  return safeExternalHttpUrl(value);
+}
+
 export function sourceHref(source: EvidenceSourceRef): string | undefined {
   const page = sourcePage(source);
-  if (source.documentId) {
-    return `/api/documents/${encodeURIComponent(source.documentId)}/access${page ? `#page=${page}` : ""}`;
+  const canonicalHref = publicCanonicalHref(source);
+  if (canonicalHref) return canonicalHref;
+  const revisionId = exactSourceRevisionId(source);
+  return revisionId
+    ? `/api/source-revisions/${encodeURIComponent(revisionId)}/access${page ? `#page=${page}` : ""}`
+    : undefined;
+}
+
+function sourceLocator(source: EvidenceSourceRef): string {
+  if (!("schemaVersion" in source)) {
+    return source.page ? `Document page ${source.page}` : "Unavailable";
   }
-  const externalUrl = "schemaVersion" in source
-    ? source.canonicalUrl ?? undefined
-    : source.url;
-  return safeExternalHttpUrl(externalUrl);
+  const locator = source.locator;
+  if (!locator) return "Unavailable";
+  if (locator.kind === "web_text") return `Web selector · ${locator.selector}`;
+  if (locator.kind === "document_page") return `Document page · ${locator.page}`;
+  if (locator.kind === "json_pointer") return `JSON pointer · ${locator.pointer}`;
+  return `Lines ${locator.startLine}–${locator.endLine}`;
+}
+
+function SourceEvidenceText({ source }: { source: EvidenceSourceRef }) {
+  if (!("schemaVersion" in source)) {
+    return (
+      <div className="vsee-source-evidence-text legacy-unverified">
+        <strong>Legacy unverified statement · Not a quotation</strong>
+        <p>{source.excerpt}</p>
+      </div>
+    );
+  }
+  const evidence = source.text;
+  if (evidence.status === "verified_exact") {
+    return (
+      <div className="vsee-source-evidence-text verified-exact">
+        <strong>Verified verbatim excerpt</strong>
+        <blockquote>“{evidence.verbatimExcerpt}”</blockquote>
+        {evidence.normalizedStatement && (
+          <>
+            <strong>Normalized statement · Not a quotation</strong>
+            <p>{evidence.normalizedStatement}</p>
+          </>
+        )}
+      </div>
+    );
+  }
+  if (evidence.status === "normalized_only") {
+    return (
+      <div className="vsee-source-evidence-text normalized-only">
+        <strong>Normalized-only evidence · Not a quotation</strong>
+        <p>{evidence.normalizedStatement}</p>
+      </div>
+    );
+  }
+  if (evidence.status === "legacy_unverified") {
+    return (
+      <div className="vsee-source-evidence-text legacy-unverified">
+        <strong>Legacy unverified statement · Not a quotation</strong>
+        <p>{evidence.normalizedStatement}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="vsee-source-evidence-text model-inference">
+      <strong>Model inference · Not a fact or quotation</strong>
+      <p>{evidence.normalizedStatement}</p>
+      <small>
+        {evidence.model.provider} · {evidence.model.model} · Generated {formatReportDate(evidence.model.generatedAt)}
+      </small>
+      <small>Input fingerprint · {evidence.model.inputFingerprint}</small>
+    </div>
+  );
+}
+
+function SourceProvenance({ source }: { source: EvidenceSourceRef }) {
+  if (!("schemaVersion" in source)) {
+    return (
+      <div className="vsee-source-provenance">
+        <Definition label="Event date · unknown precision" value="Unavailable" />
+        <Definition
+          label={`Publication date · ${source.publishedAt ? "timestamp" : "unknown"} precision`}
+          value={source.publishedAt
+            ? formatReportDate(source.publishedAt)
+            : "Unavailable"}
+        />
+        <Definition label="Retrieval date · unknown precision" value="Unavailable" />
+        <Definition label="Update date · unknown precision" value="Unavailable" />
+        <Definition label="Source class" value="Unknown legacy" />
+        <Definition label="Source authority" value="Unknown legacy" />
+        <Definition label="Evidence role" value="Unknown legacy" />
+        <Definition label="Provider" value="Unavailable" />
+        <Definition label="Entity keys" value="Unavailable" />
+        <Definition label="Locator" value={sourceLocator(source)} />
+        <Definition label="Content fingerprint" value="Unavailable" />
+        <Definition
+          label="Source Revision"
+          value={source.sourceRevisionId ?? "Unavailable"}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="vsee-source-provenance">
+      <Definition
+        label={`Event date · ${source.eventAtPrecision ?? "unknown"} precision`}
+        value={formatProvenanceTemporal(source.eventAt, source.eventAtPrecision)}
+      />
+      <Definition
+        label={`Publication date · ${source.publishedAtPrecision ?? "unknown"} precision`}
+        value={formatProvenanceTemporal(
+          source.publishedAt,
+          source.publishedAtPrecision,
+        )}
+      />
+      <Definition
+        label={`Retrieval date · ${source.retrievedAtPrecision ?? "unknown"} precision`}
+        value={formatProvenanceTemporal(
+          source.retrievedAt,
+          source.retrievedAtPrecision,
+        )}
+      />
+      <Definition
+        label={`Update date · ${source.updatedAtPrecision ?? "unknown"} precision`}
+        value={formatProvenanceTemporal(source.updatedAt, source.updatedAtPrecision)}
+      />
+      <Definition label="Source class" value={source.sourceClass.replaceAll("_", " ")} />
+      <Definition label="Source authority" value={source.sourceAuthority.replaceAll("_", " ")} />
+      <Definition label="Evidence role" value={source.evidenceRole.replaceAll("_", " ")} />
+      <Definition label="Provider" value={source.providerId ?? "Unavailable"} />
+      <Definition
+        label="Entity keys"
+        value={source.entityKeys.length ? source.entityKeys.join(" · ") : "Unavailable"}
+      />
+      <Definition label="Locator" value={sourceLocator(source)} />
+      <Definition
+        label="Content fingerprint"
+        value={source.contentFingerprint ?? "Unavailable"}
+      />
+      <Definition
+        label="Source Revision"
+        value={source.sourceRevisionId ?? "Unavailable"}
+      />
+      <Definition
+        label="Trigger lineage"
+        value={source.evidenceRole === "trigger"
+          ? `Trigger source · ${source.id}`
+          : `Not a trigger · ${source.id}`}
+      />
+    </div>
+  );
 }
 
 function CompanySourceLink({ source }: { source: EvidenceSourceRef }) {
   const page = sourcePage(source);
-  const href = sourceHref(source);
-  return href ? (
-    <a href={href} target="_blank" rel="noreferrer">
-      {source.publisher ?? source.title}{page ? ` · p.${page}` : ""} ↗
-    </a>
-  ) : <span>{source.title}</span>;
+  const canonicalHref = publicCanonicalHref(source);
+  const revisionId = exactSourceRevisionId(source);
+  if (!canonicalHref && !revisionId) {
+    return <span>{source.title} · No public URL or exact Source Revision</span>;
+  }
+  return (
+    <span className="vsee-company-source-links">
+      {canonicalHref && (
+        <a href={canonicalHref} target="_blank" rel="noreferrer">
+          {source.publisher ?? source.title} · Public canonical source ↗
+        </a>
+      )}
+      {revisionId && (
+        <SourceRevisionLink revisionId={revisionId} page={page}>
+          Exact Source Revision · {revisionId}{page ? ` · p.${page}` : ""} ↗
+        </SourceRevisionLink>
+      )}
+    </span>
+  );
 }

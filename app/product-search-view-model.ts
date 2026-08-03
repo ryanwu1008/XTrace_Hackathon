@@ -2,13 +2,24 @@ import type {
   UnderwritingSearchResult,
 } from "../lib/underwriting/read-model";
 
-export interface ProductSearchCitation {
+interface ProductSearchCitationBase {
   id: string;
-  provenance: "source_document" | "underwriting_reference";
   title: string;
-  url?: string;
   excerpt: string;
 }
+
+export type ProductSearchCitation = ProductSearchCitationBase & (
+  | {
+      provenance: "source_document";
+      sourceRevisionId: string;
+      url: string;
+    }
+  | {
+      provenance: "underwriting_reference";
+      sourceRevisionId?: undefined;
+      url?: undefined;
+    }
+);
 
 export function toProductSearchMessage(
   results: UnderwritingSearchResult[],
@@ -76,6 +87,7 @@ export function toProductSearchMessage(
       ...revisionIds.map((sourceRevisionId): ProductSearchCitation => ({
         id: sourceRevisionId,
         provenance: "source_document",
+        sourceRevisionId,
         title: `Source Revision ${sourceRevisionId}`,
         url: `/api/source-revisions/${
           encodeURIComponent(sourceRevisionId)

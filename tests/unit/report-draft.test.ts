@@ -19,7 +19,6 @@ import {
 import {
   exactSourceV2,
   marketEventV2,
-  normalizedSourceV2,
 } from "../helpers/source-evidence-v2";
 
 const report = {
@@ -233,10 +232,9 @@ test("builds a cited internal VC report draft without a recipient", () => {
   assert.match(draft.bodyText, /Potential positive effects/);
   assert.match(draft.bodyText, /Potential negative effects/);
   assert.match(draft.bodyText, /https:\/\/news\.example\/funding#page=2/);
-  assert.match(
-    draft.bodyText,
-    /https:\/\/vsee\.example\/api\/documents\/doc%20ably\/access#page=4/,
-  );
+  assert.match(draft.bodyText, /Legacy evidence · Exact Source Revision unavailable/);
+  assert.doesNotMatch(draft.bodyText, /api\/documents\/doc%20ably\/access/);
+  assert.doesNotMatch(draft.bodyText, /api\/source-revisions\/document_1\/access/);
   assert.match(draft.bodyText, /https:\/\/vsee\.example\/\?view=reports&report=report_1/);
   assert.match(
     draft.bodyText,
@@ -247,14 +245,14 @@ test("builds a cited internal VC report draft without a recipient", () => {
   assert.doesNotMatch(draft.bodyText, /Hi founder|outreach/i);
 });
 
-test("report drafts preserve v2 canonical URLs and typed document pages", () => {
+test("report drafts show a safe canonical public URL beside its exact revision and use only exact revisions for documents", () => {
   const draft = buildInternalReportDraft({
     report: {
       ...report,
       opportunities: [{
         ...report.opportunities[0],
         sources: [
-          normalizedSourceV2("v2_public", {
+          exactSourceV2("v2_public", {
             title: "V2 public announcement",
             canonicalUrl: "https://news.example/v2-announcement",
           }),
@@ -280,7 +278,51 @@ test("report drafts preserve v2 canonical URLs and typed document pages", () => 
   assert.match(draft.bodyText, /https:\/\/news\.example\/v2-announcement/);
   assert.match(
     draft.bodyText,
-    /https:\/\/vsee\.example\/api\/documents\/doc%20v2\/access#page=7/,
+    /https:\/\/vsee\.example\/api\/source-revisions\/revision_v2_public\/access/,
+  );
+  assert.match(
+    draft.bodyText,
+    /https:\/\/vsee\.example\/api\/source-revisions\/revision_v2_document\/access#page=7/,
+  );
+  assert.doesNotMatch(draft.bodyText, /api\/documents\/doc%20v2\/access/);
+  assert.doesNotMatch(draft.bodyText, /api\/source-revisions\/v2_document\/access/);
+});
+
+test("legacy report sources without an exact revision stay explicit and never promote document or evidence IDs", () => {
+  const draft = buildInternalReportDraft({
+    report: {
+      ...report,
+      opportunities: [{
+        ...report.opportunities[0],
+        sources: [
+          {
+            id: "legacy_public_evidence_id",
+            provenance: "public_web" as const,
+            title: "Legacy public source",
+            url: "https://news.example/legacy-source",
+            excerpt: "Legacy public evidence.",
+          },
+          {
+            id: "legacy_document_evidence_id",
+            provenance: "source_document" as const,
+            title: "Legacy document source",
+            documentId: "legacy_document_id",
+            page: 9,
+            excerpt: "Legacy document evidence.",
+          },
+        ],
+      }],
+    },
+    companyNames: { deal_ably: "Ably" },
+    appOrigin: "https://vsee.example",
+  });
+
+  assert.match(draft.bodyText, /https:\/\/news\.example\/legacy-source/);
+  assert.match(draft.bodyText, /Legacy evidence · Exact Source Revision unavailable/);
+  assert.doesNotMatch(draft.bodyText, /api\/documents\/legacy_document_id\/access/);
+  assert.doesNotMatch(
+    draft.bodyText,
+    /api\/source-revisions\/(?:legacy_document_id|legacy_document_evidence_id|legacy_public_evidence_id)\/access/,
   );
 });
 
@@ -394,7 +436,10 @@ test("drafts from recommended CompanyAnalysis and includes Then, Now, risks, and
     appOrigin: "https://vsee.example",
   });
 
-  assert.match(draft.bodyText, /THEN \/ INVESTMENT MEMORY/);
+  assert.match(
+    draft.bodyText,
+    /THEN \/ INVESTMENT MEMORY\nSample decision record · synthetic demo history\nPrevious meeting:/,
+  );
   assert.match(draft.bodyText, /The fund passed because timing was early/);
   assert.match(draft.bodyText, /NOW \/ MARKET EVIDENCE/);
   assert.match(draft.bodyText, /Infrastructure demand increased/);
@@ -402,4 +447,26 @@ test("drafts from recommended CompanyAnalysis and includes Then, Now, risks, and
   assert.match(draft.bodyText, /Differentiation remained an open question/);
   assert.match(draft.bodyText, /Funding announcement/);
   assert.doesNotMatch(draft.bodyText, /Monitor Co/i);
+});
+
+test("legacy opportunities permanently label synthetic previous context without labeling ordinary history", () => {
+  const syntheticDraft = buildInternalReportDraft({
+    report,
+    companyNames: { deal_ably: "Ably" },
+    appOrigin: "https://vsee.example",
+  });
+  assert.match(
+    syntheticDraft.bodyText,
+    /Previous context:\nSample decision record · synthetic demo history\nThe fund previously passed/,
+  );
+
+  const ordinaryDraft = buildInternalReportDraft({
+    report: {
+      ...report,
+      opportunities: [{ ...report.opportunities[0], demoFixtureIds: [] }],
+    },
+    companyNames: { deal_ably: "Ably" },
+    appOrigin: "https://vsee.example",
+  });
+  assert.doesNotMatch(ordinaryDraft.bodyText, /Sample decision record/);
 });

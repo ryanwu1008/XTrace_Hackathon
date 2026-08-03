@@ -10,7 +10,8 @@ export type FinancialValuationField =
   | "initialOwnership"
   | "postDilutionOwnership"
   | "grossMoic"
-  | "grossIrr";
+  | "grossIrr"
+  | "pricingPremium";
 
 const FINANCIAL_CALCULATION_IDENTITY: Record<
   FinancialValuationField,
@@ -35,6 +36,10 @@ const FINANCIAL_CALCULATION_IDENTITY: Record<
   grossIrr: {
     formulaId: "annualized_gross_irr_v1",
     outputField: "gross_irr",
+  },
+  pricingPremium: {
+    formulaId: "market_comps_v1",
+    outputField: "pricing_premium",
   },
 };
 

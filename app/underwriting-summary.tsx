@@ -3,14 +3,15 @@
 import { useEffect, useState } from "react";
 
 import type { CompanyAnalysis } from "../lib/contracts/domain";
+import type { ReportEvidenceContext } from "../lib/contracts/evidence-context";
 import type {
+  CandidateUnderwritingDetail,
   PublicActionDraft,
   UnderwritingBatchSummary,
 } from "../lib/underwriting/read-model";
 import { ActionDraftDialog } from "./action-draft-dialog";
 import { apiRequest } from "./api-client";
 import {
-  type CandidateUnderwritingDetailDto,
   UnderwritingDetailDialog,
 } from "./underwriting-detail";
 import { orderUnderwritingSelections } from "./underwriting-view-model";
@@ -47,7 +48,11 @@ export function UnderwritingSummary({
   const [retryToken, setRetryToken] = useState(0);
   const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
   const [detail, setDetail] =
-    useState<CandidateUnderwritingDetailDto | null>(null);
+    useState<CandidateUnderwritingDetail | null>(null);
+  const [loadedEvidenceContext, setLoadedEvidenceContext] = useState<{
+    reportId: string;
+    context: ReportEvidenceContext | undefined;
+  } | null>(null);
   const [drafts, setDrafts] = useState<PublicActionDraft[]>([]);
   const [editingDraft, setEditingDraft] =
     useState<PublicActionDraft | null>(null);
@@ -57,9 +62,16 @@ export function UnderwritingSummary({
     let cancelled = false;
     void apiRequest<{
       underwritingBatch?: UnderwritingBatchSummary;
+      evidenceContext?: ReportEvidenceContext;
     }>(`/api/reports/${encodeURIComponent(reportId)}`)
       .then((report) => {
-        if (!cancelled) setBatch(report.underwritingBatch ?? null);
+        if (!cancelled) {
+          setBatch(report.underwritingBatch ?? null);
+          setLoadedEvidenceContext({
+            reportId,
+            context: report.evidenceContext,
+          });
+        }
       })
       .catch((loadError) => {
         if (!cancelled) {
@@ -86,7 +98,7 @@ export function UnderwritingSummary({
     setCandidateError("");
     try {
       const [candidateDetail, actionDrafts] = await Promise.all([
-        apiRequest<CandidateUnderwritingDetailDto>(
+        apiRequest<CandidateUnderwritingDetail>(
           `/api/reports/${encodeURIComponent(reportId)}/underwriting/${
             encodeURIComponent(selection.dealId)
           }`,
@@ -115,6 +127,9 @@ export function UnderwritingSummary({
       ?? selectedAnalysis?.companyName
       ?? selectedDealId
     : "";
+  const evidenceContext = loadedEvidenceContext?.reportId === reportId
+    ? loadedEvidenceContext.context
+    : undefined;
 
   return (
     <>
@@ -160,6 +175,7 @@ export function UnderwritingSummary({
         analysis={selectedAnalysis}
         detail={detail}
         drafts={drafts}
+        evidenceContext={evidenceContext}
         canSaveDrafts={canSaveDrafts}
         onClose={() => setSelectedDealId(null)}
         onEditDraft={setEditingDraft}

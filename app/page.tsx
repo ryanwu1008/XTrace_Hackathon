@@ -124,6 +124,7 @@ interface LegacyUiSource {
   title: string;
   url?: string;
   documentId?: string;
+  sourceRevisionId?: string;
   page?: number;
   publisher?: string;
   publishedAt?: string;
@@ -1345,7 +1346,7 @@ export function DealsView({
             </div>
             <span className={`vsee-status ${deal.status}`}>{statusLabels[deal.status]}</span>
             <div className="vsee-context">
-              {deploymentMode === "public_demo" && deal.fixture ? (
+              {deal.fixture ? (
                 <>
                   <b>{deal.fixture.label}</b>
                   <dl className="vsee-context-grid">
@@ -1701,7 +1702,13 @@ export function ReportsView({
                 <h2>{companyByDeal.get(item.dealId) ?? item.dealId}</h2>
                 <span className={`vsee-confidence ${item.confidence}`}>{item.confidence} · {Math.round(item.score * 100)}%</span>
                 <h3>Why now</h3><p>{item.whyNow}</p>
-                <h3>Previous context</h3><p>{item.previousContext}</p>
+                <h3>Previous context</h3>
+                {item.demoFixtureIds.length > 0 && (
+                  <strong className="vsee-sample-decision-label">
+                    Sample decision record
+                  </strong>
+                )}
+                <p>{item.previousContext}</p>
                 {item.implications.positive.length > 0 && (
                   <><h3>Potential positive effects</h3><ul className="vsee-implications">{item.implications.positive.map((effect) => <li key={effect}>{effect}</li>)}</ul></>
                 )}
@@ -1893,23 +1900,41 @@ function SourceLink({ source }: { source: Source }) {
     : source.locator?.kind === "document_page"
     ? source.locator.page
     : undefined;
-  if (
-    source.provenance === "source_document"
-    && sourceUrl?.startsWith("/api/source-revisions/")
-  ) {
+  const revisionId = "sourceRevisionId" in source
+    ? source.sourceRevisionId ?? undefined
+    : undefined;
+  const canonicalHref = source.provenance === "source_document"
+    ? undefined
+    : safeExternalHttpUrl(sourceUrl);
+  const legacyDocumentHref = legacy
+      && source.provenance === "source_document"
+      && source.documentId
+    ? `/api/documents/${encodeURIComponent(source.documentId)}/access${page ? `#page=${page}` : ""}`
+    : undefined;
+  if (!canonicalHref && !revisionId && !legacyDocumentHref) {
     return (
-      <SourceRevisionLink revisionId={source.id}>
-        {source.publisher ?? source.title}
-        {page ? ` · p.${page}` : ""} ↗
-      </SourceRevisionLink>
+      <span>
+        {source.title} · No authorized public, document, or exact Source Revision link
+      </span>
     );
   }
-  const href = source.documentId
-    ? `/api/documents/${encodeURIComponent(source.documentId)}/access${page ? `#page=${page}` : ""}`
-    : safeExternalHttpUrl(sourceUrl);
-  return href
-    ? <a href={href} target="_blank" rel="noreferrer">
-        {source.publisher ?? source.title}{page ? ` · p.${page}` : ""} ↗
-      </a>
-    : <span>{source.title}</span>;
+  return (
+    <span className="vsee-source-links">
+      {canonicalHref && (
+        <a href={canonicalHref} target="_blank" rel="noreferrer">
+          {source.publisher ?? source.title} · Public canonical source ↗
+        </a>
+      )}
+      {revisionId && (
+        <SourceRevisionLink revisionId={revisionId} page={page}>
+          Exact Source Revision · {revisionId}{page ? ` · p.${page}` : ""} ↗
+        </SourceRevisionLink>
+      )}
+      {!revisionId && legacyDocumentHref && (
+        <a href={legacyDocumentHref} target="_blank" rel="noreferrer">
+          {source.publisher ?? source.title}{page ? ` · p.${page}` : ""} ↗
+        </a>
+      )}
+    </span>
+  );
 }

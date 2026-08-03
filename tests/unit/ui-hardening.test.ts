@@ -19,6 +19,9 @@ import { GET as getHealth } from "../../app/api/settings/health/route";
 import { listPreloadedDocuments } from "../../lib/corpus/manifest";
 import { buildDemoViewModel } from "../../lib/demo/view-model";
 import { createDefaultDemoDataStore } from "../../lib/storage/service";
+import type {
+  CandidateUnderwritingDetail,
+} from "../../lib/underwriting/read-model";
 
 const pagePath = new URL("../../app/page.tsx", import.meta.url);
 const cssPath = new URL("../../app/vsee.css", import.meta.url);
@@ -756,6 +759,7 @@ test("underwriting detail preserves section order, lineage, public version pins,
       investmentMemory: {
         previousMeetingSummary: "The fund waited for carrier proof.",
         decisionReason: "Commercial proof was early.",
+        fixtureIds: [],
       },
       sources: [{
         id: "source_public",
@@ -918,7 +922,7 @@ test("each valuation card links only to its exact calculation identity", () => {
   const html = renderToStaticMarkup(createElement(UnderwritingDetailPanel, {
     companyName: "Acme",
     analysis: null,
-    detail: renderedDetail,
+    detail: renderedDetail as CandidateUnderwritingDetail,
     drafts: [],
     canSaveDrafts: false,
     onEditDraft() {},
@@ -1171,7 +1175,7 @@ function selection(
   };
 }
 
-function underwritingDetailFixture() {
+function underwritingDetailFixture(): CandidateUnderwritingDetail {
   return {
     candidateRunId: "candidate_1",
     dealId: "deal_1",
@@ -1450,7 +1454,7 @@ function underwritingDetailFixture() {
       settingsFingerprint: "private-settings-fingerprint",
       applicationCommit: "private-application-commit",
     },
-  };
+  } as unknown as CandidateUnderwritingDetail;
 }
 
 function awaitImportPriorityResult() {

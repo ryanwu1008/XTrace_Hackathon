@@ -10,6 +10,7 @@ function sourceRevisionAccessPath(revisionId: string): string {
 
 export async function openSourceRevision(input: {
   revisionId: string;
+  page?: number;
   request?: (
     accessPath: string,
   ) => Promise<{ url: string; expiresAt: string }>;
@@ -19,14 +20,16 @@ export async function openSourceRevision(input: {
     ?? ((accessPath: string) =>
       apiRequest<{ url: string; expiresAt: string }>(accessPath));
   const access = await request(sourceRevisionAccessPath(input.revisionId));
-  input.navigate(access.url);
+  input.navigate(`${access.url}${input.page ? `#page=${input.page}` : ""}`);
 }
 
 export function SourceRevisionLink({
   revisionId,
+  page,
   children,
 }: {
   revisionId: string;
+  page?: number;
   children?: React.ReactNode;
 }) {
   const [error, setError] = useState("");
@@ -42,6 +45,7 @@ export function SourceRevisionLink({
     try {
       await openSourceRevision({
         revisionId,
+        page,
         navigate(url) {
           if (pendingWindow) pendingWindow.location.replace(url);
           else window.location.assign(url);
@@ -60,7 +64,7 @@ export function SourceRevisionLink({
   return (
     <span className="vsee-source-revision-link">
       <a
-        href={accessPath}
+        href={`${accessPath}${page ? `#page=${page}` : ""}`}
         onClick={(event) => void openRevision(event)}
         target="_blank"
         rel="noreferrer"

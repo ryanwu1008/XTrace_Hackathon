@@ -17,6 +17,8 @@ import {
   createMemoryUploadedDocumentsRepository,
 } from "../../db/repositories/uploaded-documents";
 import type { RouteDependencies } from "../../lib/api/route-dependencies";
+import { DEMO_FIXTURE_LABEL } from "../../lib/contracts/domain";
+import { toProductDealView } from "../../lib/deals/read-model";
 import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelligence-report";
 
 const WORKSPACE_ID = "workspace_product_deals";
@@ -54,8 +56,68 @@ async function productFixture() {
       assignedByUserId: "user_product",
       reason: "Confirmed product source.",
       confirmedAt: createdAt,
+      ...(id === "revision_product_a"
+        ? {
+            memoryBundle: {
+              dealId: "deal_product",
+              companyName: "Product Registry Co",
+              status: "evaluating" as const,
+              facts: [],
+              interactions: [{
+                id: "fixture_product_registry",
+                occurredAt: "2026-07-01T12:00:00.000Z",
+                summary:
+                  "Sample internal note: the team deferred the company.",
+                decisionReason:
+                  "The sample team deferred pending enterprise proof.",
+                concerns: ["Production adoption was not established."],
+                revisitConditions: [
+                  "Verify a named production customer.",
+                ],
+                provenance: "demo_fixture" as const,
+                label: DEMO_FIXTURE_LABEL,
+              }],
+            },
+            memoryLineage: {
+              evidence: {},
+              interactions: {
+                fixture_product_registry: {
+                  workspaceId: WORKSPACE_ID,
+                  dealId: "deal_product",
+                  sourceId,
+                  sourceRevisionId: id,
+                },
+              },
+            },
+          }
+        : {}),
     });
   }
+  await sources.createInitialRevision({
+    id: "revision_no_memory",
+    workspaceId: WORKSPACE_ID,
+    sourceId: "source_no_memory",
+    contentHash: "hash-revision-no-memory",
+    objectKey: `private/${WORKSPACE_ID}/revision_no_memory.md`,
+    objectVersion: "version-revision-no-memory",
+    contentType: "text/markdown",
+    extractorId: "plain_text_v1",
+    extractorVersion: "1",
+    extractedAt: "2026-07-29T12:02:00.000Z",
+    createdAt: "2026-07-29T12:02:00.000Z",
+  });
+  await deals.confirmSourceAssignment({
+    requestId: "request-revision-no-memory",
+    workspaceId: WORKSPACE_ID,
+    dealId: "deal_no_memory",
+    companyId: "company_no_memory",
+    companyName: "No Memory Co",
+    status: "watchlist",
+    sourceRevisionId: "revision_no_memory",
+    assignedByUserId: "user_product",
+    reason: "Confirmed source without a sample interaction.",
+    confirmedAt: "2026-07-29T12:02:00.000Z",
+  });
   await intelligence.saveReport(canonicalIntelligenceReportFixture({
     id: "report_product",
     workspaceId: WORKSPACE_ID,
@@ -124,7 +186,64 @@ test("product Deal list projects the registry and exact active source links", as
         sourceUrl: "/api/source-revisions/revision_product_b/access",
       },
     ],
+    fixture: {
+      id: "fixture_product_registry",
+      label: "Sample decision record",
+      provenance: "demo_fixture",
+      meetingSummary:
+        "Sample internal note: the team deferred the company.",
+      decisionReason:
+        "The sample team deferred pending enterprise proof.",
+      concerns: ["Production adoption was not established."],
+      revisitConditions: ["Verify a named production customer."],
+    },
   }]);
+});
+
+test("product Deal search includes the durable sample decision and revisit condition", async () => {
+  const { dependencies } = await productFixture();
+  for (const query of ["enterprise proof", "named production customer"]) {
+    const response = await listDeals(
+      new Request(`https://vsee.test/api/deals?q=${encodeURIComponent(query)}`),
+      undefined,
+      dependencies,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      (await response.json() as { data: Array<{ id: string }> }).data.map(
+        (deal) => deal.id,
+      ),
+      ["deal_product"],
+    );
+  }
+});
+
+test("product Deal projection rejects a sample interaction linked to another Deal", () => {
+  assert.throws(() => toProductDealView({
+    id: "deal_product",
+    workspaceId: WORKSPACE_ID,
+    companyId: "company_product",
+    companyName: "Product Registry Co",
+    status: "evaluating",
+    analysisEligibleAt: "2026-07-29T12:00:00.000Z",
+    activeSourceRevisionFingerprint: `sha256:${"1".repeat(64)}`,
+    activeSourceRevisionIds: ["revision_product_a"],
+  }, {
+    dealId: "deal_foreign",
+    companyName: "Foreign Co",
+    status: "passed",
+    facts: [],
+    interactions: [{
+      id: "fixture_foreign",
+      occurredAt: "2026-07-01T12:00:00.000Z",
+      summary: "Sample foreign note.",
+      decisionReason: "Sample foreign decision.",
+      concerns: [],
+      revisitConditions: [],
+      provenance: "demo_fixture",
+      label: DEMO_FIXTURE_LABEL,
+    }],
+  }), /memory bundle must match its registry Deal identity/i);
 });
 
 test("product Deal detail cannot fall back to a demo fixture or cross scope", async () => {
@@ -137,7 +256,15 @@ test("product Deal detail cannot fall back to a demo fixture or cross scope", as
   assert.equal(response.status, 200);
   const payload = await response.json() as { data: Record<string, unknown> };
   assert.equal(payload.data.companyName, "Product Registry Co");
-  assert.equal("fixture" in payload.data, false);
+  assert.deepEqual(payload.data.fixture, {
+    id: "fixture_product_registry",
+    label: "Sample decision record",
+    provenance: "demo_fixture",
+    meetingSummary: "Sample internal note: the team deferred the company.",
+    decisionReason: "The sample team deferred pending enterprise proof.",
+    concerns: ["Production adoption was not established."],
+    revisitConditions: ["Verify a named production customer."],
+  });
   assert.deepEqual(payload.data.sourceRevisionIds, [
     "revision_product_a",
     "revision_product_b",
@@ -169,15 +296,24 @@ test("product overview uses real registry/report/upload availability counts", as
   };
   assert.equal(payload.data.generatedAt, "2026-07-29T14:00:00.000Z");
   assert.deepEqual(payload.data.stats, {
-    deals: 1,
+    deals: 2,
     marketReports: 1,
     referenceDocuments: 0,
-    fixtureDeals: 0,
-    activeSourceRevisions: 2,
+    fixtureDeals: 1,
+    activeSourceRevisions: 3,
     uploads: 1,
   });
-  assert.equal(payload.data.deals[0].companyName, "Product Registry Co");
-  assert.equal("fixture" in payload.data.deals[0], false);
+  const productDeal = payload.data.deals.find((deal) =>
+    deal.companyName === "Product Registry Co"
+  );
+  const unlinkedDeal = payload.data.deals.find((deal) =>
+    deal.companyName === "No Memory Co"
+  );
+  assert.equal(
+    (productDeal?.fixture as { label?: string } | undefined)?.label,
+    "Sample decision record",
+  );
+  assert.equal("fixture" in (unlinkedDeal ?? {}), false);
   assert.deepEqual(payload.data.documents, []);
 });
 

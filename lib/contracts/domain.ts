@@ -264,55 +264,57 @@ const SemanticFieldIdentityShape = {
   schemaVersion: z.literal("deal-semantic-field-v1"),
 } as const;
 
+export const DealSemanticFieldSchema = z.discriminatedUnion("classification", [
+  z.strictObject({
+    ...SemanticFieldIdentityShape,
+    fieldId: CanonicalSemanticFieldIdSchema,
+    classification: z.literal("fact"),
+    availability: z.literal("available"),
+    value: z.string().min(1),
+    basis: z.string().min(1).optional(),
+    asOfDate: z.string().date().optional(),
+    sourceIds: z.array(z.string().min(1)).min(1),
+  }),
+  z.strictObject({
+    ...SemanticFieldIdentityShape,
+    fieldId: CanonicalSemanticFieldIdSchema,
+    classification: z.literal("unavailable"),
+    availability: z.literal("unavailable"),
+    reason: z.string().min(1),
+    checkedSourceIds: z.array(z.string().min(1)).min(1),
+  }),
+  z.strictObject({
+    ...SemanticFieldIdentityShape,
+    fieldId: z.literal("founding_date"),
+    classification: z.literal("conflicting"),
+    observations: z.array(z.strictObject({
+      value: z.string().min(1),
+      sourceId: z.string().min(1),
+    })).min(2),
+  }),
+  z.strictObject({
+    ...SemanticFieldIdentityShape,
+    fieldId: z.literal("security_type"),
+    classification: z.literal("assumption"),
+    value: z.literal("preferred"),
+    basis: z.literal("assumption"),
+    requiresConfirmation: z.literal(true),
+    assumptionPolicyVersion: z.literal("belief-reversal-demo-context-v1"),
+    rationale: z.string().min(1),
+    sourceBoundary: z.string().min(1),
+  }),
+  z.strictObject({
+    ...SemanticFieldIdentityShape,
+    fieldId: z.literal("unknowns"),
+    classification: z.literal("unknown"),
+    reason: z.string().min(1),
+  }),
+]);
+
 export const DealFactSchema = z.object({
   text: z.string().min(1),
   sources: z.array(EvidenceSourceRefSchema).min(1),
-  semanticFields: z.array(z.discriminatedUnion("classification", [
-    z.strictObject({
-      ...SemanticFieldIdentityShape,
-      fieldId: CanonicalSemanticFieldIdSchema,
-      classification: z.literal("fact"),
-      availability: z.literal("available"),
-      value: z.string().min(1),
-      basis: z.string().min(1).optional(),
-      asOfDate: z.string().date().optional(),
-      sourceIds: z.array(z.string().min(1)).min(1),
-    }),
-    z.strictObject({
-      ...SemanticFieldIdentityShape,
-      fieldId: CanonicalSemanticFieldIdSchema,
-      classification: z.literal("unavailable"),
-      availability: z.literal("unavailable"),
-      reason: z.string().min(1),
-      checkedSourceIds: z.array(z.string().min(1)).min(1),
-    }),
-    z.strictObject({
-      ...SemanticFieldIdentityShape,
-      fieldId: z.literal("founding_date"),
-      classification: z.literal("conflicting"),
-      observations: z.array(z.strictObject({
-        value: z.string().min(1),
-        sourceId: z.string().min(1),
-      })).min(2),
-    }),
-    z.strictObject({
-      ...SemanticFieldIdentityShape,
-      fieldId: z.literal("security_type"),
-      classification: z.literal("assumption"),
-      value: z.literal("preferred"),
-      basis: z.literal("assumption"),
-      requiresConfirmation: z.literal(true),
-      assumptionPolicyVersion: z.literal("belief-reversal-demo-context-v1"),
-      rationale: z.string().min(1),
-      sourceBoundary: z.string().min(1),
-    }),
-    z.strictObject({
-      ...SemanticFieldIdentityShape,
-      fieldId: z.literal("unknowns"),
-      classification: z.literal("unknown"),
-      reason: z.string().min(1),
-    }),
-  ])).optional(),
+  semanticFields: z.array(DealSemanticFieldSchema).optional(),
 });
 
 export const DealInteractionSchema = z.object({
@@ -779,6 +781,33 @@ export const CompanyBriefSchema = z.object({
     sourceIds: z.array(z.string().min(1)).min(1),
   })),
   sourceLineage: z.array(EvidenceSourceRefSchema),
+  structuredFields: z.array(DealSemanticFieldSchema).optional(),
+}).superRefine((brief, context) => {
+  const fields = brief.structuredFields ?? [];
+  const fieldIds = new Set(fields.map((field) => field.id));
+  if (fieldIds.size !== fields.length) {
+    context.addIssue({
+      code: "custom",
+      message: "Company Brief semantic field IDs must be unique",
+    });
+  }
+  const lineageIds = new Set(brief.sourceLineage.map((source) => source.id));
+  const referencedSourceIds = fields.flatMap((field) =>
+    field.classification === "fact"
+      ? field.sourceIds
+      : field.classification === "unavailable"
+      ? field.checkedSourceIds
+      : field.classification === "conflicting"
+      ? field.observations.map((observation) => observation.sourceId)
+      : []
+  );
+  if (referencedSourceIds.some((sourceId) => !lineageIds.has(sourceId))) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Semantic field source IDs must resolve to Company Brief lineage",
+    });
+  }
 });
 
 const CompanyAnalysisObjectSchema = z.object({
@@ -1095,6 +1124,7 @@ export type RunStatus = z.infer<typeof RunStatusSchema>;
 export type SourceRef = z.infer<typeof SourceRefSchema>;
 export type EvidenceSourceRef = z.infer<typeof EvidenceSourceRefSchema>;
 export type ClaimSupportV2 = z.infer<typeof ClaimSupportV2Schema>;
+export type DealSemanticField = z.infer<typeof DealSemanticFieldSchema>;
 export type DealFact = z.infer<typeof DealFactSchema>;
 export type DealInteraction = z.infer<typeof DealInteractionSchema>;
 export type DealMemoryBundle = z.infer<typeof DealMemoryBundleSchema>;

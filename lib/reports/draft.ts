@@ -3,9 +3,13 @@ import type {
   EvidenceSourceRef,
   OpportunityReportItem,
 } from "../contracts/domain";
+import { SAMPLE_DECISION_RECORD_LABEL } from "../contracts/source-evidence";
 import { sanitizeReportNextStep } from "./next-step-policy";
 import { safeExternalHttpUrl } from "../security/safe-url";
 import { rankBeliefRevisionCandidates } from "../matching/ranking";
+
+const SYNTHETIC_HISTORY_LABEL =
+  `${SAMPLE_DECISION_RECORD_LABEL} · synthetic demo history`;
 
 export interface InternalReportDraft {
   subject: string;
@@ -76,6 +80,9 @@ function formatCompanyAnalysis(
     `#${index + 1} · ${analysis.companyName.toUpperCase()} · ${analysis.confidence.toUpperCase()} CONFIDENCE · ${Math.round(analysis.score * 100)}%`,
     "",
     "THEN / INVESTMENT MEMORY",
+    ...(analysis.investmentMemory.fixtureIds.length > 0
+      ? [SYNTHETIC_HISTORY_LABEL]
+      : []),
     `Previous meeting: ${analysis.investmentMemory.previousMeetingSummary}`,
     `Decision reason: ${analysis.investmentMemory.decisionReason}`,
   ];
@@ -121,6 +128,9 @@ function formatOpportunity(
     opportunity.whyNow,
     "",
     "Previous context:",
+    ...(opportunity.demoFixtureIds.length > 0
+      ? [SYNTHETIC_HISTORY_LABEL]
+      : []),
     opportunity.previousContext,
   ];
 
@@ -143,17 +153,38 @@ function appendList(lines: string[], heading: string, items: string[]): void {
 }
 
 function formatSource(source: EvidenceSourceRef, origin: string): string {
-  const url = resolveSourceUrl(source, origin);
-  return url ? `- ${source.title} — ${url}` : `- ${source.title}`;
+  const links = resolveSourceLinks(source, origin);
+  const details = [
+    ...(links.publicUrl
+      ? [`${links.isLegacy ? "Legacy public source" : "Public canonical source"}: ${links.publicUrl}`]
+      : []),
+    ...(links.revisionUrl
+      ? [`Exact Source Revision: ${links.revisionUrl}`]
+      : []),
+    ...(links.isLegacy && !links.revisionUrl
+      ? ["Legacy evidence · Exact Source Revision unavailable"]
+      : []),
+  ];
+  return details.length > 0
+    ? [`- ${source.title}`, ...details.map((detail) => `  ${detail}`)].join("\n")
+    : `- ${source.title}`;
 }
 
-function resolveSourceUrl(
+function resolveSourceLinks(
   source: EvidenceSourceRef,
   origin: string,
-): string | undefined {
-  const externalUrl = "schemaVersion" in source
-    ? source.canonicalUrl ?? undefined
-    : source.url;
+): {
+  publicUrl?: string;
+  revisionUrl?: string;
+  isLegacy: boolean;
+} {
+  const isLegacy = !("schemaVersion" in source)
+    || source.adaptation === "legacy_read";
+  const externalUrl = source.provenance === "public_web"
+    ? "schemaVersion" in source
+      ? source.canonicalUrl ?? undefined
+      : source.url
+    : undefined;
   const page = "schemaVersion" in source
     && source.locator?.kind === "document_page"
     ? source.locator.page
@@ -161,14 +192,20 @@ function resolveSourceUrl(
     ? source.page
     : undefined;
   const safeExternalUrl = safeExternalHttpUrl(externalUrl);
+  let publicUrl: string | undefined;
   if (safeExternalUrl) {
     const url = new URL(safeExternalUrl);
     if (page && !url.hash) url.hash = `page=${page}`;
-    return url.toString();
+    publicUrl = url.toString();
   }
-  if (!source.documentId) return undefined;
+  const sourceRevisionId = "schemaVersion" in source
+    ? source.sourceRevisionId ?? undefined
+    : source.sourceRevisionId;
   const pageAnchor = page ? `#page=${page}` : "";
-  return `${origin}/api/documents/${encodeURIComponent(source.documentId)}/access${pageAnchor}`;
+  const revisionUrl = sourceRevisionId
+    ? `${origin}/api/source-revisions/${encodeURIComponent(sourceRevisionId)}/access${pageAnchor}`
+    : undefined;
+  return { publicUrl, revisionUrl, isLegacy };
 }
 
 function unique(values: string[]): string[] {

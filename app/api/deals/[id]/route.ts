@@ -6,7 +6,7 @@ import {
 import { requirePermission } from "../../../../lib/api/safety";
 import { buildDemoViewModel } from "../../../../lib/demo/view-model";
 import { getDealRegistry } from "../../../../db/repositories/deal-registry";
-import { toProductDealView } from "../../../../lib/deals/read-model";
+import { findProductDeal } from "../../../../lib/deals/read-model";
 import { isDurableWorkspaceMode } from "../../../../lib/auth/request-context";
 
 export async function GET(
@@ -22,12 +22,11 @@ export async function GET(
     requirePermission(requestContext, "readWorkspace");
     const { id } = await context.params;
     const deal = isDurableWorkspaceMode(requestContext.mode)
-      ? await (
-        dependencies.dealRegistry ?? getDealRegistry()
-      ).findForWorkspace({
+      ? await findProductDeal({
         workspaceId: requestContext.workspaceId,
         dealId: id,
-      }).then((value) => value ? toProductDealView(value) : null)
+        deals: dependencies.dealRegistry ?? getDealRegistry(),
+      })
       : buildDemoViewModel().deals.find((candidate) => candidate.id === id);
     return deal
       ? jsonOk(deal)
