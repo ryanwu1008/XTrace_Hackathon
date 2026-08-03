@@ -1432,6 +1432,36 @@ test("completes an evidence-backed empty scan when a provider succeeds", async (
   assert.equal(result.window.days, 14);
 });
 
+test("uses the persisted window anchor independently from the actual retrieval time", async () => {
+  const retrievedAt = new Date("2026-08-02T12:00:00.000Z");
+  let requestedWindow: { from: Date; to: Date } | undefined;
+  const service = createMarketService({
+    providers: [{
+      id: "company-feed",
+      name: "Company announcements",
+      async fetch(window) {
+        requestedWindow = window;
+        return [rawItem()];
+      },
+    }],
+  });
+
+  const result = await service.scanMarketWindow({
+    days: 14,
+    now: NOW,
+    retrievedAt,
+  });
+
+  assert.equal(requestedWindow?.to.toISOString(), NOW.toISOString());
+  assert.equal(result.window.to, NOW.toISOString());
+  assert.equal(result.events[0]?.retrievedAt, retrievedAt.toISOString());
+  assert.equal(
+    result.events[0]?.sources[0]?.retrievedAt,
+    retrievedAt.toISOString(),
+  );
+  assert.equal(result.providers[0]?.lastSuccessAt, retrievedAt.toISOString());
+});
+
 test("the worker market stage delegates to the injected service", async () => {
   const expected = {
     status: "completed" as const,

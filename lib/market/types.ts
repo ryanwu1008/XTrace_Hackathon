@@ -69,6 +69,7 @@ export interface MarketScanResult {
 export interface MarketScanOptions {
   days?: number;
   now?: Date;
+  retrievedAt?: Date;
 }
 
 export type PersistMarketEvents = (

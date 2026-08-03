@@ -425,6 +425,54 @@ test("a new analysis run rejects a Deal registry snapshot that changes during st
   assert.equal(marketCalled, false);
 });
 
+test("a delayed current-live claim scans the persisted anchor while recording actual retrieval time", async () => {
+  let clock = new Date("2026-07-24T12:00:00.000Z");
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => clock,
+  }));
+  const queued = await runs.create({
+    workspaceId: "workspace_demo",
+    mode: "structured",
+    windowDays: 14,
+  });
+  assert.equal(queued.evidenceContext.state, "current");
+  if (queued.evidenceContext.state !== "current") {
+    throw new Error("The delayed-claim test requires a current run.");
+  }
+  const persistedAnchorAt = queued.evidenceContext.anchorAt;
+  clock = new Date("2026-08-02T12:00:00.000Z");
+  const run = await runs.claimNext("test-worker");
+  assert.ok(run);
+  let scanNow: Date | undefined;
+  let scanRetrievedAt: Date | undefined;
+
+  await assert.rejects(
+    processClaimedRun(run, {
+      runs,
+      intelligence: createTestIntelligenceRepository(),
+      ...authoritativeDeals(buildPreloadedDealMemoryBundles()),
+      importGate: READY_IMPORT_GATE,
+      market: {
+        async scanMarketWindow(options) {
+          scanNow = options?.now;
+          scanRetrievedAt = options?.retrievedAt;
+          throw new Error("stop after observing the scan clock");
+        },
+      },
+      reasoner: {
+        async reason() {
+          throw new Error("reasoning must not run after the scan probe");
+        },
+      },
+      now: () => clock,
+    }),
+    /stop after observing the scan clock/i,
+  );
+
+  assert.equal(scanNow?.toISOString(), persistedAnchorAt);
+  assert.equal(scanRetrievedAt?.toISOString(), clock.toISOString());
+});
+
 test("a current live Worker seals the exact selected events before saving its report", async () => {
   const baseRuns = createRunsRepository(createMemoryDataClient());
   const intelligenceBase = createTestIntelligenceRepository();

@@ -253,6 +253,10 @@ export function createMarketService(
       if (!Number.isFinite(to.getTime())) {
         throw new TypeError("Market scan requires a valid current time.");
       }
+      const retrievedAt = options.retrievedAt ?? to;
+      if (!Number.isFinite(retrievedAt.getTime())) {
+        throw new TypeError("Market scan requires a valid retrieval time.");
+      }
       const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1_000);
 
       const providerResults = await Promise.all(
@@ -280,7 +284,7 @@ export function createMarketService(
 
               try {
                 const normalized = await normalizeMarketItem(candidate, {
-                  retrievedAt: to,
+                  retrievedAt,
                 });
                 accepted.push(
                   classifyMarketEventForAnalysis(normalized) ?? normalized,
@@ -296,7 +300,7 @@ export function createMarketService(
               fetchedCount: rawItems.length,
               acceptedCount: accepted.length,
               rejectedCount,
-              lastSuccessAt: to.toISOString(),
+              lastSuccessAt: retrievedAt.toISOString(),
             };
             return { events: accepted, report, succeeded: true };
           } catch (error) {

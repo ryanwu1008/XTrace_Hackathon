@@ -181,9 +181,15 @@ export async function processClaimedRun(
     }
 
     await updateStage("market_scan", "running");
+    const retrievedAt = now();
+    const scanAnchorAt = claimedRun.evidenceContext.state === "current"
+        && claimedRun.evidenceContext.evidenceMode === "live"
+      ? new Date(claimedRun.evidenceContext.anchorAt)
+      : retrievedAt;
     const scannedMarket = await dependencies.market.scanMarketWindow({
       days: 14,
-      now: now(),
+      now: scanAnchorAt,
+      retrievedAt,
     });
     // Classification changes canonical sectors/themes and therefore identity.
     // Normalize it once before the first durable write, then reuse that exact
