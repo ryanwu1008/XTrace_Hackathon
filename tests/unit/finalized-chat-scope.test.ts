@@ -601,6 +601,47 @@ test("allows terminal unavailable candidates only when no finalized bundle is re
   }
 });
 
+test("allows a terminal partial belief-revised candidate when its exact finalized artifact is available", async () => {
+  const partial = candidate({
+    id: "candidate_ably",
+    dealId: "deal_ably",
+    status: "partial",
+  });
+  const partialBundle = bundle({
+    candidateRunId: partial.id,
+    dealId: partial.dealId,
+    fingerprint: partial.candidateAnalysisFingerprint,
+  });
+  const storage = repositories({
+    batch: batch({ status: "partial" }),
+    candidates: [partial],
+    bundles: { candidate_ably: partialBundle },
+  });
+  const scope = resolvedScope({
+    dealId: "deal_ably",
+    candidateRunIds: [partial.id],
+    analyses: [analysis({
+      dealId: "deal_ably",
+      companyName: "Ably",
+      dealStatus: "passed",
+    })],
+  });
+
+  const result = await loadExactFinalizedChatScope({
+    workspaceId: "workspace_1",
+    scope,
+    question: "What finalized evidence is available?",
+    underwritingRuns: storage.underwritingRuns,
+    artifacts: storage.artifacts,
+  });
+
+  assert.equal(result.status, "ready");
+  if (result.status === "ready") {
+    assert.equal(result.candidate?.status, "partial");
+    assert.equal(result.bundle?.candidateRunId, partial.id);
+  }
+});
+
 test("rejects absent, foreign, mismatched, and wrong-generation finalized artifacts", async () => {
   const cases: Array<{
     label: string;

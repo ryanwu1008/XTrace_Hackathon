@@ -16,7 +16,7 @@ import {
   parseBeliefActions,
 } from "../reports/action-policy";
 
-export interface SelectedPriorInteractionForBeliefRevision {
+interface SelectedSampleDecisionForBeliefRevision {
   id: string;
   occurredAt: string;
   sourceIds: readonly string[];
@@ -25,6 +25,22 @@ export interface SelectedPriorInteractionForBeliefRevision {
   label: "Sample decision record";
   priorActions: readonly BeliefAction[];
 }
+
+interface SelectedResearchScreeningForBeliefRevision {
+  id: string;
+  occurredAt: string;
+  sourceIds: readonly string[];
+  revisitConditions: readonly string[];
+  provenance: "source_document";
+  label: "Sample research screening record";
+  meetingOccurred: false;
+  vcInteraction: false;
+  priorActions: readonly BeliefAction[];
+}
+
+export type SelectedPriorInteractionForBeliefRevision =
+  | SelectedSampleDecisionForBeliefRevision
+  | SelectedResearchScreeningForBeliefRevision;
 
 export interface SelectedTriggerEventForBeliefRevision {
   id: string;
@@ -116,8 +132,14 @@ export function evaluateBeliefRevisionHardGates(
     mapping.citedSourceIds,
     resolvableSourceIds,
   ) && mapping.citedSourceIds.every((sourceId) => triggerSourceIds.has(sourceId));
-  const revisitPassed = input.priorInteraction.provenance === "demo_fixture"
-    && input.priorInteraction.label === "Sample decision record"
+  const validPriorAuthority =
+    (input.priorInteraction.provenance === "demo_fixture"
+      && input.priorInteraction.label === "Sample decision record")
+    || (input.priorInteraction.provenance === "source_document"
+      && input.priorInteraction.label === "Sample research screening record"
+      && input.priorInteraction.meetingOccurred === false
+      && input.priorInteraction.vcInteraction === false);
+  const revisitPassed = validPriorAuthority
     && mapping.priorInteractionId === input.priorInteraction.id
     && mapping.triggerEventId === input.triggerEvent.id
     && mappedCondition !== undefined
@@ -170,7 +192,7 @@ export function evaluateBeliefRevisionHardGates(
       passed: revisitPassed,
       failureReason: revisitPassed
         ? null
-        : "The claimed revisit condition must exactly bind the selected Sample decision record, trigger event, and resolvable trigger citations.",
+        : "The claimed revisit condition must exactly bind the selected typed prior-context authority, trigger event, and resolvable trigger citations.",
     },
     counterevidence: {
       statement: input.counterevidence.statement,

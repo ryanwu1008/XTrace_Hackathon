@@ -26,6 +26,18 @@ The Worker launcher obtains its other required values from Keychain services:
 `vsee-document-url-signing-secret`. `mmk_` XTrace keys do not require an
 XTrace organization ID.
 
+## Current migration decision
+
+`SAFE_REFUSAL — production forward migration remains blocked`
+
+The reviewed production terminal remains `0018`. Migration `0019` and the
+local-only `0020`–`0024` chain have not received production catalog approval.
+Task 13 reads no production credentials and runs no launcher against
+production; its production-shaped launcher verification uses only disposable
+PostgreSQL 17.6 fixtures.
+Do not treat a green test command as approval to run `0019` or later against a
+shared or production database.
+
 ## Required release migration gates
 
 Before applying a reviewed commit to production, run both migration gates on
@@ -37,20 +49,26 @@ npm run test:migrations:production-pg176
 ```
 
 The second command is mandatory and must connect to PostgreSQL `17.6` (server
-version number `170006`). It executes both complete guarded-launcher E2Es: the
-Supabase-shaped superuser profile and the real non-superuser `CREATEROLE`
-executor profile. The command must report exactly two passing tests, zero
-failures, and zero skips. It deliberately fails on PostgreSQL 17.10, a missing
-database, a renamed/nonmatching test, or any run in which one of the two E2Es
-does not execute. The general `test:migrations` suite may also be run on
-PostgreSQL 17.10 for compatibility coverage, but that does not replace the
-17.6 production-profile gate.
+version number `170006`). It executes exactly three production-shaped profiles:
+Supabase superuser, non-superuser `CREATEROLE`, and repaired ACL. The command
+must report three passing enclosing tests, zero failures, and zero skips. In
+each profile the forward launcher itself must exit nonzero with the exact
+unreviewed-`0019` refusal, while the test proves reviewed `0018` is complete,
+`0019`–`0024` are absent, invariants are unchanged, and no transaction remains
+open. It deliberately fails on another server version, a missing database, a
+renamed/nonmatching test, or any run in which one of the three profiles does
+not execute. This is a `SAFE_REFUSAL` gate, not a migration-success gate.
 
 Use one disposable PostgreSQL cluster/container per migration job. These tests
 exercise fixed cluster-global production role names and must not share a
 cluster with another parallel job or a real environment.
 
 ## Production baseline maintenance window
+
+The procedure below is **blocked at the forward-migration step** for this
+checkpoint. It remains reference material for a future separately reviewed
+maintenance approval; Task 13 did not perform these operations. Do not begin a
+new production cutover while `0019` lacks a reviewed terminal fingerprint.
 
 The production project may still have the early upload-extraction prototype
 instead of the final `0007` table contract. Treat its baseline upgrade as an
@@ -106,31 +124,75 @@ Web request or Worker process can write to PostgreSQL.
    contract while retaining every legacy column and row, then applies and
    verifies `0008` and `0009`. It refuses unknown, partial, unsafe, or gapped
    states. Do not bypass that refusal or apply the compatibility SQL manually.
-5. In the same no-traffic maintenance window, run the forward launcher:
+5. **Stop.** The forward launcher is not authorized for a production run from
+   this checkpoint. Do not run `./scripts/apply-production-migrations.zsh` on
+   production, do not apply `0019` manually, and do not add or alias a catalog
+   fingerprint. A future review must explicitly authorize the new terminal.
+6. On disposable PostgreSQL 17.6 only, the expected forward result is a
+   nonzero exit after reviewed `0018` with `Migration 0019 has no reviewed
+   terminal catalog fingerprint; refusing mutation.` Verify `0019`, `0020`,
+   `0021`, `0022`, `0023`, and `0024` remain absent. Never describe that outcome as production
+   migrations passed, green, deployed, or authorized.
+7. Resume the Web and the Worker only with the already-reviewed
+   application/schema combination. A release that depends on `0019` or later
+   remains blocked until the separate migration review is approved.
 
-   ```bash
-   ./scripts/apply-production-migrations.zsh
-   ```
+## Current company-mainline acceptance and release status
 
-   The forward launcher also never prints the database URL. It requires the
-   complete `0009` boundary, inventories the `0010`–`0019` sentinels before
-   changing anything, refuses any gap, applies only from the first missing
-   migration in order, and re-verifies every sentinel. Resolve a failed
-   sentinel or gap before retrying; do not skip a file or run a later migration
-   manually.
-6. Verify `0019` before restoring traffic. The forward launcher must report
-   that every production sentinel through `0019` is complete. `0018` repairs
-   only the internal pgcrypto schema dependency used by canonical fingerprints.
-   Rerun it once
-   after the first successful pass and require the same all-complete result
-   with no migration applied. Repeat the two quiet-state SQL checks above; both
-   must still return zero rows.
-7. Resume the Web and the Worker only after all verification succeeds. Start
-   one Worker first, wait for its fresh PostgreSQL heartbeat, restore the Web
-   deployment/traffic, and then complete the health gate below. Retain the
-   database snapshot until the post-cutover smoke test is complete.
+A completed current run must bind exactly 30 Companies, 30 Deals, and 30
+analysis-eligible Deals, then persist exactly 30 CompanyAnalyses. The four
+outcome counts must sum to 30 and are derived from the run's evidence window.
+The versioned 2026-08-01 research package records `4 / 7 / 19 / 0`. For the
+controlled 2026-08-03 cold live run, the retained 14-day authority yields
+`4 / 6 / 20 / 0` because the Empirical Security item is outside the window.
+Do not turn either distribution into a runtime shortcut.
+
+Every and only `belief_revised` analysis must create one Deep Underwriting
+queue entry. Deterministic score and stable Deal identity control priority
+order only; rank and capacity do not remove an otherwise admitted candidate.
+Every admitted candidate must reach an explicit completed, partial, or failed
+terminal state.
+
+Centralize, ChipAgents, Sent, Cascade, Cordant, Empirical Security, and Freight
+Hero remain `screening` Deals labelled `Sample research screening record`.
+Their screening records are typed prior context, not meetings, VC interactions,
+historical Passes, or evidence that passes belief-change gates by itself.
+Stronger evidence in a later run may naturally satisfy the normal gates and
+upgrade a Deal without a name- or disposition-specific shortcut. The versioned
+2026-08-01 research package records all seven as `monitor`. In the controlled
+2026-08-03 14-day live run Empirical Security is `no_material_change` because
+its evidence falls outside the window, while the other six remain `monitor`.
+
+The historical 2026-08-01 pinned report remains bound to its immutable
+23-analysis universe and original fingerprints. It is a legacy replay artifact,
+not the current registry or current-run cardinality.
+
+The first complete current-30 automated cold smoke passed on 2026-08-03
+(`1/1`, `73.7s`) against disposable loopback PostgreSQL 17.6. It persisted 30
+CompanyAnalyses with the derived `4 / 6 / 20 / 0` outcome distribution,
+created exactly four Deep Underwriting jobs, replayed the immutable legacy
+23-analysis report, and recorded zero remote network attempts. At this
+checkpoint no smoke-verified commit has been created and no exact-SHA private
+Preview/Staging handoff has occurred. The newly authorized private Staging
+target must use only disposable/non-production data, credentials, providers,
+database, and Worker resources; the configured public Sites target remains out
+of scope.
+
+Localization and bilingual implementation are paused until the company mainline
+is complete and the final schema recheck has finished. This checkpoint does not
+claim that either is complete or ready for release.
 
 ## Start the Worker
+
+### Production-only operator procedure
+
+This section is solely for an already authorized production/public-sandbox
+operator procedure. It is not a current-30 cold-smoke or private-Staging
+procedure. The current-30 cold smoke and any private Preview/Staging handoff
+must not use the production XTrace endpoint, macOS Keychain credentials, or the
+public Sites target. They must use test-only/non-production provider seams and
+credentials, a disposable non-production database and Worker, and a separately
+authorized non-production target.
 
 Start one foreground Worker from the same reviewed commit:
 
@@ -162,6 +224,16 @@ single Worker, and wait for its heartbeat instead of bypassing the check.
 4. Run **WAKE AGENT & SCAN MARKET** after the health gate is green.
 5. Review the generated report and its traceable evidence rather than treating
    the sandbox result as a customer investment decision.
+6. Verify 30 Companies, 30 Deals, 30 eligible Deals, 30 analyses, and a total
+   of 30 outcomes. For the controlled 2026-08-03 14-day cold live fixture, the
+   expected evidence-derived outcome counts are `4 / 6 / 20 / 0`; other live
+   anchor dates may derive a different distribution.
+7. Verify that the Deep Underwriting Deal IDs equal the `belief_revised` Deal
+   IDs exactly. Priority ordering may change execution order but not admission.
+8. Verify the seven screening labels and confirm their prior records never
+   claim a meeting, VC interaction, historical Pass, or automatic gate pass.
+9. Replay the historical pinned report separately and confirm its immutable
+   universe and fingerprints remain unchanged.
 
 The report includes the market-scan result and company analyses; opening a
 candidate exposes these named underwriting sections: **What happened?**,
@@ -171,6 +243,13 @@ FRAMEWORK versus NAMED ADVISORY judgments, the advisory pack/version,
 component cards, exact source lineage, supporting/counterevidence Evidence Pack
 IDs, limitations, and independent disagreements. Named advisory viewpoints have
 formal decision weight zero.
+
+For the Hush Security invested-positive demo, keep the product action policy
+unchanged: the canonical belief action is `evaluate_follow_on`. The research
+action `validate_channel_economics` is represented by the exact saved
+CompanyAnalysis unknown (“Akamai and Kyndryl channel bookings, margins, and
+sell-through remain unavailable.”), its reviewed founder-safe label, and a
+`diligence_request` draft. It is not a second canonical belief action.
 
 ## Reset test view
 
@@ -187,4 +266,5 @@ If the public-sandbox cutover fails, stop the Worker, restore the previously
 saved Sites version, and change the Sites runtime mode back to
 `VSEE_DEPLOYMENT_MODE=public_demo`. Verify the restored public site is the
 anonymous synthetic read-only demo. **Do not roll back database migrations:**
-the `0010`–`0019` forward migrations remain applied during a Sites rollback.
+only the separately reviewed production migrations through `0018` may be
+assumed present. This checkpoint never applies `0019` or later to production.

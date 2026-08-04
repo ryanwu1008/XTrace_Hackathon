@@ -1820,14 +1820,40 @@ begin
     order by event.id collate "C" for share
   ) locked;
   resolved:=pg_catalog.jsonb_array_length(selected_events);
-  if resolved <> requested then raise exception 'UNKNOWN_OR_OUT_OF_WINDOW_LIVE_EVENT'; end if;
+  if resolved <> requested then
+    raise exception
+      'UNKNOWN_OR_OUT_OF_WINDOW_LIVE_EVENT (resolved %, requested %, selected %)',
+      resolved,requested,selected_events;
+  end if;
   if exists(select 1 from pg_catalog.jsonb_array_elements(selected_events) item
     where not public.valid_market_event_v2_0019(item->'payload')
       or not public.evidence_event_in_window_0019(
         item#>>'{payload,publishedAt}',item#>>'{payload,publishedAtPrecision}',
         run.evidence_window_start_at,run.evidence_window_end_at,
         run.evidence_window_timezone))
-  then raise exception 'UNKNOWN_OR_OUT_OF_WINDOW_LIVE_EVENT'; end if;
+  then
+    raise exception
+      'UNKNOWN_OR_OUT_OF_WINDOW_LIVE_EVENT (invalid event ids %, out-of-window ids %, window % to % %)',
+      array(
+        select item->>'id'
+        from pg_catalog.jsonb_array_elements(selected_events) item
+        where not public.valid_market_event_v2_0019(item->'payload')
+        order by item->>'id' collate "C"
+      ),
+      array(
+        select item->>'id'
+        from pg_catalog.jsonb_array_elements(selected_events) item
+        where not public.evidence_event_in_window_0019(
+          item#>>'{payload,publishedAt}',
+          item#>>'{payload,publishedAtPrecision}',
+          run.evidence_window_start_at,run.evidence_window_end_at,
+          run.evidence_window_timezone
+        )
+        order by item->>'id' collate "C"
+      ),
+      run.evidence_window_start_at,run.evidence_window_end_at,
+      run.evidence_window_timezone;
+  end if;
   event_set_digest := public.sha256_length_framed(array['run-event-set-v1'] || coalesce(array(
     select public.canonical_jsonb_text_0019(item->'payload')
     from pg_catalog.jsonb_array_elements(selected_events) item

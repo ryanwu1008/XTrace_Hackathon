@@ -10,6 +10,7 @@ import {
   EvidenceFieldSchema,
   MarketEventSchema,
   OpportunityReportItemSchema,
+  parseCompanyAnalysisRead,
   SourceRefSchema,
   type BeliefAction,
 } from "../../lib/contracts/domain";
@@ -2156,4 +2157,38 @@ test("none and unavailable directions can never declare a belief revision", () =
     );
     assert.equal(CompanyAnalysisSchema.safeParse(analysis).success, false, direction);
   }
+});
+
+test("persisted CompanyAnalysis reads add a safe external label without weakening canonical writes", () => {
+  const legacy = companyAnalysisFixture();
+  const companyBrief = legacy.companyBrief as Record<string, unknown>;
+  companyBrief.structuredFields = [{
+    id: `semantic-field-${"a".repeat(24)}`,
+    schemaVersion: "deal-semantic-field-v1",
+    fieldId: "unknowns",
+    classification: "unknown",
+    reason:
+      "Internal concern: founder reference quality did not pass our prior review.",
+  }];
+
+  assert.equal(
+    CompanyAnalysisSchema.safeParse(legacy).success,
+    false,
+    "new canonical writes must not omit externalLabel",
+  );
+  const parsed = parseCompanyAnalysisRead(legacy);
+  const parsedBrief = parsed.companyBrief as {
+    structuredFields: Array<Record<string, unknown>>;
+  };
+  assert.deepEqual(parsedBrief.structuredFields[0], {
+    ...(companyBrief.structuredFields as Array<Record<string, unknown>>)[0],
+    externalLabel: "Current company evidence for review",
+  });
+  assert.equal(
+    String(parsedBrief.structuredFields[0]?.externalLabel).includes(
+      "did not pass",
+    ),
+    false,
+  );
+  assert.equal(CompanyAnalysisSchema.safeParse(parsed).success, true);
 });

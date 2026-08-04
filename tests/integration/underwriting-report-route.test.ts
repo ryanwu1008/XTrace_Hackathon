@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { GET as getReport } from "../../app/api/reports/[id]/route";
+import { GET as listReports } from "../../app/api/reports/route";
 import { GET as getUnderwriting } from "../../app/api/reports/[id]/underwriting/[dealId]/route";
 import { GET as listActionDrafts } from "../../app/api/action-drafts/route";
 import { GET as search } from "../../app/api/search/route";
@@ -38,7 +39,7 @@ import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelli
 
 const WORKSPACE_ID = "workspace_read_api";
 const REPORT_ID = "report_read_api";
-const RUN_ID = "run_read_api";
+const RUN_ID = "11111111-1111-4111-8111-111111111111";
 const PUBLIC_JUDGMENT_LIMITATION = "Management-reported evidence.";
 const PRIVATE_LIMITATION_MARKERS = [
   "Private no-endorsement authoring notice.",
@@ -50,6 +51,24 @@ const PRIVATE_LIMITATION_MARKERS = [
   "Private card review issue.",
   "Private rights note.",
 ] as const;
+
+const CURRENT_LIVE_EVIDENCE_CONTEXT = {
+  state: "current" as const,
+  schemaVersion: "run-evidence-context-v1" as const,
+  evidenceMode: "live" as const,
+  windowDays: 14 as const,
+  anchorAt: "2026-08-03T12:00:00.000Z",
+  windowStartAt: "2026-07-20T12:00:00.000Z",
+  windowEndAt: "2026-08-03T12:00:00.000Z",
+  windowTimezone: "America/Los_Angeles",
+  snapshotId: null,
+  snapshotFingerprint: null,
+  contextFingerprint: `sha256:${"8".repeat(64)}`,
+  displayLabel: "Live evidence through 2026-08-03",
+  eventCount: 7,
+  eventSetFingerprint: `sha256:${"9".repeat(64)}`,
+  bindingFingerprint: `sha256:${"a".repeat(64)}`,
+};
 
 function productDependencies(
   overrides: Partial<RouteDependencies> = {},
@@ -523,6 +542,7 @@ function finalizedBundle(input: {
     missingEvidence: [{
       fieldId: "net_retention",
       label: "Net retention",
+      externalLabel: "Net retention",
       reasonCode: "MISSING_CRITICAL_EVIDENCE",
       mostLikelyDecisionImpact: "May change the current decision ceiling.",
     }],
@@ -556,13 +576,40 @@ async function readRepositories(options: {
     artifacts,
   });
   const intelligence = createMemoryIntelligenceRepository();
-  await intelligence.saveReport(canonicalIntelligenceReportFixture({
+  const admittedDealIds = [
+    "deal_selected",
+    "deal_priority_2",
+    "deal_priority_3",
+    "deal_priority_4",
+    "deal_priority_5",
+    "deal_priority_6",
+  ];
+  const reportInput = canonicalIntelligenceReportFixture({
     id: REPORT_ID,
     workspaceId: WORKSPACE_ID,
     runId: RUN_ID,
     createdAt: "2026-07-29T12:00:00.000Z",
     marketSummary: "Persisted market summary",
-  }));
+    dealIds: [...admittedDealIds, "deal_not_selected"],
+  });
+  await intelligence.saveReport({
+    ...reportInput,
+    companyAnalyses: reportInput.companyAnalyses?.map((analysis) =>
+      admittedDealIds.includes(analysis.dealId)
+        ? {
+          ...analysis,
+          outcome: "belief_revised" as const,
+          confidence: "medium" as const,
+          score: 0.8,
+        }
+        : {
+          ...analysis,
+          outcome: "monitor" as const,
+          confidence: "medium" as const,
+          score: 0.6,
+        }
+    ),
+  });
   const scanRun = {
     id: RUN_ID,
     workspaceId: WORKSPACE_ID,
@@ -603,24 +650,26 @@ async function readRepositories(options: {
   await runs.saveSelections({
     batchId: batch.id,
     selections: [
-      {
-        dealId: "deal_selected",
+      ...admittedDealIds.map((dealId, index) => ({
+        dealId,
         status: "selected",
-        rank: 1,
-        reason: "Top-ranked persisted match",
-      },
+        rank: index + 1,
+        reason:
+          `Admitted at priority ${index + 1}; priority does not affect eligibility.`,
+      } as const)),
       {
         dealId: "deal_not_selected",
         status: "not_selected",
         rank: null,
-        reason: "Outside the Top 5",
+        reason: "The CompanyAnalysis outcome was monitor.",
       },
     ],
   });
-  const [candidate] = await runs.createSelectedCandidates({
+  const candidates = await runs.createSelectedCandidates({
     batchId: batch.id,
-    dealIds: ["deal_selected"],
+    dealIds: admittedDealIds,
   });
+  const candidate = candidates[0]!;
   const prepared = finalizedBundle({
     candidateRunId: candidate.id,
   });
@@ -629,7 +678,15 @@ async function readRepositories(options: {
       ? await options.prepareBundle(prepared, candidate)
       : prepared,
   );
-  return { artifacts, runs, intelligence, scanRuns, batch, candidate };
+  return {
+    artifacts,
+    runs,
+    intelligence,
+    scanRuns,
+    batch,
+    candidate,
+    candidates,
+  };
 }
 
 test("public sandbox renders the complete persisted canonical named-advisory report", async () => {
@@ -753,8 +810,14 @@ test("public sandbox renders the complete persisted canonical named-advisory rep
 
   assert.match(
     reportHtml,
-    /Loading persisted candidate states/,
+    /Loading Underwriting Queue and Underwriting Status/,
     "public sandbox ReportsView must enter the durable underwriting UI",
+  );
+  assert.match(reportHtml, /Belief Revisions/);
+  assert.match(reportHtml, /Underwriting Queue/);
+  assert.doesNotMatch(
+    reportHtml,
+    /Top[ -]?5|Selected for Top|rank cutoff|sixth.*reject/i,
   );
   assert.doesNotMatch(reportHtml, /synthetic and read-only/);
   const peter = detail.judgments.find(
@@ -850,7 +913,7 @@ test("public sandbox renders the complete persisted canonical named-advisory rep
   }
 });
 
-test("report detail attaches an explicit persisted underwriting batch summary", async () => {
+test("current report API exposes every belief revision in the underwriting queue including priority six", async () => {
   const repositories = await readRepositories();
   const response = await getReport(
     new Request(`https://vsee.test/api/reports/${REPORT_ID}`),
@@ -865,29 +928,465 @@ test("report detail attaches an explicit persisted underwriting batch summary", 
   assert.equal(response.status, 200);
   const payload = await response.json() as {
     data: {
+      counts: Record<string, number>;
       underwritingBatch: {
         batchId: string;
-        selections: Array<Record<string, unknown>>;
+        queue: Array<Record<string, unknown>>;
+        underwritingStatusCounts: Record<string, number>;
       };
     };
   };
   assert.equal(payload.data.underwritingBatch.batchId, repositories.batch.id);
-  assert.deepEqual(payload.data.underwritingBatch.selections, [
-    {
-      dealId: "deal_selected",
-      underwritingStatus: "queued",
-      rank: 1,
-      candidateRunId: repositories.candidate.id,
-      decision: null,
+  assert.equal(payload.data.underwritingBatch.queue.length, 6);
+  assert.deepEqual(
+    payload.data.underwritingBatch.queue.map((entry) => ({
+      dealId: entry.dealId,
+      priorityRank: entry.priorityRank,
+      status: entry.status,
+      candidateRunId: entry.candidateRunId,
+    })),
+    repositories.candidates.map((candidate, index) => ({
+      dealId: candidate.dealId,
+      priorityRank: index + 1,
+      status: "queued",
+      candidateRunId: candidate.id,
+    })),
+  );
+  assert.equal(
+    payload.data.underwritingBatch.queue.some(
+      (entry) => entry.dealId === "deal_not_selected",
+    ),
+    false,
+  );
+  assert.deepEqual(payload.data.underwritingBatch.underwritingStatusCounts, {
+    queued: 6,
+    running: 0,
+    completed: 0,
+    partial: 0,
+    failed: 0,
+  });
+  assert.deepEqual(payload.data.counts, {
+    companyCount: 7,
+    beliefRevised: 6,
+    monitor: 1,
+    noMaterialChange: 0,
+    analysisUnavailable: 0,
+    eligibleDealCount: 7,
+    companyAnalysisCount: 7,
+    beliefRevisedCount: 6,
+    monitorCount: 1,
+    noMaterialChangeCount: 0,
+    analysisUnavailableCount: 0,
+    underwritingCandidateCount: 6,
+    underwritingQueuedCount: 6,
+    underwritingRunningCount: 0,
+    underwritingCompletedCount: 0,
+    underwritingPartialCount: 0,
+    underwritingFailedCount: 0,
+  });
+});
+
+test("current report list exposes accurate underwriting counts for the rendered report coverage", async () => {
+  const repositories = await readRepositories();
+  const response = await listReports(
+    new Request(`https://vsee.test/api/reports?runId=${RUN_ID}`),
+    undefined,
+    productDependencies({
+      intelligence: repositories.intelligence,
+      underwritingRuns: repositories.runs,
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: Array<{ counts: Record<string, number> }>;
+  };
+  assert.equal(payload.data.length, 1);
+  assert.equal(payload.data[0].counts.eligibleDealCount, 7);
+  assert.equal(payload.data[0].counts.companyAnalysisCount, 7);
+  assert.equal(payload.data[0].counts.underwritingCandidateCount, 6);
+  assert.equal(payload.data[0].counts.underwritingQueuedCount, 6);
+});
+
+test("current report list fails closed when a belief-revised report is missing its underwriting batch", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const currentReport = {
+    ...stored,
+    evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+  };
+
+  const response = await listReports(
+    new Request(`https://vsee.test/api/reports?runId=${RUN_ID}`),
+    undefined,
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReportByRunId(workspaceId, runId) {
+          return workspaceId === WORKSPACE_ID && runId === RUN_ID
+            ? structuredClone(currentReport)
+            : null;
+        },
+      },
+      underwritingRuns: {
+        ...repositories.runs,
+        async getBatchByScanRunId() {
+          return null;
+        },
+      },
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 500);
+});
+
+test("current report list fails closed when its underwriting batch belongs to a stale scan", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const currentReport = {
+    ...stored,
+    evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+  };
+
+  const response = await listReports(
+    new Request(`https://vsee.test/api/reports?runId=${RUN_ID}`),
+    undefined,
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReportByRunId(workspaceId, runId) {
+          return workspaceId === WORKSPACE_ID && runId === RUN_ID
+            ? structuredClone(currentReport)
+            : null;
+        },
+      },
+      underwritingRuns: {
+        ...repositories.runs,
+        async getBatchByScanRunId() {
+          return {
+            ...repositories.batch,
+            scanRunId: "run_stale_underwriting_batch",
+          };
+        },
+      },
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 500);
+});
+
+test("current report list fails closed when the same-size underwriting queue names a non-belief Deal", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const currentReport = {
+    ...stored,
+    evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+  };
+  const mismatchedRuns = {
+    ...repositories.runs,
+    async listSelectionsForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return (await repositories.runs.listSelectionsForBatch(input)).map(
+        (selection) => selection.dealId === "deal_selected"
+          ? { ...selection, dealId: "deal_not_selected" }
+          : selection,
+      );
     },
-    {
-      dealId: "deal_not_selected",
-      underwritingStatus: "not_selected",
-      rank: null,
-      candidateRunId: null,
-      decision: null,
+    async listCandidatesForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return (await repositories.runs.listCandidatesForBatch(input)).map(
+        (candidate) => candidate.dealId === "deal_selected"
+          ? { ...candidate, dealId: "deal_not_selected" }
+          : candidate,
+      );
     },
-  ]);
+  };
+
+  const response = await listReports(
+    new Request(`https://vsee.test/api/reports?runId=${RUN_ID}`),
+    undefined,
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReportByRunId(workspaceId, runId) {
+          return workspaceId === WORKSPACE_ID && runId === RUN_ID
+            ? structuredClone(currentReport)
+            : null;
+        },
+      },
+      underwritingRuns: mismatchedRuns,
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 500);
+});
+
+test("current report list fails closed when its underwriting queue contains an extra Deal", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const currentReport = {
+    ...stored,
+    evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+  };
+  const extraQueueRuns = {
+    ...repositories.runs,
+    async listSelectionsForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return [
+        ...await repositories.runs.listSelectionsForBatch(input),
+        {
+          batchId: input.batchId,
+          dealId: "deal_not_selected",
+          status: "selected" as const,
+          rank: 7,
+          reason: "Stale selection must never become a current underwriting job.",
+        },
+      ];
+    },
+    async listCandidatesForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      const candidates = await repositories.runs.listCandidatesForBatch(input);
+      return [
+        ...candidates,
+        {
+          ...candidates[0]!,
+          id: "candidate_extra_stale",
+          dealId: "deal_not_selected",
+        },
+      ];
+    },
+  };
+
+  const response = await listReports(
+    new Request(`https://vsee.test/api/reports?runId=${RUN_ID}`),
+    undefined,
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReportByRunId(workspaceId, runId) {
+          return workspaceId === WORKSPACE_ID && runId === RUN_ID
+            ? structuredClone(currentReport)
+            : null;
+        },
+      },
+      underwritingRuns: extraQueueRuns,
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 500);
+});
+
+test("current report API rejects a same-size queue containing a non-belief outcome", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const currentReport = {
+    ...stored,
+    evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+  };
+  const mismatchedRuns = {
+    ...repositories.runs,
+    async listSelectionsForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return (await repositories.runs.listSelectionsForBatch(input)).map(
+        (selection) => selection.dealId === "deal_selected"
+          ? { ...selection, dealId: "deal_not_selected" }
+          : selection,
+      );
+    },
+    async listCandidatesForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return (await repositories.runs.listCandidatesForBatch(input)).map(
+        (candidate) => candidate.dealId === "deal_selected"
+          ? { ...candidate, dealId: "deal_not_selected" }
+          : candidate,
+      );
+    },
+  };
+
+  const response = await getReport(
+    new Request(`https://vsee.test/api/reports/${REPORT_ID}`),
+    params(REPORT_ID),
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReport(workspaceId, reportId) {
+          return workspaceId === WORKSPACE_ID && reportId === REPORT_ID
+            ? structuredClone(currentReport)
+            : null;
+        },
+      },
+      underwritingRuns: mismatchedRuns,
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 500);
+});
+
+test("current report API rejects belief revisions without an underwriting batch", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const currentReport = {
+    ...stored,
+    evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+  };
+
+  const response = await getReport(
+    new Request(`https://vsee.test/api/reports/${REPORT_ID}`),
+    params(REPORT_ID),
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReport(workspaceId, reportId) {
+          return workspaceId === WORKSPACE_ID && reportId === REPORT_ID
+            ? structuredClone(currentReport)
+            : null;
+        },
+      },
+      underwritingRuns: {
+        ...repositories.runs,
+        async getBatchByScanRunId() {
+          return null;
+        },
+      },
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 500);
+});
+
+test("the approved pinned report uses an explicit read-only historical priority adapter", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const pinnedEvidenceContext = {
+    state: "current" as const,
+    schemaVersion: "run-evidence-context-v1" as const,
+    evidenceMode: "pinned" as const,
+    windowDays: 14 as const,
+    anchorAt: "2026-08-01T12:00:00.000Z",
+    windowStartAt: "2026-07-18T12:00:00.000Z",
+    windowEndAt: "2026-08-01T12:00:00.000Z",
+    windowTimezone: "America/Los_Angeles",
+    snapshotId: "belief_reversal_2026_08_01",
+    snapshotFingerprint: `sha256:${"1".repeat(64)}`,
+    contextFingerprint: `sha256:${"2".repeat(64)}`,
+    displayLabel: "Demo evidence snapshot as of 2026-08-01",
+    eventCount: 4,
+    eventSetFingerprint: `sha256:${"3".repeat(64)}`,
+    bindingFingerprint: `sha256:${"4".repeat(64)}`,
+  };
+  const pinnedReport = {
+    ...stored,
+    evidenceContext: pinnedEvidenceContext,
+  };
+  const response = await getReport(
+    new Request(`https://vsee.test/api/reports/${REPORT_ID}`),
+    params(REPORT_ID),
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReport(workspaceId, reportId) {
+          return workspaceId === WORKSPACE_ID && reportId === REPORT_ID
+            ? structuredClone(pinnedReport)
+            : null;
+        },
+      },
+      underwritingRuns: repositories.runs,
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: {
+      evidenceContext: typeof pinnedEvidenceContext;
+      underwritingBatch: {
+        queue: Array<{ dealId: string }>;
+        legacyPinnedPriorityOrder: {
+          adapter: string;
+          snapshotId: string;
+          entries: Array<{
+            dealId: string;
+            historicalPriorityOrder: number | null;
+            historicalAdmissionStatus: string;
+            historicalReason: string;
+          }>;
+        };
+      };
+    };
+  };
+  assert.deepEqual(payload.data.evidenceContext, pinnedEvidenceContext);
+  assert.equal(payload.data.underwritingBatch.queue.length, 6);
+  assert.deepEqual(
+    payload.data.underwritingBatch.legacyPinnedPriorityOrder,
+    {
+      adapter: "legacy-pinned-priority-order-v1",
+      snapshotId: "belief_reversal_2026_08_01",
+      entries: [
+        ...repositories.candidates.map((candidate, index) => ({
+          batchId: repositories.batch.id,
+          dealId: candidate.dealId,
+          historicalPriorityOrder: index + 1,
+          historicalAdmissionStatus: "historically_admitted",
+          historicalReason:
+            `Admitted at priority ${index + 1}; priority does not affect eligibility.`,
+        })),
+        {
+          batchId: repositories.batch.id,
+          dealId: "deal_not_selected",
+          historicalPriorityOrder: null,
+          historicalAdmissionStatus: "historically_not_admitted",
+          historicalReason: "The CompanyAnalysis outcome was monitor.",
+        },
+      ],
+    },
+  );
 });
 
 test("public demo report detail never reads persisted underwriting state", async () => {
@@ -936,6 +1435,14 @@ test("public demo report detail never reads persisted underwriting state", async
 
 test("candidate detail returns exact persisted replay lineage", async () => {
   const repositories = await readRepositories();
+  const candidateOnlyRuns = {
+    ...repositories.runs,
+    async listSelectionsForBatch() {
+      throw new Error(
+        "Current candidate detail must not depend on legacy selection rows.",
+      );
+    },
+  };
   const response = await getUnderwriting(
     new Request(
       `https://vsee.test/api/reports/${REPORT_ID}/underwriting/deal_selected`,
@@ -945,7 +1452,7 @@ test("candidate detail returns exact persisted replay lineage", async () => {
     },
     productDependencies({
       intelligence: repositories.intelligence,
-      underwritingRuns: repositories.runs,
+      underwritingRuns: candidateOnlyRuns,
       underwritingArtifacts: repositories.artifacts,
     }),
   );

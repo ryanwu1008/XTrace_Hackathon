@@ -6,6 +6,7 @@ import {
   type UnderwritingAnalysisContext,
   UnderwritingDetailPanel,
 } from "../../app/underwriting-detail";
+import { UnderwritingSummaryPanel } from "../../app/underwriting-summary";
 import type { ReportEvidenceContext } from "../../lib/contracts/evidence-context";
 import type { SourceRefV2 } from "../../lib/contracts/source-evidence";
 import type { ScenarioInputField, ScenarioModel } from "../../lib/contracts/underwriting";
@@ -99,6 +100,35 @@ function canonicalDocumentSource(): CanonicalSourceRefV2 {
     sourceRevisionId: "revision_document_exact",
     locator: { kind: "document_page", page: 7 },
     contentFingerprint: `sha256:${"c".repeat(64)}`,
+  };
+}
+
+function sampleResearchScreeningSource(): CanonicalSourceRefV2 {
+  return {
+    ...canonicalPublicSource(),
+    id: "research_screening_underwriting_v1",
+    provenance: "source_document",
+    title: "Sample research screening record",
+    canonicalUrl: null,
+    documentId: "document_research_screening_underwriting",
+    publisher: "Internal Research Registry",
+    providerId: "belief-reversal-research-seed-v1",
+    eventAt: "2026-04-01T12:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    updatedAt: null,
+    updatedAtPrecision: null,
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: "revision_research_screening_underwriting",
+    locator: { kind: "json_pointer", pointer: "/record" },
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Sample research screening record. Synthetic research-only context; no meeting or VC interaction occurred. Reconsideration conditions: Independent customer adoption is confirmed.",
+    },
   };
 }
 
@@ -369,6 +399,7 @@ function draftFixture(): PublicActionDraft {
     missingEvidence: [{
       fieldId: "arr",
       label: "Latest ARR",
+      externalLabel: "Latest ARR",
       reasonCode: "MISSING_ARR",
       mostLikelyDecisionImpact: "Could lower the current decision ceiling.",
     }],
@@ -380,6 +411,62 @@ function draftFixture(): PublicActionDraft {
     updatedAt: "2026-08-01T12:00:00.000Z",
   };
 }
+
+test("new-run summary presents all queue statuses and a sixth priority without selection semantics", () => {
+  const statuses = [
+    "queued",
+    "running",
+    "completed",
+    "partial",
+    "failed",
+    "completed",
+  ] as const;
+  const html = renderToStaticMarkup(<UnderwritingSummaryPanel
+    batch={{
+      batchId: "batch_current",
+      status: "partial",
+      queue: statuses.map((status, index) => ({
+        batchId: "batch_current",
+        dealId: `deal_${index + 1}`,
+        priorityRank: index + 1,
+        status,
+        candidateRunId: `candidate_${index + 1}`,
+        ...(status === "partial" || status === "failed"
+          ? { reason: `${status} persisted reason` }
+          : {}),
+        decision: status === "completed" ? "Advance" as const : null,
+      })),
+      underwritingStatusCounts: {
+        queued: 1,
+        running: 1,
+        completed: 2,
+        partial: 1,
+        failed: 1,
+      },
+    }}
+    companyNames={Object.fromEntries(
+      statuses.map((_, index) => [`deal_${index + 1}`, `Company ${index + 1}`]),
+    )}
+    onOpenCandidate={() => {}}
+  />);
+
+  for (const copy of [
+    "Belief Revisions",
+    "Changed Beliefs",
+    "Underwriting Queue",
+    "Priority Order",
+    "Underwriting Status",
+    "Deep Underwriting",
+    "Investor Framework Perspectives",
+    "Company 6",
+  ]) {
+    assert.match(html, new RegExp(copy));
+  }
+  assert.doesNotMatch(
+    html,
+    /Top[ -]?5|Selected for Top|rank cutoff|not selected|sixth.*reject/i,
+  );
+});
 
 test("renders the exact 3 by 17 scenario model, full evidence state, premium lineage, and invested-negative action", () => {
   const props = {
@@ -406,7 +493,7 @@ test("renders the exact 3 by 17 scenario model, full evidence state, premium lin
   assert.match(html, /net_retention/);
   assert.match(html, /conflict_arr/);
   assert.match(html, /CORE_ONLY_ANALYSIS_CEILING/);
-  assert.match(html, /Underwriting status/);
+  assert.match(html, /Underwriting Status/);
 
   assert.match(html, /Evidence conflicts/);
   assert.match(html, /fact_left/);
@@ -438,6 +525,31 @@ test("renders the exact 3 by 17 scenario model, full evidence state, premium lin
   assert.match(html, /Internal memo · Internal · Internal/);
   assert.match(html, /Latest ARR/);
   assert.match(html, /Could lower the current decision ceiling/);
+});
+
+test("Deep Underwriting permanently labels an exact synthetic research screening authority without impersonating a meeting", () => {
+  const analysis = analysisFixture();
+  analysis.dealStatus = "screening";
+  analysis.investmentMemory = {
+    previousMeetingSummary: "No recorded meeting.",
+    decisionReason: "No recorded decision.",
+    fixtureIds: [],
+  };
+  analysis.sources = [sampleResearchScreeningSource()];
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Screening Co"
+    analysis={analysis}
+    detail={detailFixture()}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+
+  assert.match(
+    html,
+    /Sample research screening record · synthetic, no meeting or VC interaction/,
+  );
+  assert.doesNotMatch(html, /Sample decision record · synthetic demo history/);
 });
 
 test("renders canonical public and document source links without forging revision identity", () => {

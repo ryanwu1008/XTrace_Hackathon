@@ -118,7 +118,7 @@ test.after(() => {
     assert.equal(
       requiredSupabasePg176Executions,
       3,
-      "the required PostgreSQL 17.6 release gate must execute both launcher E2Es and the ACL repair E2E",
+      "the required PostgreSQL 17.6 release gate must execute all three SAFE_REFUSAL profiles",
     );
   }
 });
@@ -377,6 +377,106 @@ function assertBootstrapRefused(
 ): void {
   assert.notEqual(result.status, 0);
   assert.match(`${result.stdout}${result.stderr}`, pattern);
+}
+
+const unreviewed0019Refusal =
+  "Migration 0019 has no reviewed terminal catalog fingerprint; refusing mutation.";
+
+function assertProductionForwardSafeRefusal(
+  database: string,
+  result: LoopbackPostgresCommandResult,
+): void {
+  const output = `${result.stdout}${result.stderr}`;
+  assert.notEqual(
+    result.status,
+    0,
+    "the production forward launcher must fail closed at unreviewed 0019",
+  );
+  assert.equal(
+    output.split(unreviewed0019Refusal).length - 1,
+    1,
+    output,
+  );
+  assert.doesNotMatch(output, /Applying migration 0019\./u);
+
+  assert.equal(
+    executeSql(database, `
+      select
+        to_regclass('public.workspace_test_generations') is not null
+        and exists (
+          select 1
+          from pg_catalog.pg_extension as extension_record
+          join pg_catalog.pg_depend as dependency
+            on dependency.refclassid = 'pg_catalog.pg_extension'::regclass
+            and dependency.refobjid = extension_record.oid
+            and dependency.classid = 'pg_catalog.pg_proc'::regclass
+            and dependency.deptype = 'e'
+          join pg_catalog.pg_proc as procedure_record
+            on procedure_record.oid = dependency.objid
+          join pg_catalog.pg_namespace as namespace
+            on namespace.oid = procedure_record.pronamespace
+          where extension_record.extname = 'pgcrypto'
+            and procedure_record.proname = 'digest'
+            and procedure_record.proargtypes = '17 25'::oidvector
+            and pg_catalog.has_schema_privilege(
+              'vsee_registry_owner', namespace.oid, 'USAGE'
+            )
+        )
+        and to_regclass('public.market_evidence_snapshots') is null
+        and to_regclass('public.market_evidence_snapshot_events') is null
+        and to_regclass('public.run_evidence_bindings') is null
+        and to_regclass('public.run_market_events') is null
+        and to_regprocedure(
+          'public.save_reasoner_judgment_immutable(jsonb)'
+        ) is null
+        and to_regprocedure(
+          'public.valid_market_event_v2_0019(jsonb)'
+        ) is null
+        and not exists (
+          select 1 from information_schema.columns
+          where table_schema = 'public' and table_name = 'scan_runs'
+            and column_name = 'evidence_context_version'
+        )
+        and to_regprocedure(
+          'public.save_sample_decision_interaction(jsonb)'
+        ) is null
+        and not exists (
+          select 1 from information_schema.columns
+          where table_schema = 'public' and table_name = 'deal_interactions'
+            and column_name = 'prior_actions'
+        )
+        and to_regclass('public.xtrace_ingest_intents_v2') is null
+        and to_regclass('public.xtrace_memory_links_v2') is null
+        and to_regclass('public.xtrace_recall_audits_v2') is null
+        and to_regprocedure(
+          'public.reserve_xtrace_ingest_intent_v2(jsonb)'
+        ) is null
+        and to_regprocedure(
+          'public.assert_task9_current_finalization(jsonb,text,text,text)'
+        ) is null;
+    `),
+    "t",
+    "reviewed 0018 must be complete while 0019–0023 remain entirely absent",
+  );
+  assert.equal(
+    executeSql(
+      database,
+      readFileSync(registryInvariantsPath, "utf8"),
+    ),
+    "t",
+    "the refusal must preserve source-registry data invariants",
+  );
+  assert.equal(
+    executeSql(database, `
+      select count(*)
+      from pg_catalog.pg_stat_activity
+      where datname = current_database()
+        and pid <> pg_backend_pid()
+        and xact_start is not null;
+    `),
+    "0",
+    "the refused launcher must leave no open transaction",
+  );
 }
 
 function installPrototypeSchema(
@@ -997,7 +1097,7 @@ test(
 );
 
 test(
-  "the PostgreSQL 17.6 Supabase prototype passes both guarded launchers through 0018",
+  "the PostgreSQL 17.6 Supabase superuser profile reaches reviewed 0018 then safely refuses unreviewed 0019",
   {
     skip: !requireSupabasePg176 && localServerVersionNumber !== "170006",
   },
@@ -1027,15 +1127,11 @@ test(
         }`,
       );
       const forward = runProductionScript(database, migrationLauncherPath);
-      assert.equal(
-        forward.status,
-        0,
-        `${forward.stdout}${forward.stderr}\nActual catalog: ${
-          readCatalogFingerprint(database)
-        }`,
+      assert.match(
+        `${baseline.stdout}${baseline.stderr}`,
+        /baseline through 0009 matches the reviewed catalog/i,
       );
-      assert.match(`${baseline.stdout}${baseline.stderr}`, /0010 through 0018/i);
-      assert.match(`${forward.stdout}${forward.stderr}`, /through 0018.*complete.*verified/i);
+      assertProductionForwardSafeRefusal(database, forward);
 
       assert.equal(
         executeSql(database, `
@@ -1081,7 +1177,7 @@ test(
 );
 
 test(
-  "a PostgreSQL 17.6 non-superuser CREATEROLE executor passes both guarded launchers through 0018",
+  "the PostgreSQL 17.6 non-superuser CREATEROLE profile reaches reviewed 0018 then safely refuses unreviewed 0019",
   {
     skip: !requireSupabasePg176 && localServerVersionNumber !== "170006",
   },
@@ -1138,15 +1234,11 @@ test(
             migrationLauncherPath,
             nonSuperExecutorCredentials,
           );
-          assert.equal(
-            forward.status,
-            0,
-            `${forward.stdout}${forward.stderr}\nActual catalog: ${
-              readCatalogFingerprint(database)
-            }`,
+          assert.match(
+            `${baseline.stdout}${baseline.stderr}`,
+            /baseline through 0009 matches the reviewed catalog/i,
           );
-          assert.match(`${baseline.stdout}${baseline.stderr}`, /0010 through 0018/i);
-          assert.match(`${forward.stdout}${forward.stderr}`, /through 0018.*complete.*verified/i);
+          assertProductionForwardSafeRefusal(database, forward);
 
           assert.equal(
             executeSql(database, `
@@ -1269,7 +1361,7 @@ test(
 );
 
 test(
-  "the guarded bootstrap repairs the exact PostgreSQL 17.6 Supabase default-function ACL defect",
+  "the PostgreSQL 17.6 repaired ACL profile reaches reviewed 0018 then safely refuses unreviewed 0019",
   {
     skip: !requireSupabasePg176 && localServerVersionNumber !== "170006",
   },
@@ -1378,6 +1470,12 @@ test(
             ),
             "t",
           );
+          const forward = runProductionScript(
+            database,
+            migrationLauncherPath,
+            nonSuperExecutorCredentials,
+          );
+          assertProductionForwardSafeRefusal(database, forward);
         },
       );
     } finally {

@@ -30,7 +30,13 @@ import type {
   OpportunityReportItem,
   CompanyAnalysis,
 } from "../lib/contracts/domain";
-import type { WritableMarketEventV2 } from "../lib/contracts/source-evidence";
+import type {
+  EvidenceRoleV2,
+  SourceAuthorityV2,
+  SourceClassV2,
+  TemporalPrecisionV2,
+  WritableMarketEventV2,
+} from "../lib/contracts/source-evidence";
 import type {
   Calculation,
   ClaimEdge,
@@ -157,7 +163,7 @@ export const sourceDocuments = pgTable("source_documents", {
   index("source_documents_checksum_idx").on(table.checksum),
   check(
     "source_documents_role_check",
-    sql`${table.role} in ('deal_document', 'market_report', 'reference', 'public_web_snapshot', 'sample_decision_record')`,
+    sql`${table.role} in ('deal_document', 'market_report', 'reference', 'public_web_snapshot', 'sample_decision_record', 'sample_research_screening_record')`,
   ),
 ]);
 
@@ -883,6 +889,10 @@ export const xtraceIngestIntentsV2 = pgTable("xtrace_ingest_intents_v2", {
     foreignColumns: [sourceRevisions.workspaceId, sourceRevisions.id],
     name: "xtrace_ingest_intents_v2_workspace_revision_fkey",
   }),
+  check(
+    "xtrace_ingest_intents_v2_parent_kind_check",
+    sql`${table.parentKind} in ('legacy_source_revision', 'canonical_source_revision', 'sample_decision_record', 'sample_research_screening_record')`,
+  ),
 ]);
 
 export const xtraceMemoryLinksV2 = pgTable("xtrace_memory_links_v2", {
@@ -1311,7 +1321,7 @@ export const underwritingSelections = pgTable("underwriting_selections", {
   ),
   check(
     "underwriting_selections_rank_shape_check",
-    sql`(${table.status} = 'selected' and ${table.rank} between 1 and 5) or (${table.status} = 'not_selected' and ${table.rank} is null)`,
+    sql`(${table.status} = 'selected' and ${table.rank} > 0) or (${table.status} = 'not_selected' and ${table.rank} is null)`,
   ),
   uniqueIndex("underwriting_selections_selected_rank_unique")
     .on(table.batchId, table.rank)
@@ -1362,6 +1372,10 @@ export const candidateRuns = pgTable("candidate_runs", {
     foreignColumns: [table.workspaceId, table.id],
     name: "candidate_runs_workspace_artifact_source_fkey",
   }),
+  check(
+    "candidate_runs_terminal_reason_check",
+    sql`${table.status} not in ('partial', 'unavailable', 'failed') or coalesce(btrim(${table.publicFailureReason}), '') <> '' or jsonb_array_length(${table.unavailableReasonCodes}) > 0`,
+  ),
   check(
     "candidate_runs_status_check",
     sql`${table.status} in ('queued', 'running', 'partial', 'completed', 'unavailable', 'failed')`,
@@ -1582,6 +1596,514 @@ export const candidateVersionSnapshots = pgTable(
       .notNull(),
   },
   artifactTableConfig("candidate_version_snapshots_workspace_candidate_fkey"),
+);
+
+export const researchCandidates = pgTable("research_candidates", {
+  workspaceId: text("workspace_id").notNull(),
+  candidateId: text("candidate_id").notNull(),
+  companyId: text("company_id").notNull(),
+  dealId: text("deal_id").notNull(),
+  schemaVersion: text("schema_version").$type<"research-candidate-v1">()
+    .notNull(),
+  disposition: text("disposition").$type<"qualified_not_selected">()
+    .notNull(),
+  researchSnapshotVersion: text("research_snapshot_version")
+    .notNull()
+    .default("research-evidence-snapshot-v1"),
+  snapshotId: text("snapshot_id").notNull(),
+  snapshotFingerprint: text("snapshot_fingerprint").notNull(),
+  anchorAt: timestamp("anchor_at", { withTimezone: true }).notNull(),
+  evidenceMode: text("evidence_mode").$type<"pinned">().notNull(),
+  entityKeys: jsonb("entity_keys").$type<string[]>().notNull(),
+  activeParentFingerprint: text("active_parent_fingerprint").notNull(),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+  payloadFingerprint: text("payload_fingerprint").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+    .notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.candidateId] }),
+  unique("research_candidates_workspace_deal_unique").on(
+    table.workspaceId,
+    table.dealId,
+  ),
+  unique("research_candidates_full_scope_unique").on(
+    table.workspaceId,
+    table.candidateId,
+    table.dealId,
+    table.snapshotId,
+    table.snapshotFingerprint,
+    table.anchorAt,
+    table.activeParentFingerprint,
+  ),
+  foreignKey({
+    columns: [table.workspaceId, table.companyId],
+    foreignColumns: [companies.workspaceId, companies.id],
+    name: "research_candidates_workspace_company_fkey",
+  }),
+  foreignKey({
+    columns: [table.workspaceId, table.dealId],
+    foreignColumns: [deals.workspaceId, deals.id],
+    name: "research_candidates_workspace_deal_fkey",
+  }),
+  foreignKey({
+    columns: [table.workspaceId, table.snapshotId, table.snapshotFingerprint],
+    foreignColumns: [
+      marketEvidenceSnapshots.workspaceId,
+      marketEvidenceSnapshots.id,
+      marketEvidenceSnapshots.snapshotFingerprint,
+    ],
+    name: "research_candidates_snapshot_fkey",
+  }),
+  check(
+    "research_candidates_schema_version_check",
+    sql`${table.schemaVersion} = 'research-candidate-v1'`,
+  ),
+  check(
+    "research_candidates_disposition_check",
+    sql`${table.disposition} = 'qualified_not_selected'`,
+  ),
+  check(
+    "research_candidates_snapshot_version_check",
+    sql`${table.researchSnapshotVersion} = 'research-evidence-snapshot-v1'`,
+  ),
+  check(
+    "research_candidates_evidence_mode_check",
+    sql`${table.evidenceMode} = 'pinned'`,
+  ),
+  check(
+    "research_candidates_snapshot_fingerprint_check",
+    sql`${table.snapshotFingerprint} ~ '^sha256:[0-9a-f]{64}$'`,
+  ),
+  check(
+    "research_candidates_active_parent_fingerprint_check",
+    sql`${table.activeParentFingerprint} ~ '^sha256:[0-9a-f]{64}$'`,
+  ),
+  check(
+    "research_candidates_entity_keys_check",
+    sql`public.jsonb_sorted_unique_text_array_0019(${table.entityKeys}, false, true)`,
+  ),
+  check(
+    "research_candidates_payload_shape_check",
+    sql`jsonb_typeof(${table.payload}) = 'object'`,
+  ),
+  check(
+    "research_candidates_payload_fingerprint_check",
+    sql`${table.payloadFingerprint} = public.sha256_canonical_jsonb_0019(${table.payload})`,
+  ),
+]);
+
+export const researchCandidateSourceAssignments = pgTable(
+  "research_candidate_source_assignments",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    candidateId: text("candidate_id").notNull(),
+    dealId: text("deal_id").notNull(),
+    dealAssignmentId: text("deal_assignment_id").notNull(),
+    parentKind: text("parent_kind")
+      .$type<"public_evidence" | "research_disposition">()
+      .notNull(),
+    xtraceParentKind: text("xtrace_parent_kind")
+      .$type<"canonical_source_revision" | "sample_research_screening_record">()
+      .notNull(),
+    claimClass: text("claim_class")
+      .$type<"fact" | "research_disposition">()
+      .notNull(),
+    sourceId: text("source_id").notNull(),
+    sourceRevisionId: text("source_revision_id").notNull(),
+    sourceRevisionFingerprint: text("source_revision_fingerprint").notNull(),
+    sourceRole: text("source_role")
+      .$type<"public_web_snapshot" | "sample_research_screening_record">()
+      .notNull(),
+    sourceClass: text("source_class")
+      .$type<Exclude<SourceClassV2, "unknown_legacy">>()
+      .notNull(),
+    sourceAuthority: text("source_authority")
+      .$type<Exclude<SourceAuthorityV2, "unknown_legacy">>()
+      .notNull(),
+    evidenceRole: text("evidence_role")
+      .$type<Exclude<EvidenceRoleV2, "unknown_legacy">>()
+      .notNull(),
+    canonicalUrl: text("canonical_url"),
+    eventAt: text("event_at"),
+    eventAtPrecision: text("event_at_precision").$type<TemporalPrecisionV2>(),
+    publishedAt: text("published_at"),
+    publishedAtPrecision: text("published_at_precision")
+      .$type<TemporalPrecisionV2>(),
+    retrievedAt: text("retrieved_at").notNull(),
+    retrievedAtPrecision: text("retrieved_at_precision")
+      .$type<TemporalPrecisionV2>()
+      .notNull(),
+    snapshotId: text("snapshot_id").notNull(),
+    snapshotFingerprint: text("snapshot_fingerprint").notNull(),
+    anchorAt: timestamp("anchor_at", { withTimezone: true }).notNull(),
+    entityKeys: jsonb("entity_keys").$type<string[]>().notNull(),
+    activeParentFingerprint: text("active_parent_fingerprint").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    payloadFingerprint: text("payload_fingerprint").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.workspaceId,
+        table.candidateId,
+        table.parentKind,
+        table.sourceId,
+        table.sourceRevisionId,
+      ],
+    }),
+    foreignKey({
+      columns: [
+        table.workspaceId,
+        table.candidateId,
+        table.dealId,
+        table.snapshotId,
+        table.snapshotFingerprint,
+        table.anchorAt,
+        table.activeParentFingerprint,
+      ],
+      foreignColumns: [
+        researchCandidates.workspaceId,
+        researchCandidates.candidateId,
+        researchCandidates.dealId,
+        researchCandidates.snapshotId,
+        researchCandidates.snapshotFingerprint,
+        researchCandidates.anchorAt,
+        researchCandidates.activeParentFingerprint,
+      ],
+      name: "research_candidate_sources_candidate_fkey",
+    }),
+    foreignKey({
+      columns: [table.workspaceId, table.dealAssignmentId],
+      foreignColumns: [dealSourceAssignments.workspaceId, dealSourceAssignments.id],
+      name: "research_candidate_sources_deal_assignment_fkey",
+    }),
+    foreignKey({
+      columns: [table.workspaceId, table.sourceId, table.sourceRevisionId],
+      foreignColumns: [
+        sourceRevisions.workspaceId,
+        sourceRevisions.sourceId,
+        sourceRevisions.id,
+      ],
+      name: "research_candidate_sources_revision_fkey",
+    }),
+    check(
+      "research_candidate_sources_parent_kind_check",
+      sql`${table.parentKind} in ('public_evidence', 'research_disposition')`,
+    ),
+    check(
+      "research_candidate_sources_xtrace_parent_kind_check",
+      sql`${table.xtraceParentKind} in ('canonical_source_revision', 'sample_research_screening_record')`,
+    ),
+    check(
+      "research_candidate_sources_claim_class_check",
+      sql`${table.claimClass} in ('fact', 'research_disposition')`,
+    ),
+    check(
+      "research_candidate_sources_source_role_check",
+      sql`${table.sourceRole} in ('public_web_snapshot', 'sample_research_screening_record')`,
+    ),
+    check(
+      "research_candidate_sources_evidence_role_check",
+      sql`${table.evidenceRole} in ('trigger', 'corroborating', 'counterevidence', 'context')`,
+    ),
+    check(
+      "research_candidate_sources_source_class_check",
+      sql`${table.sourceClass} in ('company_official', 'government_or_regulator', 'court_or_public_filing', 'customer_or_partner_official', 'investor_official', 'funding_publication', 'industry_publication', 'commercial_database', 'founder_social', 'internal_decision_record', 'model_output')`,
+    ),
+    check(
+      "research_candidate_sources_authority_check",
+      sql`${table.sourceAuthority} in ('primary', 'secondary', 'not_applicable')`,
+    ),
+    check(
+      "research_candidate_sources_kind_check",
+      sql`(${table.parentKind} = 'public_evidence' and ${table.claimClass} = 'fact' and ${table.xtraceParentKind} = 'canonical_source_revision' and ${table.sourceRole} = 'public_web_snapshot') or (${table.parentKind} = 'research_disposition' and ${table.claimClass} = 'research_disposition' and ${table.xtraceParentKind} = 'sample_research_screening_record' and ${table.sourceRole} = 'sample_research_screening_record')`,
+    ),
+    check(
+      "research_candidate_sources_revision_fingerprint_check",
+      sql`${table.sourceRevisionFingerprint} ~ '^sha256:[0-9a-f]{64}$'`,
+    ),
+    check(
+      "research_candidate_sources_event_temporal_check",
+      sql`public.valid_temporal_pair_0019(coalesce(to_jsonb(${table.eventAt}), 'null'::jsonb), coalesce(to_jsonb(${table.eventAtPrecision}), 'null'::jsonb), true)`,
+    ),
+    check(
+      "research_candidate_sources_published_temporal_check",
+      sql`public.valid_temporal_pair_0019(coalesce(to_jsonb(${table.publishedAt}), 'null'::jsonb), coalesce(to_jsonb(${table.publishedAtPrecision}), 'null'::jsonb), true)`,
+    ),
+    check(
+      "research_candidate_sources_retrieved_temporal_check",
+      sql`public.valid_temporal_pair_0019(to_jsonb(${table.retrievedAt}), to_jsonb(${table.retrievedAtPrecision}), false)`,
+    ),
+    check(
+      "research_candidate_sources_trigger_temporal_check",
+      sql`${table.evidenceRole} <> 'trigger' or (${table.eventAt} is not null and ${table.publishedAt} is not null)`,
+    ),
+    check(
+      "research_candidate_sources_url_check",
+      sql`${table.canonicalUrl} is null or public.valid_canonical_http_url_0019(to_jsonb(${table.canonicalUrl}))`,
+    ),
+    check(
+      "research_candidate_sources_chronology_check",
+      sql`(${table.eventAt} is null or ${table.publishedAt} is null or not public.temporal_definitely_before_0019(to_jsonb(${table.publishedAt}), to_jsonb(${table.eventAt}))) and (${table.publishedAt} is null or not public.temporal_definitely_before_0019(to_jsonb(${table.retrievedAt}), to_jsonb(${table.publishedAt})))`,
+    ),
+    check(
+      "research_candidate_sources_payload_shape_check",
+      sql`jsonb_typeof(${table.payload}) = 'object'`,
+    ),
+    check(
+      "research_candidate_sources_payload_fingerprint_check",
+      sql`${table.payloadFingerprint} = public.sha256_canonical_jsonb_0019(${table.payload})`,
+    ),
+  ],
+);
+
+export const researchCandidateEvidenceGaps = pgTable(
+  "research_candidate_evidence_gaps",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    candidateId: text("candidate_id").notNull(),
+    dealId: text("deal_id").notNull(),
+    gapId: text("gap_id").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    gapKind: text("gap_kind").notNull(),
+    sourceLabel: text("source_label").notNull(),
+    surfacedUrl: text("surfaced_url"),
+    reason: text("reason").notNull(),
+    snapshotId: text("snapshot_id").notNull(),
+    snapshotFingerprint: text("snapshot_fingerprint").notNull(),
+    anchorAt: timestamp("anchor_at", { withTimezone: true }).notNull(),
+    activeParentFingerprint: text("active_parent_fingerprint").notNull(),
+    entityKeys: jsonb("entity_keys").$type<string[]>().notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    payloadFingerprint: text("payload_fingerprint").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.candidateId, table.gapId] }),
+    foreignKey({
+      columns: [
+        table.workspaceId,
+        table.candidateId,
+        table.dealId,
+        table.snapshotId,
+        table.snapshotFingerprint,
+        table.anchorAt,
+        table.activeParentFingerprint,
+      ],
+      foreignColumns: [
+        researchCandidates.workspaceId,
+        researchCandidates.candidateId,
+        researchCandidates.dealId,
+        researchCandidates.snapshotId,
+        researchCandidates.snapshotFingerprint,
+        researchCandidates.anchorAt,
+        researchCandidates.activeParentFingerprint,
+      ],
+      name: "research_candidate_gaps_candidate_fkey",
+    }),
+    check(
+      "research_candidate_gaps_schema_version_check",
+      sql`${table.schemaVersion} = 'research-candidate-evidence-gap-v1'`,
+    ),
+    check(
+      "research_candidate_gaps_kind_check",
+      sql`${table.gapKind} in ('unresolved_source', 'insufficient_corroboration', 'missing_metric', 'identity_ambiguity')`,
+    ),
+    check(
+      "research_candidate_gaps_source_label_check",
+      sql`btrim(${table.sourceLabel}) <> ''`,
+    ),
+    check(
+      "research_candidate_gaps_reason_check",
+      sql`btrim(${table.reason}) <> ''`,
+    ),
+    check(
+      "research_candidate_gaps_payload_shape_check",
+      sql`jsonb_typeof(${table.payload}) = 'object'`,
+    ),
+    check(
+      "research_candidate_gaps_payload_fingerprint_check",
+      sql`${table.payloadFingerprint} = public.sha256_canonical_jsonb_0019(${table.payload})`,
+    ),
+  ],
+);
+
+export const dealUniverseSnapshotsV1 = pgTable("deal_universe_snapshots_v1", {
+  workspaceId: text("workspace_id").notNull(),
+  universeId: text("universe_id").notNull(),
+  schemaVersion: text("schema_version")
+    .$type<"deal-universe-snapshot-v1">()
+    .notNull(),
+  mode: text("mode").$type<"live" | "pinned">().notNull(),
+  anchorAt: timestamp("anchor_at", { withTimezone: true }).notNull(),
+  evidenceSnapshotId: text("evidence_snapshot_id"),
+  evidenceSnapshotFingerprint: text("evidence_snapshot_fingerprint"),
+  dealCount: integer("deal_count").notNull(),
+  universeFingerprint: text("universe_fingerprint").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+    .notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.universeId] }),
+  unique("deal_universe_snapshots_scope_fingerprint_unique").on(
+    table.workspaceId,
+    table.universeId,
+    table.universeFingerprint,
+  ),
+  foreignKey({
+    columns: [
+      table.workspaceId,
+      table.evidenceSnapshotId,
+      table.evidenceSnapshotFingerprint,
+    ],
+    foreignColumns: [
+      marketEvidenceSnapshots.workspaceId,
+      marketEvidenceSnapshots.id,
+      marketEvidenceSnapshots.snapshotFingerprint,
+    ],
+    name: "deal_universe_snapshot_evidence_fkey",
+  }),
+  check(
+    "deal_universe_snapshots_schema_version_check",
+    sql`${table.schemaVersion} = 'deal-universe-snapshot-v1'`,
+  ),
+  check(
+    "deal_universe_snapshot_mode_check",
+    sql`(${table.mode} = 'live' and ${table.evidenceSnapshotId} is null and ${table.evidenceSnapshotFingerprint} is null) or (${table.mode} = 'pinned' and ${table.evidenceSnapshotId} is not null and ${table.evidenceSnapshotFingerprint} is not null)`,
+  ),
+  check("deal_universe_snapshots_count_check", sql`${table.dealCount} > 0`),
+  check(
+    "deal_universe_snapshots_fingerprint_check",
+    sql`${table.universeFingerprint} ~ '^sha256:[0-9a-f]{64}$'`,
+  ),
+]);
+
+export const dealUniverseSnapshotMembersV1 = pgTable(
+  "deal_universe_snapshot_members_v1",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    universeId: text("universe_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    dealId: text("deal_id").notNull(),
+    companyId: text("company_id").notNull(),
+    dealStatus: text("deal_status")
+      .$type<"screening" | "watchlist" | "evaluating" | "passed" | "invested">()
+      .notNull(),
+    analysisEligibleAt: timestamp("analysis_eligible_at", { withTimezone: true })
+      .notNull(),
+    memberFingerprint: text("member_fingerprint").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.universeId, table.ordinal] }),
+    unique("deal_universe_members_workspace_deal_unique").on(
+      table.workspaceId,
+      table.universeId,
+      table.dealId,
+    ),
+    foreignKey({
+      columns: [table.workspaceId, table.universeId],
+      foreignColumns: [dealUniverseSnapshotsV1.workspaceId, dealUniverseSnapshotsV1.universeId],
+      name: "deal_universe_members_snapshot_fkey",
+    }),
+    foreignKey({
+      columns: [table.workspaceId, table.dealId],
+      foreignColumns: [deals.workspaceId, deals.id],
+      name: "deal_universe_members_deal_fkey",
+    }),
+    foreignKey({
+      columns: [table.workspaceId, table.companyId],
+      foreignColumns: [companies.workspaceId, companies.id],
+      name: "deal_universe_members_company_fkey",
+    }),
+    check("deal_universe_members_ordinal_check", sql`${table.ordinal} >= 0`),
+    check(
+      "deal_universe_members_status_check",
+      sql`${table.dealStatus} in ('screening', 'watchlist', 'evaluating', 'passed', 'invested')`,
+    ),
+    check(
+      "deal_universe_members_fingerprint_check",
+      sql`${table.memberFingerprint} ~ '^sha256:[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+export const runDealUniverseBindingsV1 = pgTable("run_deal_universe_bindings_v1", {
+  workspaceId: text("workspace_id").notNull(),
+  runId: uuid("run_id").notNull(),
+  schemaVersion: text("schema_version")
+    .$type<"run-deal-universe-binding-v1">()
+    .notNull(),
+  universeId: text("universe_id").notNull(),
+  universeFingerprint: text("universe_fingerprint").notNull(),
+  dealCount: integer("deal_count").notNull(),
+  boundAt: timestamp("bound_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.workspaceId, table.runId] }),
+  foreignKey({
+    columns: [table.workspaceId, table.runId],
+    foreignColumns: [scanRuns.workspaceId, scanRuns.id],
+    name: "run_deal_universe_binding_run_fkey",
+  }),
+  foreignKey({
+    columns: [table.workspaceId, table.universeId, table.universeFingerprint],
+    foreignColumns: [
+      dealUniverseSnapshotsV1.workspaceId,
+      dealUniverseSnapshotsV1.universeId,
+      dealUniverseSnapshotsV1.universeFingerprint,
+    ],
+    name: "run_deal_universe_binding_universe_fkey",
+  }),
+  check(
+    "run_deal_universe_binding_schema_version_check",
+    sql`${table.schemaVersion} = 'run-deal-universe-binding-v1'`,
+  ),
+  check("run_deal_universe_binding_count_check", sql`${table.dealCount} > 0`),
+]);
+
+export const reportDealUniverseBindingsV1 = pgTable(
+  "report_deal_universe_bindings_v1",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    reportId: text("report_id").notNull(),
+    runId: uuid("run_id").notNull(),
+    universeId: text("universe_id").notNull(),
+    universeFingerprint: text("universe_fingerprint").notNull(),
+    dealCount: integer("deal_count").notNull(),
+    boundAt: timestamp("bound_at", { withTimezone: true }).defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.reportId] }),
+    unique("report_deal_universe_binding_workspace_run_unique").on(
+      table.workspaceId,
+      table.runId,
+    ),
+    foreignKey({
+      columns: [table.workspaceId, table.reportId],
+      foreignColumns: [intelligenceReports.workspaceId, intelligenceReports.id],
+      name: "report_deal_universe_binding_report_fkey",
+    }),
+    foreignKey({
+      columns: [table.workspaceId, table.runId],
+      foreignColumns: [runDealUniverseBindingsV1.workspaceId, runDealUniverseBindingsV1.runId],
+      name: "report_deal_universe_binding_run_fkey",
+    }),
+    foreignKey({
+      columns: [table.workspaceId, table.universeId, table.universeFingerprint],
+      foreignColumns: [
+        dealUniverseSnapshotsV1.workspaceId,
+        dealUniverseSnapshotsV1.universeId,
+        dealUniverseSnapshotsV1.universeFingerprint,
+      ],
+      name: "report_deal_universe_binding_universe_fkey",
+    }),
+    check(
+      "report_deal_universe_binding_count_check",
+      sql`${table.dealCount} > 0`,
+    ),
+  ],
 );
 
 function artifactTableConfig(constraintName: string) {

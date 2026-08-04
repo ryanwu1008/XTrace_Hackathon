@@ -33,19 +33,28 @@ function failure(
   assert.match(result.stderr, pattern);
 }
 
-test("0021 is contiguous local-only while production authorization remains through 0019", () => {
+test("0021 remains contiguous before later local-only migrations while production stops before them", () => {
   assert.equal(existsSync(migrationPath), true);
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
     entries: Array<{ idx: number; tag: string }>;
   };
-  assert.equal(journal.entries.at(-1)?.idx, 21);
-  assert.equal(journal.entries.at(-1)?.tag, "0021_exact_xtrace_lineage");
+  const xtraceEntry = journal.entries.find(({ idx }) => idx === 21);
+  assert.equal(xtraceEntry?.idx, 21);
+  assert.equal(xtraceEntry?.tag, "0021_exact_xtrace_lineage");
+  const finalizationEntry = journal.entries.find(({ idx }) => idx === 22);
+  assert.equal(finalizationEntry?.tag, "0022_task9_finalization_authority");
+  assert.equal(journal.entries.at(-1)?.idx, 24);
+  assert.equal(
+    journal.entries.at(-1)?.tag,
+    "0024_research_candidate_xtrace",
+  );
   const launcher = readFileSync(fileURLToPath(new URL(
     "../../scripts/apply-production-migrations.zsh",
     import.meta.url,
   )), "utf8");
   assert.match(launcher, /through 0019/u);
   assert.doesNotMatch(launcher, /0021_exact_xtrace_lineage/u);
+  assert.doesNotMatch(launcher, /0023_pg17_market_event_validator/u);
 });
 
 test(
@@ -73,7 +82,8 @@ test(
       ]), "API roles");
       const directory = fileURLToPath(new URL("../../drizzle/", import.meta.url));
       const migrations = readdirSync(directory)
-        .filter((name) => /^\d{4}_.+\.sql$/u.test(name))
+        .filter((name) => /^\d{4}_.+\.sql$/u.test(name)
+          && Number(name.slice(0, 4)) <= 21)
         .sort();
       assert.equal(migrations.length, 22);
       for (const migration of migrations) {

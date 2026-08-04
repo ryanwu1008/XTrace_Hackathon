@@ -15,7 +15,10 @@ import { actionsForDealStatusAndDirection } from "../../lib/reports/action-polic
 import { createMatchingService } from "../../lib/matching/service";
 import { rankGroundedBeliefRevisionCandidates } from "../../lib/matching/ranking";
 import type { DealStatus } from "../../lib/contracts/domain";
-import { interactionSourceV2 } from "../../lib/matching/context";
+import {
+  interactionSourceV2,
+  projectRecalledCanonicalSourceIds,
+} from "../../lib/matching/context";
 import type {
   MatchingInput,
   ReasonedMatch,
@@ -100,6 +103,86 @@ function priorExactSource(
   });
 }
 
+function sampleResearchScreeningSource(
+  id = "sample_research_screening_centralize",
+  entityKey = "centralize",
+) {
+  return normalizedSourceV2(id, {
+    provenance: "source_document",
+    title: "Sample research screening record",
+    canonicalUrl: null,
+    documentId: `document_${id}`,
+    publisher: "Internal Research Registry",
+    providerId: "belief-reversal-research-seed-v1",
+    eventAt: "2026-08-01T12:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: [entityKey],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: `revision_${id}`,
+    locator: { kind: "json_pointer", pointer: "/record" },
+    contentFingerprint: TEST_SHA256_A,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: [
+        "Sample research screening record.",
+        "Synthetic research-only context; no meeting or VC interaction occurred.",
+        "Disposition: qualified_not_selected.",
+        "Qualification: The company is real and the public event is relevant.",
+        "Not selected reason: Evidence does not yet support a changed action.",
+        "Reconsideration conditions: Obtain stronger customer and traction evidence.",
+      ].join(" "),
+    },
+  });
+}
+
+test("projects recalled raw source authority to canonical SourceRef IDs only through exact revision lineage", () => {
+  const prior = sampleResearchScreeningSource();
+  const trigger = normalizedSourceV2("centralize_trigger_projection", {
+    documentId: "source_centralize_axios_v1",
+    sourceRevisionId: "source_revision_source_centralize_axios_v1_1",
+    entityKeys: ["centralize"],
+  });
+  const bundle = {
+    dealId: "deal_centralize",
+    companyName: "Centralize",
+    status: "screening" as const,
+    facts: [
+      { text: "Synthetic research context.", sources: [prior] },
+      { text: "Centralize financing evidence.", sources: [trigger] },
+    ],
+    interactions: [],
+  };
+
+  assert.deepEqual(projectRecalledCanonicalSourceIds(bundle, [{
+    sourceIds: [prior.documentId!],
+    sourceRevisionIds: [prior.sourceRevisionId!],
+  }, {
+    sourceIds: [trigger.documentId!],
+    sourceRevisionIds: [trigger.sourceRevisionId!],
+  }]).sort(), [prior.id, trigger.id].sort());
+
+  assert.deepEqual(projectRecalledCanonicalSourceIds(bundle, [{
+    sourceIds: [prior.documentId!],
+    sourceRevisionIds: [prior.sourceRevisionId!],
+  }, {
+    sourceIds: [trigger.documentId!],
+    sourceRevisionIds: ["source_revision_source_centralize_axios_v1_wrong"],
+  }]), [prior.id], "the same raw Source with a different revision must fail closed");
+
+  assert.deepEqual(projectRecalledCanonicalSourceIds(bundle, [{
+    sourceIds: [trigger.documentId!],
+    sourceRevisionIds: [],
+  }]), [], "a raw Source ID without exact revision authority must not project");
+});
+
 async function matchWithReasonerNextStep(
   nextStep: string,
   status: DealStatus = "passed",
@@ -158,7 +241,7 @@ async function matchWithReasonerNextStep(
   });
 }
 
-test("keeps at most five medium-or-high confidence matches", () => {
+test("keeps every medium-or-high confidence match without a capacity cutoff", () => {
   const matches = [
     { id: "a", score: 0.90 },
     { id: "b", score: 0.40 },
@@ -170,17 +253,17 @@ test("keeps at most five medium-or-high confidence matches", () => {
   ];
 
   const result = rankQualifiedMatches(matches);
-  assert.equal(result.length, 5);
+  assert.equal(result.length, 6);
   assert.equal(result.some((item) => item.id === "b"), false);
-  assert.deepEqual(result.map((item) => item.score), [0.9, 0.8, 0.7, 0.6, 0.59]);
+  assert.deepEqual(result.map((item) => item.score), [0.9, 0.8, 0.7, 0.6, 0.59, 0.58]);
   assert.equal(result[0].confidence, "high");
 });
 
-test("equal-score ranking is UTF-8 deterministic before the five-item cap", () => {
+test("equal-score priority ordering is UTF-8 deterministic without truncation", () => {
   const matches = ["deal_é", "deal_z", "deal_a", "deal_β", "deal_b", "deal_Ä"]
     .map((dealId) => ({ dealId, score: 0.8 }));
 
-  const expected = ["deal_a", "deal_b", "deal_z", "deal_Ä", "deal_é"];
+  const expected = ["deal_a", "deal_b", "deal_z", "deal_Ä", "deal_é", "deal_β"];
   assert.deepEqual(
     rankQualifiedMatches(matches).map(({ dealId }) => dealId),
     expected,
@@ -696,6 +779,342 @@ test("a Deal-background public_web source cannot satisfy event-side grounding", 
 
   assert.equal(match?.outcome, "analysis_unavailable");
   assert.deepEqual(match?.events, []);
+});
+
+test("a recalled Sample research screening record deterministically preserves a relevant event as monitor without inventing a VC interaction", async () => {
+  const prior = sampleResearchScreeningSource();
+  const trigger = normalizedSourceV2("centralize_trigger", {
+    title: "Centralize funding update",
+    canonicalUrl: "https://example.com/centralize-funding",
+    publisher: "Centralize",
+    providerId: "company-feed",
+    eventAt: "2026-07-28",
+    eventAtPrecision: "date",
+    publishedAt: "2026-07-28",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-07-29T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    entityKeys: ["centralize"],
+    evidenceRole: "trigger",
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Centralize disclosed a funding event relevant to its current screening review.",
+    },
+  });
+  const event = marketEventV2(trigger, {
+    id: "event_centralize_funding",
+    title: trigger.title,
+    eventAt: trigger.eventAt,
+    eventAtPrecision: trigger.eventAtPrecision,
+    publishedAt: trigger.publishedAt,
+    publishedAtPrecision: trigger.publishedAtPrecision,
+    retrievedAt: trigger.retrievedAt,
+    retrievedAtPrecision: trigger.retrievedAtPrecision,
+    entityKeys: ["centralize"],
+    sources: [trigger],
+  });
+
+  const matches = await createMatchingService({ reason: async () => [] })
+    .analyze({
+      deals: [{
+        id: "deal_centralize",
+        companyName: "Centralize",
+        status: "screening",
+      }],
+      events: [event],
+      memoryContexts: [{
+        dealId: "deal_centralize",
+        text: prior.text.status === "normalized_only"
+          ? prior.text.normalizedStatement
+          : "",
+        sourceIds: [prior.id, trigger.id],
+        fixtureIds: [],
+      }],
+      sources: [trigger, prior],
+    });
+
+  assert.equal(matches.length, 1);
+  const match = matches[0]!;
+  assert.equal(match.outcome, "monitor");
+  assert.equal(match.dealStatus, "screening");
+  assert.equal(match.beliefAssessment, undefined);
+  assert.equal(match.screeningMonitorAssessment?.schemaVersion,
+    "screening-monitor-assessment-v1");
+  assert.deepEqual(match.screeningMonitorAssessment?.priorContextAuthority, {
+    kind: "sample_research_screening_record",
+    id: prior.id,
+    sourceIds: [prior.id],
+    recordedAt: prior.eventAt,
+    provenance: "source_document",
+    label: "Sample research screening record",
+    meetingOccurred: false,
+    vcInteraction: false,
+  });
+  assert.equal(match.screeningMonitorAssessment?.gates.allPassed, false);
+  assert.equal(
+    match.screeningMonitorAssessment?.gates.actionDelta.passed,
+    false,
+  );
+  assert.match(
+    match.screeningMonitorAssessment?.whyNotUnderwriting ?? "",
+    /research screening record.*not.*formal VC action/i,
+  );
+  assert.deepEqual(match.events.map(({ id }) => id), [event.id]);
+  assert.deepEqual(match.demoFixtureIds, []);
+  assert.deepEqual(
+    match.sources.map(({ id }) => id).sort(),
+    [prior.id, trigger.id].sort(),
+  );
+});
+
+test("all seven research screening Deals remain auditable monitors for their already-bound event evidence", async () => {
+  const ordinals = Array.from({ length: 7 }, (_, index) => index + 1);
+  const rows = ordinals.map((ordinal) => {
+    const entityKey = `research-screening-${ordinal}`;
+    const prior = sampleResearchScreeningSource(
+      `sample_research_screening_${ordinal}`,
+      entityKey,
+    );
+    const trigger = normalizedSourceV2(`research_screening_trigger_${ordinal}`, {
+      title: `Research screening event ${ordinal}`,
+      canonicalUrl: `https://example.com/research-screening-${ordinal}`,
+      eventAt: "2026-07-28",
+      eventAtPrecision: "date",
+      publishedAt: "2026-07-28",
+      publishedAtPrecision: "date",
+      retrievedAt: "2026-07-29T12:00:00.000Z",
+      retrievedAtPrecision: "timestamp",
+      entityKeys: [entityKey],
+      evidenceRole: "trigger",
+      text: {
+        status: "normalized_only",
+        normalizedStatement:
+          `Research screening event ${ordinal} is relevant to the screening review.`,
+      },
+    });
+    const event = marketEventV2(trigger, {
+      id: `event_research_screening_${ordinal}`,
+      eventAt: trigger.eventAt,
+      eventAtPrecision: trigger.eventAtPrecision,
+      publishedAt: trigger.publishedAt,
+      publishedAtPrecision: trigger.publishedAtPrecision,
+      retrievedAt: trigger.retrievedAt,
+      retrievedAtPrecision: trigger.retrievedAtPrecision,
+      entityKeys: [entityKey],
+      sources: [trigger],
+    });
+    return { ordinal, prior, trigger, event };
+  });
+
+  const matches = await createMatchingService({ reason: async () => [] })
+    .analyze({
+      deals: rows.map(({ ordinal }) => ({
+        id: `deal_research_screening_${ordinal}`,
+        companyName: `Research Screening ${ordinal}`,
+        status: "screening" as const,
+      })),
+      events: rows.map(({ event }) => event),
+      memoryContexts: rows.map(({ ordinal, prior, trigger }) => ({
+        dealId: `deal_research_screening_${ordinal}`,
+        text: prior.text.status === "normalized_only"
+          ? prior.text.normalizedStatement
+          : "",
+        sourceIds: [prior.id, trigger.id],
+        fixtureIds: [],
+      })),
+      sources: rows.flatMap(({ prior, trigger }) => [prior, trigger]),
+    });
+
+  assert.equal(matches.length, 7);
+  assert.ok(matches.every((match) => match.outcome === "monitor"));
+  assert.ok(matches.every((match) => match.dealStatus === "screening"));
+  assert.ok(matches.every((match) => match.beliefAssessment === undefined));
+  assert.ok(matches.every((match) =>
+    match.screeningMonitorAssessment?.gates.allPassed === false
+  ));
+  assert.ok(matches.every((match) =>
+    match.screeningMonitorAssessment?.priorContextAuthority.meetingOccurred
+      === false
+    && match.screeningMonitorAssessment?.priorContextAuthority.vcInteraction
+      === false
+  ));
+  assert.ok(matches.every((match) => match.demoFixtureIds.length === 0));
+});
+
+test("new strong evidence can satisfy a typed research-prior reconsideration condition and become underwriting eligible without a meeting", async () => {
+  const prior = sampleResearchScreeningSource("future_research_prior");
+  const trigger = normalizedSourceV2("future_research_trigger", {
+    title: "Independent production deployment evidence",
+    canonicalUrl: "https://example.com/centralize-production",
+    publisher: "Verified Customer",
+    providerId: "customer-feed",
+    eventAt: "2026-08-02",
+    eventAtPrecision: "date",
+    publishedAt: "2026-08-02",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-08-03T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    entityKeys: ["centralize"],
+    evidenceRole: "trigger",
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "An independent customer verified Centralize in a production deployment.",
+    },
+  });
+  const counter = normalizedSourceV2("future_research_counter", {
+    title: "Remaining production limitation",
+    canonicalUrl: "https://example.com/centralize-production-limit",
+    publisher: "Verified Customer",
+    providerId: "customer-feed",
+    eventAt: "2026-08-02",
+    eventAtPrecision: "date",
+    publishedAt: "2026-08-02",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-08-03T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    entityKeys: ["centralize"],
+    evidenceRole: "counterevidence",
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "The independent customer evidence does not establish broad retention across Centralize deployments.",
+    },
+  });
+  const event = marketEventV2(trigger, {
+    id: "event_future_research_evidence",
+    title: trigger.title,
+    eventAt: trigger.eventAt,
+    eventAtPrecision: trigger.eventAtPrecision,
+    publishedAt: trigger.publishedAt,
+    publishedAtPrecision: trigger.publishedAtPrecision,
+    retrievedAt: trigger.retrievedAt,
+    retrievedAtPrecision: trigger.retrievedAtPrecision,
+    entityKeys: ["centralize"],
+    sources: [trigger, counter],
+  });
+  const previousContext = prior.text.status === "normalized_only"
+    ? prior.text.normalizedStatement
+    : "";
+  const reconsiderationCondition =
+    "Obtain stronger customer and traction evidence.";
+  const observation: ReasonedMatch = {
+    dealId: "deal_centralize",
+    whyNow: trigger.text.status === "normalized_only"
+      ? trigger.text.normalizedStatement
+      : "",
+    previousContext,
+    positiveImplications: [trigger.text.status === "normalized_only"
+      ? trigger.text.normalizedStatement
+      : ""],
+    negativeImplications: [],
+    selectedTriggerEventId: event.id,
+    selectedPriorInteractionId: prior.id,
+    revisitConditionIndex: 0,
+    revisitConditionText: reconsiderationCondition,
+    revisitCitedSourceIds: [trigger.id],
+    counterevidence: {
+      statement: counter.text.status === "normalized_only"
+        ? counter.text.normalizedStatement
+        : "",
+      citedSourceIds: [counter.id],
+    },
+    citedSourceIds: [trigger.id, counter.id, prior.id],
+    scoreInputs: {
+      eventRelevance: 1,
+      dealRelevance: 1,
+      priorContextStrength: 0.8,
+      evidenceQuality: 0.9,
+    },
+    claimSourceIds: {
+      [trigger.text.status === "normalized_only"
+        ? trigger.text.normalizedStatement
+        : ""]: [trigger.id],
+      [previousContext]: [prior.id],
+    },
+  };
+  const [match] = await createMatchingService({
+    reason: async () => [observation],
+  }).analyze({
+    deals: [{
+      id: "deal_centralize",
+      companyName: "Centralize",
+      status: "screening",
+    }],
+    events: [event],
+    memoryContexts: [{
+      dealId: "deal_centralize",
+      text: previousContext,
+      sourceIds: [prior.id],
+      fixtureIds: [],
+      interactionCandidates: [{
+        id: prior.id,
+        occurredAt: prior.eventAt!,
+        sourceIds: [prior.id],
+        revisitConditions: [reconsiderationCondition],
+        provenance: "source_document",
+        label: "Sample research screening record",
+        meetingOccurred: false,
+        vcInteraction: false,
+        priorActions: actionsForDealStatusAndDirection("screening", "none"),
+      }],
+    }],
+    sources: [trigger, counter, prior],
+  });
+
+  assert.equal(match?.outcome, "belief_revised");
+  assert.equal(match?.beliefAssessment?.gates.allPassed, true);
+  assert.equal(
+    match?.beliefAssessment?.gateContext.priorInteraction.provenance,
+    "source_document",
+  );
+  assert.equal(
+    "meetingOccurred" in match!.beliefAssessment!.gateContext.priorInteraction
+      ? match!.beliefAssessment!.gateContext.priorInteraction.meetingOccurred
+      : true,
+    false,
+  );
+  assert.deepEqual(match?.demoFixtureIds, []);
+  assert.deepEqual(
+    rankGroundedBeliefRevisionCandidates(match ? [match] : [])
+      .map(({ dealId }) => dealId),
+    ["deal_centralize"],
+  );
+});
+
+test("a spoofed screening label cannot become typed prior context", async () => {
+  const prior = {
+    ...sampleResearchScreeningSource("spoofed_research_record"),
+    title: "Research notes",
+  };
+  const trigger = normalizedSourceV2("spoofed_trigger", {
+    entityKeys: ["centralize"],
+    eventAt: "2026-07-28",
+    eventAtPrecision: "date",
+  });
+  const matches = await createMatchingService({ reason: async () => [] })
+    .analyze({
+      deals: [{
+        id: "deal_centralize",
+        companyName: "Centralize",
+        status: "screening",
+      }],
+      events: [marketEventV2(trigger, {
+        entityKeys: ["centralize"],
+        eventAt: trigger.eventAt,
+        eventAtPrecision: trigger.eventAtPrecision,
+      })],
+      memoryContexts: [{
+        dealId: "deal_centralize",
+        text: "Synthetic research context.",
+        sourceIds: [prior.id],
+        fixtureIds: [],
+      }],
+      sources: [trigger, prior],
+    });
+
+  assert.deepEqual(matches, []);
 });
 
 function strictBeliefRevisionFixture(options: {

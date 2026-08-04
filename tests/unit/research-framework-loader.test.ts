@@ -177,7 +177,12 @@ test("filters component cards by all four immutable context dimensions before au
       context: { ...context, stage: "series_a" },
     }),
     loadResearchFrameworkCatalog({
-      context: { ...context, geography: "global" },
+      context: {
+        ...context,
+        geography: "global",
+        benchmarkPackId: null,
+        benchmarkCompatibility: "unavailable",
+      },
     }),
   ]);
   const billSeed = packComponentIds(seed, "bill_gurley_public_frameworks_v0_1");

@@ -22,6 +22,10 @@ import type {
 import { formatTemporalForDisplay } from "../lib/format/temporal";
 import { safeExternalHttpUrl } from "../lib/security/safe-url";
 import type { ReportEvidenceContext } from "../lib/contracts/evidence-context";
+import {
+  hasSampleResearchScreeningAuthority,
+  SAMPLE_RESEARCH_SCREENING_BADGE,
+} from "../lib/belief-reversal/sample-research-screening-authority";
 import { SourceRevisionLink } from "./source-revision-link";
 
 export interface IntelligenceReportView {
@@ -32,7 +36,20 @@ export interface IntelligenceReportView {
   opportunities: OpportunityReportItem[];
   analysisStatus: "completed" | "incomplete";
   evidenceCoverage: EvidenceCoverage;
-  counts: CompanyAnalysisCounts;
+  counts: CompanyAnalysisCounts & {
+    eligibleDealCount?: number;
+    companyAnalysisCount?: number;
+    beliefRevisedCount?: number;
+    monitorCount?: number;
+    noMaterialChangeCount?: number;
+    analysisUnavailableCount?: number;
+    underwritingCandidateCount?: number;
+    underwritingQueuedCount?: number;
+    underwritingRunningCount?: number;
+    underwritingCompletedCount?: number;
+    underwritingPartialCount?: number;
+    underwritingFailedCount?: number;
+  };
   priorityDealId: string | null;
   companyAnalyses: CompanyAnalysis[];
   evidenceContext?: ReportEvidenceContext;
@@ -56,7 +73,7 @@ const briefTabs: BriefTab[] = [
 ];
 
 const outcomeLabels: Record<CompanyAnalysisOutcome, string> = {
-  belief_revised: "Belief revised",
+  belief_revised: "Changed belief",
   monitor: "Monitor",
   no_material_change: "No material change",
   analysis_unavailable: "Analysis unavailable",
@@ -113,6 +130,19 @@ function traceableSourceLabel(count: number): string {
   return `${count} traceable ${count === 1 ? "source" : "sources"}`;
 }
 
+function analysisHasSampleResearchScreeningAuthority(analysis: CompanyAnalysis): boolean {
+  return hasSampleResearchScreeningAuthority(analysis.sources);
+}
+
+function SampleResearchScreeningBadge({ analysis }: { analysis: CompanyAnalysis }) {
+  if (!analysisHasSampleResearchScreeningAuthority(analysis)) return null;
+  return (
+    <strong className="vsee-sample-decision-label vsee-sample-research-screening-label">
+      {SAMPLE_RESEARCH_SCREENING_BADGE}
+    </strong>
+  );
+}
+
 export function CompanyIntelligenceReport({
   report,
   focused,
@@ -156,7 +186,9 @@ export function CompanyIntelligenceReport({
       <header className="vsee-intelligence-report-header">
         <div>
           <span>REPORT · {formatReportDate(report.createdAt)}</span>
-          <h2>{report.counts.companyCount} companies analyzed</h2>
+          <h2>
+            Belief Change Analysis · {report.counts.companyCount} companies
+          </h2>
           <details className="vsee-details">
             <summary>How this scan was assembled</summary>
             <p>{report.marketSummary}</p>
@@ -179,9 +211,10 @@ export function CompanyIntelligenceReport({
             <div>
               <span className="vsee-eyebrow">DURABLE UNDERWRITING REPORT</span>
               <p>
-                Finalized candidate detail keeps the formal deterministic
-                decision separate from independent named-advisory viewpoints,
-                with exact Evidence Pack and public-source lineage.
+                Deep Underwriting keeps the formal deterministic decision
+                separate from Investor Framework Perspectives (independent
+                named-advisory viewpoints), with exact Evidence Pack and
+                public-source lineage.
               </p>
             </div>
           </header>
@@ -263,13 +296,23 @@ export function CompanyIntelligenceReport({
 }
 
 function ReportCoverage({ report }: { report: IntelligenceReportView }) {
+  const underwritingTerminalCount =
+    (report.counts.underwritingCompletedCount ?? 0)
+    + (report.counts.underwritingPartialCount ?? 0)
+    + (report.counts.underwritingFailedCount ?? 0);
   const items = [
-    ["Belief revised", report.counts.beliefRevised],
+    ["Eligible Deals", report.counts.eligibleDealCount ?? report.counts.companyCount],
+    [
+      "Belief Change Checks",
+      report.counts.companyAnalysisCount ?? report.companyAnalyses.length,
+    ],
+    ["Belief Revisions", report.counts.beliefRevised],
     ["Monitor", report.counts.monitor],
     ["No material change", report.counts.noMaterialChange],
     ["Unavailable", report.counts.analysisUnavailable],
     ["Accepted public events", report.evidenceCoverage.acceptedPublicEvents],
     ["Recalled Deal memories", report.evidenceCoverage.recalledDealCount],
+    ["Underwriting terminal", underwritingTerminalCount],
     [
       "Structured image fallbacks",
       report.evidenceCoverage.structuredImageFallbackDealCount ?? 0,
@@ -345,7 +388,9 @@ export function PriorityResult({
     <section className="vsee-priority-result" aria-labelledby={`priority-${analysis.id}`}>
       <header>
         <div>
-          <span className="vsee-eyebrow">PRIORITY RESULT</span>
+          <span className="vsee-eyebrow">
+            CHANGED BELIEF · PRIORITY ORDER #1
+          </span>
           <h2 id={`priority-${analysis.id}`}>{analysis.companyName}</h2>
         </div>
         <div className="vsee-analysis-badges">
@@ -357,6 +402,7 @@ export function PriorityResult({
             {analysis.confidence} confidence · {Math.round(analysis.score * 100)}%
           </span>
         </div>
+        <SampleResearchScreeningBadge analysis={analysis} />
       </header>
 
       <div className="vsee-priority-grid">
@@ -711,8 +757,8 @@ export function CompanyAnalysisList({
     <section className="vsee-company-analysis-list">
       <header>
         <div>
-          <span>COMPLETE COMPANY REVIEW</span>
-          <h2>All {analyses.length} company analyses</h2>
+          <span>BELIEF CHANGE ANALYSIS</span>
+          <h2>All {analyses.length} Belief Change Analyses</h2>
         </div>
         <div className="vsee-analysis-filters">
           <label>
@@ -721,7 +767,7 @@ export function CompanyAnalysisList({
               setOutcome(event.target.value as "all" | CompanyAnalysisOutcome)
             }>
               <option value="all">All</option>
-              <option value="belief_revised">Belief revised</option>
+              <option value="belief_revised">Changed belief</option>
               <option value="monitor">Monitor</option>
               <option value="no_material_change">No material change</option>
               <option value="analysis_unavailable">Unavailable</option>
@@ -769,6 +815,7 @@ export function CompanyAnalysisList({
                 {analysis.dealStatus} ·{" "}
                 {traceableSourceLabel(analysis.verifiedSourceCount)}
               </small>
+              <SampleResearchScreeningBadge analysis={analysis} />
             </div>
             <span className={`vsee-analysis-outcome ${analysis.outcome}`}>
               {outcomeLabels[analysis.outcome]}
@@ -814,6 +861,7 @@ export function CompanyBrief({
             <span className="vsee-eyebrow">COMPANY BRIEF</span>
             <h2 id={`brief-${analysis.id}`}>{analysis.companyName}</h2>
             <p>{outcomeLabels[analysis.outcome]} · {analysis.confidence} confidence</p>
+            <SampleResearchScreeningBadge analysis={analysis} />
           </div>
           <button onClick={onClose} aria-label="Close company brief">×</button>
         </header>

@@ -1,6 +1,6 @@
 import type { Calculation, ClaimEdge } from "../lib/contracts/evidence";
 import type {
-  DealUnderwritingSelectionView,
+  DealUnderwritingQueueView,
   PublicCandidateVersionSnapshot,
 } from "../lib/underwriting/read-model";
 import { LEGACY_IMAGE_QUARANTINE_NOTICE } from "../lib/uploads/quarantine";
@@ -43,14 +43,13 @@ const FINANCIAL_CALCULATION_IDENTITY: Record<
   },
 };
 
-export function orderUnderwritingSelections(
-  selections: DealUnderwritingSelectionView[],
-): DealUnderwritingSelectionView[] {
-  return [...selections].sort((left, right) => {
-    const leftRank = left.rank ?? Number.MAX_SAFE_INTEGER;
-    const rightRank = right.rank ?? Number.MAX_SAFE_INTEGER;
-    return leftRank - rightRank || left.dealId.localeCompare(right.dealId);
-  });
+export function orderUnderwritingQueue(
+  queue: DealUnderwritingQueueView[],
+): DealUnderwritingQueueView[] {
+  return [...queue].sort((left, right) =>
+    left.priorityRank - right.priorityRank
+    || left.dealId.localeCompare(right.dealId)
+  );
 }
 
 export function describeUploadState(input: {

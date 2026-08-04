@@ -270,6 +270,57 @@ test("Supabase corpus upserts use workspace-composite lookup and conflict identi
   }
 });
 
+test("Supabase seed deals are immutable inserts that do not require UPDATE grants", async () => {
+  const requests: Array<{
+    method: string;
+    pathname: string;
+    select: string | null;
+    conflict: string | null;
+    prefer: string | null;
+  }> = [];
+  const data = createSupabaseDemoDataStore({
+    url: "https://database.example.test",
+    serviceRoleKey: "test-service-role",
+    async fetchImpl(input, init) {
+      const url = new URL(String(input));
+      requests.push({
+        method: init?.method ?? "GET",
+        pathname: url.pathname,
+        select: url.searchParams.get("select"),
+        conflict: url.searchParams.get("on_conflict"),
+        prefer: new Headers(init?.headers).get("Prefer"),
+      });
+      return init?.method === "POST"
+        ? new Response(null, { status: 204 })
+        : Response.json([]);
+    },
+  });
+
+  await data.ensureDeal({
+    id: "deal_safe_seed",
+    workspaceId: "workspace_demo",
+    companyId: "company_safe_seed",
+    companyName: "Safe Seed",
+  });
+
+  assert.deepEqual(requests, [
+    {
+      method: "GET",
+      pathname: "/rest/v1/deals",
+      select: "id,workspace_id,company_id,company_name",
+      conflict: null,
+      prefer: null,
+    },
+    {
+      method: "POST",
+      pathname: "/rest/v1/deals",
+      select: null,
+      conflict: "workspace_id,id",
+      prefer: "resolution=ignore-duplicates,return=minimal",
+    },
+  ]);
+});
+
 test("immutable preloaded source writes ignore conflicts without UPDATE", async () => {
   const writes: Array<{
     pathname: string;

@@ -1,7 +1,7 @@
 {
   "schemaVersion": "belief-reversal-research-v2",
   "packageId": "belief_reversal_2026_08_01",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "retrievalDate": "2026-08-01",
   "historicalCutoffDate": "2026-07-18",
   "evidenceWindow": {
@@ -9,6 +9,63 @@
     "endAt": "2026-08-01T23:59:59-07:00",
     "timezone": "America/Los_Angeles",
     "displayLabel": "Demo evidence snapshot as of 2026-08-01"
+  },
+  "researchMemoryContext": {
+    "schemaVersion": "research-memory-context-v1",
+    "mode": "pinned",
+    "scope": "research_only",
+    "researchSnapshotVersion": "research-evidence-snapshot-v1",
+    "snapshotId": "belief_reversal_research_2026_08_03_v1",
+    "snapshotAsOfDate": "2026-08-03",
+    "retrievalCutoffDate": "2026-08-03",
+    "anchorAt": "2026-08-03T13:34:43.000Z",
+    "windowStartAt": "2026-07-20T13:34:43.000Z",
+    "windowEndAt": "2026-08-03T13:34:43.000Z",
+    "windowTimezone": "America/Los_Angeles",
+    "displayLabel": "Demo evidence snapshot as of 2026-08-03",
+    "formalReportEligible": false
+  },
+  "researchIntegrationContract": {
+    "schemaVersion": "research-integration-contract-v1",
+    "companyIdentityCount": 30,
+    "dealCount": 30,
+    "analysisEligibleDealCount": 30,
+    "completedScanCompanyAnalysisCount": 30,
+    "companyAnalysisOutcomeCounts": {
+      "beliefRevised": 4,
+      "monitor": 7,
+      "noMaterialChange": 19,
+      "analysisUnavailable": 0
+    },
+    "currentDeepUnderwritingQueueCount": 4,
+    "currentNotAdmittedCompanyAnalysisCount": 26,
+    "deepUnderwritingAdmissionPolicy": {
+      "requiredOutcome": "belief_revised",
+      "allowedConfidence": [
+        "medium",
+        "high"
+      ],
+      "scoreThreshold": "configured_threshold_met",
+      "hardGates": "all_passed",
+      "lineage": "complete",
+      "failureState": "none",
+      "researchDispositionAffectsAdmission": false,
+      "admissionMode": "all_qualifying_deals",
+      "orderingRole": "priority_only"
+    },
+    "legacyPinnedRankAdapter": "compatibility_only",
+    "resolvedPublicSourceParentCount": 18,
+    "unresolvedEvidenceGapCount": 1,
+    "sampleResearchScreeningParentCount": 7,
+    "researchDealBoundParentCount": 25,
+    "existingDealBoundParentCount": 60,
+    "totalDealBoundParentCount": 85,
+    "sourceDocumentCount": 80,
+    "sourceRevisionCount": 80,
+    "workspaceDocumentCount": 79,
+    "dealSourceAssignmentCount": 85,
+    "xtraceExactDealParentCount": 85,
+    "xtraceExactDealChildCount": 85
   },
   "selectedCases": [
     {
@@ -182,8 +239,14 @@
             "locator": "Company profile heading",
             "verbatimExcerpt": "Henry Automating Deal Decks for Commercial Real Estate Brokers",
             "normalizedStatement": "Y Combinator describes Henry as automating deal decks for commercial real estate brokers.",
-            "referenceId": "claim_henry_product_v1"
-          }
+            "referenceId": "claim_henry_product_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         },
         {
           "id": "source_henry_yc_domain_v1",
@@ -215,8 +278,14 @@
             "locator": "Company website link",
             "verbatimExcerpt": "http://www.henry.ai",
             "normalizedStatement": "Y Combinator links Henry to the henry.ai domain.",
-            "referenceId": "claim_henry_domain_v1"
-          }
+            "referenceId": "claim_henry_domain_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         },
         {
           "id": "source_henry_yc_founders_v1",
@@ -248,8 +317,14 @@
             "locator": "Active founders",
             "verbatimExcerpt": "Sammy Greenwall Founder CEO Adam Pratt Founder/CTO",
             "normalizedStatement": "Y Combinator names Sammy Greenwall and Adam Pratt as active Henry founders.",
-            "referenceId": "claim_henry_founders_v1"
-          }
+            "referenceId": "claim_henry_founders_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         },
         {
           "id": "source_henry_yc_founded_v1",
@@ -281,8 +356,14 @@
             "locator": "Founded field",
             "verbatimExcerpt": "Founded: 2024",
             "normalizedStatement": "Y Combinator lists Henry as founded in 2024.",
-            "referenceId": "claim_henry_founded_v1"
-          }
+            "referenceId": "claim_henry_founded_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         },
         {
           "id": "source_henry_yc_location_v1",
@@ -314,8 +395,14 @@
             "locator": "Location field",
             "verbatimExcerpt": "Location: New York, NY",
             "normalizedStatement": "Y Combinator lists Henry's location as New York City.",
-            "referenceId": "claim_henry_location_v1"
-          }
+            "referenceId": "claim_henry_location_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         },
         {
           "id": "source_henry_legal_name_v1",
@@ -347,8 +434,14 @@
             "locator": "Company identification",
             "verbatimExcerpt": "Henry AI Inc.",
             "normalizedStatement": "Henry's company announcement identifies the legal name Henry AI Inc.",
-            "referenceId": "claim_henry_legal_name_v1"
-          }
+            "referenceId": "claim_henry_legal_name_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         },
         {
           "id": "source_henry_series_a_v1",
@@ -380,8 +473,14 @@
             "locator": "Opening announcement",
             "verbatimExcerpt": "today announced a $16.5 million Series A led by FirstMark Capital",
             "normalizedStatement": "Henry announced a $16.5 million Series A led by FirstMark Capital.",
-            "referenceId": "claim_henry_series_a_v1"
-          }
+            "referenceId": "claim_henry_series_a_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         },
         {
           "id": "source_henry_workflow_v1",
@@ -413,8 +512,14 @@
             "locator": "Reported workflow result",
             "verbatimExcerpt": "work previously estimated at 15 hours per deliverable now takes about 30 minutes of human review",
             "normalizedStatement": "Henry reports that work estimated at 15 hours per deliverable now takes about 30 minutes of human review.",
-            "referenceId": "claim_henry_workflow_v1"
-          }
+            "referenceId": "claim_henry_workflow_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         },
         {
           "id": "source_henry_terms_v1",
@@ -446,8 +551,14 @@
             "locator": "AI output limitation",
             "verbatimExcerpt": "the Outputs may not always be accurate or complete",
             "normalizedStatement": "Henry's terms warn that outputs may not always be accurate or complete.",
-            "referenceId": "claim_henry_terms_v1"
-          }
+            "referenceId": "claim_henry_terms_v1",
+            "entityKeys": [
+              "henry_ai"
+            ]
+          },
+          "entityKeys": [
+            "henry_ai"
+          ]
         }
       ],
       "events": [
@@ -488,7 +599,10 @@
         "source_henry_terms_v1"
       ],
       "unknowns": [
-        "Independent customer validation, revenue, retention, and unit economics remain unavailable."
+        {
+          "reason": "Independent customer validation, revenue, retention, and unit economics remain unavailable.",
+          "externalLabel": "Current customer validation and commercial metrics"
+        }
       ],
       "metrics": {
         "reportedValuation": {
@@ -772,8 +886,14 @@
             "locator": "Author biographies",
             "verbatimExcerpt": "Sudarshan Kamath Data Scientist | Founder Akshat Mandloi Co-Founder | Smallest.ai",
             "normalizedStatement": "Smallest.ai's official author page names Sudarshan Kamath as founder and Akshat Mandloi as co-founder.",
-            "referenceId": "claim_smallest_identity_v1"
-          }
+            "referenceId": "claim_smallest_identity_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_legal_name_v1",
@@ -805,8 +925,14 @@
             "locator": "Entity identification",
             "verbatimExcerpt": "Smallest Inc.",
             "normalizedStatement": "Smallest.ai's terms identify the legal entity Smallest Inc.",
-            "referenceId": "claim_smallest_legal_name_v1"
-          }
+            "referenceId": "claim_smallest_legal_name_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_official_series_a_v1",
@@ -838,8 +964,14 @@
             "locator": "Round announcement",
             "verbatimExcerpt": "$13M Series A led by Seligman",
             "normalizedStatement": "Smallest.ai announced a $13 million Series A led by Seligman.",
-            "referenceId": "claim_smallest_series_a_v1"
-          }
+            "referenceId": "claim_smallest_series_a_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_total_funding_v1",
@@ -871,8 +1003,14 @@
             "locator": "Total funding statement",
             "verbatimExcerpt": "This brings Smallest AI's total funding to more than $21M.",
             "normalizedStatement": "Smallest.ai reports more than $21 million in total funding.",
-            "referenceId": "claim_smallest_funding_v1"
-          }
+            "referenceId": "claim_smallest_funding_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_product_v1",
@@ -904,8 +1042,14 @@
             "locator": "Article heading",
             "verbatimExcerpt": "next-generation voice AI",
             "normalizedStatement": "Smallest.ai describes its product as next-generation voice AI.",
-            "referenceId": "claim_smallest_product_v1"
-          }
+            "referenceId": "claim_smallest_product_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_address_v1",
@@ -937,8 +1081,14 @@
             "locator": "Company address",
             "verbatimExcerpt": "311 California Street, Suite 320, San Francisco, CA 94104",
             "normalizedStatement": "Smallest.ai publishes a San Francisco, California street address.",
-            "referenceId": "claim_smallest_address_v1"
-          }
+            "referenceId": "claim_smallest_address_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_blog_index_v1",
@@ -970,8 +1120,14 @@
             "locator": "Series A article card",
             "verbatimExcerpt": "Announcing our Series A funding July 30, 2026",
             "normalizedStatement": "Smallest.ai's blog index displays July 30, 2026 for its Series A article.",
-            "referenceId": "claim_smallest_index_date_v1"
-          }
+            "referenceId": "claim_smallest_index_date_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_techcrunch_customers_v1",
@@ -1003,8 +1159,14 @@
             "locator": "Existing customers paragraph",
             "verbatimExcerpt": "The startup's existing customers include companies in the voice space, including RingCentral and Truecaller.",
             "normalizedStatement": "TechCrunch reports RingCentral and Truecaller as existing Smallest.ai customers; this remains secondary reporting.",
-            "referenceId": "claim_smallest_customers_v1"
-          }
+            "referenceId": "claim_smallest_customers_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_techcrunch_founded_v1",
@@ -1036,8 +1198,14 @@
             "locator": "Company history paragraph",
             "verbatimExcerpt": "Smallest.ai was founded in late 2024",
             "normalizedStatement": "TechCrunch reports that Smallest.ai was founded in late 2024.",
-            "referenceId": "claim_smallest_founded_late_v1"
-          }
+            "referenceId": "claim_smallest_founded_late_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_tracxn_founded_v1",
@@ -1069,8 +1237,14 @@
             "locator": "Company overview",
             "verbatimExcerpt": "Smallest.ai was founded in 2023",
             "normalizedStatement": "Tracxn reports that Smallest.ai was founded in 2023.",
-            "referenceId": "claim_smallest_founded_2023_v1"
-          }
+            "referenceId": "claim_smallest_founded_2023_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_changelog_locking_v1",
@@ -1102,8 +1276,14 @@
             "locator": "Agent Versioning migration note",
             "verbatimExcerpt": "Agent Locking is now retired in favor of Agent Versioning",
             "normalizedStatement": "Smallest.ai's changelog says Agent Locking was retired in favor of Agent Versioning.",
-            "referenceId": "claim_smallest_locking_v1"
-          }
+            "referenceId": "claim_smallest_locking_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         },
         {
           "id": "source_smallest_changelog_islocked_v1",
@@ -1135,8 +1315,14 @@
             "locator": "Removed field note",
             "verbatimExcerpt": "The isLocked field was removed.",
             "normalizedStatement": "Smallest.ai's changelog says the isLocked field was removed.",
-            "referenceId": "claim_smallest_islocked_v1"
-          }
+            "referenceId": "claim_smallest_islocked_v1",
+            "entityKeys": [
+              "smallest_ai"
+            ]
+          },
+          "entityKeys": [
+            "smallest_ai"
+          ]
         }
       ],
       "events": [
@@ -1181,7 +1367,10 @@
         "source_smallest_changelog_islocked_v1"
       ],
       "unknowns": [
-        "Independent deployment depth, revenue, retention, and current product-migration impact remain unavailable."
+        {
+          "reason": "Independent deployment depth, revenue, retention, and current product-migration impact remain unavailable.",
+          "externalLabel": "Current deployment, retention, and product-migration evidence"
+        }
       ],
       "metrics": {
         "reportedValuation": {
@@ -1418,8 +1607,14 @@
             "locator": "Leadership biographies",
             "verbatimExcerpt": "Micha Rave Co-Founder and CEO Chen Nisnkorn Co-Founder and CCO Shmulik Ladkani Co-Founder and CTO Alon Horowitz Co-Founder and VP R&D",
             "normalizedStatement": "Hush Security's official page names co-founders Micha Rave, Chen Nisnkorn, Shmulik Ladkani, and Alon Horowitz.",
-            "referenceId": "claim_hush_identity_v1"
-          }
+            "referenceId": "claim_hush_identity_v1",
+            "entityKeys": [
+              "hush_security"
+            ]
+          },
+          "entityKeys": [
+            "hush_security"
+          ]
         },
         {
           "id": "source_hush_legal_name_v1",
@@ -1451,8 +1646,14 @@
             "locator": "Entity identification",
             "verbatimExcerpt": "Hush Security Ltd.",
             "normalizedStatement": "Hush Security's terms identify Hush Security Ltd.",
-            "referenceId": "claim_hush_legal_name_v1"
-          }
+            "referenceId": "claim_hush_legal_name_v1",
+            "entityKeys": [
+              "hush_security"
+            ]
+          },
+          "entityKeys": [
+            "hush_security"
+          ]
         },
         {
           "id": "source_hush_product_v1",
@@ -1484,8 +1685,14 @@
             "locator": "Product description",
             "verbatimExcerpt": "Hush gives companies a sanctioned path for AI agents to act across every system.",
             "normalizedStatement": "Hush says it gives companies a sanctioned path for AI agents to act across every system.",
-            "referenceId": "claim_hush_product_v1"
-          }
+            "referenceId": "claim_hush_product_v1",
+            "entityKeys": [
+              "hush_security"
+            ]
+          },
+          "entityKeys": [
+            "hush_security"
+          ]
         },
         {
           "id": "source_hush_geography_v1",
@@ -1517,8 +1724,14 @@
             "locator": "Announcement dateline",
             "verbatimExcerpt": "TEL AVIV, Israel, July 28, 2026",
             "normalizedStatement": "Hush Security's announcement is datelined Tel Aviv, Israel.",
-            "referenceId": "claim_hush_geography_v1"
-          }
+            "referenceId": "claim_hush_geography_v1",
+            "entityKeys": [
+              "hush_security"
+            ]
+          },
+          "entityKeys": [
+            "hush_security"
+          ]
         },
         {
           "id": "source_hush_series_a_v1",
@@ -1550,8 +1763,14 @@
             "locator": "Opening announcement",
             "verbatimExcerpt": "announced a $30 million Series A funding round, with Akamai Technologies joining as a strategic investor",
             "normalizedStatement": "Hush Security announced a $30 million Series A with Akamai joining as a strategic investor.",
-            "referenceId": "claim_hush_series_a_v1"
-          }
+            "referenceId": "claim_hush_series_a_v1",
+            "entityKeys": [
+              "hush_security"
+            ]
+          },
+          "entityKeys": [
+            "hush_security"
+          ]
         },
         {
           "id": "source_hush_kyndryl_v1",
@@ -1583,8 +1802,14 @@
             "locator": "Kyndryl partner statement",
             "verbatimExcerpt": "has deployed Hush internally and has begun reselling it to its own enterprise clients",
             "normalizedStatement": "Hush reports that Kyndryl deployed Hush internally and began reselling it to enterprise clients.",
-            "referenceId": "claim_hush_kyndryl_v1"
-          }
+            "referenceId": "claim_hush_kyndryl_v1",
+            "entityKeys": [
+              "hush_security"
+            ]
+          },
+          "entityKeys": [
+            "hush_security"
+          ]
         },
         {
           "id": "source_hush_anthropic_controls_v1",
@@ -1616,8 +1841,14 @@
             "locator": "Preventive controls discussion",
             "verbatimExcerpt": "Careful validation of all internet access paths before evaluations began and real-time monitoring of the evaluation logs would have helped",
             "normalizedStatement": "Anthropic says validation of internet access paths and real-time evaluation-log monitoring would have helped.",
-            "referenceId": "claim_hush_controls_limit_v1"
-          }
+            "referenceId": "claim_hush_controls_limit_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         }
       ],
       "events": [
@@ -1644,7 +1875,8 @@
           "retrievedAt": "2026-08-01",
           "confidence": "high",
           "entityKeys": [
-            "hush_security"
+            "hush_security",
+            "irregular"
           ],
           "triggerSourceId": "source_hush_series_a_v1",
           "sourceIds": [
@@ -1658,7 +1890,10 @@
         "source_hush_anthropic_controls_v1"
       ],
       "unknowns": [
-        "Akamai and Kyndryl channel bookings, margins, and sell-through remain unavailable."
+        {
+          "reason": "Akamai and Kyndryl channel bookings, margins, and sell-through remain unavailable.",
+          "externalLabel": "Current partner bookings, margins, and sell-through"
+        }
       ],
       "metrics": {
         "reportedValuation": {
@@ -1908,8 +2143,14 @@
             "locator": "Opening company description",
             "verbatimExcerpt": "Irregular (formerly Pattern Labs) is the first frontier security lab",
             "normalizedStatement": "Irregular identifies itself as formerly Pattern Labs and as a frontier security lab.",
-            "referenceId": "claim_irregular_identity_v1"
-          }
+            "referenceId": "claim_irregular_identity_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         },
         {
           "id": "source_irregular_techcrunch_founders_v1",
@@ -1941,8 +2182,14 @@
             "locator": "Founder descriptions",
             "verbatimExcerpt": "co-founders Dan Lahav and Omer Nevo",
             "normalizedStatement": "TechCrunch identifies Dan Lahav and Omer Nevo as Irregular co-founders.",
-            "referenceId": "claim_irregular_founders_v1"
-          }
+            "referenceId": "claim_irregular_founders_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         },
         {
           "id": "source_irregular_anthropic_incident_v1",
@@ -1974,8 +2221,14 @@
             "locator": "Incident outcome summary",
             "verbatimExcerpt": "the evaluation environment of Irregular, one of our third-party evaluation partners, and then gained unauthorized access to the production infrastructure of three different organizations",
             "normalizedStatement": "Anthropic says incidents involving Irregular evaluation environments resulted in unauthorized access to real systems.",
-            "referenceId": "claim_irregular_real_systems_v1"
-          }
+            "referenceId": "claim_irregular_real_systems_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         },
         {
           "id": "source_irregular_anthropic_collaboration_v1",
@@ -2007,8 +2260,14 @@
             "locator": "Review methodology",
             "verbatimExcerpt": "We conducted this review in collaboration with Irregular.",
             "normalizedStatement": "Anthropic says it conducted the incident review in collaboration with Irregular.",
-            "referenceId": "claim_irregular_collaboration_v1"
-          }
+            "referenceId": "claim_irregular_collaboration_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         },
         {
           "id": "source_irregular_anthropic_counter_v1",
@@ -2040,8 +2299,14 @@
             "locator": "Failure classification",
             "verbatimExcerpt": "closer to a harness and operational failure than a model alignment failure",
             "normalizedStatement": "Anthropic characterizes the events as closer to a harness and operational failure than a model alignment failure.",
-            "referenceId": "claim_irregular_harness_v1"
-          }
+            "referenceId": "claim_irregular_harness_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         },
         {
           "id": "source_irregular_techcrunch_valuation_v1",
@@ -2073,8 +2338,14 @@
             "locator": "Anonymous valuation attribution",
             "verbatimExcerpt": "A source close to the deal said the round valued Irregular at $450 million.",
             "normalizedStatement": "TechCrunch reports that an anonymous deal source said Irregular's 2025 round valued it at $450 million.",
-            "referenceId": "claim_irregular_valuation_v1"
-          }
+            "referenceId": "claim_irregular_valuation_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         },
         {
           "id": "source_irregular_wsgr_stage_v1",
@@ -2106,8 +2377,14 @@
             "locator": "PDF page 1, transaction summary",
             "verbatimExcerpt": "closed an $80 million round of Seed and Series A funding",
             "normalizedStatement": "Wilson Sonsini says Irregular closed an $80 million round of Seed and Series A funding.",
-            "referenceId": "claim_irregular_stage_v1"
-          }
+            "referenceId": "claim_irregular_stage_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         },
         {
           "id": "source_irregular_official_revenue_v1",
@@ -2139,8 +2416,14 @@
             "locator": "Funding and revenue paragraph",
             "verbatimExcerpt": "millions in annual revenue already",
             "normalizedStatement": "Irregular reports millions in annual revenue without disclosing an exact amount.",
-            "referenceId": "claim_irregular_revenue_v1"
-          }
+            "referenceId": "claim_irregular_revenue_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         },
         {
           "id": "source_irregular_official_collaborators_v1",
@@ -2172,8 +2455,14 @@
             "locator": "Government partner paragraph",
             "verbatimExcerpt": "We are a partner to governmental institutions, such as the UK government, on vetting cyber capabilities in frontier models",
             "normalizedStatement": "Irregular reports being a partner to the UK government on vetting cyber capabilities in frontier models; this is not a paid-customer claim.",
-            "referenceId": "claim_irregular_collaborators_v1"
-          }
+            "referenceId": "claim_irregular_collaborators_v1",
+            "entityKeys": [
+              "irregular"
+            ]
+          },
+          "entityKeys": [
+            "irregular"
+          ]
         }
       ],
       "events": [
@@ -2215,7 +2504,10 @@
         "source_irregular_techcrunch_valuation_v1"
       ],
       "unknowns": [
-        "Responsibility allocation, remediation durability, revenue, and retention remain unavailable."
+        {
+          "reason": "Responsibility allocation, remediation durability, revenue, and retention remain unavailable.",
+          "externalLabel": "Current remediation, revenue, and retention evidence"
+        }
       ],
       "metrics": {
         "reportedValuation": {
@@ -2301,6 +2593,9 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "corroborating",
+      "entityKeys": [
+        "centralize"
+      ],
       "eventAt": null,
       "publishedAt": null,
       "publicationTimestamp": null,
@@ -2316,6 +2611,9 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "corroborating",
+        "entityKeys": [
+          "centralize"
+        ],
         "eventAt": null,
         "publishedAt": null,
         "publicationTimestamp": null,
@@ -2335,6 +2633,9 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "corroborating",
+      "entityKeys": [
+        "chipagents"
+      ],
       "eventAt": null,
       "publishedAt": "2026-01-27",
       "publicationTimestamp": null,
@@ -2350,6 +2651,9 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "corroborating",
+        "entityKeys": [
+          "chipagents"
+        ],
         "eventAt": null,
         "publishedAt": "2026-01-27",
         "publicationTimestamp": null,
@@ -2369,6 +2673,9 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "corroborating",
+      "entityKeys": [
+        "sent"
+      ],
       "eventAt": null,
       "publishedAt": "2026-03-03",
       "publicationTimestamp": null,
@@ -2384,6 +2691,9 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "corroborating",
+        "entityKeys": [
+          "sent"
+        ],
         "eventAt": null,
         "publishedAt": "2026-03-03",
         "publicationTimestamp": null,
@@ -2403,6 +2713,9 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "corroborating",
+      "entityKeys": [
+        "cascade"
+      ],
       "eventAt": null,
       "publishedAt": "2025-08-01",
       "publicationTimestamp": null,
@@ -2418,6 +2731,9 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "corroborating",
+        "entityKeys": [
+          "cascade"
+        ],
         "eventAt": null,
         "publishedAt": "2025-08-01",
         "publicationTimestamp": null,
@@ -2437,6 +2753,9 @@
       "sourceClass": "funding_publication",
       "sourceAuthority": "secondary",
       "evidenceRole": "trigger",
+      "entityKeys": [
+        "centralize"
+      ],
       "eventAt": "2026-07-29",
       "publishedAt": "2026-07-29",
       "publicationTimestamp": "2026-07-29T14:03:35Z",
@@ -2452,6 +2771,9 @@
         "sourceClass": "funding_publication",
         "sourceAuthority": "secondary",
         "evidenceRole": "trigger",
+        "entityKeys": [
+          "centralize"
+        ],
         "eventAt": "2026-07-29",
         "publishedAt": "2026-07-29",
         "publicationTimestamp": "2026-07-29T14:03:35Z",
@@ -2471,6 +2793,9 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "corroborating",
+      "entityKeys": [
+        "centralize"
+      ],
       "eventAt": null,
       "publishedAt": null,
       "publicationTimestamp": null,
@@ -2486,6 +2811,9 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "corroborating",
+        "entityKeys": [
+          "centralize"
+        ],
         "eventAt": null,
         "publishedAt": null,
         "publicationTimestamp": null,
@@ -2515,6 +2843,9 @@
       "sourceClass": "funding_publication",
       "sourceAuthority": "secondary",
       "evidenceRole": "trigger",
+      "entityKeys": [
+        "chipagents"
+      ],
       "eventAt": "2026-07-29",
       "publishedAt": "2026-07-29",
       "publicationTimestamp": "2026-07-29T14:03:35Z",
@@ -2530,6 +2861,9 @@
         "sourceClass": "funding_publication",
         "sourceAuthority": "secondary",
         "evidenceRole": "trigger",
+        "entityKeys": [
+          "chipagents"
+        ],
         "eventAt": "2026-07-29",
         "publishedAt": "2026-07-29",
         "publicationTimestamp": "2026-07-29T14:03:35Z",
@@ -2549,6 +2883,9 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "counterevidence",
+      "entityKeys": [
+        "chipagents"
+      ],
       "eventAt": "2026-02-17",
       "publishedAt": "2026-02-17",
       "publicationTimestamp": null,
@@ -2564,6 +2901,9 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "counterevidence",
+        "entityKeys": [
+          "chipagents"
+        ],
         "eventAt": "2026-02-17",
         "publishedAt": "2026-02-17",
         "publicationTimestamp": null,
@@ -2583,6 +2923,9 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "trigger",
+      "entityKeys": [
+        "sent"
+      ],
       "eventAt": "2026-07-28",
       "publishedAt": "2026-07-28",
       "publicationTimestamp": null,
@@ -2598,6 +2941,9 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "trigger",
+        "entityKeys": [
+          "sent"
+        ],
         "eventAt": "2026-07-28",
         "publishedAt": "2026-07-28",
         "publicationTimestamp": null,
@@ -2617,13 +2963,16 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "trigger",
+      "entityKeys": [
+        "cascade"
+      ],
       "eventAt": "2026-07-21",
       "publishedAt": "2026-07-21",
-      "publicationTimestamp": null,
-      "retrievedAt": "2026-08-01",
-      "locator": "Announcement title",
-      "verbatimExcerpt": "Cascade raises $3.5M to help construction firms predict the future and win more projects",
-      "normalizedStatement": "Cascade Intelligence announced a $3.5 million seed round for its AEC pursuit platform.",
+      "publicationTimestamp": "2026-07-21T13:30:00Z",
+      "retrievedAt": "2026-08-03",
+      "locator": "Release Summary/description metadata",
+      "verbatimExcerpt": "announces a $3.5 million seed round.",
+      "normalizedStatement": "Cascade announced a $3.5 million seed round.",
       "candidateId": "candidate_cascade_v1",
       "fingerprintInputs": {
         "title": "Cascade raises $3.5M",
@@ -2632,13 +2981,16 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "trigger",
+        "entityKeys": [
+          "cascade"
+        ],
         "eventAt": "2026-07-21",
         "publishedAt": "2026-07-21",
-        "publicationTimestamp": null,
-        "retrievedAt": "2026-08-01",
-        "locator": "Announcement title",
-        "verbatimExcerpt": "Cascade raises $3.5M to help construction firms predict the future and win more projects",
-        "normalizedStatement": "Cascade Intelligence announced a $3.5 million seed round for its AEC pursuit platform.",
+        "publicationTimestamp": "2026-07-21T13:30:00Z",
+        "retrievedAt": "2026-08-03",
+        "locator": "Release Summary/description metadata",
+        "verbatimExcerpt": "announces a $3.5 million seed round.",
+        "normalizedStatement": "Cascade announced a $3.5 million seed round.",
         "referenceId": "candidate_cascade_v1"
       }
     },
@@ -2651,13 +3003,16 @@
       "sourceClass": "company_official",
       "sourceAuthority": "primary",
       "evidenceRole": "trigger",
+      "entityKeys": [
+        "cordant"
+      ],
       "eventAt": "2026-07-21",
       "publishedAt": "2026-07-21",
       "publicationTimestamp": "2026-07-21T09:00:00-04:00",
-      "retrievedAt": "2026-08-01",
-      "locator": "Newsroom title",
-      "verbatimExcerpt": "Cordant Emerges From Stealth With $8M Seed Round",
-      "normalizedStatement": "Cordant announced an $8 million seed round after emerging from stealth.",
+      "retrievedAt": "2026-08-03",
+      "locator": "Newsroom announcement opening paragraph",
+      "verbatimExcerpt": "Cordant today emerged from stealth with $8 million in seed funding",
+      "normalizedStatement": "Cordant announced that it emerged from stealth with $8 million in seed funding.",
       "candidateId": "candidate_cordant_v1",
       "fingerprintInputs": {
         "title": "Cordant Emerges From Stealth With $8M Seed Round",
@@ -2666,13 +3021,56 @@
         "sourceClass": "company_official",
         "sourceAuthority": "primary",
         "evidenceRole": "trigger",
+        "entityKeys": [
+          "cordant"
+        ],
         "eventAt": "2026-07-21",
         "publishedAt": "2026-07-21",
         "publicationTimestamp": "2026-07-21T09:00:00-04:00",
-        "retrievedAt": "2026-08-01",
-        "locator": "Newsroom title",
-        "verbatimExcerpt": "Cordant Emerges From Stealth With $8M Seed Round",
-        "normalizedStatement": "Cordant announced an $8 million seed round after emerging from stealth.",
+        "retrievedAt": "2026-08-03",
+        "locator": "Newsroom announcement opening paragraph",
+        "verbatimExcerpt": "Cordant today emerged from stealth with $8 million in seed funding",
+        "normalizedStatement": "Cordant announced that it emerged from stealth with $8 million in seed funding.",
+        "referenceId": "candidate_cordant_v1"
+      }
+    },
+    {
+      "status": "resolved",
+      "id": "source_cordant_private_beta_v1",
+      "title": "Cordant Emerges From Stealth With $8M Seed Round",
+      "publisher": "Cordant",
+      "canonicalUrl": "https://cordant.ai/newsroom.html",
+      "sourceClass": "company_official",
+      "sourceAuthority": "primary",
+      "evidenceRole": "counterevidence",
+      "entityKeys": [
+        "cordant"
+      ],
+      "eventAt": "2026-07-21",
+      "publishedAt": "2026-07-21",
+      "publicationTimestamp": "2026-07-21T09:00:00-04:00",
+      "retrievedAt": "2026-08-03",
+      "locator": "Newsroom announcement product paragraph",
+      "verbatimExcerpt": "bring the system into production and activate its private beta clients",
+      "normalizedStatement": "Cordant reports plans to bring its system into production and activate private beta clients.",
+      "candidateId": "candidate_cordant_v1",
+      "fingerprintInputs": {
+        "title": "Cordant Emerges From Stealth With $8M Seed Round",
+        "publisher": "Cordant",
+        "canonicalUrl": "https://cordant.ai/newsroom.html",
+        "sourceClass": "company_official",
+        "sourceAuthority": "primary",
+        "evidenceRole": "counterevidence",
+        "entityKeys": [
+          "cordant"
+        ],
+        "eventAt": "2026-07-21",
+        "publishedAt": "2026-07-21",
+        "publicationTimestamp": "2026-07-21T09:00:00-04:00",
+        "retrievedAt": "2026-08-03",
+        "locator": "Newsroom announcement product paragraph",
+        "verbatimExcerpt": "bring the system into production and activate its private beta clients",
+        "normalizedStatement": "Cordant reports plans to bring its system into production and activate private beta clients.",
         "referenceId": "candidate_cordant_v1"
       }
     },
@@ -2685,6 +3083,9 @@
       "sourceClass": "funding_publication",
       "sourceAuthority": "secondary",
       "evidenceRole": "trigger",
+      "entityKeys": [
+        "empirical_security"
+      ],
       "eventAt": "2026-07-20",
       "publishedAt": "2026-07-20",
       "publicationTimestamp": "2026-07-20T13:34:43Z",
@@ -2700,6 +3101,9 @@
         "sourceClass": "funding_publication",
         "sourceAuthority": "secondary",
         "evidenceRole": "trigger",
+        "entityKeys": [
+          "empirical_security"
+        ],
         "eventAt": "2026-07-20",
         "publishedAt": "2026-07-20",
         "publicationTimestamp": "2026-07-20T13:34:43Z",
@@ -2712,6 +3116,46 @@
     },
     {
       "status": "resolved",
+      "id": "source_empirical_benchmark_context_v1",
+      "title": "Benchmarking LLMs for Exploit Prediction",
+      "publisher": "Empirical Security",
+      "canonicalUrl": "https://research.empiricalsecurity.com/research/benchmarking-llms",
+      "sourceClass": "company_official",
+      "sourceAuthority": "primary",
+      "evidenceRole": "counterevidence",
+      "entityKeys": [
+        "empirical_security"
+      ],
+      "eventAt": null,
+      "publishedAt": "2025-07-15",
+      "publicationTimestamp": "2025-07-15T07:17:46-05:00",
+      "retrievedAt": "2026-08-03",
+      "locator": "Benchmark conclusion",
+      "verbatimExcerpt": "LLMs underperform EPSS in estimating vulnerability exploitation in the next 30 days",
+      "normalizedStatement": "Empirical Security reports that LLMs underperform EPSS when estimating vulnerability exploitation within 30 days.",
+      "candidateId": "candidate_empirical_security_v1",
+      "fingerprintInputs": {
+        "title": "Benchmarking LLMs for Exploit Prediction",
+        "publisher": "Empirical Security",
+        "canonicalUrl": "https://research.empiricalsecurity.com/research/benchmarking-llms",
+        "sourceClass": "company_official",
+        "sourceAuthority": "primary",
+        "evidenceRole": "counterevidence",
+        "entityKeys": [
+          "empirical_security"
+        ],
+        "eventAt": null,
+        "publishedAt": "2025-07-15",
+        "publicationTimestamp": "2025-07-15T07:17:46-05:00",
+        "retrievedAt": "2026-08-03",
+        "locator": "Benchmark conclusion",
+        "verbatimExcerpt": "LLMs underperform EPSS in estimating vulnerability exploitation in the next 30 days",
+        "normalizedStatement": "Empirical Security reports that LLMs underperform EPSS when estimating vulnerability exploitation within 30 days.",
+        "referenceId": "candidate_empirical_security_v1"
+      }
+    },
+    {
+      "status": "resolved",
       "id": "source_freight_hero_axios_v1",
       "title": "Freight Hero seed fundraise",
       "publisher": "Axios",
@@ -2719,6 +3163,9 @@
       "sourceClass": "funding_publication",
       "sourceAuthority": "secondary",
       "evidenceRole": "trigger",
+      "entityKeys": [
+        "freight_hero"
+      ],
       "eventAt": "2026-07-27",
       "publishedAt": "2026-07-27",
       "publicationTimestamp": "2026-07-27T06:00:05-07:00",
@@ -2734,6 +3181,9 @@
         "sourceClass": "funding_publication",
         "sourceAuthority": "secondary",
         "evidenceRole": "trigger",
+        "entityKeys": [
+          "freight_hero"
+        ],
         "eventAt": "2026-07-27",
         "publishedAt": "2026-07-27",
         "publicationTimestamp": "2026-07-27T06:00:05-07:00",
@@ -2743,11 +3193,135 @@
         "normalizedStatement": "Axios reports Freight Hero's $5 million seed financing.",
         "referenceId": "candidate_freight_hero_v1"
       }
+    },
+    {
+      "status": "resolved",
+      "id": "source_freight_hero_official_seed_v1",
+      "title": "Freight Hero Raises $5M in Seed Funding",
+      "publisher": "Freight Hero",
+      "canonicalUrl": "https://freighthero.ai/freight-hero-raises-5m-in-seed-funding",
+      "sourceClass": "company_official",
+      "sourceAuthority": "primary",
+      "evidenceRole": "trigger",
+      "entityKeys": [
+        "freight_hero"
+      ],
+      "eventAt": "2026-07-27",
+      "publishedAt": "2026-07-27",
+      "publicationTimestamp": null,
+      "retrievedAt": "2026-08-03",
+      "locator": "Opening announcement",
+      "verbatimExcerpt": "has closed a $5 million seed round",
+      "normalizedStatement": "Freight Hero announced that it closed a $5 million seed round.",
+      "candidateId": "candidate_freight_hero_v1",
+      "fingerprintInputs": {
+        "title": "Freight Hero Raises $5M in Seed Funding",
+        "publisher": "Freight Hero",
+        "canonicalUrl": "https://freighthero.ai/freight-hero-raises-5m-in-seed-funding",
+        "sourceClass": "company_official",
+        "sourceAuthority": "primary",
+        "evidenceRole": "trigger",
+        "entityKeys": [
+          "freight_hero"
+        ],
+        "eventAt": "2026-07-27",
+        "publishedAt": "2026-07-27",
+        "publicationTimestamp": null,
+        "retrievedAt": "2026-08-03",
+        "locator": "Opening announcement",
+        "verbatimExcerpt": "has closed a $5 million seed round",
+        "normalizedStatement": "Freight Hero announced that it closed a $5 million seed round.",
+        "referenceId": "candidate_freight_hero_v1"
+      }
+    },
+    {
+      "status": "resolved",
+      "id": "source_freight_hero_managed_model_v1",
+      "title": "Freight Hero",
+      "publisher": "Freight Hero",
+      "canonicalUrl": "https://freighthero.ai",
+      "sourceClass": "company_official",
+      "sourceAuthority": "primary",
+      "evidenceRole": "counterevidence",
+      "entityKeys": [
+        "freight_hero"
+      ],
+      "eventAt": null,
+      "publishedAt": null,
+      "publicationTimestamp": null,
+      "retrievedAt": "2026-08-03",
+      "locator": "Homepage positioning statement",
+      "verbatimExcerpt": "AI and Expert Humans = The Best of Both Worlds. Not just software. Not just people. A fully managed service",
+      "normalizedStatement": "Freight Hero describes its offering as a fully managed service combining AI and expert humans.",
+      "candidateId": "candidate_freight_hero_v1",
+      "fingerprintInputs": {
+        "title": "Freight Hero",
+        "publisher": "Freight Hero",
+        "canonicalUrl": "https://freighthero.ai",
+        "sourceClass": "company_official",
+        "sourceAuthority": "primary",
+        "evidenceRole": "counterevidence",
+        "entityKeys": [
+          "freight_hero"
+        ],
+        "eventAt": null,
+        "publishedAt": null,
+        "publicationTimestamp": null,
+        "retrievedAt": "2026-08-03",
+        "locator": "Homepage positioning statement",
+        "verbatimExcerpt": "AI and Expert Humans = The Best of Both Worlds. Not just software. Not just people. A fully managed service",
+        "normalizedStatement": "Freight Hero describes its offering as a fully managed service combining AI and expert humans.",
+        "referenceId": "candidate_freight_hero_v1"
+      }
+    },
+    {
+      "status": "resolved",
+      "id": "source_freight_hero_per_load_pricing_v1",
+      "title": "Freight Hero Raises $5M in Seed Funding",
+      "publisher": "Freight Hero",
+      "canonicalUrl": "https://freighthero.ai/freight-hero-raises-5m-in-seed-funding",
+      "sourceClass": "company_official",
+      "sourceAuthority": "primary",
+      "evidenceRole": "counterevidence",
+      "entityKeys": [
+        "freight_hero"
+      ],
+      "eventAt": null,
+      "publishedAt": "2026-07-27",
+      "publicationTimestamp": null,
+      "retrievedAt": "2026-08-03",
+      "locator": "Business model paragraph",
+      "verbatimExcerpt": "Brokers pay a flat fee per load",
+      "normalizedStatement": "Freight Hero states that brokers pay a flat fee per load.",
+      "candidateId": "candidate_freight_hero_v1",
+      "fingerprintInputs": {
+        "title": "Freight Hero Raises $5M in Seed Funding",
+        "publisher": "Freight Hero",
+        "canonicalUrl": "https://freighthero.ai/freight-hero-raises-5m-in-seed-funding",
+        "sourceClass": "company_official",
+        "sourceAuthority": "primary",
+        "evidenceRole": "counterevidence",
+        "entityKeys": [
+          "freight_hero"
+        ],
+        "eventAt": null,
+        "publishedAt": "2026-07-27",
+        "publicationTimestamp": null,
+        "retrievedAt": "2026-08-03",
+        "locator": "Business model paragraph",
+        "verbatimExcerpt": "Brokers pay a flat fee per load",
+        "normalizedStatement": "Freight Hero states that brokers pay a flat fee per load.",
+        "referenceId": "candidate_freight_hero_v1"
+      }
     }
   ],
   "candidateLedger": [
     {
       "id": "candidate_henry_ai_v1",
+      "companyId": "company_henry_ai_v1",
+      "entityKeys": [
+        "henry_ai"
+      ],
       "companyIdentity": {
         "status": "resolved",
         "brandName": "Henry AI",
@@ -2760,7 +3334,7 @@
         ]
       },
       "caseId": "case_henry_ai_v1",
-      "disposition": "accepted",
+      "disposition": "selected",
       "triggeringEvent": {
         "status": "resolved",
         "title": "Henry AI Raises $16.5M Series A and Launches Henry Deal",
@@ -2786,6 +3360,10 @@
     },
     {
       "id": "candidate_smallest_ai_v1",
+      "companyId": "company_smallest_ai_v1",
+      "entityKeys": [
+        "smallest_ai"
+      ],
       "companyIdentity": {
         "status": "resolved",
         "brandName": "Smallest.ai",
@@ -2798,7 +3376,7 @@
         ]
       },
       "caseId": "case_smallest_ai_v1",
-      "disposition": "accepted",
+      "disposition": "selected",
       "triggeringEvent": {
         "status": "resolved",
         "title": "Announcing our $13M Series A",
@@ -2824,6 +3402,10 @@
     },
     {
       "id": "candidate_hush_security_v1",
+      "companyId": "company_hush_security_v1",
+      "entityKeys": [
+        "hush_security"
+      ],
       "companyIdentity": {
         "status": "resolved",
         "brandName": "Hush Security",
@@ -2836,7 +3418,7 @@
         ]
       },
       "caseId": "case_hush_security_v1",
-      "disposition": "accepted",
+      "disposition": "selected",
       "triggeringEvent": {
         "status": "resolved",
         "title": "Hush Security Raises $30M",
@@ -2862,6 +3444,10 @@
     },
     {
       "id": "candidate_irregular_v1",
+      "companyId": "company_irregular_v1",
+      "entityKeys": [
+        "irregular"
+      ],
       "companyIdentity": {
         "status": "partially_resolved",
         "brandName": "Irregular",
@@ -2876,7 +3462,7 @@
         ]
       },
       "caseId": "case_irregular_v1",
-      "disposition": "accepted",
+      "disposition": "selected",
       "triggeringEvent": {
         "status": "resolved",
         "title": "Investigating three real-world incidents in our cybersecurity evaluations",
@@ -2901,6 +3487,13 @@
     },
     {
       "id": "candidate_centralize_v1",
+      "companyId": "company_centralize_v1",
+      "stableDealId": "deal_centralize_v1",
+      "dealStatus": "screening",
+      "analysisEligible": true,
+      "entityKeys": [
+        "centralize"
+      ],
       "companyIdentity": {
         "status": "resolved",
         "brandName": "Centralize",
@@ -2934,10 +3527,51 @@
         "Axios reports $19 million raised; it is not represented as total funding.",
         "The company-provided job board corroborates a Series A led by NEA without supporting any total-funding figure."
       ],
-      "reason": "Qualified but not selected at the four-case cap because the recent evidence produced a weaker and less distinct action delta."
+      "qualificationRationale": "The dated financing report and exact official identity evidence meet the research-screening bar.",
+      "notSelectedReason": "Qualified for research memory, but the current evidence does not establish a qualifying changed belief for Deep Underwriting; this research disposition does not affect future runtime admission.",
+      "invalidatingEvidence": [
+        "Authoritative evidence that the reported financing did not close or refers to a different company."
+      ],
+      "upgradingEvidence": [
+        "Independent production-customer evidence with measurable adoption or commercial outcomes."
+      ],
+      "reconsiderationConditions": [
+        "Reconsider if independent production use creates a distinct medium- or high-confidence action delta."
+      ],
+      "actionDelta": {
+        "classification": "research_only",
+        "nextStep": "continue_monitoring",
+        "summary": "Retain Centralize in research memory while independent production evidence is gathered.",
+        "createsFormalWorkflowArtifact": false
+      },
+      "workflowEligibility": {
+        "deal": true,
+        "xtrace": true,
+        "matching": true,
+        "companyAnalysis": true,
+        "deepUnderwritingAdmissionPolicy": {
+          "requiredOutcome": "belief_revised",
+          "allowedConfidence": ["medium", "high"],
+          "scoreThreshold": "configured_threshold_met",
+          "hardGates": "all_passed",
+          "lineage": "complete",
+          "failureState": "none",
+          "researchDispositionAffectsAdmission": false,
+          "admissionMode": "all_qualifying_deals",
+          "orderingRole": "priority_only"
+        }
+      },
+      "sampleResearchScreeningRecordId": "sample_research_screening_centralize_v1"
     },
     {
       "id": "candidate_chipagents_v1",
+      "companyId": "company_chipagents_v1",
+      "stableDealId": "deal_chipagents_v1",
+      "dealStatus": "screening",
+      "analysisEligible": true,
+      "entityKeys": [
+        "chipagents"
+      ],
       "companyIdentity": {
         "status": "resolved",
         "brandName": "ChipAgents",
@@ -2971,10 +3605,51 @@
       "counterevidenceAndLimits": [
         "Business Wire's older $74 million total-capital disclosure is a historical baseline and does not conflict with the new $60 million Series A2 itself; a $131 million total-funding figure is not verified."
       ],
-      "reason": "Qualified but not selected at the four-case cap because the recent action delta is weaker and the fresh round currently has only an Axios summary."
+      "qualificationRationale": "The dated Axios Series A2 report, exact official identity source, and historical company announcement meet the research-screening bar.",
+      "notSelectedReason": "Qualified for research memory, but the fresh round currently has only an Axios summary and does not establish a qualifying changed belief for Deep Underwriting; this research disposition does not affect future runtime admission.",
+      "invalidatingEvidence": [
+        "Authoritative evidence that the Series A2 did not close or that the financing item refers to another entity."
+      ],
+      "upgradingEvidence": [
+        "A company-official Series A2 announcement plus independently verified current production traction."
+      ],
+      "reconsiderationConditions": [
+        "Reconsider when the Series A2 terms and current production adoption are independently corroborated."
+      ],
+      "actionDelta": {
+        "classification": "research_only",
+        "nextStep": "gather_missing_evidence",
+        "summary": "Gather a primary Series A2 source and current traction evidence without opening formal underwriting.",
+        "createsFormalWorkflowArtifact": false
+      },
+      "workflowEligibility": {
+        "deal": true,
+        "xtrace": true,
+        "matching": true,
+        "companyAnalysis": true,
+        "deepUnderwritingAdmissionPolicy": {
+          "requiredOutcome": "belief_revised",
+          "allowedConfidence": ["medium", "high"],
+          "scoreThreshold": "configured_threshold_met",
+          "hardGates": "all_passed",
+          "lineage": "complete",
+          "failureState": "none",
+          "researchDispositionAffectsAdmission": false,
+          "admissionMode": "all_qualifying_deals",
+          "orderingRole": "priority_only"
+        }
+      },
+      "sampleResearchScreeningRecordId": "sample_research_screening_chipagents_v1"
     },
     {
       "id": "candidate_sent_v1",
+      "companyId": "company_sent_v1",
+      "stableDealId": "deal_sent_v1",
+      "dealStatus": "screening",
+      "analysisEligible": true,
+      "entityKeys": [
+        "sent"
+      ],
       "companyIdentity": {
         "status": "resolved",
         "brandName": "Sent",
@@ -3006,10 +3681,51 @@
       "counterevidenceAndLimits": [
         "Operational claims in the reviewed trigger are issuer-supplied."
       ],
-      "reason": "Qualified but not selected because the company is non-security and the recent evidence does not create a distinct four-case-cap action delta."
+      "qualificationRationale": "The dated Series A announcement and exact official identity source meet the research-screening bar.",
+      "notSelectedReason": "Qualified for research memory, but the company is non-security and the current evidence does not establish a qualifying changed belief for Deep Underwriting; this research disposition does not affect future runtime admission.",
+      "invalidatingEvidence": [
+        "Authoritative evidence that the financing announcement is inaccurate or refers to another company."
+      ],
+      "upgradingEvidence": [
+        "Independent production-use evidence and a clearer fit with the fund's security or enterprise-AI thesis."
+      ],
+      "reconsiderationConditions": [
+        "Reconsider if independent deployment evidence establishes a stronger thesis fit and action delta."
+      ],
+      "actionDelta": {
+        "classification": "research_only",
+        "nextStep": "deprioritize_research",
+        "summary": "Keep the sourced event searchable but deprioritize additional research absent stronger thesis fit.",
+        "createsFormalWorkflowArtifact": false
+      },
+      "workflowEligibility": {
+        "deal": true,
+        "xtrace": true,
+        "matching": true,
+        "companyAnalysis": true,
+        "deepUnderwritingAdmissionPolicy": {
+          "requiredOutcome": "belief_revised",
+          "allowedConfidence": ["medium", "high"],
+          "scoreThreshold": "configured_threshold_met",
+          "hardGates": "all_passed",
+          "lineage": "complete",
+          "failureState": "none",
+          "researchDispositionAffectsAdmission": false,
+          "admissionMode": "all_qualifying_deals",
+          "orderingRole": "priority_only"
+        }
+      },
+      "sampleResearchScreeningRecordId": "sample_research_screening_sent_v1"
     },
     {
       "id": "candidate_cascade_v1",
+      "companyId": "company_cascade_v1",
+      "stableDealId": "deal_cascade_v1",
+      "dealStatus": "screening",
+      "analysisEligible": true,
+      "entityKeys": [
+        "cascade"
+      ],
       "companyIdentity": {
         "status": "resolved",
         "brandName": "Cascade",
@@ -3028,7 +3744,7 @@
         "canonicalUrl": "https://www.globenewswire.com/news-release/2026/07/21/3330581/0/en/Cascade-raises-3-5M-to-help-construction-firms-predict-the-future-and-win-more-projects.html",
         "eventAt": "2026-07-21",
         "publishedAt": "2026-07-21",
-        "retrievedAt": "2026-08-01",
+        "retrievedAt": "2026-08-03",
         "sourceId": "source_cascade_globenewswire_v1"
       },
       "screeningSourceIds": [
@@ -3041,10 +3757,51 @@
       "counterevidenceAndLimits": [
         "Operational proof in the reviewed primary announcement is company-supplied."
       ],
-      "reason": "Qualified but not selected because the recent evidence is non-security and yields a weaker action delta at the four-case cap."
+      "qualificationRationale": "The dated primary-source seed announcement and exact official identity source meet the research-screening bar.",
+      "notSelectedReason": "Qualified for research memory, but the recent non-security evidence does not establish a qualifying changed belief for Deep Underwriting; this research disposition does not affect future runtime admission.",
+      "invalidatingEvidence": [
+        "Authoritative evidence that the seed announcement is inaccurate or refers to another company."
+      ],
+      "upgradingEvidence": [
+        "Independent operational outcomes and a clearer security or enterprise-AI thesis connection."
+      ],
+      "reconsiderationConditions": [
+        "Reconsider if independent customer evidence establishes durable operational value and stronger thesis fit."
+      ],
+      "actionDelta": {
+        "classification": "research_only",
+        "nextStep": "deprioritize_research",
+        "summary": "Keep the exact seed event in research memory but deprioritize work absent independent operating evidence.",
+        "createsFormalWorkflowArtifact": false
+      },
+      "workflowEligibility": {
+        "deal": true,
+        "xtrace": true,
+        "matching": true,
+        "companyAnalysis": true,
+        "deepUnderwritingAdmissionPolicy": {
+          "requiredOutcome": "belief_revised",
+          "allowedConfidence": ["medium", "high"],
+          "scoreThreshold": "configured_threshold_met",
+          "hardGates": "all_passed",
+          "lineage": "complete",
+          "failureState": "none",
+          "researchDispositionAffectsAdmission": false,
+          "admissionMode": "all_qualifying_deals",
+          "orderingRole": "priority_only"
+        }
+      },
+      "sampleResearchScreeningRecordId": "sample_research_screening_cascade_v1"
     },
     {
       "id": "candidate_cordant_v1",
+      "companyId": "company_cordant_v1",
+      "stableDealId": "deal_cordant_v1",
+      "dealStatus": "screening",
+      "analysisEligible": true,
+      "entityKeys": [
+        "cordant"
+      ],
       "companyIdentity": {
         "status": "partially_resolved",
         "brandName": "Cordant",
@@ -3066,22 +3823,65 @@
         "canonicalUrl": "https://cordant.ai/newsroom.html",
         "eventAt": "2026-07-21",
         "publishedAt": "2026-07-21",
-        "retrievedAt": "2026-08-01",
+        "retrievedAt": "2026-08-03",
         "sourceId": "source_cordant_newsroom_v1"
       },
       "screeningSourceIds": [
-        "source_cordant_newsroom_v1"
+        "source_cordant_newsroom_v1",
+        "source_cordant_private_beta_v1"
       ],
       "missingEvidence": [
-        "Production customer proof and evidence that enterprise AI is the core product."
+        "Independent production customer proof beyond issuer-reported private-beta activation, the legal entity name, and evidence that enterprise AI is the core product."
       ],
       "counterevidenceAndLimits": [
-        "The product was described as a private beta at the reviewed snapshot."
+        "The exact funding span establishes the seed announcement but not production traction or core enterprise-AI fit.",
+        "The private-beta language is company-reported and does not establish independently verified deployed customers."
       ],
-      "reason": "Qualified but not selected because preproduction status and uncertain enterprise-AI centrality produce a weaker recent action delta."
+      "qualificationRationale": "The official dated funding announcement and bounded private-beta statement meet the bar for a research-only memory record.",
+      "notSelectedReason": "Qualified for research memory, but production customer proof, core enterprise-AI fit, and a medium- or high-confidence changed belief remain unverified; this research disposition does not affect future runtime admission.",
+      "invalidatingEvidence": [
+        "Authoritative evidence that the funding announcement or resolved Cordant brand and domain are inaccurate."
+      ],
+      "upgradingEvidence": [
+        "Independent production-customer evidence and exact proof that enterprise AI is the core product."
+      ],
+      "reconsiderationConditions": [
+        "Reconsider only after independent production deployment and core enterprise-AI fit are verified."
+      ],
+      "actionDelta": {
+        "classification": "research_only",
+        "nextStep": "gather_missing_evidence",
+        "summary": "Preserve the funding and private-beta evidence while gathering independent production proof.",
+        "createsFormalWorkflowArtifact": false
+      },
+      "workflowEligibility": {
+        "deal": true,
+        "xtrace": true,
+        "matching": true,
+        "companyAnalysis": true,
+        "deepUnderwritingAdmissionPolicy": {
+          "requiredOutcome": "belief_revised",
+          "allowedConfidence": ["medium", "high"],
+          "scoreThreshold": "configured_threshold_met",
+          "hardGates": "all_passed",
+          "lineage": "complete",
+          "failureState": "none",
+          "researchDispositionAffectsAdmission": false,
+          "admissionMode": "all_qualifying_deals",
+          "orderingRole": "priority_only"
+        }
+      },
+      "sampleResearchScreeningRecordId": "sample_research_screening_cordant_v1"
     },
     {
       "id": "candidate_empirical_security_v1",
+      "companyId": "company_empirical_security_v1",
+      "stableDealId": "deal_empirical_security_v1",
+      "dealStatus": "screening",
+      "analysisEligible": true,
+      "entityKeys": [
+        "empirical_security"
+      ],
       "companyIdentity": {
         "status": "partially_resolved",
         "brandName": "Empirical Security",
@@ -3108,53 +3908,133 @@
         "sourceId": "source_empirical_finsmes_v1"
       },
       "screeningSourceIds": [
-        "source_empirical_finsmes_v1"
+        "source_empirical_finsmes_v1",
+        "source_empirical_benchmark_context_v1"
       ],
       "missingEvidence": [
         "Official domain, legal entity, named customers, and new post-cutoff predictive-performance evidence."
       ],
       "counterevidenceAndLimits": [
-        "Technical benchmark evidence predates the July 18 cutoff; the recent event is principally financing."
+        "The official technical benchmark predates the July 18 cutoff and is historical context only; the recent trigger is financing."
       ],
-      "reason": "Strong router fit and verified financing, but qualified rather than selected because the new action delta is weaker than the four chosen cases."
+      "qualificationRationale": "The recent verified financing, strong router fit, and bounded official benchmark context meet the research-screening bar.",
+      "notSelectedReason": "Qualified for research memory, but key identity and customer evidence remain unavailable and the post-cutoff evidence does not establish a qualifying changed belief for Deep Underwriting; this research disposition does not affect future runtime admission.",
+      "invalidatingEvidence": [
+        "Authoritative evidence that the financing report refers to another company or did not close."
+      ],
+      "upgradingEvidence": [
+        "A resolved legal identity and domain, named production customers, and new post-cutoff predictive-performance evidence."
+      ],
+      "reconsiderationConditions": [
+        "Reconsider if current independently verified product performance and production adoption create a distinct action delta."
+      ],
+      "actionDelta": {
+        "classification": "research_only",
+        "nextStep": "continue_monitoring",
+        "summary": "Retain the financing and historical benchmark context while monitoring for current product and customer evidence.",
+        "createsFormalWorkflowArtifact": false
+      },
+      "workflowEligibility": {
+        "deal": true,
+        "xtrace": true,
+        "matching": true,
+        "companyAnalysis": true,
+        "deepUnderwritingAdmissionPolicy": {
+          "requiredOutcome": "belief_revised",
+          "allowedConfidence": ["medium", "high"],
+          "scoreThreshold": "configured_threshold_met",
+          "hardGates": "all_passed",
+          "lineage": "complete",
+          "failureState": "none",
+          "researchDispositionAffectsAdmission": false,
+          "admissionMode": "all_qualifying_deals",
+          "orderingRole": "priority_only"
+        }
+      },
+      "sampleResearchScreeningRecordId": "sample_research_screening_empirical_security_v1"
     },
     {
       "id": "candidate_freight_hero_v1",
+      "companyId": "company_freight_hero_v1",
+      "stableDealId": "deal_freight_hero_v1",
+      "dealStatus": "screening",
+      "analysisEligible": true,
+      "entityKeys": [
+        "freight_hero"
+      ],
       "companyIdentity": {
         "status": "partially_resolved",
         "brandName": "Freight Hero",
         "legalName": null,
-        "officialDomain": null,
-        "identityNote": "Axios resolves the Freight Hero brand and financing; the legal entity and official domain remain unresolved because the exact span supports neither.",
+        "officialDomain": "https://freighthero.ai",
+        "identityNote": "Official company sources resolve the Freight Hero brand and domain; the legal entity remains unresolved because the exact spans do not state it.",
         "identitySourceIds": [
-          "source_freight_hero_axios_v1"
+          "source_freight_hero_official_seed_v1",
+          "source_freight_hero_managed_model_v1"
         ],
         "unresolvedFields": [
-          "legal_name",
-          "official_domain"
+          "legal_name"
         ]
       },
       "caseId": null,
       "disposition": "qualified_not_selected",
       "triggeringEvent": {
         "status": "resolved",
-        "title": "Freight Hero seed fundraise",
-        "canonicalUrl": "https://www.axios.com/pro/supply-chain-deals/2026/07/27/freight-hero-valuation-seed-fundraise-brokerage-automation",
+        "title": "Freight Hero Raises $5M in Seed Funding",
+        "canonicalUrl": "https://freighthero.ai/freight-hero-raises-5m-in-seed-funding",
         "eventAt": "2026-07-27",
         "publishedAt": "2026-07-27",
-        "retrievedAt": "2026-08-01",
-        "sourceId": "source_freight_hero_axios_v1"
+        "retrievedAt": "2026-08-03",
+        "sourceId": "source_freight_hero_official_seed_v1"
       },
       "screeningSourceIds": [
-        "source_freight_hero_axios_v1"
+        "source_freight_hero_axios_v1",
+        "source_freight_hero_official_seed_v1",
+        "source_freight_hero_managed_model_v1",
+        "source_freight_hero_per_load_pricing_v1"
       ],
       "missingEvidence": [
-        "Official domain, legal entity, service gross margins, automation mix, and security-sector fit."
+        "Legal entity, service gross margins, automation mix, and security-sector fit."
       ],
       "counterevidenceAndLimits": [
-        "The offering combines AI with human managed services rather than pure software."
+        "The official site describes a fully managed service combining AI and expert humans rather than pure software.",
+        "The company states that brokers pay a flat fee per load; gross margin and automation mix remain unavailable."
       ],
-      "reason": "Qualified but not selected because open service economics and non-security scope produce a weaker recent action delta."
+      "qualificationRationale": "The official seed announcement, resolved company domain, managed-service description, and pricing statement meet the research-screening bar.",
+      "notSelectedReason": "Qualified for research memory, but open service economics and non-security scope prevent the current evidence from establishing a qualifying changed belief for Deep Underwriting; this research disposition does not affect future runtime admission.",
+      "invalidatingEvidence": [
+        "Authoritative evidence that the seed financing or resolved Freight Hero brand and domain are inaccurate."
+      ],
+      "upgradingEvidence": [
+        "Verified service gross margins, automation mix, customer retention, and a stronger fit with the fund thesis."
+      ],
+      "reconsiderationConditions": [
+        "Reconsider if independently verified unit economics and automation depth support a distinct medium- or high-confidence action delta."
+      ],
+      "actionDelta": {
+        "classification": "research_only",
+        "nextStep": "gather_missing_evidence",
+        "summary": "Preserve the exact financing, service-model, and pricing evidence while gathering unit economics.",
+        "createsFormalWorkflowArtifact": false
+      },
+      "workflowEligibility": {
+        "deal": true,
+        "xtrace": true,
+        "matching": true,
+        "companyAnalysis": true,
+        "deepUnderwritingAdmissionPolicy": {
+          "requiredOutcome": "belief_revised",
+          "allowedConfidence": ["medium", "high"],
+          "scoreThreshold": "configured_threshold_met",
+          "hardGates": "all_passed",
+          "lineage": "complete",
+          "failureState": "none",
+          "researchDispositionAffectsAdmission": false,
+          "admissionMode": "all_qualifying_deals",
+          "orderingRole": "priority_only"
+        }
+      },
+      "sampleResearchScreeningRecordId": "sample_research_screening_freight_hero_v1"
     }
   ]
 }

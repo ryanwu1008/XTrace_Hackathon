@@ -114,13 +114,18 @@ function hasCompleteGroundedRankingLineage(
       && canonicalEvidenceJson(outer) === canonicalEvidenceJson(source);
   }) ?? false;
   const prior = assessment.gateContext.priorInteraction;
+  const fixtureLineageMatches = prior.provenance === "demo_fixture"
+    ? fixtureIds.length === 1 && fixtureIds[0] === prior.id
+    : fixtureIds.length === 0
+      && prior.label === "Sample research screening record"
+      && prior.meetingOccurred === false
+      && prior.vcInteraction === false;
   return contextSourcesResolve
     && outerEvent?.adaptation === "canonical"
     && outerEvent.eventAt === trigger.eventAt
     && sameStringSet(trigger.sourceIds, triggerIds)
     && eventSourcesResolve
-    && fixtureIds.length === 1
-    && fixtureIds[0] === prior.id
+    && fixtureLineageMatches
     && prior.sourceIds.length === 1
     && prior.sourceIds[0] === prior.id
     && sourceById.has(prior.id);
@@ -155,7 +160,7 @@ function rankCandidates<T extends BeliefRevisionRankingCandidate>(
   isEligible: (candidate: T, historicalStatus?: DealStatus) => boolean,
   options: RankingOptions,
 ): T[] {
-  const limit = options.limit ?? 5;
+  const limit = options.limit ?? Number.MAX_SAFE_INTEGER;
   return candidates
     .filter((candidate) => isEligible(
       candidate,

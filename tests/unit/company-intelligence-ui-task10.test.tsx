@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   CompanyBrief,
+  CompanyAnalysisList,
   CompanyIntelligenceReport,
   PriorityResult,
   type IntelligenceReportView,
@@ -90,6 +91,35 @@ function sampleDecisionSource(): CanonicalSourceRefV2 {
       status: "normalized_only",
       normalizedStatement:
         "Sample decision record. The sample team passed pending production adoption.",
+    },
+  };
+}
+
+function sampleResearchScreeningSource(): CanonicalSourceRefV2 {
+  return {
+    ...exactPublicSource(),
+    id: "research_screening_example_v1",
+    provenance: "source_document",
+    title: "Sample research screening record",
+    canonicalUrl: null,
+    documentId: "document_research_screening_example",
+    publisher: "Internal Research Registry",
+    providerId: "belief-reversal-research-seed-v1",
+    eventAt: "2026-04-01T12:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    updatedAt: null,
+    updatedAtPrecision: null,
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: "revision_research_screening_example",
+    locator: { kind: "json_pointer", pointer: "/record" },
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Sample research screening record. Synthetic research-only context; no meeting or VC interaction occurred. Reconsideration conditions: Independent customer adoption is confirmed.",
     },
   };
 }
@@ -403,6 +433,14 @@ function reportFixture(analysis: CompanyAnalysis): IntelligenceReportView {
       monitor: 0,
       noMaterialChange: 0,
       analysisUnavailable: 0,
+      eligibleDealCount: 30,
+      companyAnalysisCount: 30,
+      underwritingCandidateCount: 1,
+      underwritingQueuedCount: 0,
+      underwritingRunningCount: 0,
+      underwritingCompletedCount: 0,
+      underwritingPartialCount: 1,
+      underwritingFailedCount: 0,
     },
     priorityDealId: analysis.dealId,
     companyAnalyses: [analysis],
@@ -449,6 +487,91 @@ test("priority report visibly labels synthetic memory and renders weighted score
     assert.match(html, new RegExp(`${gate}[\\s\\S]*Passed`));
   }
   assert.match(html, /Trigger source[^<]*source_public_exact/);
+});
+
+test("typed Sample research screening authority is visibly labeled in list, brief, and a future changed-belief priority card", () => {
+  const researchAuthority = sampleResearchScreeningSource();
+  const analysis = analysisFixture([exactPublicSource(), researchAuthority]);
+  analysis.dealStatus = "screening";
+  analysis.investmentMemory = {
+    previousMeetingSummary: "No recorded meeting.",
+    decisionReason: "No recorded decision.",
+    concerns: [],
+    revisitConditions: ["Independent customer adoption is confirmed."],
+    lastEvaluatedAt: "2026-04-01T12:00:00.000Z",
+    memoryIds: ["memory_research_screening_example"],
+    sourceIds: [researchAuthority.id],
+    fixtureIds: [],
+    priorActions: [{
+      kind: "continue_monitoring",
+      scope: "deal",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
+  };
+  analysis.beliefAssessment!.gateContext.priorInteraction = {
+    id: researchAuthority.id,
+    occurredAt: "2026-04-01T12:00:00.000Z",
+    sourceIds: [researchAuthority.id],
+    revisitConditions: ["Independent customer adoption is confirmed."],
+    priorActions: [{
+      kind: "continue_monitoring",
+      scope: "deal",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
+    provenance: "source_document",
+    label: "Sample research screening record",
+    meetingOccurred: false,
+    vcInteraction: false,
+  };
+  analysis.sources = [exactPublicSource(), researchAuthority];
+  analysis.companyBrief.sourceLineage = [exactPublicSource(), researchAuthority];
+
+  const expected = "Sample research screening record · synthetic, no meeting or VC interaction";
+  const list = renderToStaticMarkup(createElement(CompanyAnalysisList, {
+    analyses: [analysis],
+    onOpenBrief() {},
+  }));
+  const brief = renderToStaticMarkup(createElement(CompanyBrief, {
+    analysis,
+    activeTab: "IC Snapshot",
+    onTab() {},
+    onClose() {},
+  }));
+  const priority = renderToStaticMarkup(createElement(PriorityResult, {
+    analysis,
+    onOpenBrief() {},
+  }));
+
+  for (const html of [list, brief, priority]) {
+    assert.match(html, new RegExp(expected));
+  }
+});
+
+test("screening-record label requires the exact typed research authority, never status or Sample decision fixture text", () => {
+  const ordinaryScreening = analysisFixture();
+  ordinaryScreening.dealStatus = "screening";
+  const forgedResearch = sampleResearchScreeningSource();
+  forgedResearch.provenance = "demo_fixture";
+  const forgedAnalysis = analysisFixture([exactPublicSource(), forgedResearch]);
+  forgedAnalysis.dealStatus = "screening";
+
+  const label = /Sample research screening record · synthetic, no meeting or VC interaction/;
+  for (const analysis of [ordinaryScreening, forgedAnalysis]) {
+    const list = renderToStaticMarkup(createElement(CompanyAnalysisList, {
+      analyses: [analysis],
+      onOpenBrief() {},
+    }));
+    const brief = renderToStaticMarkup(createElement(CompanyBrief, {
+      analysis,
+      activeTab: "IC Snapshot",
+      onTab() {},
+      onClose() {},
+    }));
+    assert.doesNotMatch(list, label);
+    assert.doesNotMatch(brief, label);
+  }
 });
 
 test("presentation-only sample profiles stay off unless a caller explicitly opts into public demo enrichment", () => {
@@ -612,6 +735,7 @@ test("IC Snapshot renders structured fact, unavailable, conflict, assumption, an
       fieldId: "unknowns",
       classification: "unknown",
       reason: "Customer retention remains unknown.",
+      externalLabel: "Current customer retention evidence",
     },
   ];
   const html = renderToStaticMarkup(createElement(CompanyBrief, {
@@ -650,6 +774,16 @@ test("report detail preserves its pinned replay identity instead of relying on t
   assert.match(html, /belief_reversal_2026_08_01/);
   assert.match(html, /Context fingerprint/);
   assert.match(html, new RegExp(CONTEXT_FINGERPRINT));
+  assert.match(html, /Belief Change Analysis/);
+  assert.match(html, /30[\s\S]*Eligible Deals/);
+  assert.match(html, /30[\s\S]*Belief Change Checks/);
+  assert.match(html, /1[\s\S]*Underwriting terminal/);
+  assert.match(html, /Belief Revisions/);
+  assert.match(html, /Changed Belief/);
+  assert.doesNotMatch(
+    html,
+    /Top[ -]?5|Selected for Top|rank cutoff|sixth.*reject/i,
+  );
 });
 
 test("product Deal history keeps the permanent Sample decision record label", () => {

@@ -37,6 +37,7 @@ const decision: DecisionResult = {
 const missingEvidence: MissingEvidenceItem[] = [{
   fieldId: "retention",
   label: "Current net revenue retention",
+  externalLabel: "Current retention evidence",
   reasonCode: "MISSING_CRITICAL_EVIDENCE",
   mostLikelyDecisionImpact: "Could change Price Attractiveness.",
 }];
@@ -78,7 +79,7 @@ test("ActionDraft v2 requires permanent safety, policy, status, action, and deli
     body: [
       "DRAFT ONLY — NOT SENT",
       "Please share the following current evidence for review:",
-      "- Current net revenue retention",
+      "- Current retention evidence",
       "This draft is limited to evidence collection and neutral sharing instructions.",
     ].join("\n"),
     createdAt: "2026-07-29T12:00:00.000Z",
@@ -286,6 +287,41 @@ test("external status-safe drafts contain only neutral evidence requests and no 
   }
 });
 
+test("external drafts use reviewed audience-safe labels while internal memo retains the full unknown", () => {
+  const internalUnknown =
+    "IC ceiling: pause follow-on and start portfolio-risk review if partner economics fail.";
+  const safeExternalLabel = "Current partner bookings and economics";
+  const drafts = generator.generate({
+    candidateRunId: "candidate_1",
+    decision,
+    missingEvidence: [{
+      fieldId: `semantic-field-${"a".repeat(24)}`,
+      label: internalUnknown,
+      externalLabel: safeExternalLabel,
+      reasonCode: "UNRESOLVED_COMPANY_OR_EVENT_UNKNOWN",
+      mostLikelyDecisionImpact:
+        "Resolving this company- or event-specific unknown may raise or lower the formal decision ceiling.",
+    }],
+    dealStatus: "invested",
+    beliefDirection: "positive",
+    actions: [{
+      kind: "evaluate_follow_on",
+      scope: "portfolio",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
+  });
+
+  const internal = drafts.find((draft) => draft.audienceType === "internal")!;
+  const external = drafts.filter((draft) => draft.audienceType === "founder");
+  assert.match(internal.body, new RegExp(internalUnknown.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.equal(external.length, 2);
+  for (const draft of external) {
+    assert.match(draft.body, new RegExp(safeExternalLabel));
+    assert.doesNotMatch(draft.body, /IC ceiling|pause follow-on|portfolio-risk/iu);
+  }
+});
+
 test("internal status-safe memo separates the formal result, authoritative action, and missing evidence", () => {
   const [memo] = generator.generate({
     candidateRunId: "candidate_1",
@@ -340,7 +376,7 @@ test("creates exactly five deterministic status-safe draft-only artifacts", () =
     true,
   );
   assert.match(first[0]!.body, /Advance/);
-  assert.match(first[4]!.body, /Current net revenue retention/);
+  assert.match(first[4]!.body, /Current retention evidence/);
 });
 
 test("never persists addressing, delivery, sending, or provider fields", () => {

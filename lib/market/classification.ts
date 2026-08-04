@@ -14,7 +14,13 @@ const SECTOR_RULES: readonly EvidenceRule[] = [
   },
   {
     label: "cybersecurity",
-    patterns: [/\bcybersecurity\b/i, /\bcyber security\b/i, /\bransomware\b/i, /\bdata breach\b/i],
+    patterns: [
+      /\bcybersecurity\b/i,
+      /\bcyber security\b/i,
+      /\bransomware\b/i,
+      /\bdata breach\b/i,
+      /\bunauthorized access\b/i,
+    ],
   },
   {
     label: "robotics",
@@ -59,8 +65,16 @@ const THEME_RULES: readonly EvidenceRule[] = [
     label: "funding",
     patterns: [
       /\b(?:raises?|raised|raising|secures?|secured|closes?|closed)\b.{0,45}\b(?:funding|financing|capital|round)\b/i,
+      /\b(?:announces?|announced|reports?|reported|raises?|raised|closes?|closed|secures?|secured)\b(?:[^.!?]|\.(?=\d)){0,70}\b(?:pre-seed|seed|series [a-h])\b/i,
       /\b(?:seed|pre-seed|series [a-h])\s+(?:funding|financing|round)\b/i,
       /\bventure (?:funding|financing|investment|round)\b/i,
+    ],
+  },
+  {
+    label: "security-incident",
+    patterns: [
+      /\b(?:discloses?|disclosed|reports?|reported|publishes?|published|reviews?|reviewed|investigates?|investigated)\b[^.!?]{0,80}\b(?:incidents?|unauthorized access|data breach|compromise)\b/i,
+      /\b(?:incidents?|unauthorized access|data breach|compromise)\b[^.!?]{0,80}\b(?:discloses?|disclosed|reports?|reported|review|investigation|remediation)\b/i,
     ],
   },
   {
@@ -112,12 +126,35 @@ function matchingLabels(text: string, rules: readonly EvidenceRule[]): string[] 
     .map((rule) => rule.label);
 }
 
+function hasReviewedSourceRevisionLineage(
+  event: NormalizedMarketEvent,
+): boolean {
+  return "schemaVersion" in event
+    && event.schemaVersion === "market-event-v2"
+    && event.adaptation === "canonical"
+    && event.sources.length > 0
+    && event.sources.every((source) =>
+      "sourceRevisionId" in source
+      && typeof source.sourceRevisionId === "string"
+      && source.sourceRevisionId.length > 0
+      && typeof source.documentId === "string"
+      && source.documentId.length > 0
+    );
+}
+
 export function classifyMarketEventForAnalysis(
   event: NormalizedMarketEvent,
 ): NormalizedMarketEvent | null {
   const text = evidenceText(event);
   const themes = matchingLabels(text, THEME_RULES);
   if (themes.length === 0) return null;
+
+  // Canonical events built from exact immutable Source Revisions have already
+  // crossed the reviewed registry boundary. Keep their reviewed taxonomy;
+  // applying the generic text classifier again would erase specific labels
+  // such as commercial_real_estate_software and workflow_automation. The
+  // evidence rules above still decide whether the event is analysis-eligible.
+  if (hasReviewedSourceRevisionLineage(event)) return event;
 
   const sectors = matchingLabels(text, SECTOR_RULES);
   if (

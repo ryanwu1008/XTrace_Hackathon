@@ -16,6 +16,11 @@ import {
 } from "../../lib/contracts/finalized-chat";
 import { classifyFinalizedChatTopic } from "../../lib/chat/finalized-topic";
 import { renderFinalizedChatProjection } from "../../lib/chat/finalized-renderer";
+import {
+  exactSourceV2,
+  normalizedSourceV2,
+} from "../helpers/source-evidence-v2";
+import { WritableSourceRefV2Schema } from "../../lib/contracts/source-evidence";
 
 const SHA_A = `sha256:${"a".repeat(64)}`;
 const SHA_B = `sha256:${"b".repeat(64)}`;
@@ -40,11 +45,53 @@ const liveFrame = {
   snapshotFingerprint: null,
 } as const;
 
+const normalizedCanonicalSource = WritableSourceRefV2Schema.parse(normalizedSourceV2(
+  "fixture_henry_passed_v1",
+  {
+    provenance: "demo_fixture",
+    title: "Sample decision record",
+    canonicalUrl: null,
+    documentId: "document_fixture_henry",
+    publisher: null,
+    providerId: "deal-registry",
+    eventAt: "2026-06-01T12:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: "2026-08-01T20:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    entityKeys: ["henry_ai"],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: "revision_fixture_henry_v1",
+    contentFingerprint: SHA_D,
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Sample decision record. The fund passed pending repeatable customer evidence.",
+    },
+  },
+));
+
+const exactCanonicalSource = WritableSourceRefV2Schema.parse(exactSourceV2("source_henry_event_v1", {
+  documentId: "document_henry_event_v1",
+  sourceRevisionId: "revision_henry_event_v1",
+  contentFingerprint: SHA_C,
+  text: {
+    status: "verified_exact",
+    verbatimExcerpt: "Henry announced a reviewed enterprise customer deployment.",
+    normalizedStatement:
+      "Henry reported a reviewed deployment with an enterprise customer.",
+  },
+}));
+
 const normalizedSource = {
   sourceId: "fixture_henry_passed_v1",
   documentId: "document_fixture_henry",
   sourceRevisionId: "revision_fixture_henry_v1",
   contentFingerprint: SHA_D,
+  canonicalSource: normalizedCanonicalSource,
   text: {
     status: "normalized_only",
     normalizedStatement:
@@ -57,6 +104,7 @@ const exactSource = {
   documentId: "document_henry_event_v1",
   sourceRevisionId: "revision_henry_event_v1",
   contentFingerprint: SHA_C,
+  canonicalSource: exactCanonicalSource,
   text: {
     status: "verified_exact",
     verbatimExcerpt: "Henry announced a reviewed enterprise customer deployment.",
@@ -124,6 +172,13 @@ test("strict finalized Chat schemas reject unknown topics, classes, artifacts, p
   assert.equal(FinalizedChatSourceRefSchema.safeParse({
     ...normalizedSource,
     unexpected: true,
+  }).success, false);
+  assert.equal(FinalizedChatSourceRefSchema.safeParse({
+    ...normalizedSource,
+    canonicalSource: {
+      ...normalizedCanonicalSource,
+      evidenceRole: "trigger",
+    },
   }).success, false);
 });
 
@@ -282,6 +337,14 @@ test("claim identity and projection fingerprints are stable and bind exact text 
     text: "Sample decision record. A different persisted reason.",
     sourceRefs: [{
       ...normalizedSource,
+      canonicalSource: {
+        ...normalizedCanonicalSource,
+        text: {
+          status: "normalized_only" as const,
+          normalizedStatement:
+            "Sample decision record. A different persisted reason.",
+        },
+      },
       text: {
         status: "normalized_only" as const,
         normalizedStatement:

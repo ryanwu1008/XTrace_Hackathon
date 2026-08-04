@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import rawExpectedOutcomes from "../../seed/belief-reversal/2026-08-01/expected-outcomes.json";
@@ -56,7 +57,7 @@ test("production loading exposes research evidence but no expected answer fields
     assert.equal("hiddenChainOfThought" in selectedCase, false);
     assert.equal(originalCompanyNames.has(selectedCase.profile.brandName.value), false);
   }
-  assert.equal(JSON.stringify(researchPackage).includes("qualificationRationale"), false);
+  assert.equal(JSON.stringify(researchPackage.selectedCases).includes("qualificationRationale"), false);
   assert.equal(JSON.stringify(researchPackage).includes("expectedNewActions"), false);
   assert.equal("parseBeliefReversalExpectedOutcomes" in productionContractsModule, false);
   assert.equal("crossCheckBeliefReversalExpectedOutcomes" in productionContractsModule, false);
@@ -148,13 +149,57 @@ test("every selected case has a seed-ready recent event with bounded referenced 
       assert.equal(event.retrievedAt, "2026-08-01");
       assert.match(event.confidence, /^(low|medium|high)$/);
       assert.ok(event.entityKeys.length > 0);
-      assert.ok(event.entityKeys.every((key) => selectedCase.entityKeys.includes(key)));
       assert.ok(sourceIds.has(event.triggerSourceId));
       assert.ok(event.sourceIds.every((id) => sourceIds.has(id)));
+      const sources = event.sourceIds.map((id) =>
+        selectedCase.sources.find((source) => source.id === id)
+      );
+      assert.ok(sources.every((source) => source !== undefined));
+      assert.deepEqual(
+        event.entityKeys,
+        [...new Set(sources.flatMap((source) => source?.entityKeys ?? []))]
+          .sort(),
+      );
+      const trigger = selectedCase.sources.find((source) =>
+        source.id === event.triggerSourceId
+      );
+      assert.ok(trigger);
+      assert.ok(selectedCase.entityKeys.every((key) =>
+        trigger.entityKeys.includes(key)
+      ));
       assert.ok(event.positiveImplications.every((text) => !/diligence|follow-on|portfolio|reopen/i.test(text)));
       assert.ok(event.negativeImplications.every((text) => !/diligence|follow-on|portfolio|reopen/i.test(text)));
     }
   }
+});
+
+test("source-level entity provenance preserves the Hush-to-Irregular counter-source boundary", () => {
+  const researchPackage = productionManifestModule.loadBeliefReversalManifest();
+  const hush = researchPackage.selectedCases.find(({ dealId }) =>
+    dealId === "deal_hush_security_v1"
+  );
+  assert.ok(hush);
+  const counter = hush.sources.find(({ id }) =>
+    id === "source_hush_anthropic_controls_v1"
+  ) as unknown as JsonObject | undefined;
+  assert.ok(counter);
+  assert.deepEqual(counter.entityKeys, ["irregular"]);
+  assert.deepEqual(hush.events[0]?.entityKeys, ["hush_security", "irregular"]);
+});
+
+test("source entity keys are required, fingerprint-bound, and exactly covered by each event", () => {
+  assertManifestRejected((input) => {
+    delete input.selectedCases[0].sources[0].entityKeys;
+  }, /entityKeys|entity keys/i);
+  assertManifestRejected((input) => {
+    input.selectedCases[0].sources[0].entityKeys = ["forged_company"];
+  }, /fingerprint inputs/i);
+  assertManifestRejected((input) => {
+    const hush = input.selectedCases.find((item: JsonObject) =>
+      item.dealId === "deal_hush_security_v1"
+    );
+    hush.events[0].entityKeys = ["hush_security"];
+  }, /event entity keys.*source entity keys/i);
 });
 
 test("claim support is one exact bounded span and normalized text stays distinct", () => {
@@ -238,16 +283,16 @@ test("Hush retains company-reported Kyndryl deployment and resale evidence", () 
   assert.match(claim.statement, /deployed.*internally.*resell/i);
 });
 
-test("the machine ledger records accepted and qualified-not-selected dispositions from sourced evidence", () => {
+test("the machine ledger records four pinned narrative cases and seven analysis-eligible research candidates", () => {
   const researchPackage = productionManifestModule.loadBeliefReversalManifest();
   assert.deepEqual(researchPackage.candidateLedger.map((entry) => ({
     name: entry.companyIdentity.brandName,
     disposition: entry.disposition,
   })), [
-    { name: "Henry AI", disposition: "accepted" },
-    { name: "Smallest.ai", disposition: "accepted" },
-    { name: "Hush Security", disposition: "accepted" },
-    { name: "Irregular", disposition: "accepted" },
+    { name: "Henry AI", disposition: "selected" },
+    { name: "Smallest.ai", disposition: "selected" },
+    { name: "Hush Security", disposition: "selected" },
+    { name: "Irregular", disposition: "selected" },
     { name: "Centralize", disposition: "qualified_not_selected" },
     { name: "ChipAgents", disposition: "qualified_not_selected" },
     { name: "Sent", disposition: "qualified_not_selected" },
@@ -263,17 +308,67 @@ test("the machine ledger records accepted and qualified-not-selected disposition
     assert.ok(entry.companyIdentity.identitySourceIds.length > 0);
     assert.ok(entry.triggeringEvent.status === "resolved" || entry.triggeringEvent.status === "unresolved");
   }
+  const researchOnly = researchPackage.candidateLedger.filter(
+    (entry) => entry.disposition === "qualified_not_selected",
+  );
+  assert.equal(researchOnly.length, 7);
+  const stableDealIds = new Map([
+    ["Centralize", "deal_centralize_v1"],
+    ["ChipAgents", "deal_chipagents_v1"],
+    ["Sent", "deal_sent_v1"],
+    ["Cascade", "deal_cascade_v1"],
+    ["Cordant", "deal_cordant_v1"],
+    ["Empirical Security", "deal_empirical_security_v1"],
+    ["Freight Hero", "deal_freight_hero_v1"],
+  ]);
+  for (const entry of researchOnly) {
+    assert.equal(entry.caseId, null);
+    assert.ok(entry.companyId.length > 0);
+    assert.equal(
+      entry.stableDealId,
+      stableDealIds.get(entry.companyIdentity.brandName),
+    );
+    assert.equal(entry.dealStatus, "screening");
+    assert.equal(entry.analysisEligible, true);
+    assert.ok(entry.entityKeys.length > 0);
+    assert.ok(entry.qualificationRationale.length > 0);
+    assert.ok(entry.notSelectedReason.length > 0);
+    assert.ok(entry.invalidatingEvidence.length > 0);
+    assert.ok(entry.upgradingEvidence.length > 0);
+    assert.ok(entry.reconsiderationConditions.length > 0);
+    assert.equal(entry.actionDelta.classification, "research_only");
+    assert.equal(entry.actionDelta.createsFormalWorkflowArtifact, false);
+    assert.deepEqual(entry.workflowEligibility, {
+      deal: true,
+      xtrace: true,
+      matching: true,
+      companyAnalysis: true,
+      deepUnderwritingAdmissionPolicy: {
+        requiredOutcome: "belief_revised",
+        allowedConfidence: ["medium", "high"],
+        scoreThreshold: "configured_threshold_met",
+        hardGates: "all_passed",
+        lineage: "complete",
+        failureState: "none",
+        researchDispositionAffectsAdmission: false,
+        admissionMode: "all_qualifying_deals",
+        orderingRole: "priority_only",
+      },
+    });
+  }
   const centralize = researchPackage.candidateLedger.find((entry) => entry.companyIdentity.brandName === "Centralize");
-  assert.ok(centralize);
+  assert.ok(centralize?.disposition === "qualified_not_selected");
   assert.equal(centralize.companyIdentity.legalName, "Collate Labs, Inc.");
   assert.equal(centralize.triggeringEvent.status, "resolved");
-  assert.match(centralize.reason, /four-case/i);
+  assert.match(centralize.notSelectedReason, /qualifying changed belief.*Deep Underwriting/i);
+  assert.match(centralize.notSelectedReason, /does not affect future runtime admission/i);
 
   const chipAgents = researchPackage.candidateLedger.find((entry) => entry.companyIdentity.brandName === "ChipAgents");
-  assert.ok(chipAgents);
+  assert.ok(chipAgents?.disposition === "qualified_not_selected");
   assert.equal(chipAgents.companyIdentity.legalName, "Alpha Design AI, Inc.");
   assert.equal(chipAgents.triggeringEvent.status, "resolved");
-  assert.match(chipAgents.reason, /four-case|weaker/i);
+  assert.match(chipAgents.notSelectedReason, /qualifying changed belief.*Deep Underwriting/i);
+  assert.match(chipAgents.notSelectedReason, /does not affect future runtime admission/i);
   const chipReutersGap = researchPackage.screeningSources.find((source) => source.id === "source_chipagents_reuters_gap_v1");
   assert.ok(chipReutersGap?.status === "unresolved");
   assert.match(chipReutersGap.reason, /Reuters-specific.*not used/i);
@@ -284,6 +379,115 @@ test("the machine ledger records accepted and qualified-not-selected disposition
   assert.ok(chipAgents.screeningSourceIds.includes(chipBaseline.id));
   assert.match(chipAgents.counterevidenceAndLimits.join(" "), /\$74 million.*baseline.*does not conflict.*\$60 million/i);
   assert.match(chipAgents.counterevidenceAndLimits.join(" "), /\$131 million.*not verified/i);
+});
+
+test("the completed research scan sends every qualifying changed belief to the underwriting queue", () => {
+  const contract = productionManifestModule.loadBeliefReversalManifest()
+    .researchIntegrationContract;
+  assert.deepEqual(contract, {
+    schemaVersion: "research-integration-contract-v1",
+    companyIdentityCount: 30,
+    dealCount: 30,
+    analysisEligibleDealCount: 30,
+    completedScanCompanyAnalysisCount: 30,
+    companyAnalysisOutcomeCounts: {
+      beliefRevised: 4,
+      monitor: 7,
+      noMaterialChange: 19,
+      analysisUnavailable: 0,
+    },
+    currentDeepUnderwritingQueueCount: 4,
+    currentNotAdmittedCompanyAnalysisCount: 26,
+    deepUnderwritingAdmissionPolicy: {
+      requiredOutcome: "belief_revised",
+      allowedConfidence: ["medium", "high"],
+      scoreThreshold: "configured_threshold_met",
+      hardGates: "all_passed",
+      lineage: "complete",
+      failureState: "none",
+      researchDispositionAffectsAdmission: false,
+      admissionMode: "all_qualifying_deals",
+      orderingRole: "priority_only",
+    },
+    legacyPinnedRankAdapter: "compatibility_only",
+    resolvedPublicSourceParentCount: 18,
+    unresolvedEvidenceGapCount: 1,
+    sampleResearchScreeningParentCount: 7,
+    researchDealBoundParentCount: 25,
+    existingDealBoundParentCount: 60,
+    totalDealBoundParentCount: 85,
+    sourceDocumentCount: 80,
+    sourceRevisionCount: 80,
+    workspaceDocumentCount: 79,
+    dealSourceAssignmentCount: 85,
+    xtraceExactDealParentCount: 85,
+    xtraceExactDealChildCount: 85,
+  });
+});
+
+test("research Deal eligibility and changed-belief underwriting admission fail closed", () => {
+  assertManifestRejected((input) => {
+    const entry = input.candidateLedger.find(
+      (candidate: JsonObject) => candidate.companyIdentity.brandName === "Centralize",
+    );
+    entry.dealStatus = "passed";
+  }, /screening|deal status/i);
+  assertManifestRejected((input) => {
+    const entry = input.candidateLedger.find(
+      (candidate: JsonObject) => candidate.companyIdentity.brandName === "Centralize",
+    );
+    entry.analysisEligible = false;
+  }, /analysis|literal|true/i);
+  assertManifestRejected((input) => {
+    const entry = input.candidateLedger.find(
+      (candidate: JsonObject) => candidate.companyIdentity.brandName === "Centralize",
+    );
+    entry.stableDealId = "deal_henry_ai_v1";
+  }, /unique|duplicate/i);
+  assertManifestRejected((input) => {
+    const entry = input.candidateLedger.find(
+      (candidate: JsonObject) => candidate.companyIdentity.brandName === "Centralize",
+    );
+    entry.workflowEligibility.deepUnderwritingAdmissionPolicy
+      .researchDispositionAffectsAdmission = true;
+  }, /disposition|admission|literal|false/i);
+  assertManifestRejected((input) => {
+    const entry = input.candidateLedger.find(
+      (candidate: JsonObject) => candidate.companyIdentity.brandName === "Centralize",
+    );
+    entry.workflowEligibility.ranking = false;
+  }, /unrecognized|ranking/i);
+  assertManifestRejected((input) => {
+    input.researchIntegrationContract.companyAnalysisOutcomeCounts.monitor = 6;
+  }, /analysis|count|literal|30/i);
+  assertManifestRejected((input) => {
+    input.researchIntegrationContract.totalDealBoundParentCount = 84;
+  }, /parent|count|literal|85/i);
+});
+
+test("Cascade screening copy uses the verified release-summary seed span", () => {
+  const researchPackage = productionManifestModule.loadBeliefReversalManifest();
+  const source = researchPackage.screeningSources.find((item) => item.id === "source_cascade_globenewswire_v1");
+  assert.ok(source?.status === "resolved");
+  assert.equal(
+    source.normalizedStatement,
+    "Cascade announced a $3.5 million seed round.",
+  );
+  assert.equal(source.verbatimExcerpt, "announces a $3.5 million seed round.");
+  assert.equal(source.publicationTimestamp, "2026-07-21T13:30:00Z");
+  assert.equal(source.retrievedAt, "2026-08-03");
+  assert.equal(source.locator, "Release Summary/description metadata");
+  assert.equal(source.fingerprintInputs.normalizedStatement, source.normalizedStatement);
+  assert.doesNotMatch(source.normalizedStatement, /AEC|pursuit platform/i);
+
+  const ledgerMarkdown = readFileSync(
+    new URL("../../seed/belief-reversal/2026-08-01/candidate-ledger.md", import.meta.url),
+    "utf8",
+  );
+  assert.match(ledgerMarkdown, /\| Cascade \|.*\$3\.5m seed/i);
+  assert.match(ledgerMarkdown, /\| Cordant \|.*\| Qualified research record;/i);
+  assert.match(ledgerMarkdown, /All qualifying Deals are admitted/i);
+  assert.match(ledgerMarkdown, /ordering only controls processing priority/i);
 });
 
 test("Sent identity metadata follows the final official Privacy Notice", () => {
@@ -317,13 +521,78 @@ test("partial candidate identities do not assert domains absent from exact sourc
   if (empirical.companyIdentity.status !== "partially_resolved") assert.fail("Empirical identity must remain partial");
   if (freightHero.companyIdentity.status !== "partially_resolved") assert.fail("Freight Hero identity must remain partial");
   assert.equal(empirical.companyIdentity.officialDomain, null);
-  assert.equal(freightHero.companyIdentity.officialDomain, null);
+  assert.equal(freightHero.companyIdentity.officialDomain, "https://freighthero.ai");
   assert.deepEqual(empirical.companyIdentity.unresolvedFields, ["legal_name", "official_domain"]);
-  assert.deepEqual(freightHero.companyIdentity.unresolvedFields, ["legal_name", "official_domain"]);
+  assert.deepEqual(freightHero.companyIdentity.unresolvedFields, ["legal_name"]);
   assert.match(empirical.companyIdentity.identityNote, /official domain.*unresolved/i);
-  assert.match(freightHero.companyIdentity.identityNote, /official domain.*unresolved/i);
+  assert.match(freightHero.companyIdentity.identityNote, /official.*brand.*domain.*legal entity.*unresolved/i);
   assert.match(empirical.missingEvidence.join(" "), /official domain/i);
-  assert.match(freightHero.missingEvidence.join(" "), /official domain/i);
+  assert.doesNotMatch(freightHero.missingEvidence.join(" "), /official domain/i);
+});
+
+test("research-only evidence uses its own August 3 snapshot and exact 18-resolved/one-gap catalog", () => {
+  const researchPackage = productionManifestModule.loadBeliefReversalManifest();
+  assert.deepEqual(researchPackage.researchMemoryContext, {
+    schemaVersion: "research-memory-context-v1",
+    mode: "pinned",
+    scope: "research_only",
+    researchSnapshotVersion: "research-evidence-snapshot-v1",
+    snapshotId: "belief_reversal_research_2026_08_03_v1",
+    snapshotAsOfDate: "2026-08-03",
+    retrievalCutoffDate: "2026-08-03",
+    anchorAt: "2026-08-03T13:34:43.000Z",
+    windowStartAt: "2026-07-20T13:34:43.000Z",
+    windowEndAt: "2026-08-03T13:34:43.000Z",
+    windowTimezone: "America/Los_Angeles",
+    displayLabel: "Demo evidence snapshot as of 2026-08-03",
+    formalReportEligible: false,
+  });
+  assert.equal(researchPackage.evidenceWindow.displayLabel, "Demo evidence snapshot as of 2026-08-01");
+  const resolved = researchPackage.screeningSources.filter((source) => source.status === "resolved");
+  const unresolved = researchPackage.screeningSources.filter((source) => source.status === "unresolved");
+  assert.equal(resolved.length, 18);
+  assert.deepEqual(unresolved.map(({ id }) => id), ["source_chipagents_reuters_gap_v1"]);
+
+  const expectedAugust3 = new Map([
+    ["source_cordant_private_beta_v1", "counterevidence"],
+    ["source_empirical_benchmark_context_v1", "counterevidence"],
+    ["source_freight_hero_official_seed_v1", "trigger"],
+    ["source_freight_hero_managed_model_v1", "counterevidence"],
+    ["source_freight_hero_per_load_pricing_v1", "counterevidence"],
+  ] as const);
+  for (const [id, evidenceRole] of expectedAugust3) {
+    const source = resolved.find((item) => item.id === id);
+    assert.ok(source);
+    assert.equal(source.retrievedAt, "2026-08-03");
+    assert.equal(source.sourceClass, "company_official");
+    assert.equal(source.sourceAuthority, "primary");
+    assert.equal(source.evidenceRole, evidenceRole);
+  }
+  const benchmark = resolved.find((source) =>
+    source.id === "source_empirical_benchmark_context_v1"
+  );
+  assert.ok(benchmark);
+  assert.equal(benchmark.publishedAt, "2025-07-15");
+  assert.equal(benchmark.eventAt, null);
+  assert.equal(benchmark.evidenceRole, "counterevidence");
+});
+
+test("the Empirical trigger includes the exact rolling-window boundary and excludes one millisecond earlier", () => {
+  const researchPackage = productionManifestModule.loadBeliefReversalManifest();
+  const empirical = researchPackage.screeningSources.find((source) =>
+    source.id === "source_empirical_finsmes_v1"
+  );
+  assert.ok(empirical?.status === "resolved");
+  assert.equal(empirical.publicationTimestamp, "2026-07-20T13:34:43Z");
+
+  assertManifestRejected((input) => {
+    const source = input.screeningSources.find(
+      (item: JsonObject) => item.id === "source_empirical_finsmes_v1",
+    );
+    source.publicationTimestamp = "2026-07-20T13:34:42.999Z";
+    source.fingerprintInputs.publicationTimestamp =
+      "2026-07-20T13:34:42.999Z";
+  }, /research-memory window|outside.*window/i);
 });
 
 test("Centralize keeps company-provided Series A corroboration without adopting a floating total", () => {
@@ -405,22 +674,62 @@ test("candidate identity resolution status must match field completeness", () =>
   }, /unrecognized key|unresolvedFields/i);
 });
 
-test("accepted candidate case IDs must be a one-to-one set match", () => {
+test("selected candidate case IDs must be a one-to-one set match", () => {
   assertManifestRejected((input) => {
-    const accepted = input.candidateLedger.filter((entry: JsonObject) => entry.disposition === "accepted");
-    accepted[0].caseId = accepted[1].caseId;
-  }, /accepted.*one-to-one|exactly link/i);
+    const selected = input.candidateLedger.filter((entry: JsonObject) => entry.disposition === "selected");
+    selected[0].caseId = selected[1].caseId;
+  }, /selected.*one-to-one|exactly link/i);
 });
 
-test("accepted candidate links must match selected brand and domain", () => {
+test("selected candidate links must match selected brand and domain", () => {
   assertManifestRejected((input) => {
     const henry = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Henry AI");
     henry.companyIdentity.brandName = "Wrong company";
-  }, /accepted.*brand|accepted.*domain|company identity/i);
+  }, /selected.*brand|selected.*domain|company identity/i);
   assertManifestRejected((input) => {
     const henry = input.candidateLedger.find((entry: JsonObject) => entry.companyIdentity.brandName === "Henry AI");
     henry.companyIdentity.officialDomain = "https://wrong.example.com";
-  }, /accepted.*brand|accepted.*domain|company identity/i);
+  }, /selected.*brand|selected.*domain|company identity/i);
+});
+
+test("resolved screening sources bind canonical entity keys into their fingerprints", () => {
+  const researchPackage = productionManifestModule.loadBeliefReversalManifest();
+  const resolved = researchPackage.screeningSources.filter(
+    (source) => source.status === "resolved",
+  );
+  assert.ok(resolved.length > 0);
+  for (const source of resolved) {
+    assert.ok(source.entityKeys.length > 0);
+    assert.deepEqual(source.fingerprintInputs.entityKeys, source.entityKeys);
+  }
+
+  assertManifestRejected((input) => {
+    const source = input.screeningSources.find(
+      (item: JsonObject) => item.status === "resolved",
+    );
+    source.entityKeys = ["forged_company"];
+  }, /fingerprint|entity keys/i);
+});
+
+test("Cordant stays qualified but its unavailable production proof is never promoted into a fact", () => {
+  const researchPackage = productionManifestModule.loadBeliefReversalManifest();
+  const cordant = researchPackage.candidateLedger.find(
+    (entry) => entry.companyIdentity.brandName === "Cordant",
+  );
+  assert.ok(cordant?.disposition === "qualified_not_selected");
+  assert.match(cordant.missingEvidence.join(" "), /production customer/i);
+  assert.match(cordant.missingEvidence.join(" "), /enterprise AI.*core|core.*enterprise AI/i);
+  assert.match(cordant.notSelectedReason, /unverified|insufficient/i);
+  assert.doesNotMatch(cordant.qualificationRationale, /production customer.*(proved|verified|deployed)/i);
+
+  assertManifestRejected((input) => {
+    const entry = input.candidateLedger.find(
+      (item: JsonObject) => item.companyIdentity.brandName === "Cordant",
+    );
+    entry.missingEvidence = ["No material evidence gaps."];
+    entry.notSelectedReason = "Qualified despite unavailable production evidence.";
+    entry.counterevidenceAndLimits = ["Cordant has verified production customers."];
+  }, /Cordant.*production|Cordant.*evidence limit/i);
 });
 
 test("impossible calendar dates fail closed", () => {

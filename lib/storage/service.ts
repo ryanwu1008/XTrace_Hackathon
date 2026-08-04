@@ -42,7 +42,8 @@ export interface StoredCorpusDocument extends PreloadedDocument {
 
 export type SourceDocumentRole = PreloadedDocument["role"]
   | "public_web_snapshot"
-  | "sample_decision_record";
+  | "sample_decision_record"
+  | "sample_research_screening_record";
 
 export interface ImmutableSourceDocumentRecord {
   id: string;
@@ -75,7 +76,7 @@ export interface DemoDealRecord {
 }
 
 export interface ImmutableBeliefReversalDealRecord extends DemoDealRecord {
-  status: "passed" | "watchlist" | "invested";
+  status: "screening" | "passed" | "watchlist" | "invested";
 }
 
 export interface StoredEvidenceRecord extends DemoDealEvidence {
@@ -713,7 +714,7 @@ export function createSupabaseDemoDataStore(options: {
       { id: input.id, workspace_id: input.workspaceId, name: input.name },
       input,
     ),
-    ensureDeal: (input) => upsert(
+    ensureDeal: (input) => insertExactImmutable(
       "deals",
       ["workspace_id", "id"],
       { workspace_id: input.workspaceId, id: input.id },

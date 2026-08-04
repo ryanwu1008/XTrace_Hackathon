@@ -16,9 +16,14 @@ import type {
   ActionDraftV2,
   CandidateRun,
   FrameworkJudgment,
+  LegacyPinnedUnderwritingSelection,
   MissingEvidenceItem,
   UnderwritingBatch,
+  UnderwritingQueueEntry,
+  UnderwritingQueueStatus,
 } from "../contracts/underwriting";
+import { UnderwritingQueueEntrySchema } from "../contracts/underwriting";
+import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from "../contracts/evidence-context";
 import { evidenceQueryTokens } from "../demo/search";
 import { buildUnderwritingNarrative } from "./narrative";
 import {
@@ -27,22 +32,40 @@ import {
   sanitizeLegacyPublicActionDraftBody,
 } from "./public-advisory-rendering";
 
-export type DealUnderwritingStatus =
-  | "not_selected"
-  | CandidateRun["status"];
-
-export interface DealUnderwritingSelectionView {
-  dealId: string;
-  underwritingStatus: DealUnderwritingStatus;
-  rank: number | null;
-  candidateRunId: string | null;
+export interface DealUnderwritingQueueView extends UnderwritingQueueEntry {
   decision: CandidateArtifactBundle["decision"]["decision"];
+}
+
+export interface UnderwritingStatusCounts {
+  queued: number;
+  running: number;
+  completed: number;
+  partial: number;
+  failed: number;
+}
+
+export interface LegacyPinnedUnderwritingPriorityEntry {
+  batchId: string;
+  dealId: string;
+  historicalPriorityOrder: number | null;
+  historicalAdmissionStatus:
+    | "historically_admitted"
+    | "historically_not_admitted";
+  historicalReason: string;
+}
+
+export interface LegacyPinnedUnderwritingPriorityOrder {
+  adapter: "legacy-pinned-priority-order-v1";
+  snapshotId: typeof APPROVED_PINNED_DEMO_SNAPSHOT_ID;
+  entries: LegacyPinnedUnderwritingPriorityEntry[];
 }
 
 export interface UnderwritingBatchSummary {
   batchId: string;
   status: UnderwritingBatch["status"];
-  selections: DealUnderwritingSelectionView[];
+  queue: DealUnderwritingQueueView[];
+  underwritingStatusCounts: UnderwritingStatusCounts;
+  legacyPinnedPriorityOrder?: LegacyPinnedUnderwritingPriorityOrder;
 }
 
 export interface PublicActionDraft {
@@ -85,17 +108,149 @@ export interface UnderwritingSearchResult {
   claimEdges: ClaimEdge[];
 }
 
+function queueStatusForCandidate(
+  status: CandidateRun["status"],
+): UnderwritingQueueStatus {
+  return status === "unavailable" ? "failed" : status;
+}
+
+function queueReason(input: {
+  candidateStatus: CandidateRun["status"];
+  persistedReason: string;
+}): string | undefined {
+  if (input.candidateStatus === "unavailable") {
+    return `Deep Underwriting inputs were unavailable. ${input.persistedReason}`;
+  }
+  return input.candidateStatus === "partial"
+      || input.candidateStatus === "failed"
+    ? input.persistedReason
+    : undefined;
+}
+
+export function adaptCurrentUnderwritingQueueEntries(input: {
+  batchId: string;
+  selections: readonly LegacyPinnedUnderwritingSelection[];
+  candidates: readonly CandidateRun[];
+}): UnderwritingQueueEntry[] {
+  const candidatesByDeal = new Map<string, CandidateRun>();
+  for (const candidate of input.candidates) {
+    if (
+      candidate.batchId !== input.batchId
+      || candidatesByDeal.has(candidate.dealId)
+    ) {
+      throw new Error(
+        "Underwriting queue candidate identity is duplicated or crosses its batch.",
+      );
+    }
+    candidatesByDeal.set(candidate.dealId, candidate);
+  }
+  const admittedDeals = new Set(
+    input.selections
+      .filter(({ status }) => status === "selected")
+      .map(({ dealId }) => dealId),
+  );
+  if (input.candidates.some(({ dealId }) => !admittedDeals.has(dealId))) {
+    throw new Error(
+      "An underwriting job cannot exist without an admitted belief revision.",
+    );
+  }
+
+  return input.selections
+    .flatMap((selection): UnderwritingQueueEntry[] => {
+      if (selection.status !== "selected") return [];
+      const candidate = candidatesByDeal.get(selection.dealId);
+      if (!candidate || selection.rank === null) {
+        throw new Error(
+          "An admitted belief revision is missing its immutable underwriting job or priority order.",
+        );
+      }
+      return [UnderwritingQueueEntrySchema.parse({
+        batchId: input.batchId,
+        dealId: selection.dealId,
+        priorityRank: selection.rank,
+        status: queueStatusForCandidate(candidate.status),
+        candidateRunId: candidate.id,
+        ...(queueReason({
+          candidateStatus: candidate.status,
+          persistedReason: selection.reason,
+        })
+          ? {
+            reason: queueReason({
+              candidateStatus: candidate.status,
+              persistedReason: selection.reason,
+            }),
+          }
+          : {}),
+      })];
+    })
+    .sort((left, right) =>
+      left.priorityRank - right.priorityRank
+      || left.dealId.localeCompare(right.dealId)
+    );
+}
+
+export function adaptLegacyPinnedUnderwritingSelections(input: {
+  snapshotId: string;
+  selections: readonly LegacyPinnedUnderwritingSelection[];
+}): LegacyPinnedUnderwritingPriorityOrder {
+  if (input.snapshotId !== APPROVED_PINNED_DEMO_SNAPSHOT_ID) {
+    throw new Error(
+      "The legacy underwriting priority adapter is restricted to the approved pinned report.",
+    );
+  }
+  return {
+    adapter: "legacy-pinned-priority-order-v1",
+    snapshotId: APPROVED_PINNED_DEMO_SNAPSHOT_ID,
+    entries: input.selections
+      .map((selection) => ({
+        batchId: selection.batchId,
+        dealId: selection.dealId,
+        historicalPriorityOrder: selection.rank,
+        historicalAdmissionStatus: selection.status === "selected"
+          ? "historically_admitted" as const
+          : "historically_not_admitted" as const,
+        historicalReason: selection.reason,
+      }))
+      .sort((left, right) =>
+        (left.historicalPriorityOrder ?? Number.MAX_SAFE_INTEGER)
+          - (right.historicalPriorityOrder ?? Number.MAX_SAFE_INTEGER)
+        || left.dealId.localeCompare(right.dealId)
+      ),
+  };
+}
+
+export function underwritingStatusCounts(
+  queue: readonly Pick<UnderwritingQueueEntry, "status">[],
+): UnderwritingStatusCounts {
+  return {
+    queued: queue.filter(({ status }) => status === "queued").length,
+    running: queue.filter(({ status }) => status === "running").length,
+    completed: queue.filter(({ status }) => status === "completed").length,
+    partial: queue.filter(({ status }) => status === "partial").length,
+    failed: queue.filter(({ status }) => status === "failed").length,
+  };
+}
+
 export async function buildUnderwritingBatchSummary(input: {
   workspaceId: string;
   scanRunId: string;
   runs: UnderwritingRunsRepository;
   artifacts: UnderwritingArtifactsRepository;
+  legacyPinnedSnapshotId?: string | null;
 }): Promise<UnderwritingBatchSummary | null> {
   const batch = await input.runs.getBatchByScanRunId({
     workspaceId: input.workspaceId,
     scanRunId: input.scanRunId,
   });
   if (!batch) return null;
+  if (
+    batch.workspaceId !== input.workspaceId
+    || batch.scanRunId !== input.scanRunId
+  ) {
+    throw new Error(
+      "Underwriting batch identity does not match the requested current report run.",
+    );
+  }
   const [selections, candidates] = await Promise.all([
     input.runs.listSelectionsForBatch({
       workspaceId: input.workspaceId,
@@ -106,9 +261,6 @@ export async function buildUnderwritingBatchSummary(input: {
       batchId: batch.id,
     }),
   ]);
-  const candidatesByDeal = new Map(
-    candidates.map((candidate) => [candidate.dealId, candidate]),
-  );
   const decisions = new Map<string, CandidateArtifactBundle["decision"]["decision"]>();
   await Promise.all(candidates.map(async (candidate) => {
     if (!["completed", "partial"].includes(candidate.status)) return;
@@ -118,28 +270,28 @@ export async function buildUnderwritingBatchSummary(input: {
     });
     if (bundle) decisions.set(candidate.id, bundle.decision.decision);
   }));
+  const queueEntries = adaptCurrentUnderwritingQueueEntries({
+    batchId: batch.id,
+    selections,
+    candidates,
+  });
+  const queue = queueEntries.map((entry): DealUnderwritingQueueView => ({
+    ...entry,
+    decision: decisions.get(entry.candidateRunId) ?? null,
+  }));
   return {
     batchId: batch.id,
     status: batch.status,
-    selections: selections.map((selection) => {
-      if (selection.status === "not_selected") {
-        return {
-          dealId: selection.dealId,
-          underwritingStatus: "not_selected" as const,
-          rank: null,
-          candidateRunId: null,
-          decision: null,
-        };
+    queue,
+    underwritingStatusCounts: underwritingStatusCounts(queue),
+    ...(input.legacyPinnedSnapshotId
+      ? {
+        legacyPinnedPriorityOrder: adaptLegacyPinnedUnderwritingSelections({
+          snapshotId: input.legacyPinnedSnapshotId,
+          selections,
+        }),
       }
-      const candidate = candidatesByDeal.get(selection.dealId);
-      return {
-        dealId: selection.dealId,
-        underwritingStatus: candidate?.status ?? "queued",
-        rank: selection.rank,
-        candidateRunId: candidate?.id ?? null,
-        decision: candidate ? decisions.get(candidate.id) ?? null : null,
-      };
-    }),
+      : {}),
   };
 }
 
@@ -154,24 +306,17 @@ export async function findCandidateForReportDeal(input: {
     scanRunId: input.scanRunId,
   });
   if (!batch) return null;
-  const [selection, candidates] = await Promise.all([
-    input.runs.listSelectionsForBatch({
-      workspaceId: input.workspaceId,
-      batchId: batch.id,
-    }).then((values) =>
-      values.find((value) =>
-        value.dealId === input.dealId && value.status === "selected"
-      )
-    ),
-    input.runs.listCandidatesForBatch({
-      workspaceId: input.workspaceId,
-      batchId: batch.id,
-    }),
-  ]);
-  if (!selection) return null;
-  return candidates.find((candidate) =>
+  const candidates = await input.runs.listCandidatesForBatch({
+    workspaceId: input.workspaceId,
+    batchId: batch.id,
+  });
+  const matches = candidates.filter((candidate) =>
     candidate.dealId === input.dealId
-  ) ?? null;
+  );
+  if (matches.length > 1) {
+    throw new Error("A Deal has more than one underwriting job in the batch.");
+  }
+  return matches[0] ?? null;
 }
 
 export function toCandidateUnderwritingDetail(

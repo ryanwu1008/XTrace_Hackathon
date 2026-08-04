@@ -1,6 +1,7 @@
 # English / Traditional-Chinese Localization Continuation Handoff
 
 **Status:** Partial design approval; implementation is explicitly paused
+**Current company-workflow authority:** The approved [2026-08-03 Underwrite All Belief Revisions product-decision addendum](2026-08-03-underwrite-all-belief-revisions-product-decision-addendum.md) supersedes any Top-5, rank-cutoff, or fixed-capacity selection references below. This localization handoff remains paused pending its separate product confirmation.
 
 **Date:** 2026-08-01
 
@@ -45,7 +46,7 @@ chain includes:
 
 - confirmed Deal sources and long-term decision memory;
 - recent market events and belief-change matching;
-- CompanyAnalysis and ranked Top 5 opportunities;
+- CompanyAnalysis, belief-revision priority ordering, and Deep Underwriting for every admitted belief revision;
 - Bear/Base/Bull underwriting and deterministic valuation;
 - named VC/investor framework opinions and disagreements;
 - formal `Pass / Watch / Advance / Invest Candidate` decisions;
@@ -528,7 +529,7 @@ Material effect on a prior belief or next action
     ↓
 Medium / High Match Confidence
     ↓
-Top 5 and full-underwriting eligibility
+Deep Underwriting eligibility; priority controls ordering only
 ```
 
 It must also explain:
@@ -536,8 +537,8 @@ It must also explain:
 - Low confidence → Monitor;
 - no relevant evidence → No material change;
 - missing verified memory or failed analysis → Analysis unavailable;
-- medium/high belief revision → eligible for Top 5;
-- not selected for Top 5 → not an automatic Pass.
+- medium/high belief revision with every required hard gate and exact lineage → eligible for Deep Underwriting;
+- priority changes queue/display order only; it never excludes an admitted belief revision or implies a Pass.
 
 ## 12. Confirmed initial VC glossary
 

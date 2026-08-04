@@ -7,7 +7,12 @@ import type {
 import { parseSourceRefV2Read } from "../../lib/contracts/legacy-evidence-adapter";
 import { buildPreloadedDealMemoryBundles } from "../../lib/corpus/service";
 import { interactionSourceV2 } from "../../lib/matching/context";
-import type { GroundedMatch } from "../../lib/matching/service";
+import {
+  createMatchingService,
+  type GroundedMatch,
+} from "../../lib/matching/service";
+import { isEligibleBeliefRevision } from "../../lib/matching/ranking";
+import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import {
   buildCompanyAnalyses,
   countCompanyAnalyses,
@@ -17,11 +22,49 @@ import {
   exactSourceV2,
   marketEventV2,
   normalizedSourceV2,
+  TEST_SHA256_A,
 } from "../helpers/source-evidence-v2";
 
 const REPORT_ID = "report_1";
 const RUN_ID = "00000000-0000-4000-8000-000000000001";
 const CREATED_AT = "2026-07-24T12:00:00.000Z";
+
+function sampleResearchScreeningSource() {
+  return normalizedSourceV2("sample_research_screening_monitor", {
+    provenance: "source_document",
+    title: "Sample research screening record",
+    canonicalUrl: null,
+    documentId: "document_sample_research_screening_monitor",
+    publisher: "Internal Research Registry",
+    providerId: "belief-reversal-research-seed-v1",
+    eventAt: "2026-08-01T12:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: ["screening-monitor"],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: "revision_sample_research_screening_monitor",
+    locator: { kind: "json_pointer", pointer: "/record" },
+    contentFingerprint: TEST_SHA256_A,
+    text: {
+      status: "normalized_only",
+      normalizedStatement: [
+        "Sample research screening record.",
+        "Synthetic research-only context; no meeting or VC interaction occurred.",
+        "Disposition: qualified_not_selected.",
+        "Qualification: The company and relevant public evidence are verified.",
+        "Not selected reason: Evidence does not yet support a changed action.",
+        "Reconsideration conditions: Obtain stronger customer and traction evidence.",
+      ].join(" "),
+    },
+  });
+}
 
 function semanticBundle(input: {
   sourceIds?: readonly [string, string];
@@ -93,6 +136,7 @@ function semanticBundle(input: {
     fieldId: "unknowns",
     classification: "unknown",
     reason: "Current net retention is unknown.",
+    externalLabel: "Current retention evidence",
   }];
   return {
     bundle: {
@@ -223,6 +267,487 @@ function baseInput() {
   };
 }
 
+function withCurrentRunAuthority(input: ReturnType<typeof baseInput>) {
+  return {
+    ...input,
+    currentRunAuthority: {
+      workspaceId: "workspace_demo",
+      dealUniverseId: "belief_reversal_deal_universe_2026_08_03_v1",
+      dealUniverseFingerprint: `sha256:${"1".repeat(64)}`,
+      evidenceContextFingerprint: `sha256:${"2".repeat(64)}`,
+      evidenceBindingFingerprint: `sha256:${"3".repeat(64)}`,
+      consideredMarketEventIds: ["event_considered_a", "event_considered_b"],
+      dealsById: new Map(input.bundles.map((bundle, index) => [
+        bundle.dealId,
+        {
+          companyId: `company_${index + 1}`,
+          priorDealStatus: bundle.status,
+          analysisEligibleAt: "2026-08-03T12:00:00.000Z",
+          activeSourceRevisionIds: [`revision_${index + 1}`],
+          activeParentFingerprint: `sha256:${(index + 4).toString(16).padStart(64, "0")}`,
+        },
+      ])),
+      recallFailureReasons: new Map<string, string>(),
+    },
+  };
+}
+
+test("persists a complete current-run audit for a no-event Deal", () => {
+  const input = withCurrentRunAuthority(baseInput());
+  const analysis = buildCompanyAnalyses(input)[0]!;
+
+  assert.deepEqual(analysis.currentRunAudit, {
+    schemaVersion: "company-analysis-current-run-audit-v1",
+    workspaceId: "workspace_demo",
+    companyId: "company_1",
+    stableDealId: analysis.dealId,
+    priorDealStatus: analysis.dealStatus,
+    analysisEligibleAt: "2026-08-03T12:00:00.000Z",
+    dealUniverseId: "belief_reversal_deal_universe_2026_08_03_v1",
+    dealUniverseFingerprint: `sha256:${"1".repeat(64)}`,
+    evidenceContextFingerprint: `sha256:${"2".repeat(64)}`,
+    evidenceBindingFingerprint: `sha256:${"3".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"4".padStart(64, "0")}`,
+    sourceRevisionIds: ["revision_1"],
+    xtraceMemoryIds: [`memory_${analysis.dealId}`],
+    priorMemory: {
+      kind: "investment",
+      previousMeetingSummary: analysis.investmentMemory.previousMeetingSummary,
+      decisionReason: analysis.investmentMemory.decisionReason,
+      concerns: analysis.investmentMemory.concerns,
+      revisitConditions: analysis.investmentMemory.revisitConditions,
+      lastEvaluatedAt: analysis.investmentMemory.lastEvaluatedAt,
+      sourceIds: analysis.investmentMemory.sourceIds,
+      fixtureIds: analysis.investmentMemory.fixtureIds,
+    },
+    consideredMarketEventIds: ["event_considered_a", "event_considered_b"],
+    matchedMarketEventIds: [],
+    scoreBreakdown: {
+      eventRelevance: 0,
+      dealRelevance: 0,
+      priorContextStrength: 0,
+      evidenceQuality: 0,
+      finalScore: 0,
+      confidence: "low",
+    },
+    gates: {
+      chronology: { passed: false, failureReason: "No matched market event was available." },
+      revisitConditionMapping: { passed: false, failureReason: "No matched market event was available." },
+      counterevidence: { passed: false, failureReason: "No matched market event was available." },
+      actionDelta: { passed: false, failureReason: "No matched market event was available." },
+      allPassed: false,
+    },
+    direction: "none",
+    actions: [{
+      kind: "no_new_action",
+      scope: "deal",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
+    outcome: "no_material_change",
+    nonChangeReason:
+      "No material market evidence matched this company during the current 14-day scan.",
+    analysisFailureReason: null,
+    whyNotUnderwriting:
+      "No material belief change was supported by the current evidence.",
+    recall: {
+      attempted: true,
+      succeeded: true,
+      failureReason: null,
+    },
+  });
+});
+
+test("persists a recalled screening-record monitor with explicit failed gates and no synthetic VC decision", async () => {
+  const prior = sampleResearchScreeningSource();
+  const trigger = normalizedSourceV2("screening_monitor_trigger", {
+    title: "Screening Monitor funding update",
+    canonicalUrl: "https://example.com/screening-monitor-funding",
+    publisher: "Screening Monitor",
+    providerId: "company-feed",
+    eventAt: "2026-07-28",
+    eventAtPrecision: "date",
+    publishedAt: "2026-07-28",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-07-29T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    entityKeys: ["screening-monitor"],
+    sourceRevisionId: "revision_screening_monitor_trigger",
+    contentFingerprint: TEST_SHA256_A,
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Screening Monitor disclosed a funding event relevant to its current review.",
+    },
+  });
+  const event = marketEventV2(trigger, {
+    id: "event_screening_monitor",
+    entityKeys: ["screening-monitor"],
+    eventAt: trigger.eventAt,
+    eventAtPrecision: trigger.eventAtPrecision,
+    publishedAt: trigger.publishedAt,
+    publishedAtPrecision: trigger.publishedAtPrecision,
+    retrievedAt: trigger.retrievedAt,
+    retrievedAtPrecision: trigger.retrievedAtPrecision,
+    sources: [trigger],
+  });
+  const bundle: DealMemoryBundle = {
+    dealId: "deal_screening_monitor",
+    companyName: "Screening Monitor",
+    status: "screening",
+    facts: [{
+      text: trigger.text.status === "normalized_only"
+        ? trigger.text.normalizedStatement
+        : "",
+      sources: [trigger],
+    }, {
+      text: prior.text.status === "normalized_only"
+        ? prior.text.normalizedStatement
+        : "",
+      sources: [prior],
+    }],
+    interactions: [],
+  };
+  const memoryContext: MemoryContext = {
+    dealId: bundle.dealId,
+    memoryId: "memory_sample_research_screening_monitor",
+    memoryType: "research_disposition",
+    text: prior.text.status === "normalized_only"
+      ? prior.text.normalizedStatement
+      : "",
+    score: 1,
+    provenance: "source_document",
+    sourceRevisionIds: [prior.sourceRevisionId!],
+    sourceIds: [prior.id, trigger.id],
+    fixtureIds: [],
+  };
+  const [match] = await createMatchingService({ reason: async () => [] })
+    .analyze({
+      deals: [{
+        id: bundle.dealId,
+        companyName: bundle.companyName,
+        status: bundle.status,
+      }],
+      events: [event],
+      memoryContexts: [{
+        dealId: bundle.dealId,
+        text: memoryContext.text,
+        sourceIds: memoryContext.sourceIds,
+        fixtureIds: [],
+      }],
+      sources: [trigger, prior],
+    });
+  assert.ok(match);
+
+  const [analysis] = buildCompanyAnalyses({
+    reportId: REPORT_ID,
+    runId: RUN_ID,
+    createdAt: "2026-08-03T12:00:00.000Z",
+    bundles: [bundle],
+    contextsByDeal: new Map([[bundle.dealId, [memoryContext]]]),
+    recallFailures: new Set(),
+    groundedMatches: [match],
+    currentRunAuthority: {
+      workspaceId: "workspace_demo",
+      dealUniverseId: "current_30_deals",
+      dealUniverseFingerprint: `sha256:${"1".repeat(64)}`,
+      evidenceContextFingerprint: `sha256:${"2".repeat(64)}`,
+      evidenceBindingFingerprint: `sha256:${"3".repeat(64)}`,
+      consideredMarketEventIds: [event.id],
+      dealsById: new Map([[bundle.dealId, {
+        companyId: "company_screening_monitor",
+        priorDealStatus: "screening",
+        analysisEligibleAt: "2026-08-03T10:00:00.000Z",
+        activeSourceRevisionIds: [
+          trigger.sourceRevisionId!,
+          prior.sourceRevisionId!,
+        ],
+        activeParentFingerprint: `sha256:${"4".repeat(64)}`,
+      }]]),
+      recallAttemptedDealIds: new Set([bundle.dealId]),
+      recallFailureReasons: new Map(),
+    },
+  });
+
+  assert.equal(analysis.outcome, "monitor");
+  assert.equal(analysis.beliefAssessment, undefined);
+  assert.deepEqual(analysis.investmentMemory.fixtureIds, []);
+  assert.deepEqual(analysis.investmentMemory.sourceIds, [prior.id]);
+  assert.equal(
+    analysis.investmentMemory.previousMeetingSummary,
+    "No previous meeting summary was recorded.",
+  );
+  assert.equal(
+    analysis.investmentMemory.decisionReason,
+    "No previous decision reason was recorded.",
+  );
+  assert.deepEqual(analysis.companyBrief.decisionHistory, []);
+  assert.deepEqual(analysis.currentRunAudit?.matchedMarketEventIds, [event.id]);
+  assert.equal(analysis.currentRunAudit?.priorMemory.kind, "screening");
+  assert.equal(analysis.currentRunAudit?.gates.allPassed, false);
+  assert.equal(analysis.currentRunAudit?.gates.actionDelta.passed, false);
+  assert.match(
+    analysis.currentRunAudit?.whyNotUnderwriting ?? "",
+    /research screening record.*not.*formal VC action/i,
+  );
+  assert.equal(isEligibleBeliefRevision(analysis), false);
+});
+
+test("persists a gate-passing research-prior belief revision without fabricating a meeting or formal prior decision", async () => {
+  const prior = sampleResearchScreeningSource();
+  const trigger = normalizedSourceV2("research_revision_trigger", {
+    title: "Independent production evidence",
+    canonicalUrl: "https://example.com/screening-monitor-production",
+    publisher: "Verified Customer",
+    providerId: "customer-feed",
+    eventAt: "2026-08-02",
+    eventAtPrecision: "date",
+    publishedAt: "2026-08-02",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-08-03T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    entityKeys: ["screening-monitor"],
+    sourceRevisionId: "revision_research_revision_trigger",
+    contentFingerprint: TEST_SHA256_A,
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "An independent customer verified Screening Monitor in a production deployment.",
+    },
+  });
+  const counter = normalizedSourceV2("research_revision_counter", {
+    title: "Remaining adoption limitation",
+    canonicalUrl: "https://example.com/screening-monitor-limit",
+    publisher: "Verified Customer",
+    providerId: "customer-feed",
+    eventAt: "2026-08-02",
+    eventAtPrecision: "date",
+    publishedAt: "2026-08-02",
+    publishedAtPrecision: "date",
+    retrievedAt: "2026-08-03T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    entityKeys: ["screening-monitor"],
+    evidenceRole: "counterevidence",
+    sourceRevisionId: "revision_research_revision_counter",
+    contentFingerprint: TEST_SHA256_A,
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "The independent evidence does not establish broad retention across Screening Monitor deployments.",
+    },
+  });
+  const event = marketEventV2(trigger, {
+    id: "event_research_revision",
+    entityKeys: ["screening-monitor"],
+    eventAt: trigger.eventAt,
+    eventAtPrecision: trigger.eventAtPrecision,
+    publishedAt: trigger.publishedAt,
+    publishedAtPrecision: trigger.publishedAtPrecision,
+    retrievedAt: trigger.retrievedAt,
+    retrievedAtPrecision: trigger.retrievedAtPrecision,
+    sources: [trigger, counter],
+  });
+  const priorText = prior.text.status === "normalized_only"
+    ? prior.text.normalizedStatement
+    : "";
+  const triggerText = trigger.text.status === "normalized_only"
+    ? trigger.text.normalizedStatement
+    : "";
+  const counterText = counter.text.status === "normalized_only"
+    ? counter.text.normalizedStatement
+    : "";
+  const reconsiderationCondition =
+    "Obtain stronger customer and traction evidence.";
+  const [match] = await createMatchingService({
+    reason: async () => [{
+      dealId: "deal_screening_monitor",
+      whyNow: triggerText,
+      previousContext: priorText,
+      positiveImplications: [triggerText],
+      negativeImplications: [],
+      selectedTriggerEventId: event.id,
+      selectedPriorInteractionId: prior.id,
+      revisitConditionIndex: 0,
+      revisitConditionText: reconsiderationCondition,
+      revisitCitedSourceIds: [trigger.id],
+      counterevidence: {
+        statement: counterText,
+        citedSourceIds: [counter.id],
+      },
+      citedSourceIds: [trigger.id, counter.id, prior.id],
+      scoreInputs: {
+        eventRelevance: 1,
+        dealRelevance: 1,
+        priorContextStrength: 0.8,
+        evidenceQuality: 0.9,
+      },
+      claimSourceIds: {
+        [triggerText]: [trigger.id],
+        [priorText]: [prior.id],
+      },
+    }],
+  }).analyze({
+    deals: [{
+      id: "deal_screening_monitor",
+      companyName: "Screening Monitor",
+      status: "screening",
+    }],
+    events: [event],
+    memoryContexts: [{
+      dealId: "deal_screening_monitor",
+      text: priorText,
+      sourceIds: [prior.id],
+      fixtureIds: [],
+      interactionCandidates: [{
+        id: prior.id,
+        occurredAt: prior.eventAt!,
+        sourceIds: [prior.id],
+        revisitConditions: [reconsiderationCondition],
+        provenance: "source_document",
+        label: "Sample research screening record",
+        meetingOccurred: false,
+        vcInteraction: false,
+        priorActions: actionsForDealStatusAndDirection("screening", "none"),
+      }],
+    }],
+    sources: [trigger, counter, prior],
+  });
+  assert.ok(match);
+  const bundle: DealMemoryBundle = {
+    dealId: "deal_screening_monitor",
+    companyName: "Screening Monitor",
+    status: "screening",
+    facts: [{ text: triggerText, sources: [trigger] }, {
+      text: counterText,
+      sources: [counter],
+    }, { text: priorText, sources: [prior] }],
+    interactions: [],
+  };
+  const memoryContext: MemoryContext = {
+    dealId: bundle.dealId,
+    memoryId: "memory_research_prior",
+    memoryType: "research_disposition",
+    text: priorText,
+    score: 1,
+    provenance: "source_document",
+    sourceRevisionIds: [prior.sourceRevisionId!],
+    sourceIds: [prior.id],
+    fixtureIds: [],
+  };
+  const [analysis] = buildCompanyAnalyses({
+    reportId: REPORT_ID,
+    runId: RUN_ID,
+    createdAt: "2026-08-03T12:00:00.000Z",
+    bundles: [bundle],
+    contextsByDeal: new Map([[bundle.dealId, [memoryContext]]]),
+    recallFailures: new Set(),
+    groundedMatches: [match],
+    currentRunAuthority: {
+      workspaceId: "workspace_demo",
+      dealUniverseId: "current_30_deals",
+      dealUniverseFingerprint: `sha256:${"1".repeat(64)}`,
+      evidenceContextFingerprint: `sha256:${"2".repeat(64)}`,
+      evidenceBindingFingerprint: `sha256:${"3".repeat(64)}`,
+      consideredMarketEventIds: [event.id],
+      dealsById: new Map([[bundle.dealId, {
+        companyId: "company_screening_monitor",
+        priorDealStatus: "screening",
+        analysisEligibleAt: "2026-08-03T10:00:00.000Z",
+        activeSourceRevisionIds: [
+          prior.sourceRevisionId!,
+          trigger.sourceRevisionId!,
+          counter.sourceRevisionId!,
+        ],
+        activeParentFingerprint: `sha256:${"4".repeat(64)}`,
+      }]]),
+      recallAttemptedDealIds: new Set([bundle.dealId]),
+      recallFailureReasons: new Map(),
+    },
+  });
+
+  assert.equal(analysis.outcome, "belief_revised");
+  assert.equal(analysis.dealStatus, "screening");
+  assert.deepEqual(analysis.investmentMemory.fixtureIds, []);
+  assert.deepEqual(analysis.investmentMemory.sourceIds, [prior.id]);
+  assert.equal(
+    analysis.investmentMemory.previousMeetingSummary,
+    "No previous meeting summary was recorded.",
+  );
+  assert.equal(
+    analysis.investmentMemory.decisionReason,
+    "No previous decision reason was recorded.",
+  );
+  assert.deepEqual(analysis.companyBrief.decisionHistory, []);
+  assert.equal(analysis.currentRunAudit?.gates.allPassed, true);
+  assert.equal(analysis.currentRunAudit?.whyNotUnderwriting, null);
+  assert.equal(isEligibleBeliefRevision(analysis), true);
+});
+
+test("retains considered events and the exact recall failure on unavailable analyses", () => {
+  const input = withCurrentRunAuthority(baseInput());
+  const failedDealId = input.bundles[0]!.dealId;
+  input.recallFailures = new Set([failedDealId]);
+  input.currentRunAuthority.recallFailureReasons.set(
+    failedDealId,
+    "XTRACE_RECALL_LINEAGE_FAILED",
+  );
+
+  const analysis = buildCompanyAnalyses(input)[0]!;
+
+  assert.equal(analysis.outcome, "analysis_unavailable");
+  assert.deepEqual(
+    analysis.currentRunAudit?.consideredMarketEventIds,
+    ["event_considered_a", "event_considered_b"],
+  );
+  assert.deepEqual(analysis.currentRunAudit?.recall, {
+    attempted: true,
+    succeeded: false,
+    failureReason: "XTRACE_RECALL_LINEAGE_FAILED",
+  });
+  assert.equal(
+    analysis.currentRunAudit?.analysisFailureReason,
+    "XTRACE_RECALL_LINEAGE_FAILED",
+  );
+  assert.match(analysis.currentRunAudit?.whyNotUnderwriting ?? "", /unavailable/i);
+});
+
+test("a matching-lineage failure retains the successful XTrace recall audit", () => {
+  const input = withCurrentRunAuthority(baseInput());
+  const bundle = input.bundles[0]!;
+  input.groundedMatches = [groundedMatch(bundle, "high")];
+
+  const analysis = buildCompanyAnalyses(input)[0]!;
+
+  assert.equal(analysis.outcome, "analysis_unavailable");
+  assert.deepEqual(
+    analysis.investmentMemory.memoryIds,
+    [`memory_${bundle.dealId}`],
+  );
+  assert.deepEqual(analysis.currentRunAudit?.recall, {
+    attempted: true,
+    succeeded: true,
+    failureReason: null,
+  });
+  assert.deepEqual(
+    analysis.currentRunAudit?.xtraceMemoryIds,
+    [`memory_${bundle.dealId}`],
+  );
+  assert.match(
+    analysis.currentRunAudit?.analysisFailureReason ?? "",
+    /belief-assessment lineage/i,
+  );
+});
+
+test("rejects duplicate Deal analyses instead of silently overwriting authority", () => {
+  const input = baseInput();
+  input.bundles = [input.bundles[0]!, structuredClone(input.bundles[0]!)];
+
+  assert.throws(
+    () => buildCompanyAnalyses(input),
+    /duplicate.*Deal|Deal.*duplicate/i,
+  );
+});
+
 test("builds one no-change analysis for every fixed MVP Deal", () => {
   const analyses = buildCompanyAnalyses(baseInput());
 
@@ -237,6 +762,42 @@ test("builds one no-change analysis for every fixed MVP Deal", () => {
     noMaterialChange: 19,
     analysisUnavailable: 0,
   });
+});
+
+test("builds exactly one auditable analysis for a 30-Deal run universe", () => {
+  const base = baseInput();
+  const addedBundles = Array.from({ length: 11 }, (_, index) => {
+    const ordinal = index + 20;
+    const { bundle } = semanticBundle({
+      sourceIds: [
+        `semantic_primary_source_${ordinal}`,
+        `semantic_corroborating_source_${ordinal}`,
+      ],
+    });
+    return {
+      ...bundle,
+      dealId: `deal_universe_${ordinal}`,
+      companyName: `Universe Company ${ordinal}`,
+    };
+  });
+  const bundles = [...base.bundles, ...addedBundles];
+  const input = withCurrentRunAuthority({
+    ...base,
+    bundles,
+    contextsByDeal: contextsForEveryDeal(bundles),
+  });
+
+  const analyses = buildCompanyAnalyses(input);
+  const counts = countCompanyAnalyses(analyses);
+
+  assert.equal(analyses.length, 30);
+  assert.equal(new Set(analyses.map(({ dealId }) => dealId)).size, 30);
+  assert.ok(analyses.every(({ currentRunAudit }) => currentRunAudit !== undefined));
+  assert.equal(
+    counts.beliefRevised + counts.monitor + counts.noMaterialChange
+      + counts.analysisUnavailable,
+    30,
+  );
 });
 
 test("projects qualified and low grounded matches without inventing fields", () => {

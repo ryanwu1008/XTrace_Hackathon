@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  DeepUnderwritingAdmissionPolicySchema,
+  ResearchActionDeltaSchema,
+  ResearchDispositionSchema,
+  ResearchWorkflowEligibilitySchema,
+} from "../contracts/research-candidate";
+import { withinPublicationWindow } from "../market/dedupe";
 import { CanonicalHttpUrlSchema } from "../security/safe-url";
 
 const StableIdSchema = z.string().regex(
@@ -17,6 +24,19 @@ const BoundedVerbatimExcerptSchema = VerbatimExcerptSchema.refine(
 );
 const NonEmptyStringsSchema = z.array(NonEmptyStringSchema).min(1);
 const EntityKeySchema = z.string().regex(/^[a-z0-9]+(?:_[a-z0-9]+)*$/);
+const EntityKeysSchema = z.array(EntityKeySchema).min(1).superRefine(
+  (keys, context) => {
+    if (
+      new Set(keys).size !== keys.length
+      || keys.some((key, index) => index > 0 && keys[index - 1]! >= key)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Entity keys must be unique and canonically sorted",
+      });
+    }
+  },
+);
 
 const IsoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).superRefine((value, context) => {
   const [year, month, day] = value.split("-").map(Number);
@@ -74,6 +94,10 @@ const FingerprintInputsSchema = z.strictObject({
   referenceId: StableIdSchema,
 });
 
+const ResearchFingerprintInputsSchema = FingerprintInputsSchema.extend({
+  entityKeys: EntityKeysSchema,
+});
+
 const ResearchSourceSchema = z.strictObject({
   id: StableIdSchema,
   title: NonEmptyStringSchema,
@@ -82,6 +106,7 @@ const ResearchSourceSchema = z.strictObject({
   sourceClass: SourceClassSchema,
   sourceAuthority: SourceAuthoritySchema,
   evidenceRole: EvidenceRoleSchema,
+  entityKeys: EntityKeysSchema,
   eventAt: IsoDateSchema.nullable(),
   publishedAt: IsoDateSchema.nullable(),
   publicationTimestamp: IsoDateTimeSchema.nullable(),
@@ -90,7 +115,7 @@ const ResearchSourceSchema = z.strictObject({
   verbatimExcerpt: BoundedVerbatimExcerptSchema,
   normalizedStatement: NonEmptyStringSchema,
   supportedClaimId: StableIdSchema,
-  fingerprintInputs: FingerprintInputsSchema,
+  fingerprintInputs: ResearchFingerprintInputsSchema,
 }).superRefine((source, context) => {
   if (source.verbatimExcerpt === source.normalizedStatement) {
     context.addIssue({ code: "custom", message: "Normalized text cannot masquerade as exact verbatim support" });
@@ -216,16 +241,21 @@ const RecentMarketEventSchema = z.strictObject({
   publishedAt: IsoDateSchema,
   retrievedAt: IsoDateSchema,
   confidence: z.enum(["low", "medium", "high"]),
-  entityKeys: z.array(EntityKeySchema).min(1),
+  entityKeys: EntityKeysSchema,
   triggerSourceId: StableIdSchema,
   sourceIds: z.array(StableIdSchema).min(1),
+});
+
+const ResearchUnknownSchema = z.strictObject({
+  reason: NonEmptyStringSchema,
+  externalLabel: NonEmptyStringSchema,
 });
 
 const ResearchCaseSchema = z.strictObject({
   id: StableIdSchema,
   companyId: StableIdSchema,
   dealId: StableIdSchema,
-  entityKeys: z.array(EntityKeySchema).min(1),
+  entityKeys: EntityKeysSchema,
   profile: CompanyProfileSchema,
   foundingDate: FoundingDateSchema,
   sourceDateConflicts: z.array(SourceDateConflictSchema),
@@ -234,7 +264,7 @@ const ResearchCaseSchema = z.strictObject({
   sources: z.array(ResearchSourceSchema).min(2),
   events: z.array(RecentMarketEventSchema).min(1),
   counterevidenceSourceIds: z.array(StableIdSchema).min(1),
-  unknowns: NonEmptyStringsSchema,
+  unknowns: z.array(ResearchUnknownSchema).min(1),
   metrics: z.strictObject({
     reportedValuation: MetricSchema,
     arrOrRevenue: MetricSchema,
@@ -257,6 +287,7 @@ const ResolvedScreeningSourceSchema = z.strictObject({
   sourceClass: SourceClassSchema,
   sourceAuthority: SourceAuthoritySchema,
   evidenceRole: EvidenceRoleSchema,
+  entityKeys: EntityKeysSchema,
   eventAt: IsoDateSchema.nullable(),
   publishedAt: IsoDateSchema.nullable(),
   publicationTimestamp: IsoDateTimeSchema.nullable(),
@@ -265,7 +296,7 @@ const ResolvedScreeningSourceSchema = z.strictObject({
   verbatimExcerpt: BoundedVerbatimExcerptSchema,
   normalizedStatement: NonEmptyStringSchema,
   candidateId: StableIdSchema,
-  fingerprintInputs: FingerprintInputsSchema,
+  fingerprintInputs: ResearchFingerprintInputsSchema,
 }).superRefine((source, context) => {
   if (source.verbatimExcerpt === source.normalizedStatement) {
     context.addIssue({ code: "custom", message: "Screening source exact and normalized text must remain separate" });
@@ -330,16 +361,81 @@ const CandidateTriggerSchema = z.discriminatedUnion("status", [
     reason: NonEmptyStringSchema,
   }),
 ]);
-const CandidateLedgerEntrySchema = z.strictObject({
+const CandidateLedgerBaseShape = {
   id: StableIdSchema,
+  companyId: StableIdSchema,
+  entityKeys: EntityKeysSchema,
   companyIdentity: CandidateIdentitySchema,
-  caseId: StableIdSchema.nullable(),
-  disposition: z.enum(["accepted", "qualified_not_selected", "rejected"]),
   triggeringEvent: CandidateTriggerSchema,
   screeningSourceIds: z.array(StableIdSchema).min(1),
   missingEvidence: NonEmptyStringsSchema,
   counterevidenceAndLimits: NonEmptyStringsSchema,
+} as const;
+const SelectedCandidateLedgerEntrySchema = z.strictObject({
+  ...CandidateLedgerBaseShape,
+  caseId: StableIdSchema,
+  disposition: z.literal("selected"),
   reason: NonEmptyStringSchema,
+});
+const ResearchOnlyCandidateLedgerShape = {
+  ...CandidateLedgerBaseShape,
+  stableDealId: StableIdSchema,
+  dealStatus: z.literal("screening"),
+  analysisEligible: z.literal(true),
+  caseId: z.null(),
+  qualificationRationale: NonEmptyStringSchema,
+  notSelectedReason: NonEmptyStringSchema,
+  invalidatingEvidence: NonEmptyStringsSchema,
+  upgradingEvidence: NonEmptyStringsSchema,
+  reconsiderationConditions: NonEmptyStringsSchema,
+  actionDelta: ResearchActionDeltaSchema,
+  workflowEligibility: ResearchWorkflowEligibilitySchema,
+  sampleResearchScreeningRecordId: StableIdSchema,
+} as const;
+const CandidateLedgerEntrySchema = z.discriminatedUnion("disposition", [
+  SelectedCandidateLedgerEntrySchema,
+  z.strictObject({
+    ...ResearchOnlyCandidateLedgerShape,
+    disposition: ResearchDispositionSchema.extract(["qualified_not_selected"]),
+  }),
+  z.strictObject({
+    ...ResearchOnlyCandidateLedgerShape,
+    disposition: ResearchDispositionSchema.extract(["insufficient_evidence"]),
+  }),
+  z.strictObject({
+    ...ResearchOnlyCandidateLedgerShape,
+    disposition: ResearchDispositionSchema.extract(["rejected"]),
+  }),
+]);
+
+const ResearchIntegrationContractSchema = z.strictObject({
+  schemaVersion: z.literal("research-integration-contract-v1"),
+  companyIdentityCount: z.literal(30),
+  dealCount: z.literal(30),
+  analysisEligibleDealCount: z.literal(30),
+  completedScanCompanyAnalysisCount: z.literal(30),
+  companyAnalysisOutcomeCounts: z.strictObject({
+    beliefRevised: z.literal(4),
+    monitor: z.literal(7),
+    noMaterialChange: z.literal(19),
+    analysisUnavailable: z.literal(0),
+  }),
+  currentDeepUnderwritingQueueCount: z.literal(4),
+  currentNotAdmittedCompanyAnalysisCount: z.literal(26),
+  deepUnderwritingAdmissionPolicy: DeepUnderwritingAdmissionPolicySchema,
+  legacyPinnedRankAdapter: z.literal("compatibility_only"),
+  resolvedPublicSourceParentCount: z.literal(18),
+  unresolvedEvidenceGapCount: z.literal(1),
+  sampleResearchScreeningParentCount: z.literal(7),
+  researchDealBoundParentCount: z.literal(25),
+  existingDealBoundParentCount: z.literal(60),
+  totalDealBoundParentCount: z.literal(85),
+  sourceDocumentCount: z.literal(80),
+  sourceRevisionCount: z.literal(80),
+  workspaceDocumentCount: z.literal(79),
+  dealSourceAssignmentCount: z.literal(85),
+  xtraceExactDealParentCount: z.literal(85),
+  xtraceExactDealChildCount: z.literal(85),
 });
 
 export const BeliefReversalResearchPackageSchema = z.strictObject({
@@ -354,6 +450,22 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
     timezone: z.literal("America/Los_Angeles"),
     displayLabel: z.literal("Demo evidence snapshot as of 2026-08-01"),
   }),
+  researchMemoryContext: z.strictObject({
+    schemaVersion: z.literal("research-memory-context-v1"),
+    mode: z.literal("pinned"),
+    scope: z.literal("research_only"),
+    researchSnapshotVersion: z.literal("research-evidence-snapshot-v1"),
+    snapshotId: z.literal("belief_reversal_research_2026_08_03_v1"),
+    snapshotAsOfDate: z.literal("2026-08-03"),
+    retrievalCutoffDate: z.literal("2026-08-03"),
+    anchorAt: z.literal("2026-08-03T13:34:43.000Z"),
+    windowStartAt: z.literal("2026-07-20T13:34:43.000Z"),
+    windowEndAt: z.literal("2026-08-03T13:34:43.000Z"),
+    windowTimezone: z.literal("America/Los_Angeles"),
+    displayLabel: z.literal("Demo evidence snapshot as of 2026-08-03"),
+    formalReportEligible: z.literal(false),
+  }),
+  researchIntegrationContract: ResearchIntegrationContractSchema,
   selectedCases: z.array(ResearchCaseSchema).length(4),
   screeningSources: z.array(ScreeningSourceSchema).min(7),
   candidateLedger: z.array(CandidateLedgerEntrySchema).length(11),
@@ -426,7 +538,10 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
       if (source.evidenceRole === "trigger" && source.eventAt === null) issue(`${source.id} trigger source requires an event date`);
       if (source.evidenceRole === "trigger" && source.publishedAt === null) issue(`${source.id} trigger source requires a publication date`);
       if (source.publicationTimestamp !== null && source.publishedAt === null) issue(`${source.id} timestamp requires a publication date`);
-      const expectedFingerprintInputs = sourceFingerprintInputs(source, source.supportedClaimId);
+      const expectedFingerprintInputs = researchSourceFingerprintInputs(
+        source,
+        source.supportedClaimId,
+      );
       if (JSON.stringify(source.fingerprintInputs) !== JSON.stringify(expectedFingerprintInputs)) {
         issue(`${source.id} fingerprint inputs do not match every immutable provenance field`);
       }
@@ -458,10 +573,30 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
         !event.sourceIds.includes(event.triggerSourceId) ||
         event.eventAt !== triggerSource.eventAt ||
         event.publishedAt !== triggerSource.publishedAt ||
-        event.retrievedAt !== triggerSource.retrievedAt
+        event.retrievedAt !== triggerSource.retrievedAt ||
+        selectedCase.entityKeys.some((key) =>
+          !triggerSource.entityKeys.includes(key)
+        )
       ) issue(`${event.id} trigger provenance does not match its referenced source`);
-      for (const sourceId of event.sourceIds) if (!sourceById.has(sourceId)) issue(`${event.id} has unknown event source ${sourceId}`);
-      for (const key of event.entityKeys) if (!selectedCase.entityKeys.includes(key)) issue(`${event.id} has unknown entity key ${key}`);
+      const eventSources = event.sourceIds.flatMap((sourceId) => {
+        const source = sourceById.get(sourceId);
+        if (!source) {
+          issue(`${event.id} has unknown event source ${sourceId}`);
+          return [];
+        }
+        return [source];
+      });
+      const expectedEventEntityKeys = [...new Set(eventSources.flatMap(
+        ({ entityKeys }) => entityKeys,
+      ))].sort();
+      if (
+        JSON.stringify(event.entityKeys)
+          !== JSON.stringify(expectedEventEntityKeys)
+      ) {
+        issue(
+          `${event.id} event entity keys must exactly equal its source entity keys`,
+        );
+      }
       const implications = [...event.positiveImplications, ...event.negativeImplications].join(" ");
       if (/reopen|diligence|follow-on|portfolio_risk|pause_follow/i.test(implications)) issue(`${event.id} implication contains a company action or expected direction`);
     }
@@ -474,22 +609,57 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
   }
 
   const screeningSources = new Map(researchPackage.screeningSources.map((source) => [source.id, source]));
+  const resolvedScreeningSourceCount = researchPackage.screeningSources.filter(
+    (source) => source.status === "resolved",
+  ).length;
+  const unresolvedScreeningSourceCount = researchPackage.screeningSources.length
+    - resolvedScreeningSourceCount;
+  if (
+    resolvedScreeningSourceCount
+      !== researchPackage.researchIntegrationContract.resolvedPublicSourceParentCount
+  ) issue("Resolved research source-parent count does not match the integration contract");
+  if (
+    unresolvedScreeningSourceCount
+      !== researchPackage.researchIntegrationContract.unresolvedEvidenceGapCount
+  ) issue("Unresolved research evidence-gap count does not match the integration contract");
   for (const source of researchPackage.screeningSources) {
     allIds.push(source.id);
-    if (source.retrievedAt !== researchPackage.retrievalDate) issue(`${source.id} screening retrieval date does not match the package`);
+    if (source.retrievedAt > researchPackage.researchMemoryContext.retrievalCutoffDate) {
+      issue(`${source.id} screening retrieval date exceeds the research-memory cutoff`);
+    }
     if (source.status === "resolved") {
       if (source.evidenceRole === "trigger" && (source.eventAt === null || source.publishedAt === null)) {
         issue(`${source.id} screening trigger requires event and publication dates`);
       }
+      if (
+        source.evidenceRole === "trigger"
+        && source.publishedAt !== null
+        && !withinPublicationWindow({
+          publishedAt: source.publicationTimestamp ?? source.publishedAt,
+          publishedAtPrecision: source.publicationTimestamp === null
+            ? "date"
+            : "timestamp",
+        }, {
+          windowStartAt: researchPackage.researchMemoryContext.windowStartAt,
+          windowEndAt: researchPackage.researchMemoryContext.windowEndAt,
+          windowTimezone: researchPackage.researchMemoryContext.windowTimezone,
+        })
+      ) issue(`${source.id} screening trigger is outside the exact research-memory window`);
       if (source.publicationTimestamp !== null && source.publishedAt === null) {
         issue(`${source.id} screening timestamp requires a publication date`);
       }
-      const expected = sourceFingerprintInputs(source, source.candidateId);
+      const expected = researchSourceFingerprintInputs(source, source.candidateId);
       if (JSON.stringify(source.fingerprintInputs) !== JSON.stringify(expected)) issue(`${source.id} screening fingerprint mismatch`);
     }
   }
+  const candidateCompanyIds = new Set<string>();
   for (const entry of researchPackage.candidateLedger) {
     allIds.push(entry.id);
+    if (candidateCompanyIds.has(entry.companyId)) issue(`${entry.id} reuses another candidate company identity`);
+    candidateCompanyIds.add(entry.companyId);
+    if (entry.disposition !== "selected") {
+      allIds.push(entry.stableDealId, entry.sampleResearchScreeningRecordId);
+    }
     if (entry.caseId !== null && !selectedCases.has(entry.caseId)) issue(`${entry.id} has unknown selected case reference`);
     for (const sourceId of entry.screeningSourceIds) {
       if (!screeningSources.has(sourceId) && !allSelectedSources.has(sourceId)) issue(`${entry.id} has unknown screening source ${sourceId}`);
@@ -505,6 +675,10 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
       if (!screeningSource && !selectedOwner) issue(`${entry.id} has unknown identity source ${sourceId}`);
       if (screeningSource?.status === "unresolved") issue(`${entry.id} identity source must reference resolved evidence`);
       if (screeningSource && screeningSource.candidateId !== entry.id) issue(`${entry.id} cannot borrow another candidate's identity source`);
+      if (
+        screeningSource?.status === "resolved"
+        && entry.entityKeys.some((key) => !screeningSource.entityKeys.includes(key))
+      ) issue(`${entry.id} identity source is missing a candidate entity key`);
       if (selectedOwner && selectedOwner !== entry.caseId) issue(`${entry.id} cannot borrow another selected case's identity source`);
     }
     const screeningTriggerSource = screeningSources.get(entry.triggeringEvent.sourceId);
@@ -528,6 +702,7 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
         entry.triggeringEvent.eventAt !== resolvedTriggerSource.eventAt ||
         entry.triggeringEvent.publishedAt !== resolvedTriggerSource.publishedAt ||
         entry.triggeringEvent.retrievedAt !== resolvedTriggerSource.retrievedAt
+        || entry.entityKeys.some((key) => !resolvedTriggerSource.entityKeys.includes(key))
       ) issue(`${entry.id} triggering event does not match its source`);
     } else if (screeningTriggerSource?.status !== "unresolved") {
       issue(`${entry.id} unresolved trigger requires an unresolved screening source`);
@@ -535,43 +710,93 @@ export const BeliefReversalResearchPackageSchema = z.strictObject({
   }
   if (new Set(allIds).size !== allIds.length) issue("All package, event, screening, and ledger IDs must be globally unique");
 
-  const acceptedEntries = researchPackage.candidateLedger.filter((entry) => entry.disposition === "accepted");
-  const acceptedCaseIds = acceptedEntries.map((entry) => entry.caseId);
-  const acceptedCaseIdSet = new Set(acceptedCaseIds);
-  if (
-    acceptedEntries.length !== selectedCases.size ||
-    acceptedCaseIdSet.size !== selectedCases.size ||
-    acceptedCaseIds.some((id) => id === null || !selectedCases.has(id)) ||
-    [...selectedCases.keys()].some((id) => !acceptedCaseIdSet.has(id))
-  ) {
-    issue("Accepted ledger case IDs must be a one-to-one set match with selected cases");
+  const selectedEntries = researchPackage.candidateLedger.filter((entry) => entry.disposition === "selected");
+  const researchOnlyEntries = researchPackage.candidateLedger.filter(
+    (entry) => entry.disposition !== "selected",
+  );
+  const integrationContract = researchPackage.researchIntegrationContract;
+  const outcomeCountSum = Object.values(
+    integrationContract.companyAnalysisOutcomeCounts,
+  ).reduce<number>((sum, count) => sum + count, 0);
+  if (outcomeCountSum !== integrationContract.completedScanCompanyAnalysisCount) {
+    issue("CompanyAnalysis outcome counts must sum to the completed scan count");
   }
-  for (const entry of acceptedEntries) {
-    if (entry.caseId === null) continue;
+  if (
+    integrationContract.currentDeepUnderwritingQueueCount
+      !== integrationContract.companyAnalysisOutcomeCounts.beliefRevised
+  ) issue("Every current qualifying changed belief must enter the underwriting queue");
+  if (
+    integrationContract.currentNotAdmittedCompanyAnalysisCount
+      !== integrationContract.completedScanCompanyAnalysisCount
+        - integrationContract.currentDeepUnderwritingQueueCount
+  ) issue("Admitted and not-admitted CompanyAnalysis counts must cover the completed scan");
+  if (
+    researchOnlyEntries.length
+      !== integrationContract.sampleResearchScreeningParentCount
+  ) issue("Sample research screening parent count does not match the candidate ledger");
+  if (
+    integrationContract.researchDealBoundParentCount
+      !== integrationContract.resolvedPublicSourceParentCount
+        + integrationContract.sampleResearchScreeningParentCount
+  ) issue("Research Deal-bound parent count must equal public plus sample parents");
+  if (
+    integrationContract.totalDealBoundParentCount
+      !== integrationContract.existingDealBoundParentCount
+        + integrationContract.researchDealBoundParentCount
+  ) issue("Total Deal-bound parent count must equal existing plus research parents");
+  const selectedCaseIds = selectedEntries.map((entry) => entry.caseId);
+  const selectedCaseIdSet = new Set(selectedCaseIds);
+  if (
+    selectedEntries.length !== selectedCases.size ||
+    selectedCaseIdSet.size !== selectedCases.size ||
+    selectedCaseIds.some((id) => !selectedCases.has(id)) ||
+    [...selectedCases.keys()].some((id) => !selectedCaseIdSet.has(id))
+  ) {
+    issue("Selected ledger case IDs must be a one-to-one set match with selected cases");
+  }
+  for (const entry of selectedEntries) {
     const selectedCase = selectedCases.get(entry.caseId);
     if (
       selectedCase && (
+        entry.companyId !== selectedCase.companyId ||
+        JSON.stringify(entry.entityKeys) !== JSON.stringify(selectedCase.entityKeys) ||
         entry.companyIdentity.brandName !== selectedCase.profile.brandName.value ||
         entry.companyIdentity.officialDomain !== selectedCase.profile.officialDomain.value
       )
     ) {
-      issue(`${entry.id} accepted company identity must match its selected case brand and domain`);
+      issue(`${entry.id} selected company identity must match its selected case company, entity keys, brand, and domain`);
     }
   }
   const centralize = researchPackage.candidateLedger.find((entry) => entry.companyIdentity.brandName === "Centralize");
   if (centralize?.disposition !== "qualified_not_selected") issue("Centralize must be qualified_not_selected");
-  const requiredDispositions = new Map([
-    ["ChipAgents", "qualified_not_selected"],
-    ["Sent", "qualified_not_selected"],
-    ["Cascade", "qualified_not_selected"],
-    ["Cordant", "qualified_not_selected"],
-    ["Empirical Security", "qualified_not_selected"],
-    ["Freight Hero", "qualified_not_selected"],
+  const requiredResearchDeals = new Map([
+    ["Centralize", "deal_centralize_v1"],
+    ["ChipAgents", "deal_chipagents_v1"],
+    ["Sent", "deal_sent_v1"],
+    ["Cascade", "deal_cascade_v1"],
+    ["Cordant", "deal_cordant_v1"],
+    ["Empirical Security", "deal_empirical_security_v1"],
+    ["Freight Hero", "deal_freight_hero_v1"],
   ] as const);
-  for (const [requiredName, requiredDisposition] of requiredDispositions) {
-    if (!researchPackage.candidateLedger.some((entry) => entry.companyIdentity.brandName === requiredName && entry.disposition === requiredDisposition)) {
-      issue(`Candidate ledger is missing ${requiredDisposition} ${requiredName}`);
+  for (const [requiredName, requiredDealId] of requiredResearchDeals) {
+    if (!researchPackage.candidateLedger.some((entry) =>
+      entry.companyIdentity.brandName === requiredName
+      && entry.disposition === "qualified_not_selected"
+      && entry.stableDealId === requiredDealId
+    )) {
+      issue(`Candidate ledger is missing qualified_not_selected screening Deal ${requiredName}`);
     }
+  }
+  const cordant = researchPackage.candidateLedger.find(
+    (entry) => entry.companyIdentity.brandName === "Cordant",
+  );
+  if (
+    cordant?.disposition !== "qualified_not_selected"
+    || !/production customer/iu.test(cordant.missingEvidence.join(" "))
+    || !/(?:enterprise AI.*core|core.*enterprise AI)/iu.test(cordant.missingEvidence.join(" "))
+    || !/(?:unverified|insufficient)/iu.test(cordant.notSelectedReason)
+  ) {
+    issue("Cordant evidence limits must preserve unverified production customer and core enterprise-AI evidence");
   }
 });
 
@@ -622,6 +847,18 @@ function sourceFingerprintInputs(
     verbatimExcerpt: source.verbatimExcerpt,
     normalizedStatement: source.normalizedStatement,
     referenceId,
+  };
+}
+
+function researchSourceFingerprintInputs(
+  source: Parameters<typeof sourceFingerprintInputs>[0] & {
+    entityKeys: readonly string[];
+  },
+  referenceId: string,
+): z.infer<typeof ResearchFingerprintInputsSchema> {
+  return {
+    ...sourceFingerprintInputs(source, referenceId),
+    entityKeys: [...source.entityKeys],
   };
 }
 

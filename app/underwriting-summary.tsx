@@ -14,15 +14,13 @@ import { apiRequest } from "./api-client";
 import {
   UnderwritingDetailDialog,
 } from "./underwriting-detail";
-import { orderUnderwritingSelections } from "./underwriting-view-model";
+import { orderUnderwritingQueue } from "./underwriting-view-model";
 
 const statusLabels = {
-  not_selected: "Not selected",
   queued: "Queued",
   running: "Running",
   partial: "Partial",
   completed: "Completed",
-  unavailable: "Unavailable",
   failed: "Failed",
 } as const;
 
@@ -89,10 +87,9 @@ export function UnderwritingSummary({
   }, [enabled, reportId, retryToken]);
 
   async function openCandidate(
-    selection: UnderwritingBatchSummary["selections"][number],
+    entry: UnderwritingBatchSummary["queue"][number],
   ) {
-    if (!selection.candidateRunId) return;
-    setSelectedDealId(selection.dealId);
+    setSelectedDealId(entry.dealId);
     setDetail(null);
     setDrafts([]);
     setCandidateError("");
@@ -100,12 +97,12 @@ export function UnderwritingSummary({
       const [candidateDetail, actionDrafts] = await Promise.all([
         apiRequest<CandidateUnderwritingDetail>(
           `/api/reports/${encodeURIComponent(reportId)}/underwriting/${
-            encodeURIComponent(selection.dealId)
+            encodeURIComponent(entry.dealId)
           }`,
         ),
         apiRequest<PublicActionDraft[]>(
           `/api/action-drafts?candidateRunId=${
-            encodeURIComponent(selection.candidateRunId)
+            encodeURIComponent(entry.candidateRunId)
           }`,
         ),
       ]);
@@ -136,15 +133,15 @@ export function UnderwritingSummary({
       {loading ? (
         <section className="vsee-underwriting-summary" role="status">
           <header>
-            <span className="vsee-eyebrow">TOP-5 UNDERWRITING</span>
-            <h2>Loading persisted candidate states…</h2>
+            <span className="vsee-eyebrow">Belief Revisions</span>
+            <h2>Loading Underwriting Queue and Underwriting Status…</h2>
           </header>
         </section>
       ) : (
         <UnderwritingSummaryPanel
           batch={batch}
           companyNames={companyNames}
-          onOpenCandidate={(selection) => void openCandidate(selection)}
+          onOpenCandidate={(entry) => void openCandidate(entry)}
           emptyMessage={enabled
             ? "This report has no persisted underwriting batch."
             : "Public demo reports are synthetic and read-only; no persisted product underwriting is presented as fact."}
@@ -204,33 +201,33 @@ export function UnderwritingSummaryPanel({
   batch: UnderwritingBatchSummary | null;
   companyNames: Record<string, string>;
   onOpenCandidate(
-    selection: UnderwritingBatchSummary["selections"][number],
+    entry: UnderwritingBatchSummary["queue"][number],
   ): void;
   emptyMessage?: string;
 }) {
-  const selections = batch
-    ? orderUnderwritingSelections(batch.selections)
+  const queue = batch
+    ? orderUnderwritingQueue(batch.queue)
     : [];
 
   return (
     <section
       className="vsee-underwriting-summary"
-      aria-labelledby="top-five-underwriting"
+      aria-labelledby="underwriting-queue"
     >
       <header>
         <div>
-          <span className="vsee-eyebrow">TOP-5 UNDERWRITING</span>
-          <h2 id="top-five-underwriting">Auditable candidate states</h2>
+          <span className="vsee-eyebrow">Belief Revisions</span>
+          <h2 id="underwriting-queue">Underwriting Queue</h2>
           <p>
-            Every eligible Deal retains an explicit selection and execution
-            state. Open finalized candidates for calculations, independent
-            named-advisory viewpoints, Evidence Pack IDs, and exact
-            public-source lineage.
+            All Changed Beliefs enter Deep Underwriting. Priority Order
+            controls execution order only and never eligibility. Open finalized
+            work for calculations, Investor Framework Perspectives, Evidence
+            Pack IDs, and exact public-source lineage.
           </p>
         </div>
         {batch && (
           <span className={`vsee-batch-state ${batch.status}`}>
-            Batch · {batch.status}
+            Underwriting Status · {statusLabels[batch.status]}
           </span>
         )}
       </header>
@@ -238,48 +235,80 @@ export function UnderwritingSummaryPanel({
       {!batch ? (
         <p className="vsee-underwriting-empty" role="status">{emptyMessage}</p>
       ) : (
-        <div className="vsee-underwriting-rows">
-          {selections.map((selection) => {
-            const openable = selection.candidateRunId !== null
-              && (
-                selection.underwritingStatus === "completed"
-                || selection.underwritingStatus === "partial"
-              );
+        <>
+          <div
+            className="vsee-underwriting-status-counts"
+            aria-label="Underwriting Status counts"
+          >
+            {Object.entries(batch.underwritingStatusCounts).map(
+              ([status, count]) => (
+                <span key={status}>
+                  {statusLabels[status as keyof typeof statusLabels]} · {count}
+                </span>
+              ),
+            )}
+          </div>
+          <div className="vsee-underwriting-rows">
+          {queue.map((entry) => {
+            const openable = entry.status === "completed"
+              || entry.status === "partial";
             return (
               <article
-                className={`vsee-underwriting-row ${
-                  selection.underwritingStatus
-                }`}
-                key={selection.dealId}
+                className={`vsee-underwriting-row ${entry.status}`}
+                key={entry.dealId}
               >
                 <span className="vsee-underwriting-rank">
-                  {selection.rank ? `#${selection.rank}` : "—"}
+                  Priority Order · #{entry.priorityRank}
                 </span>
                 <div>
                   <strong>
-                    {companyNames[selection.dealId] ?? selection.dealId}
+                    {companyNames[entry.dealId] ?? entry.dealId}
                   </strong>
-                  <small>{selection.dealId}</small>
+                  <small>{entry.dealId}</small>
+                  {entry.reason && <small>{entry.reason}</small>}
                 </div>
                 <span className="vsee-underwriting-status">
-                  {statusLabels[selection.underwritingStatus]}
+                  Underwriting Status · {statusLabels[entry.status]}
                 </span>
-                <span>{selection.decision ?? "Decision unavailable"}</span>
+                <span>{entry.decision ?? "Decision unavailable"}</span>
                 <button
-                  onClick={() => onOpenCandidate(selection)}
+                  onClick={() => onOpenCandidate(entry)}
                   disabled={!openable}
                   aria-label={openable
                     ? `Open underwriting for ${
-                        companyNames[selection.dealId] ?? selection.dealId
+                        companyNames[entry.dealId] ?? entry.dealId
                       }`
-                    : `${statusLabels[selection.underwritingStatus]} underwriting is not finalized`}
+                    : `${statusLabels[entry.status]} underwriting is not finalized`}
                 >
                   {openable ? "OPEN DETAIL →" : "NOT READY"}
                 </button>
               </article>
             );
           })}
-        </div>
+          </div>
+          {batch.legacyPinnedPriorityOrder && (
+            <details className="vsee-details">
+              <summary>Historical Priority Order · read-only pinned report</summary>
+              <p>
+                This compatibility view records historical ordering only. It
+                does not control eligibility for new runs.
+              </p>
+              <ol>
+                {batch.legacyPinnedPriorityOrder.entries.map((entry) => (
+                  <li key={entry.dealId}>
+                    {entry.historicalPriorityOrder === null
+                      ? "No historical priority"
+                      : `#${entry.historicalPriorityOrder}`} · {companyNames[entry.dealId]
+                      ?? entry.dealId} · {entry.historicalAdmissionStatus
+                        === "historically_admitted"
+                      ? "Historically admitted"
+                      : "Historical non-admission"}
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
+        </>
       )}
     </section>
   );

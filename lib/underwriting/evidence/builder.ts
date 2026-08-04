@@ -283,7 +283,23 @@ function validateXTraceLineage(input: {
       .filter(({ id }) => lineageRevisionIds.has(id))
       .map(({ sourceId }) => sourceId),
   );
-  if (!sameStringSet(expectedSourceIds, uniqueSorted(lineage.sourceIds))) {
+  const fixtureSourceIds = uniqueSorted(
+    lineage.fixtureIds.map((fixtureId) => `source_${fixtureId}`),
+  );
+  if (fixtureSourceIds.some((sourceId) => !expectedSourceIds.includes(sourceId))) {
+    throw new Error(
+      "XTrace fixture lineage does not match the exact local source revisions.",
+    );
+  }
+  const expectedFactualSourceIds = expectedSourceIds.filter(
+    (sourceId) => !fixtureSourceIds.includes(sourceId),
+  );
+  if (
+    !sameStringSet(
+      expectedFactualSourceIds,
+      uniqueSorted(lineage.sourceIds),
+    )
+  ) {
     throw new Error(
       "XTrace source lineage does not match the exact local source revisions.",
     );

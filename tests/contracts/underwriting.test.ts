@@ -9,11 +9,14 @@ import {
   FrameworkDisagreementSchema,
   FrameworkJudgmentSchema,
   FundPolicySnapshotSchema,
+  LegacyPinnedUnderwritingSelectionSchema,
   MissingEvidenceItemSchema,
+  parseActionDraftRead,
   ResolvedUnderwritingContextSchema,
   ScenarioInputSchema,
   ScenarioModelSchema,
   UnderwritingBatchSchema,
+  UnderwritingQueueEntrySchema,
   UnderwritingSelectionSchema,
   ValuationEvaluationSchema,
   XTraceLineageSnapshotSchema,
@@ -383,7 +386,7 @@ test("prevents final synthesis claim edges from bypassing saved analysis items",
   })));
 });
 
-test("round-trips batch, selection, candidate, checkpoint, and lineage contracts", () => {
+test("round-trips batch, legacy persistence selection, candidate, checkpoint, and lineage contracts", () => {
   const batch = {
     id: "batch_1",
     workspaceId: "workspace_1",
@@ -438,6 +441,10 @@ test("round-trips batch, selection, candidate, checkpoint, and lineage contracts
 
   assert.deepEqual(UnderwritingBatchSchema.parse(batch), batch);
   assert.deepEqual(UnderwritingSelectionSchema.parse(selection), selection);
+  assert.deepEqual(
+    LegacyPinnedUnderwritingSelectionSchema.parse(selection),
+    selection,
+  );
   assert.deepEqual(CandidateRunSchema.parse(candidate), candidate);
   assert.deepEqual(CandidateCheckpointSchema.parse(checkpoint), checkpoint);
   assert.deepEqual(XTraceLineageSnapshotSchema.parse(lineage), lineage);
@@ -448,10 +455,52 @@ test("round-trips batch, selection, candidate, checkpoint, and lineage contracts
   }));
 });
 
+test("new-run underwriting queue entries expose priority and every supported status without selection semantics", () => {
+  const statuses = [
+    "queued",
+    "running",
+    "completed",
+    "partial",
+    "failed",
+  ] as const;
+  const entries = statuses.map((status, index) => ({
+    batchId: "batch_current",
+    dealId: `deal_${index + 1}`,
+    priorityRank: index + 1,
+    status,
+    candidateRunId: `candidate_${index + 1}`,
+    ...(status === "partial" || status === "failed"
+      ? { reason: `${status} reason` }
+      : {}),
+  }));
+
+  assert.deepEqual(
+    entries.map((entry) => UnderwritingQueueEntrySchema.parse(entry)),
+    entries,
+  );
+  for (const forbidden of [
+    { ...entries[0], status: "not_selected" },
+    { ...entries[0], status: "unavailable" },
+    { ...entries[0], rank: 1 },
+    { ...entries[0], selectedForTop5: true },
+  ]) {
+    assert.equal(UnderwritingQueueEntrySchema.safeParse(forbidden).success, false);
+  }
+  assert.equal(UnderwritingQueueEntrySchema.safeParse({
+    ...entries[3],
+    reason: undefined,
+  }).success, false);
+  assert.equal(UnderwritingQueueEntrySchema.safeParse({
+    ...entries[4],
+    reason: undefined,
+  }).success, false);
+});
+
 test("round-trips missing evidence and action drafts as strict persisted shapes", () => {
   const missing = {
     fieldId: "gross_margin",
     label: "Gross margin",
+    externalLabel: "Latest gross-margin evidence",
     reasonCode: "NOT_REPORTED",
     mostLikelyDecisionImpact: "May cap the decision at Watch.",
   };
@@ -470,5 +519,67 @@ test("round-trips missing evidence and action drafts as strict persisted shapes"
   assert.throws(() => ActionDraftSchema.parse({
     ...draft,
     audioUrl: "https://example.com/draft.mp3",
+  }));
+});
+
+test("persisted action-draft-v2 reads preserve the legacy canonical body byte for byte", () => {
+  const legacyLabel = "current customer references";
+  const legacy = {
+    schemaVersion: "action-draft-v2",
+    safety: "status_safe",
+    deliveryMode: "draft_only",
+    draftPolicyVersion: "status-safe-action-draft-v2",
+    actionPolicyVersion: "belief-action-policy-v1",
+    id: "draft_legacy_external_label",
+    workspaceId: "workspace_1",
+    candidateRunId: "candidate_1",
+    dealStatus: "passed",
+    beliefDirection: "positive",
+    actions: [{
+      kind: "reopen_diligence",
+      scope: "deal",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
+    missingEvidence: [{
+      fieldId: "customer_evidence",
+      label: legacyLabel,
+      reasonCode: "MISSING_CRITICAL_EVIDENCE",
+      mostLikelyDecisionImpact:
+        "Providing accepted evidence may raise or lower the formal decision ceiling.",
+    }],
+    format: "founder_email",
+    channel: "email",
+    audienceType: "founder",
+    body: [
+      "Subject: Draft evidence follow-up",
+      "",
+      "DRAFT ONLY — NOT SENT",
+      "Please share the following current evidence for review:",
+      `- ${legacyLabel}`,
+      "This draft is limited to evidence collection and neutral sharing instructions.",
+    ].join("\n"),
+    createdAt: "2026-07-28T10:00:00.000Z",
+    updatedAt: "2026-07-28T10:01:00.000Z",
+  };
+
+  assert.equal(
+    ActionDraftSchema.safeParse(legacy).success,
+    false,
+    "new canonical writes must not omit externalLabel",
+  );
+  const parsed = parseActionDraftRead(legacy);
+  assert.ok("schemaVersion" in parsed);
+  const missingEvidence = parsed.missingEvidence as Array<{
+    label: string;
+    externalLabel: string;
+  }>;
+  assert.equal(missingEvidence[0]?.label, legacyLabel);
+  assert.equal(missingEvidence[0]?.externalLabel, legacyLabel);
+  assert.equal(parsed.body, legacy.body);
+  assert.equal(ActionDraftSchema.safeParse(parsed).success, true);
+  assert.throws(() => parseActionDraftRead({
+    ...legacy,
+    body: `${legacy.body}\nNon-canonical historical posture.`,
   }));
 });

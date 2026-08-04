@@ -12,6 +12,8 @@ import {
   shouldResetChatTranscript,
 } from "../../app/page";
 import type { IntelligenceReportView } from "../../app/company-intelligence";
+import { WritableSourceRefV2Schema } from "../../lib/contracts/source-evidence";
+import { normalizedSourceV2 } from "../helpers/source-evidence-v2";
 
 const PINNED_CONTEXT = {
   state: "current" as const,
@@ -120,6 +122,18 @@ test("read-only public demo Chat retains the explicit XTrace toggle", () => {
 });
 
 test("durable Chat renders an exact finalized Source Revision citation", () => {
+  const canonicalSource = WritableSourceRefV2Schema.parse(normalizedSourceV2(
+    "source_finalized_ui",
+    {
+      documentId: "document_finalized_ui",
+      sourceRevisionId: "revision_finalized_ui",
+      contentFingerprint: `sha256:${"5".repeat(64)}`,
+      text: {
+        status: "normalized_only",
+        normalizedStatement: "Verified result.",
+      },
+    },
+  ));
   const html = renderToStaticMarkup(createElement(ChatView, {
     messages: [{
       role: "assistant" as const,
@@ -130,6 +144,7 @@ test("durable Chat renders an exact finalized Source Revision citation", () => {
         documentId: "document_finalized_ui",
         sourceRevisionId: "revision_finalized_ui",
         contentFingerprint: `sha256:${"5".repeat(64)}`,
+        canonicalSource,
         text: {
           status: "normalized_only" as const,
           normalizedStatement: "Verified result.",

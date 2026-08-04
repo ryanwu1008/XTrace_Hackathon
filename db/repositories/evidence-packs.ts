@@ -16,6 +16,9 @@ import {
   type WritableSourceRefV2,
 } from "../../lib/contracts/source-evidence";
 import { DealFactSchema, type DealFact } from "../../lib/contracts/domain";
+import {
+  SAMPLE_RESEARCH_SCREENING_RECORD_LABEL,
+} from "../../lib/contracts/research-candidate";
 
 export interface SourceEvidenceInput {
   id: string;
@@ -388,15 +391,27 @@ function validateSourceEvidenceInput(
   }
   if (candidate.sourceRef !== undefined) {
     const sourceRef = WritableSourceRefV2Schema.parse(candidate.sourceRef);
+    const isCanonicalPublicSource = sourceRef.provenance === "public_web";
+    const isSampleResearchScreeningRecord =
+      sourceRef.provenance === "source_document"
+      && sourceRef.title === SAMPLE_RESEARCH_SCREENING_RECORD_LABEL
+      && sourceRef.sourceClass === "internal_decision_record"
+      && sourceRef.sourceAuthority === "primary"
+      && sourceRef.evidenceRole === "context"
+      && sourceRef.text.status === "normalized_only"
+      && sourceRef.text.normalizedStatement.startsWith(
+        `${SAMPLE_RESEARCH_SCREENING_RECORD_LABEL}.`,
+      )
+      && candidate.acceptedForGate === false;
     if (
       sourceRef.id !== candidate.id
-      || sourceRef.provenance !== "public_web"
+      || (!isCanonicalPublicSource && !isSampleResearchScreeningRecord)
       || sourceRef.documentId !== candidate.sourceId
       || sourceRef.sourceRevisionId !== candidate.sourceRevisionId
       || sourceTextForRetrieval(sourceRef) !== candidate.value
     ) {
       throw new Error(
-        "Canonical public source evidence must preserve exact identity and reviewed text.",
+        "Canonical source evidence must preserve exact identity, reviewed text, and synthetic-record policy.",
       );
     }
     candidate.sourceRef = sourceRef;

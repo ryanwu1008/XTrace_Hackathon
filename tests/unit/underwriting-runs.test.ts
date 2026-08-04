@@ -9,6 +9,7 @@ import {
 import {
   createMemoryUnderwritingRunsRepository,
   createSupabaseUnderwritingRunsRepository,
+  statusForCandidateBatch,
 } from "../../db/repositories/underwriting-runs";
 import { ScenarioInputFieldSchema } from "../../lib/contracts/underwriting";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
@@ -29,6 +30,7 @@ function statusSafeFinalization(): CandidateFinalization {
   const missingEvidence = [{
     fieldId: "arr",
     label: "arr",
+    externalLabel: "arr",
     reasonCode: "MISSING_CRITICAL_EVIDENCE",
     mostLikelyDecisionImpact:
       "Providing accepted evidence may raise or lower the formal decision ceiling.",
@@ -233,6 +235,7 @@ function statusSafeFinalization(): CandidateFinalization {
       schemaVersion: "framework-judgment-v1",
       settingsFingerprint: `sha256:${"7".repeat(64)}`,
       applicationCommit: "task-9-test",
+      companyAnalysisUnknowns: [],
     },
   };
 }
@@ -478,6 +481,17 @@ test("same batch fingerprint reuses one batch and force refresh creates a linked
   assert.equal(repository.inspect().batches.length, 2);
 });
 
+test("a completed and a partial candidate leave the memory batch partial", () => {
+  assert.equal(statusForCandidateBatch([
+    { status: "completed" },
+    { status: "partial" },
+  ]), "partial");
+  assert.equal(statusForCandidateBatch([
+    { status: "partial" },
+    { status: "partial" },
+  ]), "partial");
+});
+
 test("batch idempotency is workspace scoped and refresh requires an explicit nonce and parent", async () => {
   const repository = createMemoryUnderwritingRunsRepository(
     deterministicOptions(),
@@ -510,7 +524,7 @@ test("batch idempotency is workspace scoped and refresh requires an explicit non
   );
 });
 
-test("only ranks one through five remain selected and receive CandidateRuns", async () => {
+test("all positive priority ranks remain selected and receive CandidateRuns", async () => {
   const repository = createMemoryUnderwritingRunsRepository(
     deterministicOptions(),
   );
@@ -547,14 +561,60 @@ test("only ranks one through five remain selected and receive CandidateRuns", as
     })),
     dealIds.map((dealId, index) => ({
       dealId,
-      status: index < 5 ? "selected" : "not_selected",
-      rank: index < 5 ? index + 1 : null,
+      status: "selected",
+      rank: index + 1,
     })),
   );
   assert.deepEqual(
     candidates.map((candidate) => candidate.dealId),
-    dealIds.slice(0, 5),
+    dealIds,
   );
+});
+
+test("memory claim uses persisted priority before candidate creation order", async () => {
+  const repository = createMemoryUnderwritingRunsRepository(
+    deterministicOptions(),
+  );
+  const batch = await repository.createOrReuseBatch({
+    workspaceId: "workspace_1",
+    scanRunId: "scan_priority",
+    batchInputFingerprint: `sha256:${"a".repeat(64)}`,
+    fundPolicySnapshotId: "fund_policy_1",
+    forceRefresh: false,
+    refreshNonce: null,
+    rerunOfId: null,
+  });
+  await repository.saveSelections({
+    batchId: batch.id,
+    selections: [
+      {
+        dealId: "deal_rank_2",
+        status: "selected",
+        rank: 2,
+        reason: "Second priority",
+      },
+      {
+        dealId: "deal_rank_1",
+        status: "selected",
+        rank: 1,
+        reason: "First priority",
+      },
+    ],
+  });
+  await repository.createSelectedCandidates({
+    batchId: batch.id,
+    dealIds: ["deal_rank_2"],
+  });
+  await repository.createSelectedCandidates({
+    batchId: batch.id,
+    dealIds: ["deal_rank_1"],
+  });
+
+  const claimed = await repository.claimNextCandidate({
+    workerId: "priority_worker",
+    leaseSeconds: 60,
+  });
+  assert.equal(claimed?.candidate.dealId, "deal_rank_1");
 });
 
 test("claim returns a lease capability and checkpoints reject a foreign token", async () => {

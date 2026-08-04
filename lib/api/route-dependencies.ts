@@ -26,6 +26,7 @@ import type {
   PrivateDocumentAccess,
   PrivateObjectStorage,
 } from "../storage/service";
+import type { RateLimitRequest } from "./safety";
 
 export interface RouteDependencies {
   resolveRequestContext?: (
@@ -43,6 +44,7 @@ export interface RouteDependencies {
   intelligence?: IntelligenceRepository;
   runs?: ReturnType<typeof createRunsRepository>;
   xtraceLineage?: XTraceLineageRepository;
+  rateLimitRequest?: RateLimitRequest;
   now?: () => number;
 }
 

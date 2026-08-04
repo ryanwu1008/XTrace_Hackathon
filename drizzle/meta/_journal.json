@@ -120,6 +120,27 @@
       "when": 1785924000000,
       "tag": "0022_task9_finalization_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786010400000,
+      "tag": "0023_pg17_market_event_validator",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786096800000,
+      "tag": "0024_research_candidate_xtrace",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1786183200000,
+      "tag": "0025_report_deal_universe_authority",
+      "breakpoints": true
     }
   ]
 }

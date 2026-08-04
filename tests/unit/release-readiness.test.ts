@@ -365,6 +365,9 @@ const migrationNames = [
   "0019_belief_reversal_evidence_context.sql",
   "0020_belief_reversal_demo_seed.sql",
   "0021_exact_xtrace_lineage.sql",
+  "0022_task9_finalization_authority.sql",
+  "0023_pg17_market_event_validator.sql",
+  "0024_research_candidate_xtrace.sql",
 ];
 
 const migrationTestNames = [
@@ -381,6 +384,10 @@ const migrationTestNames = [
   "tests/integration/pgcrypto-registry-schema-usage-migration.test.ts",
   "tests/integration/belief-reversal-evidence-context-migration.test.ts",
   "tests/integration/belief-reversal-demo-seed-migration.test.ts",
+  "tests/integration/xtrace-lineage-v2-migration.test.ts",
+  "tests/integration/task9-finalization-authority-migration.test.ts",
+  "tests/integration/pg17-market-event-validator-migration.test.ts",
+  "tests/integration/research-candidate-xtrace-migration.test.ts",
 ];
 
 test("release migration verification is serial and includes every migration suite", async () => {
@@ -423,15 +430,19 @@ test("release verification has a mandatory PostgreSQL 17.6 Supabase profile gate
     1,
   );
   for (const testName of [
-    "the PostgreSQL 17.6 Supabase prototype passes both guarded launchers through 0018",
-    "a PostgreSQL 17.6 non-superuser CREATEROLE executor passes both guarded launchers through 0018",
-    "the guarded bootstrap repairs the exact PostgreSQL 17.6 Supabase default-function ACL defect",
+    "the PostgreSQL 17.6 Supabase superuser profile reaches reviewed 0018 then safely refuses unreviewed 0019",
+    "the PostgreSQL 17.6 non-superuser CREATEROLE profile reaches reviewed 0018 then safely refuses unreviewed 0019",
+    "the PostgreSQL 17.6 repaired ACL profile reaches reviewed 0018 then safely refuses unreviewed 0019",
   ]) {
     assert.equal(command.split(testName).length - 1, 1, testName);
   }
+  assert.match(
+    command,
+    /&& printf '%s\\n' 'SAFE_REFUSAL — production forward migration remains blocked'$/u,
+  );
 });
 
-test("the physical migration chain is contiguous from 0000 through 0021", async () => {
+test("the physical migration chain is contiguous from 0000 through 0024", async () => {
   const actual = (await readdir(new URL("drizzle/", repositoryRoot)))
     .filter((filename) => /^\d{4}_.+\.sql$/.test(filename))
     .sort();
@@ -439,7 +450,7 @@ test("the physical migration chain is contiguous from 0000 through 0021", async 
   assert.deepEqual(actual, migrationNames);
 });
 
-test("journaled forward migrations preserve physical order and include 0010 through 0021", async () => {
+test("journaled forward migrations preserve physical order and include 0010 through 0024", async () => {
   const journal = JSON.parse(
     await readFile(
       new URL("drizzle/meta/_journal.json", repositoryRoot),
@@ -452,7 +463,7 @@ test("journaled forward migrations preserve physical order and include 0010 thro
   );
 
   assert.deepEqual(
-    actualForwardEntries.filter((tag) => /^(?:001[0-9]|002[01])_/.test(tag)),
+    actualForwardEntries.filter((tag) => /^(?:001[0-9]|002[0-4])_/.test(tag)),
     physicalTags.slice(10),
   );
   let previousPhysicalPosition = -1;

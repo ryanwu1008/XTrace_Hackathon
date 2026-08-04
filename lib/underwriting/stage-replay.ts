@@ -7,10 +7,10 @@ import {
   SourceRevisionSchema,
 } from "../contracts/evidence";
 import {
-  ActionDraftSchema,
   DecisionResultSchema,
   FrameworkDisagreementSchema,
   FrameworkJudgmentSchema,
+  parseActionDraftRead,
   ScenarioModelSchema,
   ValuationEvaluationSchema,
   XTraceLineageSnapshotSchema,
@@ -97,7 +97,7 @@ const FrameworkCatalogBindingSchema = z.strictObject({
 });
 const NarrativeArtifactsSchema = z.strictObject({
   narrative: z.string().min(1),
-  actionDrafts: z.array(ActionDraftSchema),
+  actionDrafts: z.array(z.unknown()),
 });
 
 export function parseCandidateGroundingSnapshot(
@@ -142,5 +142,9 @@ export function parseDecisionResult(value: unknown) {
 }
 
 export function parseNarrativeArtifacts(value: unknown) {
-  return NarrativeArtifactsSchema.parse(value);
+  const parsed = NarrativeArtifactsSchema.parse(value);
+  return {
+    ...parsed,
+    actionDrafts: parsed.actionDrafts.map(parseActionDraftRead),
+  };
 }

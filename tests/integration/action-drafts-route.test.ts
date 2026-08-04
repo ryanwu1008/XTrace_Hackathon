@@ -164,6 +164,7 @@ function seedStatusSafeExternalDraftRepository() {
       missingEvidence: [{
         fieldId: "customer_evidence",
         label: "current customer references",
+        externalLabel: "current customer references",
         reasonCode: "MISSING_CRITICAL_EVIDENCE",
         mostLikelyDecisionImpact:
           "Providing accepted evidence may raise or lower the formal decision ceiling.",
@@ -620,6 +621,7 @@ test("PostgreSQL preflight blocks an unsafe v2 external edit before RPC and perm
     missingEvidence: [{
       fieldId: "customer_evidence",
       label: "current customer references",
+      externalLabel: "current customer references",
       reasonCode: "MISSING_CRITICAL_EVIDENCE",
       mostLikelyDecisionImpact:
         "Providing accepted evidence may raise or lower the formal decision ceiling.",

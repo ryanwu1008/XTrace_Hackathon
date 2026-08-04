@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { discoverMigrationPlan } from "../helpers/belief-reversal-e2e-harness";
 import {
   makeDisposableDatabaseName,
   requireLoopbackPostgres,
@@ -14,6 +15,15 @@ const migrationPath = fileURLToPath(
     "../../drizzle/0020_belief_reversal_demo_seed.sql",
     import.meta.url,
   ),
+);
+const evidenceContextMigrationPath = fileURLToPath(
+  new URL(
+    "../../drizzle/0019_belief_reversal_evidence_context.sql",
+    import.meta.url,
+  ),
+);
+const seedScriptPath = fileURLToPath(
+  new URL("../../scripts/seed-belief-reversal-demo.ts", import.meta.url),
 );
 const journalPath = fileURLToPath(
   new URL("../../drizzle/meta/_journal.json", import.meta.url),
@@ -79,6 +89,30 @@ test("0020 is a contiguous local migration without production launcher authoriza
   assert.match(migration, /new_document_role = 'sample_decision_record'/u);
 });
 
+test("the durable snapshot boundary fingerprints the exact manifest-derived demo window", () => {
+  const seedScript = readFileSync(seedScriptPath, "utf8");
+  assert.match(seedScript, /const evidenceWindow = manifest\.evidenceWindow;/u);
+  assert.match(seedScript, /anchorAt: evidenceWindow\.endAt/u);
+  assert.match(seedScript, /windowStartAt: evidenceWindow\.startAt/u);
+  assert.match(seedScript, /windowEndAt: evidenceWindow\.endAt/u);
+  assert.match(seedScript, /windowTimezone: evidenceWindow\.timezone/u);
+  assert.match(
+    seedScript,
+    /pinnedSnapshot\.displayLabel !== evidenceWindow\.displayLabel/u,
+  );
+  assert.doesNotMatch(seedScript, /2026-07-18T00:00:00/u);
+
+  const evidenceContextMigration = readFileSync(
+    evidenceContextMigrationPath,
+    "utf8",
+  );
+  assert.match(
+    evidenceContextMigration,
+    /canonical_utc_iso_milliseconds\(\(p_request ->> 'anchorAt'\)::timestamptz\)[\s\S]*canonical_utc_iso_milliseconds\(\(p_request ->> 'windowStartAt'\)::timestamptz\)[\s\S]*canonical_utc_iso_milliseconds\(\(p_request ->> 'windowEndAt'\)::timestamptz\)[\s\S]*p_request ->> 'windowTimezone'/u,
+  );
+  assert.match(evidenceContextMigration, /MARKET_EVIDENCE_SNAPSHOT_COLLISION/u);
+});
+
 test(
   "0020 installs the immutable Sample interaction boundary in disposable loopback PostgreSQL",
   { skip: postgres.state === "skipped" ? postgres.reason : false },
@@ -103,15 +137,12 @@ test(
         ].join(" "),
       ]), "API-role setup");
       const directory = fileURLToPath(new URL("../../drizzle/", import.meta.url));
-      const migrations = readdirSync(directory)
-        .filter((name) => /^\d{4}_.+\.sql$/u.test(name))
-        .sort();
-      assert.equal(migrations.length, 22);
-      for (const migration of migrations) {
+      const migrationPlan = discoverMigrationPlan({ directory, journalPath });
+      for (const migration of migrationPlan.files) {
         requireSuccess(postgres.run("psql", [
           "--no-password", "-v", "ON_ERROR_STOP=1", "-d", database,
-          "-f", fileURLToPath(new URL(`../../drizzle/${migration}`, import.meta.url)),
-        ]), `migration ${migration.slice(0, 4)}`);
+          "-f", migration.path!,
+        ]), `migration ${migration.index.toString().padStart(4, "0")}`);
       }
       const sentinel = requireSuccess(postgres.run("psql", [
         "--no-password", "-v", "ON_ERROR_STOP=1", "-At", "-d", database,

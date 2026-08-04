@@ -103,12 +103,23 @@ const analysis: CompanyAnalysis = {
 async function groundingFor(
   lineage: XTraceMemoryLineage,
   evidenceSourceId = "source_document_1",
+  options: {
+    revisionSourceId?: string;
+    exact?: boolean;
+    onExactResolve?: (input: {
+      memoryId: string;
+      workspaceId: string;
+      dealId: string;
+      activeParentFingerprint: string;
+    }) => void;
+  } = {},
 ) {
+  const revisionSourceId = options.revisionSourceId ?? "source_document_1";
   const sourceRegistry = createMemorySourceRegistry();
   await sourceRegistry.createInitialRevision({
     id: "revision_1",
     workspaceId: "workspace_1",
-    sourceId: "source_document_1",
+    sourceId: revisionSourceId,
     contentHash: "hash-1",
     objectKey: "private/acme.md",
     objectVersion: "object:v1",
@@ -168,11 +179,23 @@ async function groundingFor(
       },
     },
     criticalEvidenceProfiles: [],
-    xtraceLineage: {
-      async resolve() {
-        return structuredClone(lineage);
-      },
-    },
+    xtraceLineage: options.exact
+      ? {
+          async resolve() {
+            throw new Error(
+              "Exact XTrace grounding must not downgrade to legacy lineage.",
+            );
+          },
+          async resolveExact(input) {
+            options.onExactResolve?.(input);
+            return structuredClone(lineage);
+          },
+        }
+      : {
+          async resolve() {
+            return structuredClone(lineage);
+          },
+        },
     async resolveBenchmark() {
       return null;
     },
@@ -204,6 +227,105 @@ test("explicit XTrace revisions validate sourceIds as document IDs", async () =>
     sourceIds: ["source_document_1"],
     fixtureIds: [],
     capturedAt: "2026-07-29T12:00:00.000Z",
+  });
+});
+
+test("current candidate grounding resolves exact XTrace children against the active parent set", async () => {
+  let resolvedInput: {
+    memoryId: string;
+    workspaceId: string;
+    dealId: string;
+    activeParentFingerprint: string;
+  } | undefined;
+  const { grounding, deal } = await groundingFor({
+    memoryId: "memory_1",
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    sourceRevisionIds: ["revision_1"],
+    sourceIds: ["source_document_1"],
+    fixtureIds: [],
+    provenance: "source_document",
+  }, "source_document_1", {
+    exact: true,
+    onExactResolve(input) {
+      resolvedInput = input;
+    },
+  });
+
+  const snapshot = await grounding.load({
+    candidate,
+    analysis,
+    deal,
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(resolvedInput, {
+    memoryId: "memory_1",
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    activeParentFingerprint: deal.activeSourceRevisionFingerprint,
+  });
+  assert.deepEqual(snapshot.xtraceLineage.sourceRevisionIds, ["revision_1"]);
+});
+
+test("exact Sample decision children retain fixture lineage without impersonating a source document", async () => {
+  const { grounding, deal } = await groundingFor({
+    memoryId: "memory_1",
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    sourceRevisionIds: ["revision_1"],
+    sourceIds: [],
+    fixtureIds: ["fixture_1"],
+    provenance: "demo_fixture",
+  }, "source_fixture_1", {
+    revisionSourceId: "source_fixture_1",
+    exact: true,
+  });
+
+  const snapshot = await grounding.load({
+    candidate,
+    analysis,
+    deal,
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(snapshot.xtraceLineage, {
+    memoryIds: ["memory_1"],
+    sourceRevisionIds: ["revision_1"],
+    sourceIds: [],
+    fixtureIds: ["fixture_1"],
+    capturedAt: "2026-07-29T12:00:00.000Z",
+  });
+});
+
+test("exact Sample decision children fail closed when fixture identity drifts from the immutable parent", async () => {
+  const { grounding, deal } = await groundingFor({
+    memoryId: "memory_1",
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    sourceRevisionIds: ["revision_1"],
+    sourceIds: [],
+    fixtureIds: ["fixture_foreign"],
+    provenance: "demo_fixture",
+  }, "source_fixture_1", {
+    revisionSourceId: "source_fixture_1",
+    exact: true,
+  });
+
+  await assert.rejects(grounding.load({
+    candidate,
+    analysis,
+    deal,
+    signal: new AbortController().signal,
+  }), (error: unknown) => {
+    assert.equal(
+      "reasonCodes" in (error as object)
+        && (error as { reasonCodes: string[] }).reasonCodes.includes(
+          "XTRACE_FIXTURE_LINEAGE_MISMATCH",
+        ),
+      true,
+    );
+    return true;
   });
 });
 

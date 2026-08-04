@@ -170,6 +170,169 @@ test("the registry captures one canonical eligible Deal snapshot token", async (
   assert.match(snapshot.fingerprint, /^sha256:[0-9a-f]{64}$/);
 });
 
+test("a claimed run reuses one immutable 30-Deal universe after the mutable registry changes", async () => {
+  const sources = createMemorySourceRegistry();
+  const registry = createMemoryDealRegistry({ sourceRegistry: sources });
+  for (let index = 1; index <= 30; index += 1) {
+    await registry.confirmSourceAssignment(await assignment(sources, {
+      workspaceId: "workspace_30",
+      dealId: `deal_${index}`,
+      companyId: `company_${index}`,
+      sourceId: `source_${index}`,
+      status: index > 23 ? "screening" : "watchlist",
+      confirmedAt: "2026-08-03T12:00:00.000Z",
+    }));
+  }
+  const deals = await registry.listForWorkspace("workspace_30");
+  const input = {
+    workspaceId: "workspace_30",
+    runId: "00000000-0000-4000-8000-000000000030",
+    universeId: "belief_reversal_deal_universe_2026_08_03_v1",
+    mode: "live" as const,
+    anchorAt: "2026-08-03T13:34:43.000Z",
+    evidenceSnapshotId: null,
+    evidenceSnapshotFingerprint: null,
+    members: deals.map((deal, ordinal) => ({
+      ordinal,
+      dealId: deal.id,
+      companyId: deal.companyId,
+      dealStatus: deal.status,
+      analysisEligibleAt: deal.analysisEligibleAt!,
+    })),
+  };
+
+  const first = await registry.bindRunDealUniverse(input);
+  const replay = await registry.bindRunDealUniverse(structuredClone(input));
+
+  assert.equal(first.dealCount, 30);
+  assert.equal(first.universeFingerprint, replay.universeFingerprint);
+  assert.deepEqual(await registry.getRunDealUniverse({
+    workspaceId: input.workspaceId,
+    runId: input.runId,
+  }), first);
+  await assert.rejects(
+    registry.bindRunDealUniverse({
+      ...input,
+      members: input.members.slice(0, 29),
+    }),
+    /immutable|different|collision/i,
+  );
+});
+
+test("Supabase binds then exactly reloads the final 0024 Deal-universe RPC authority", async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const fingerprint = `sha256:${"9".repeat(64)}`;
+  const input = {
+    workspaceId: "workspace_one",
+    runId: "00000000-0000-4000-8000-000000000030",
+    universeId: "deal_universe_current_30",
+    mode: "live" as const,
+    anchorAt: "2026-08-03T13:34:43.000Z",
+    evidenceSnapshotId: null,
+    evidenceSnapshotFingerprint: null,
+    members: [{
+      ordinal: 0,
+      dealId: "deal_one",
+      companyId: "company_one",
+      dealStatus: "screening" as const,
+      analysisEligibleAt: "2026-08-03T12:00:00.000Z",
+    }],
+  };
+  const repository = createSupabaseDealRegistry({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(rawUrl, init = {}) {
+      const url = String(rawUrl);
+      requests.push({ url, init });
+      if (url.endsWith("/rpc/save_deal_universe_snapshot_v1")) {
+        return Response.json({
+          created: true,
+          universeId: input.universeId,
+          dealCount: 1,
+          universeFingerprint: fingerprint,
+        });
+      }
+      if (url.endsWith("/rpc/bind_run_deal_universe_v1")) {
+        return Response.json({
+          runId: input.runId,
+          universeId: input.universeId,
+          universeFingerprint: fingerprint,
+          dealCount: 1,
+        });
+      }
+      if (url.includes("/run_deal_universe_bindings_v1?")) {
+        return Response.json([{
+          workspace_id: input.workspaceId,
+          run_id: input.runId,
+          schema_version: "run-deal-universe-binding-v1",
+          universe_id: input.universeId,
+          universe_fingerprint: fingerprint,
+          deal_count: 1,
+        }]);
+      }
+      if (url.includes("/deal_universe_snapshots_v1?")) {
+        return Response.json([{
+          workspace_id: input.workspaceId,
+          universe_id: input.universeId,
+          schema_version: "deal-universe-snapshot-v1",
+          mode: input.mode,
+          anchor_at: input.anchorAt,
+          evidence_snapshot_id: null,
+          evidence_snapshot_fingerprint: null,
+          deal_count: 1,
+          universe_fingerprint: fingerprint,
+        }]);
+      }
+      if (url.includes("/deal_universe_snapshot_members_v1?")) {
+        return Response.json(input.members.map((member) => ({
+          ordinal: member.ordinal,
+          deal_id: member.dealId,
+          company_id: member.companyId,
+          deal_status: member.dealStatus,
+          analysis_eligible_at: member.analysisEligibleAt,
+        })));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  const binding = await repository.bindRunDealUniverse(input);
+
+  assert.deepEqual(binding, {
+    ...input,
+    schemaVersion: "run-deal-universe-binding-v1",
+    universeFingerprint: fingerprint,
+    dealCount: 1,
+  });
+  assert.deepEqual(
+    JSON.parse(String(requests[0]!.init.body)),
+    {
+      p_payload: {
+        schemaVersion: "deal-universe-snapshot-v1",
+        workspaceId: input.workspaceId,
+        universeId: input.universeId,
+        mode: input.mode,
+        anchorAt: input.anchorAt,
+        evidenceSnapshotId: input.evidenceSnapshotId,
+        evidenceSnapshotFingerprint: input.evidenceSnapshotFingerprint,
+        members: input.members,
+      },
+    },
+  );
+  assert.deepEqual(
+    JSON.parse(String(requests[1]!.init.body)),
+    {
+      p_payload: {
+        schemaVersion: "run-deal-universe-binding-v1",
+        workspaceId: input.workspaceId,
+        runId: input.runId,
+        universeId: input.universeId,
+        universeFingerprint: fingerprint,
+      },
+    },
+  );
+});
+
 test("current Deal status overlays stored memory and invalidates the eligible snapshot", async () => {
   const sources = createMemorySourceRegistry();
   const registry = createMemoryDealRegistry({ sourceRegistry: sources });
@@ -1461,6 +1624,148 @@ test("Supabase Deal memory projects canonical public web text with exact revisio
       sourceRevisionId: "revision_public",
     }))?.bundle.facts,
     expectedFacts,
+  );
+});
+
+test("Supabase Deal memory projects a permanently labelled non-gating research screening fact without inventing an interaction", async () => {
+  const contentFingerprint =
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const value = [
+    "Sample research screening record.",
+    "Synthetic research-only context; no meeting or VC interaction occurred.",
+    "Disposition: qualified_not_selected.",
+    "Qualification: Recent public evidence qualifies the company for monitoring.",
+    "Not selected reason: Evidence does not yet establish a changed action.",
+    "Reconsideration conditions: Verify independent customer adoption.",
+  ].join(" ");
+  const sourceRef = {
+    schemaVersion: "source-ref-v2" as const,
+    adaptation: "canonical" as const,
+    id: "sample_research_screening_centralize_v1",
+    provenance: "source_document" as const,
+    title: "Sample research screening record",
+    canonicalUrl: null,
+    documentId: "source_sample_research_screening_centralize_v1",
+    publisher: "Internal Research Registry",
+    providerId: "belief-reversal-research-seed-v1",
+    eventAt: "2026-08-03T13:34:43.000Z",
+    eventAtPrecision: "timestamp" as const,
+    publishedAt: null,
+    publishedAtPrecision: null,
+    retrievedAt: "2026-08-03T13:34:43.000Z",
+    retrievedAtPrecision: "timestamp" as const,
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: ["centralize"],
+    sourceClass: "internal_decision_record" as const,
+    sourceAuthority: "primary" as const,
+    evidenceRole: "context" as const,
+    sourceRevisionId: "revision_sample_research_centralize_v1",
+    locator: { kind: "json_pointer" as const, pointer: "/record" },
+    contentFingerprint,
+    text: {
+      status: "normalized_only" as const,
+      normalizedStatement: value,
+    },
+  };
+  const canonicalRow = {
+    workspace_id: "workspace_one",
+    evidence_id: sourceRef.id,
+    deal_id: "deal_centralize_v1",
+    source_id: sourceRef.documentId,
+    source_revision_id: sourceRef.sourceRevisionId,
+    payload: {
+      id: sourceRef.id,
+      workspaceId: "workspace_one",
+      dealId: "deal_centralize_v1",
+      sourceId: sourceRef.documentId,
+      sourceRevisionId: sourceRef.sourceRevisionId,
+      provenanceOrigin: "uploaded_document",
+      field: "research_disposition_context",
+      value,
+      unit: null,
+      currency: null,
+      periodStart: null,
+      periodEnd: null,
+      publishedAt: null,
+      eventAt: null,
+      retrievedAt: "2026-08-03T13:34:43.000Z",
+      locator: {
+        kind: "text_range",
+        start: 0,
+        end: value.length,
+        excerpt: value,
+      },
+      sourceRole: "management",
+      assertionStatus: "reported",
+      verificationMethod: "synthetic_research_screening_record_v1",
+      freshness: "current",
+      acceptedForGate: false,
+      sourceRef,
+    },
+  };
+  const repositoryFor = (
+    evidenceRow: typeof canonicalRow,
+  ) => createSupabaseDealRegistry({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    fetchImpl: async (input) => {
+      const url = String(input);
+      if (url.includes("/deals?")) {
+        return Response.json([{
+          id: "deal_centralize_v1",
+          workspace_id: "workspace_one",
+          company_id: "company_centralize_v1",
+          company_name: "Centralize",
+          status: "screening",
+          analysis_eligible_at: "2026-08-03T13:34:43.000Z",
+          active_source_revision_fingerprint: sourceRevisionFingerprint([
+            sourceRef.sourceRevisionId,
+          ]),
+        }]);
+      }
+      if (url.includes("/deal_source_assignments?")) {
+        return Response.json([{
+          deal_id: "deal_centralize_v1",
+          source_id: sourceRef.documentId,
+          source_revision_id: sourceRef.sourceRevisionId,
+        }]);
+      }
+      if (url.includes("/source_evidence_items?")) {
+        return Response.json([evidenceRow]);
+      }
+      if (url.includes("/source_documents?")) {
+        return Response.json([{
+          id: sourceRef.documentId,
+          title: "Sample research screening record",
+          role: "sample_research_screening_record",
+        }]);
+      }
+      if (url.includes("/source_revisions?")) {
+        return Response.json([{
+          workspace_id: "workspace_one",
+          id: sourceRef.sourceRevisionId,
+          source_id: sourceRef.documentId,
+          content_hash: contentFingerprint,
+          extracted_at: "2026-08-03T13:34:43.000Z",
+        }]);
+      }
+      return Response.json([]);
+    },
+  });
+  const repository = repositoryFor(canonicalRow);
+
+  const [bundle] = await repository.listAnalysisEligibleBundles(
+    "workspace_one",
+  );
+  assert.deepEqual(bundle?.facts, [{ text: value, sources: [sourceRef] }]);
+  assert.deepEqual(bundle?.interactions, []);
+  await assert.rejects(
+    repositoryFor({
+      ...canonicalRow,
+      payload: { ...canonicalRow.payload, acceptedForGate: true },
+    }).listAnalysisEligibleBundles("workspace_one"),
+    /permanent non-interaction and non-gating identity/iu,
   );
 });
 

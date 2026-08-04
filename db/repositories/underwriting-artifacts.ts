@@ -20,6 +20,7 @@ import {
   FundPolicySnapshotSchema,
   FrameworkDisagreementSchema,
   FrameworkJudgmentSchema,
+  parseActionDraftRead,
   ResolvedUnderwritingContextSchema,
   ScenarioModelSchema,
   ValuationEvaluationSchema,
@@ -42,6 +43,10 @@ import {
   beliefActionListsEqual,
 } from "../../lib/reports/action-policy";
 import { CONTEXT_ROUTER_VERSION } from "../../lib/underwriting/router";
+import { compareUtf8 } from "../../lib/format/canonical-order";
+import {
+  buildCandidateMissingEvidence,
+} from "../../lib/underwriting/missing-evidence";
 import {
   addDecimalStrings,
   divideDecimalStrings,
@@ -60,6 +65,12 @@ const IdSchema = z.string().min(1).refine(
   "IDs cannot have surrounding whitespace",
 );
 const FingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+export const CompanyAnalysisUnknownRefSchema = z.strictObject({
+  fieldId: z.string().regex(/^semantic-field-[a-f0-9]{24}$/),
+  label: z.string().min(1),
+  externalLabel: z.string().min(1),
+});
 
 export const CandidateVersionSnapshotSchema = z.strictObject({
   fundPolicyId: IdSchema,
@@ -103,6 +114,7 @@ export const CandidateVersionSnapshotSchema = z.strictObject({
   schemaVersion: z.string().min(1),
   settingsFingerprint: z.string().min(1),
   applicationCommit: z.string().min(1),
+  companyAnalysisUnknowns: z.array(CompanyAnalysisUnknownRefSchema).optional(),
 }).superRefine((value, context) => {
   const benchmarkValues = [
     value.benchmarkPackId,
@@ -132,6 +144,23 @@ export const CandidateVersionSnapshotSchema = z.strictObject({
       code: "custom",
       message:
         "Framework catalog version, fingerprint, and corpus digest must be pinned together.",
+    });
+  }
+  const unknowns = value.companyAnalysisUnknowns;
+  if (
+    unknowns !== undefined
+    && (
+      new Set(unknowns.map(({ fieldId }) => fieldId)).size !== unknowns.length
+      || unknowns.some(({ fieldId }, index) =>
+        index > 0
+        && compareUtf8(unknowns[index - 1]!.fieldId, fieldId) >= 0
+      )
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Company Analysis unknown references must be unique and UTF-8 sorted.",
     });
   }
 });
@@ -325,8 +354,9 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
         );
       }
       const { bundle, draft, index } = matches[0];
+      const readableDraft = parseActionDraftRead(draft);
       const updated = ActionDraftSchema.parse({
-        ...draft,
+        ...readableDraft,
         body,
         updatedAt: now().toISOString(),
       });
@@ -771,7 +801,7 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
       if (!Array.isArray(existingRows) || !existingRows[0]) return null;
       const existingPayload = (existingRows[0] as Record<string, unknown>)
         .payload;
-      const existing = ActionDraftSchema.parse(existingPayload);
+      const existing = parseActionDraftRead(existingPayload);
       ActionDraftSchema.parse({ ...existing, body });
       const value = await request("/rpc/replace_action_draft_body", {
         method: "POST",
@@ -782,7 +812,7 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
         }),
       }) as Record<string, unknown> | Record<string, unknown>[] | null;
       const row = Array.isArray(value) ? value[0] : value;
-      return row ? ActionDraftSchema.parse(row) : null;
+      return row ? parseActionDraftRead(row) : null;
     },
   };
   return repository;
@@ -822,8 +852,11 @@ export function prepareCandidateFinalization(
   );
   const valuation = ValuationEvaluationSchema.parse(input.valuation);
   const decision = DecisionResultSchema.parse(input.decision);
+  const isNewFinalization = options.mode !== "persisted_read";
   const actionDrafts = input.actionDrafts.map((value) =>
-    ActionDraftSchema.parse(value)
+    isNewFinalization
+      ? ActionDraftSchema.parse(value)
+      : parseActionDraftRead(value)
   );
   const versionSnapshot = CandidateVersionSnapshotSchema.parse(
     input.versionSnapshot,
@@ -831,13 +864,13 @@ export function prepareCandidateFinalization(
   const v2Drafts = actionDrafts.filter((draft): draft is ActionDraftV2 =>
     "schemaVersion" in draft && draft.schemaVersion === "action-draft-v2"
   );
-  const isNewFinalization = options.mode !== "persisted_read";
   if (
     isNewFinalization
     && (
       context.analysisMode === undefined
       || actionDrafts.length === 0
       || v2Drafts.length !== actionDrafts.length
+      || versionSnapshot.companyAnalysisUnknowns === undefined
     )
   ) {
     throw new Error(
@@ -896,14 +929,19 @@ export function prepareCandidateFinalization(
       ? ["internal_memo", "founder_email", "diligence_request"]
       : ["internal_memo"];
     const actualFormats = v2Drafts.map(({ format }) => format);
-    const expectedMissingEvidence = evidencePack.coverage.missingFieldIds
-      .map((fieldId) => ({
-        fieldId,
-        label: fieldId.replaceAll("_", " "),
-        reasonCode: "MISSING_CRITICAL_EVIDENCE",
+    const expectedGenericMissingEvidence = buildCandidateMissingEvidence({
+      criticalFieldIds: evidencePack.coverage.missingFieldIds,
+    });
+    const expectedMissingEvidence = [
+      ...expectedGenericMissingEvidence,
+      ...(versionSnapshot.companyAnalysisUnknowns ?? []).map((unknown) => ({
+        ...unknown,
+        reasonCode: "UNRESOLVED_COMPANY_OR_EVENT_UNKNOWN",
         mostLikelyDecisionImpact:
-          "Providing accepted evidence may raise or lower the formal decision ceiling.",
-      }));
+          "Resolving this company- or event-specific unknown may raise or lower the formal decision ceiling.",
+      })),
+    ].sort((left, right) => compareUtf8(left.fieldId, right.fieldId));
+    const canonicalMissingEvidence = v2Drafts[0]?.missingEvidence ?? [];
     if (
       !beliefActionListsEqual(
         versionSnapshot.canonicalActions!,
@@ -923,8 +961,12 @@ export function prepareCandidateFinalization(
       || expectedFormats.some((format) =>
         actualFormats.filter((actual) => actual === format).length !== 1
       )
+      || !statusSafeMissingEvidenceMatches(
+        canonicalMissingEvidence,
+        expectedMissingEvidence,
+      )
       || v2Drafts.some((draft) =>
-        !isDeepStrictEqual(draft.missingEvidence, expectedMissingEvidence)
+        !isDeepStrictEqual(draft.missingEvidence, canonicalMissingEvidence)
       )
     ) {
       throw new Error(
@@ -1158,6 +1200,22 @@ export function prepareCandidateFinalization(
     versionSnapshot,
     claimEdges,
   };
+}
+
+function statusSafeMissingEvidenceMatches(
+  actual: ActionDraftV2["missingEvidence"],
+  expected: ActionDraftV2["missingEvidence"],
+): boolean {
+  const actualIds = actual.map(({ fieldId }) => fieldId);
+  if (
+    new Set(actualIds).size !== actualIds.length
+    || actualIds.some((fieldId, index) =>
+      index > 0 && compareUtf8(actualIds[index - 1]!, fieldId) > 0
+    )
+  ) {
+    return false;
+  }
+  return isDeepStrictEqual(actual, expected);
 }
 
 function validateCurrentFrameworkJudgments(input: {

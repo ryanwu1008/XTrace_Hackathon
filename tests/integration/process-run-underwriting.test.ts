@@ -32,6 +32,7 @@ import {
   BeliefChangeAssessmentV1Schema,
   CompanyAnalysisSchema,
   type CompanyAnalysis,
+  type DealSemanticField,
   type DealInteraction,
 } from "../../lib/contracts/domain";
 import { sourceTextForRetrieval } from "../../lib/contracts/source-evidence";
@@ -64,6 +65,9 @@ import {
   SEMANTIC_CONTEXT_MAPPING_VERSION,
 } from "../../lib/underwriting/evidence/semantic-projector";
 import { createActionDraftGenerator } from "../../lib/underwriting/action-drafts";
+import {
+  buildCandidateMissingEvidence,
+} from "../../lib/underwriting/missing-evidence";
 import { IntegrationTransportError } from "../../lib/api/errors";
 import {
   CONTEXT_ROUTER_VERSION,
@@ -773,6 +777,7 @@ function finalization(input: {
     (fieldId) => ({
       fieldId,
       label: fieldId.replaceAll("_", " "),
+      externalLabel: fieldId.replaceAll("_", " "),
       reasonCode: "MISSING_CRITICAL_EVIDENCE",
       mostLikelyDecisionImpact:
         "Providing accepted evidence may raise or lower the formal decision ceiling.",
@@ -895,6 +900,7 @@ function finalization(input: {
       schemaVersion: "framework-judgment-v1",
       settingsFingerprint: `sha256:${"b".repeat(64)}`,
       applicationCommit: "task13-test",
+      companyAnalysisUnknowns: [],
     },
   };
 }
@@ -1245,7 +1251,7 @@ function imageReasonedMatch(eventId = "market_image") {
   };
 }
 
-test("selects at most five medium/high belief revisions and records every eligible Deal", async () => {
+test("admits every medium/high belief revision and uses score only for priority order", async () => {
   let sequence = 0;
   const runs = createMemoryUnderwritingRunsRepository({
     now: () => NOW,
@@ -1290,24 +1296,20 @@ test("selects at most five medium/high belief revisions and records every eligib
       ["deal_c", 3],
       ["deal_d", 4],
       ["deal_e", 5],
+      ["deal_f", 6],
     ],
   );
   assert.deepEqual(
     state.selections.filter(({ status }) => status === "not_selected")
       .map(({ dealId }) => dealId)
       .sort(),
-    ["deal_f", "deal_g"],
+    ["deal_g"],
   );
-  assert.equal(state.candidates.length, 5);
+  assert.equal(state.candidates.length, 6);
   assert.equal(
     state.candidates.some(({ dealId }) => dealId === "deal_f"),
-    false,
-    "rank six is not a candidate and must never be converted into Pass",
-  );
-  assert.match(
-    state.selections.find(({ dealId }) => dealId === "deal_f")?.reason ?? "",
-    /truncation warning/i,
-    "the candidate cap is a visible warning, not negative evidence",
+    true,
+    "priority six remains an admitted underwriting candidate",
   );
 });
 
@@ -1337,10 +1339,10 @@ test("underwriting rejects a legacy belief_revised label without a current hard-
   assert.equal(runs.inspect().selections[0]?.status, "not_selected");
 });
 
-test("matching policy, Worker report, internal draft, and underwriting share one UTF-8 Top-5 tie order", async () => {
+test("matching policy, Worker report, internal draft, and underwriting share one untruncated UTF-8 priority order", async () => {
   const analyses = ["deal_é", "deal_z", "deal_a", "deal_β", "deal_b", "deal_Ä"]
     .map((dealId) => analysis(dealId, 0.8));
-  const expected = ["deal_a", "deal_b", "deal_z", "deal_Ä", "deal_é"];
+  const expected = ["deal_a", "deal_b", "deal_z", "deal_Ä", "deal_é", "deal_β"];
 
   assert.deepEqual(
     rankBeliefRevisionCandidates(analyses).map(({ dealId }) => dealId),
@@ -1871,6 +1873,58 @@ test("processing a named candidate cannot lease an older queued candidate", asyn
   );
 });
 
+test("a persisted partial candidate is terminal on replay and mixes with completed work into a partial batch", async () => {
+  let sequence = 0;
+  const memoryRuns = createMemoryUnderwritingRunsRepository({
+    now: () => NOW,
+    idGenerator: (kind) => `${kind}_${++sequence}`,
+    leaseTokenGenerator: () => `lease_${++sequence}`,
+  });
+  let claimCount = 0;
+  let executorCount = 0;
+  const runs = {
+    ...memoryRuns,
+    async createSelectedCandidates(input: { batchId: string; dealIds: string[] }) {
+      const candidates = await memoryRuns.createSelectedCandidates(input);
+      return candidates.map((candidate, index) => ({
+        ...candidate,
+        status: index === 0 ? "completed" as const : "partial" as const,
+        finalizedAt: NOW.toISOString(),
+      }));
+    },
+    async claimCandidate(input: Parameters<typeof memoryRuns.claimCandidate>[0]) {
+      claimCount += 1;
+      return memoryRuns.claimCandidate(input);
+    },
+  };
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    candidateExecutor: async () => {
+      executorCount += 1;
+      throw new Error("terminal candidates must not execute again");
+    },
+  });
+  const analyses = [analysis("deal_complete", 0.99), analysis("deal_partial", 0.98)];
+  const batch = await orchestrator.createBatchAndSelections({
+    scanRun,
+    report: report(analyses),
+    analyses,
+    eligibleDeals: analyses.map(({ dealId }) => deal(dealId)),
+    forceRefresh: false,
+  });
+  const partialId = memoryRuns.inspect().candidates.find(
+    ({ dealId }) => dealId === "deal_partial",
+  )!.id;
+
+  const replay = await orchestrator.processCandidate(partialId);
+
+  assert.equal(batch.status, "partial");
+  assert.equal(replay.status, "partial");
+  assert.equal(claimCount, 0);
+  assert.equal(executorCount, 0);
+});
+
 test("byte-identical force refresh completes as an immutable artifact alias", async () => {
   let sequence = 0;
   const artifacts = createMemoryUnderwritingArtifactsRepository();
@@ -2266,7 +2320,20 @@ test("runs the source-grounded candidate chain once and persists communication c
     }),
     now: () => NOW,
   });
-  const analyses = [analysis("deal_a", 0.99)];
+  const companySpecificUnknown = {
+    id: `semantic-field-${"a".repeat(24)}`,
+    schemaVersion: "deal-semantic-field-v1",
+    fieldId: "unknowns",
+    classification: "unknown",
+    reason:
+      "Akamai and Kyndryl channel bookings, margins, and sell-through remain unavailable.",
+    externalLabel: "Current partner bookings, margins, and sell-through",
+  } satisfies DealSemanticField;
+  const analysisWithUnknown = analysis("deal_a", 0.99);
+  analysisWithUnknown.companyBrief.structuredFields = [
+    companySpecificUnknown,
+  ];
+  const analyses = [analysisWithUnknown];
   const input = {
     scanRun,
     report: report(analyses),
@@ -2324,8 +2391,45 @@ test("runs the source-grounded candidate chain once and persists communication c
   );
   const saved = artifacts.inspect();
   assert.equal(saved.bundles.length, 1);
+  const savedBundle = saved.bundles[0]!;
+  const missingEvidence = buildCandidateMissingEvidence({
+    criticalFieldIds: savedBundle.evidencePack.coverage.missingFieldIds,
+    structuredFields: analysisWithUnknown.companyBrief.structuredFields,
+  });
   assert.equal(
-    saved.bundles[0]?.versionSnapshot.referenceCatalogFingerprint,
+    runs.inspect().checkpoints.filter(
+      ({ stage }) => stage === "narrative_drafts",
+    ).length,
+    1,
+    "an identical replay must reuse the persisted narrative draft stage",
+  );
+  assert.equal(
+    runs.inspect().checkpoints.find(
+      ({ stage }) => stage === "narrative_drafts",
+    )?.inputFingerprint,
+    createCanonicalFingerprint({
+      stage: "narrative_drafts",
+      pack: savedBundle.evidencePack,
+      calculations: savedBundle.calculations,
+      judgments: savedBundle.judgments,
+      disagreements: savedBundle.disagreements,
+      decision: savedBundle.decision,
+      missingEvidence,
+    }),
+  );
+  assert.equal(
+    savedBundle.actionDrafts.every((draft) =>
+      "missingEvidence" in draft
+      && draft.missingEvidence.some(
+        ({ fieldId, label }) =>
+          fieldId === companySpecificUnknown.id
+          && label === companySpecificUnknown.reason,
+      )
+    ),
+    true,
+  );
+  assert.equal(
+    savedBundle.versionSnapshot.referenceCatalogFingerprint,
     TEST_REFERENCE_CATALOG.definitionFingerprint,
   );
   assert.equal(
@@ -3632,6 +3736,50 @@ test("processes a confirmed uploaded Deal from the authoritative registry before
     result.report.companyAnalyses[0]?.outcome,
     "no_material_change",
   );
+  const universe = await registry.getRunDealUniverse({
+    workspaceId: claimed.workspaceId,
+    runId: claimed.id,
+  });
+  assert.ok(universe);
+  assert.equal(universe.dealCount, 1);
+  assert.deepEqual(universe.members.map(({ dealId, companyId, dealStatus }) => ({
+    dealId,
+    companyId,
+    dealStatus,
+  })), [{
+    dealId: "deal_uploaded",
+    companyId: "company_uploaded",
+    dealStatus: "passed",
+  }]);
+  const audit = result.report.companyAnalyses[0]?.currentRunAudit;
+  assert.ok(audit);
+  assert.equal(audit.workspaceId, claimed.workspaceId);
+  assert.equal(audit.companyId, "company_uploaded");
+  assert.equal(audit.dealUniverseId, universe.universeId);
+  assert.equal(audit.dealUniverseFingerprint, universe.universeFingerprint);
+  assert.equal(
+    audit.evidenceContextFingerprint,
+    claimed.evidenceContext.state === "current"
+      ? claimed.evidenceContext.contextFingerprint
+      : null,
+  );
+  const evidenceBinding = await runs.getEvidenceBinding(
+    claimed.workspaceId,
+    claimed.id,
+  );
+  assert.ok(evidenceBinding);
+  assert.deepEqual(
+    audit.consideredMarketEventIds,
+    evidenceBinding.events.map(({ id }) => id),
+  );
+  assert.deepEqual(audit.matchedMarketEventIds, []);
+  assert.equal(audit.outcome, "no_material_change");
+  assert.match(audit.whyNotUnderwriting ?? "", /no material belief change/i);
+  assert.deepEqual(audit.recall, {
+    attempted: false,
+    succeeded: false,
+    failureReason: null,
+  });
   assert.deepEqual(
     underwritingInput?.eligibleDeals.map(({ id }) => id),
     ["deal_uploaded"],

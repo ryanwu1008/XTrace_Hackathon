@@ -680,7 +680,7 @@ export async function POST(
   try {
     const context = await resolveRouteRequestContext(request, dependencies);
     requirePermission(context, "readWorkspace");
-    const rate = await rateLimitRequest(
+    const rate = await (dependencies.rateLimitRequest ?? rateLimitRequest)(
       request,
       "chat",
       20,

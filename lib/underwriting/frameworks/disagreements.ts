@@ -56,6 +56,9 @@ export function buildFrameworkDisagreements(input: {
   const judgments = input.judgments
     .map((judgment) => FrameworkJudgmentSchema.parse(judgment))
     .sort((left, right) => compareUtf8(left.id, right.id));
+  const judgmentsById = new Map(
+    judgments.map((judgment) => [judgment.id, judgment] as const),
+  );
   const judgmentsByCardId = new Map<string, FrameworkJudgment[]>();
 
   for (const judgment of judgments) {
@@ -155,10 +158,25 @@ export function buildFrameworkDisagreements(input: {
 
   return disagreements.sort((left, right) =>
     compareUtf8(
-      `${left.topic}\u0000${left.leftJudgmentId}\u0000${left.rightJudgmentId}`,
-      `${right.topic}\u0000${right.leftJudgmentId}\u0000${right.rightJudgmentId}`,
+      disagreementSemanticOrderKey(left, judgmentsById),
+      disagreementSemanticOrderKey(right, judgmentsById),
     )
   );
+}
+
+function disagreementSemanticOrderKey(
+  disagreement: FrameworkDisagreement,
+  judgmentsById: ReadonlyMap<string, FrameworkJudgment>,
+): string {
+  const left = judgmentsById.get(disagreement.leftJudgmentId);
+  const right = judgmentsById.get(disagreement.rightJudgmentId);
+  return [
+    disagreement.topic,
+    left?.frameworkCardId ?? disagreement.leftJudgmentId,
+    right?.frameworkCardId ?? disagreement.rightJudgmentId,
+    left?.conclusion ?? "",
+    right?.conclusion ?? "",
+  ].join("\u0000");
 }
 
 function findUniqueCard(

@@ -318,6 +318,84 @@ test("rejects canonical evidence whose document ID does not own its revision", a
   }), /document.*revision|source.*revision/i);
 });
 
+test("sample research screening evidence stays a non-gating exact source-document fact", async () => {
+  const repository = createMemoryEvidencePacksRepository();
+  const input = {
+    id: "sample_research_screening_centralize_v1",
+    workspaceId: "workspace_one",
+    dealId: "deal_centralize_v1",
+    sourceId: "source_sample_research_screening_centralize_v1",
+    sourceRevisionId:
+      "source_revision_source_sample_research_screening_centralize_v1_1",
+    provenanceOrigin: "uploaded_document" as const,
+    field: "research_disposition_context",
+    value:
+      "Sample research screening record. Synthetic research-only context; no meeting or VC interaction occurred.",
+    unit: null,
+    currency: null,
+    periodStart: null,
+    periodEnd: null,
+    publishedAt: null,
+    eventAt: null,
+    retrievedAt: "2026-08-03T13:34:43.000Z",
+    locator: {
+      kind: "text_range" as const,
+      start: 0,
+      end: 98,
+      excerpt:
+        "Sample research screening record. Synthetic research-only context; no meeting or VC interaction occurred.",
+    },
+    sourceRole: "management" as const,
+    assertionStatus: "reported" as const,
+    verificationMethod: "synthetic_research_screening_record_v1",
+    freshness: "current" as const,
+    acceptedForGate: false,
+    sourceRef: WritableSourceRefV2Schema.parse({
+      schemaVersion: "source-ref-v2",
+      adaptation: "canonical",
+      id: "sample_research_screening_centralize_v1",
+      provenance: "source_document",
+      title: "Sample research screening record",
+      canonicalUrl: null,
+      documentId: "source_sample_research_screening_centralize_v1",
+      publisher: "Internal Research Registry",
+      providerId: "belief-reversal-research-seed-v1",
+      eventAt: "2026-08-03T13:34:43.000Z",
+      eventAtPrecision: "timestamp",
+      publishedAt: null,
+      publishedAtPrecision: null,
+      retrievedAt: "2026-08-03T13:34:43.000Z",
+      retrievedAtPrecision: "timestamp",
+      updatedAt: null,
+      updatedAtPrecision: null,
+      entityKeys: ["centralize"],
+      sourceClass: "internal_decision_record",
+      sourceAuthority: "primary",
+      evidenceRole: "context",
+      sourceRevisionId:
+        "source_revision_source_sample_research_screening_centralize_v1_1",
+      locator: { kind: "json_pointer", pointer: "/record" },
+      contentFingerprint: `sha256:${"a".repeat(64)}`,
+      text: {
+        status: "normalized_only",
+        normalizedStatement:
+          "Sample research screening record. Synthetic research-only context; no meeting or VC interaction occurred.",
+      },
+    }),
+  };
+
+  await repository.putSourceEvidence([input]);
+  assert.deepEqual(await repository.listSourceEvidence({
+    workspaceId: input.workspaceId,
+    dealId: input.dealId,
+    sourceRevisionIds: [input.sourceRevisionId],
+  }), [input]);
+  await assert.rejects(
+    repository.putSourceEvidence([{ ...input, acceptedForGate: true }]),
+    /synthetic-record policy/iu,
+  );
+});
+
 test("public claim prose is never a Fact while reviewed semantic facts and security assumptions are projected", async () => {
   const { repository, builder, sourceRegistry } = await setup();
   const claimId = "claim_semantic_projection";
@@ -410,6 +488,7 @@ test("public claim prose is never a Fact while reviewed semantic facts and secur
       fieldId: "unknowns",
       classification: "unknown",
       reason: "Current valuation is unknown.",
+      externalLabel: "Current valuation evidence",
     }, {
       id: "semantic-field-666666666666666666666666",
       schemaVersion: "deal-semantic-field-v1",

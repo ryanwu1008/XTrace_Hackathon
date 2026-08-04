@@ -6,6 +6,7 @@ import {
   type SourceRefV2,
 } from "../contracts/source-evidence";
 import type { BeliefAction, DealStatus } from "../contracts/domain";
+import type { MatchingPriorInteractionCandidate } from "./service";
 
 /**
  * Serialize evidence for a model without collapsing normalized provider prose
@@ -112,15 +113,7 @@ export function serializeMemoryContextForReasoner(context: {
   text: string;
   sourceIds: string[];
   fixtureIds: string[];
-  interactionCandidates?: Array<{
-    id: string;
-    occurredAt: string;
-    sourceIds: string[];
-    revisitConditions: string[];
-    provenance: "demo_fixture";
-    label: "Sample decision record";
-    priorActions?: BeliefAction[];
-  }>;
+  interactionCandidates?: MatchingPriorInteractionCandidate[];
 }) {
   return {
     dealId: context.dealId,
@@ -135,6 +128,12 @@ export function serializeMemoryContextForReasoner(context: {
         revisitConditions: candidate.revisitConditions,
         provenance: candidate.provenance,
         label: candidate.label,
+        ...(candidate.provenance === "source_document"
+          ? {
+              meetingOccurred: candidate.meetingOccurred,
+              vcInteraction: candidate.vcInteraction,
+            }
+          : {}),
         priorActions: candidate.priorActions?.map(serializeActionForReasoner)
           ?? null,
       }),

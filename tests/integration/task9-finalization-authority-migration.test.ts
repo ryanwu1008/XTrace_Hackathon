@@ -46,6 +46,7 @@ function currentPayload(): CandidateFinalization {
   const missingEvidence = [{
     fieldId: "arr",
     label: "arr",
+    externalLabel: "arr",
     reasonCode: "MISSING_CRITICAL_EVIDENCE",
     mostLikelyDecisionImpact:
       "Providing accepted evidence may raise or lower the formal decision ceiling.",
@@ -255,6 +256,7 @@ function currentPayload(): CandidateFinalization {
       schemaVersion: "underwriting-schema-v2",
       settingsFingerprint: `sha256:${"7".repeat(64)}`,
       applicationCommit: "task9-test",
+      companyAnalysisUnknowns: [],
     },
   };
 }
@@ -264,13 +266,18 @@ test("0022 is the contiguous local-only Task 9 authority migration", () => {
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
     entries: Array<{ idx: number; tag: string }>;
   };
-  assert.deepEqual(journal.entries.at(-1), {
+  assert.deepEqual(
+    journal.entries.find((entry) =>
+      entry.tag === "0022_task9_finalization_authority"
+    ),
+    {
     idx: 22,
     version: "7",
     when: 1785924000000,
     tag: "0022_task9_finalization_authority",
     breakpoints: true,
-  });
+    },
+  );
   const launcher = readFileSync(fileURLToPath(new URL(
     "../../scripts/apply-production-migrations.zsh",
     import.meta.url,
@@ -320,6 +327,8 @@ test(
           "select public.activate_fund_policy_version(jsonb_build_object('workspaceId','workspace_authority','actorId',null,'expectedActiveVersionId',null,'action','recommended'))",
           "insert into public.companies(id,workspace_id,name) values ('company_authority','workspace_authority','Authority Co')",
           "insert into public.deals(id,workspace_id,company_id,company_name,status) values ('deal_authority','workspace_authority','company_authority','Authority Co','screening')",
+          "insert into public.intelligence_reports(id,workspace_id,run_id,market_summary,analysis_status) values ('report_authority','workspace_authority','00000000-0000-4000-8000-000000000022','Authority completed intelligence report','completed')",
+          "insert into public.company_analyses(id,workspace_id,report_id,run_id,deal_id,company_name,deal_status,outcome,confidence,score,investment_memory,market_evidence,implications,recommended_next_move,company_brief,source_refs) values ('analysis_authority','workspace_authority','report_authority','00000000-0000-4000-8000-000000000022','deal_authority','Authority Co','screening','belief_revised','medium',1,'{}'::jsonb,'{}'::jsonb,'{\"positive\":[],\"negative\":[]}'::jsonb,'Advance diligence','{\"structuredFields\":[]}'::jsonb,'[]'::jsonb)",
           `insert into public.source_documents(id,filename,title,role,company_name,deal_id,checksum,byte_size,object_key) values ('source_authority','authority.md','Authority','deal_document','Authority Co','deal_authority','checksum',1,'private/authority.md')`,
           `insert into public.source_revisions(id,workspace_id,source_id,revision,content_hash,object_key,object_version,content_type,extractor_id,extractor_version,extracted_at,created_at) values ('revision_authority','workspace_authority','source_authority',1,'sha256:${"d".repeat(64)}','private/authority.md','object:v1','text/markdown','plain_text_v1','1','${NOW}','${NOW}')`,
           `insert into public.underwriting_batches(id,workspace_id,scan_run_id,status,batch_input_fingerprint,fund_policy_snapshot_id,force_refresh) values ('batch_authority','workspace_authority','00000000-0000-4000-8000-000000000022','running','sha256:${"1".repeat(64)}','fund_policy:workspace_authority:v1',false)`,

@@ -761,6 +761,7 @@ function toFinalizedSourceRef(source: EvidenceSourceRef): FinalizedChatSourceRef
     documentId: source.documentId,
     sourceRevisionId: source.sourceRevisionId,
     contentFingerprint: source.contentFingerprint,
+    canonicalSource: structuredClone(source),
     text: structuredClone(source.text),
   };
 }

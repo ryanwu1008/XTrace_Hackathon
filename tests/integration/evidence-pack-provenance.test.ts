@@ -218,3 +218,41 @@ test("rejects XTrace lineage that names a source outside the exact revision snap
     /XTrace.*source lineage/i,
   );
 });
+
+test("exact Sample decision lineage binds its revision through fixtureIds without becoming a factual source", async () => {
+  const { builder, sourceRegistry } = await fixture();
+  await sourceRegistry.createInitialRevision({
+    id: "revision_sample",
+    workspaceId: "workspace_1",
+    sourceId: "source_fixture_1",
+    contentHash: "sha256:sample-decision-record",
+    objectKey: "private/deal_1/sample.json",
+    objectVersion: "object:sample:v1",
+    contentType: "application/json",
+    extractorId: "sample_decision_v1",
+    extractorVersion: "1",
+    extractedAt: "2026-07-29T09:00:00.000Z",
+    createdAt: "2026-07-29T09:00:01.000Z",
+  });
+
+  const pack = await builder.build({
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    asOfDate: "2026-07-29",
+    sourceRevisionIds: ["revision_1", "revision_sample"],
+    xtraceLineage: {
+      memoryIds: ["memory_public", "memory_sample"],
+      sourceRevisionIds: ["revision_1", "revision_sample"],
+      sourceIds: ["source_1"],
+      fixtureIds: ["fixture_1"],
+      capturedAt: "2026-07-29T09:01:30.000Z",
+    },
+    context,
+    ...referenceInputs,
+  });
+
+  assert.deepEqual(pack.sourceRevisionIds, ["revision_1", "revision_sample"]);
+  assert.equal(pack.facts.some(({ sourceRevisionId }) =>
+    sourceRevisionId === "revision_sample"
+  ), false);
+});

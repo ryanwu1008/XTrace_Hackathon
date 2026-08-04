@@ -1,6 +1,7 @@
 # Belief-Reversal Demo Company Research and Integration Handoff
 
 **Status:** Approved product requirements; implementation has not started  
+**Superseded for underwriting selection:** The approved [2026-08-03 Underwrite All Belief Revisions product-decision addendum](2026-08-03-underwrite-all-belief-revisions-product-decision-addendum.md) overrides this document's Top-5, rank-cutoff, and fixed-capacity eligibility language. This handoff remains historical for its original research, provenance, and demo requirements.
 **Date:** 2026-08-01  
 **Audience:** The next Codex task or engineer taking over company research,
 demo-data authoring, report-quality validation, and end-to-end integration  

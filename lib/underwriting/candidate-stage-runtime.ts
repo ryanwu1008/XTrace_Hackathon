@@ -315,6 +315,17 @@ export async function createCandidateStageRuntime(input: {
         request.inputFingerprint,
       );
       if (stageState.status === "completed") {
+        const replayFingerprint = createCanonicalFingerprint({
+          stage: request.stage,
+          inputFingerprint: request.inputFingerprint,
+          result: stageState.outputPayload,
+        });
+        if (stageState.outputFingerprint !== replayFingerprint) {
+          throw new CandidateCheckpointReplayError(
+            request.stage,
+            `Completed ${request.stage} checkpoint output fingerprint does not match its payload.`,
+          );
+        }
         let replayed: T;
         try {
           replayed = request.parseOutput(stageState.outputPayload);
@@ -324,17 +335,6 @@ export async function createCandidateStageRuntime(input: {
             `Completed ${request.stage} checkpoint output failed contract validation: ${
               error instanceof Error ? error.message : String(error)
             }`,
-          );
-        }
-        const replayFingerprint = createCanonicalFingerprint({
-          stage: request.stage,
-          inputFingerprint: request.inputFingerprint,
-          result: replayed,
-        });
-        if (stageState.outputFingerprint !== replayFingerprint) {
-          throw new CandidateCheckpointReplayError(
-            request.stage,
-            `Completed ${request.stage} checkpoint output fingerprint does not match its payload.`,
           );
         }
         return replayed;

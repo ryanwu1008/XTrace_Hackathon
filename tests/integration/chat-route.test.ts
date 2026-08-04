@@ -28,6 +28,58 @@ import {
 } from "../helpers/source-evidence-v2";
 import type { ExactXTraceParentUnit } from "../../lib/xtrace/exact-parent-planner";
 
+test("Chat route uses an injected rate limiter without consulting ambient infrastructure", async () => {
+  let limiterCalls = 0;
+  const dependencies: RouteDependencies = {
+    async resolveRequestContext() {
+      return {
+        mode: "public_sandbox",
+        principal: {
+          userId: "system:local-rate-limit-test",
+          email: "local-rate-limit-test@invalid.local",
+        },
+        workspaceId: "workspace_local_rate_limit_test",
+        role: "sandbox",
+        permissions: {
+          readWorkspace: true,
+          readPrivateSources: true,
+          mutateSources: true,
+          managePolicy: true,
+          administerFrameworks: false,
+        },
+      };
+    },
+    async rateLimitRequest(request, scope, limit, windowMs, options) {
+      limiterCalls += 1;
+      assert.equal(new URL(request.url).hostname, "localhost");
+      assert.equal(scope, "chat");
+      assert.equal(limit, 20);
+      assert.equal(windowMs, undefined);
+      assert.equal(options?.context?.workspaceId, "workspace_local_rate_limit_test");
+      return { allowed: false, retryAfterSeconds: 13 };
+    },
+  };
+
+  const response = await POST(new Request("http://localhost/api/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      question: "What evidence changed?",
+      xtraceEnabled: false,
+    }),
+  }), undefined, dependencies);
+
+  assert.equal(limiterCalls, 1);
+  assert.equal(response.status, 429);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many Chat requests. Try again in 13 seconds.",
+      retryable: true,
+    },
+  });
+});
+
 test("Chat API rate-limit envelope remains public when persistent limiter transport rejects", async () => {
   const secret = "rate-limit-secret: connection reset";
   const previousUrl = process.env.SUPABASE_URL;

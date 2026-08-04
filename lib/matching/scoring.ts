@@ -73,8 +73,7 @@ export function rankQualifiedMatches<T extends { score: number }>(matches: T[]) 
         rankingId(a as T & { dealId?: string; id?: string }),
         rankingId(b as T & { dealId?: string; id?: string }),
       )
-    )
-    .slice(0, 5) as Array<T & { confidence: Exclude<OpportunityConfidence, "low"> }>;
+    ) as Array<T & { confidence: Exclude<OpportunityConfidence, "low"> }>;
 }
 
 function rankingId(value: { dealId?: string; id?: string }): string {

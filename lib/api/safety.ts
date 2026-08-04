@@ -10,12 +10,12 @@ interface RateLimitInput {
   now?: () => number;
 }
 
-interface RateLimitResult {
+export interface RateLimitResult {
   allowed: boolean;
   retryAfterSeconds: number;
 }
 
-interface PersistentRateLimitOptions {
+export interface PersistentRateLimitOptions {
   environment?: Environment;
   fetchImpl?: typeof fetch;
   context?: AuthorizedRequestContext;
@@ -110,6 +110,8 @@ export async function rateLimitRequest(
     windowMs,
   });
 }
+
+export type RateLimitRequest = typeof rateLimitRequest;
 
 export function requirePermission(
   context: AuthorizedRequestContext,

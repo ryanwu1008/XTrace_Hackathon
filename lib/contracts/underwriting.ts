@@ -454,7 +454,39 @@ export const UnderwritingBatchSchema = z.strictObject({
   createdAt: IsoDateTimeSchema,
 });
 
-export const UnderwritingSelectionSchema = z.strictObject({
+export const UnderwritingQueueStatusSchema = z.enum([
+  "queued",
+  "running",
+  "completed",
+  "partial",
+  "failed",
+]);
+
+export const UnderwritingQueueEntrySchema = z.strictObject({
+  batchId: IdSchema,
+  dealId: IdSchema,
+  priorityRank: z.number().int().positive(),
+  status: UnderwritingQueueStatusSchema,
+  candidateRunId: IdSchema,
+  reason: z.string().trim().min(1).optional(),
+}).superRefine((entry, context) => {
+  if (
+    (entry.status === "partial" || entry.status === "failed")
+    && entry.reason === undefined
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "Partial and failed underwriting queue entries require a reason.",
+    });
+  }
+});
+
+/**
+ * Read/write compatibility shape for the immutable historical persistence
+ * model. New API and UI projections must use UnderwritingQueueEntrySchema.
+ */
+export const LegacyPinnedUnderwritingSelectionSchema = z.strictObject({
   batchId: IdSchema,
   dealId: IdSchema,
   status: z.enum(["selected", "not_selected"]),
@@ -471,6 +503,10 @@ export const UnderwritingSelectionSchema = z.strictObject({
     });
   }
 });
+
+/** @deprecated Persistence compatibility only. */
+export const UnderwritingSelectionSchema =
+  LegacyPinnedUnderwritingSelectionSchema;
 
 export const CandidateRunSchema = z.strictObject({
   id: IdSchema,
@@ -538,6 +574,7 @@ export const XTraceLineageSnapshotSchema = z.strictObject({
 export const MissingEvidenceItemSchema = z.strictObject({
   fieldId: IdSchema,
   label: z.string().min(1),
+  externalLabel: z.string().min(1),
   reasonCode: z.string().min(1),
   mostLikelyDecisionImpact: z.string().min(1),
 });
@@ -579,14 +616,14 @@ export function canonicalExternalActionDraftBodies(input: {
   format: ExternalActionDraftFormat;
   missingEvidence: z.infer<typeof MissingEvidenceItemSchema>[];
 }): string[] {
-  if (input.missingEvidence.some(({ label }) =>
-    label.includes("\n") || label.includes("\r")
+  if (input.missingEvidence.some(({ externalLabel }) =>
+    externalLabel.includes("\n") || externalLabel.includes("\r")
   )) return [];
   const bulletLines = input.missingEvidence.length > 0
-    ? input.missingEvidence.map(({ label }) => `- ${label}`)
+    ? input.missingEvidence.map(({ externalLabel }) => `- ${externalLabel}`)
     : ["- No additional evidence item is currently requested."];
   const inlineLabels = input.missingEvidence.length > 0
-    ? input.missingEvidence.map(({ label }) => label).join("; ")
+    ? input.missingEvidence.map(({ externalLabel }) => externalLabel).join("; ")
     : "no saved missing-evidence item";
   const requestLines = [
     "Please share the following current evidence for review:",
@@ -756,6 +793,50 @@ export const ActionDraftSchema = z.union([
   LegacyActionDraftV1Schema,
 ]);
 
+/**
+ * Read adapter for action-draft-v2 JSON persisted before missing-evidence
+ * items gained an audience-safe external label. Canonical writes must continue
+ * to use ActionDraftSchema directly.
+ */
+export function parseActionDraftRead(
+  value: unknown,
+): z.infer<typeof ActionDraftSchema> {
+  const current = ActionDraftSchema.safeParse(value);
+  if (current.success) return current.data;
+  if (
+    typeof value !== "object"
+    || value === null
+    || (value as Record<string, unknown>).schemaVersion !== "action-draft-v2"
+    || !Array.isArray((value as Record<string, unknown>).missingEvidence)
+  ) {
+    throw current.error;
+  }
+
+  let adapted = false;
+  const missingEvidence = (
+    (value as Record<string, unknown>).missingEvidence as unknown[]
+  ).map((item) => {
+    if (
+      typeof item !== "object"
+      || item === null
+      || Object.prototype.hasOwnProperty.call(item, "externalLabel")
+    ) {
+      return item;
+    }
+    adapted = true;
+    return {
+      ...item,
+      externalLabel: (item as Record<string, unknown>).label,
+    };
+  });
+  if (!adapted) throw current.error;
+
+  return ActionDraftSchema.parse({
+    ...value,
+    missingEvidence,
+  });
+}
+
 export type FundPolicySnapshot = z.infer<typeof FundPolicySnapshotSchema>;
 export type ResolvedUnderwritingContext = z.infer<
   typeof ResolvedUnderwritingContextSchema
@@ -775,6 +856,15 @@ export type ScenarioModel = z.infer<typeof ScenarioModelSchema>;
 export type DecisionResult = z.infer<typeof DecisionResultSchema>;
 export type FinalSynthesis = DecisionResult;
 export type UnderwritingBatch = z.infer<typeof UnderwritingBatchSchema>;
+export type UnderwritingQueueStatus = z.infer<
+  typeof UnderwritingQueueStatusSchema
+>;
+export type UnderwritingQueueEntry = z.infer<
+  typeof UnderwritingQueueEntrySchema
+>;
+export type LegacyPinnedUnderwritingSelection = z.infer<
+  typeof LegacyPinnedUnderwritingSelectionSchema
+>;
 export type UnderwritingSelection = z.infer<
   typeof UnderwritingSelectionSchema
 >;

@@ -634,6 +634,43 @@ test("canonical event fingerprints bind payload while allowing explicit stable I
   );
 });
 
+test("market collection provenance may differ from its immutable trigger Source Revision", () => {
+  const immutableTrigger = sourceV2({
+    providerId: "belief_reversal_snapshot_v1",
+    retrievedAt: "2026-07-23",
+    retrievedAtPrecision: "date",
+  });
+
+  const collected = eventV2({
+    providerId: "belief_reversal_live_market_v1",
+    retrievedAt: "2026-07-24T12:00:00.000Z",
+    retrievedAtPrecision: "timestamp",
+    sources: [immutableTrigger],
+  });
+
+  assert.equal(collected.sources[0]!.providerId, "belief_reversal_snapshot_v1");
+  assert.equal(collected.providerId, "belief_reversal_live_market_v1");
+  assert.doesNotThrow(() => assertMarketEventFingerprint(collected));
+});
+
+test("market collection fails closed when it definitely predates trigger revision retrieval", () => {
+  const immutableTrigger = sourceV2({
+    providerId: "belief_reversal_snapshot_v1",
+    retrievedAt: "2026-07-23",
+    retrievedAtPrecision: "date",
+  });
+
+  assert.throws(
+    () => eventV2({
+      providerId: "belief_reversal_live_market_v1",
+      retrievedAt: "2026-07-22T23:59:59.999Z",
+      retrievedAtPrecision: "timestamp",
+      sources: [immutableTrigger],
+    }),
+    /collection cannot predate.*Source Revision retrieval/iu,
+  );
+});
+
 test("identity helpers hash schema-normalized persisted payloads", () => {
   const rawSource = sourceV2({
     title: "  Acme funding announcement  ",
@@ -1283,6 +1320,99 @@ test("excludes generic press releases even when a provider assigns broad market 
   assert.equal(selected.eligibleCount, 1);
 });
 
+test("admits explicit financing announcements and public security-incident disclosures", () => {
+  const selected = selectMarketEventsForAnalysis([
+    event({
+      id: "series-a-announcement",
+      title: "Henry reports a $16.5 million Series A",
+      eventType: "venture_news",
+      sectors: [],
+      themes: [],
+      summary: "The company announcement describes new institutional financing.",
+      confidence: "high",
+      sources: [{
+        id: "series-a-announcement-source",
+        provenance: "public_web",
+        title: "Henry reports a $16.5 million Series A",
+        url: "https://example.com/henry-series-a",
+        publisher: "Henry",
+        publishedAt: "2026-07-24T11:00:00.000Z",
+        excerpt: "Henry announced a $16.5 million Series A to expand its voice AI platform.",
+      }],
+    }),
+    event({
+      id: "security-incident-disclosure",
+      title: "Anthropic publicly discloses incidents involving evaluation environments",
+      eventType: "company_news",
+      sectors: [],
+      themes: [],
+      summary: "The official review describes incidents that affected security testing.",
+      confidence: "high",
+      sources: [{
+        id: "security-incident-disclosure-source",
+        provenance: "public_web",
+        title: "Anthropic publicly discloses incidents involving evaluation environments",
+        url: "https://example.com/security-incident-disclosure",
+        publisher: "Anthropic",
+        publishedAt: "2026-07-24T10:00:00.000Z",
+        excerpt: "Anthropic disclosed incidents that resulted in unauthorized access to real systems.",
+      }],
+    }),
+  ]);
+
+  assert.deepEqual(
+    new Set(selected.events.map((candidate) => candidate.title)),
+    new Set([
+      "Henry reports a $16.5 million Series A",
+      "Anthropic publicly discloses incidents involving evaluation environments",
+    ]),
+  );
+  assert.deepEqual(
+    selected.events.find((candidate) => candidate.title.startsWith("Henry"))?.themes,
+    ["funding"],
+  );
+  assert.deepEqual(
+    selected.events.find((candidate) => candidate.title.startsWith("Anthropic"))?.themes,
+    ["security-incident"],
+  );
+});
+
+test("does not treat incidental Series A or incident-response wording as market evidence", () => {
+  const selected = selectMarketEventsForAnalysis([
+    event({
+      id: "series-a-team-appointment",
+      title: "Series A team appoints a new operations leader",
+      summary: "The company announced an executive appointment.",
+      sources: [{
+        id: "series-a-team-appointment-source",
+        provenance: "public_web",
+        title: "Series A team appoints a new operations leader",
+        url: "https://example.com/series-a-team-appointment",
+        publisher: "Example News",
+        publishedAt: "2026-07-24T11:00:00.000Z",
+        excerpt: "The Series A team announced that a new operations leader joined the company.",
+      }],
+    }),
+    event({
+      id: "incident-response-appointment",
+      title: "Incident response team appoints a new leader",
+      summary: "The cybersecurity company announced an executive appointment.",
+      sources: [{
+        id: "incident-response-appointment-source",
+        provenance: "public_web",
+        title: "Incident response team appoints a new leader",
+        url: "https://example.com/incident-response-appointment",
+        publisher: "Example News",
+        publishedAt: "2026-07-24T10:00:00.000Z",
+        excerpt: "The incident response team announced its new leader.",
+      }],
+    }),
+  ]);
+
+  assert.equal(selected.events.length, 0);
+  assert.equal(selected.ineligibleCount, 2);
+});
+
 test("derives bounded sectors and themes from event evidence instead of static provider labels", () => {
   const selected = selectMarketEventsForAnalysis([
     event({
@@ -1311,6 +1441,31 @@ test("derives bounded sectors and themes from event evidence instead of static p
     ["artificial-intelligence", "cybersecurity"],
   );
   assert.deepEqual(selected.events[0].themes, ["regulation"]);
+});
+
+test("preserves reviewed taxonomy on exact Source Revision-backed canonical events", () => {
+  const reviewedSource = sourceV2({
+    documentId: "source_henry_series_a_v1",
+    sourceRevisionId: "source_revision_source_henry_series_a_v1_1",
+  });
+  const selected = selectMarketEventsForAnalysis([
+    eventV2({
+      sectors: ["commercial_real_estate_software"],
+      themes: ["enterprise_ai", "workflow_automation"],
+      sources: [reviewedSource],
+      triggerSourceId: reviewedSource.id,
+    }),
+  ]);
+
+  assert.equal(selected.events.length, 1);
+  assert.deepEqual(
+    selected.events[0].sectors,
+    ["commercial_real_estate_software"],
+  );
+  assert.deepEqual(
+    selected.events[0].themes,
+    ["enterprise_ai", "workflow_automation"],
+  );
 });
 
 test("uses a fixed safe default cap for market analysis", () => {

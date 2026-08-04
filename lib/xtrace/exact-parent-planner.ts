@@ -6,11 +6,15 @@ import type {
 } from "../../db/repositories/deal-registry";
 import type { SourceRegistry } from "../../db/repositories/source-registry";
 import { canonicalEvidenceJson } from "../contracts/source-evidence";
+import {
+  SAMPLE_RESEARCH_SCREENING_RECORD_LABEL,
+} from "../contracts/research-candidate";
 
 export type ExactXTraceParentKind =
   | "legacy_source_revision"
   | "canonical_source_revision"
-  | "sample_decision_record";
+  | "sample_decision_record"
+  | "sample_research_screening_record";
 
 export interface ExactXTraceParentUnit extends ExactSourceMemoryBundle {
   parentKind: ExactXTraceParentKind;
@@ -160,6 +164,36 @@ function classifyParent(exact: ExactSourceMemoryBundle): ExactXTraceParentKind {
       || "expectedOutcomes" in sample
     ) throw new Error("A Sample XTrace parent lost its permanent typed marker.");
     return "sample_decision_record";
+  }
+  const sampleResearchFacts = exact.bundle.facts.filter((fact) =>
+    fact.text.startsWith(`${SAMPLE_RESEARCH_SCREENING_RECORD_LABEL}.`)
+  );
+  if (sampleResearchFacts.length > 0) {
+    const fact = sampleResearchFacts[0]!;
+    const source = fact.sources[0];
+    if (
+      exact.bundle.interactions.length !== 0
+      || exact.bundle.facts.length !== 1
+      || sampleResearchFacts.length !== 1
+      || fact.sources.length !== 1
+      || !("schemaVersion" in source)
+      || source.provenance !== "source_document"
+      || source.title !== SAMPLE_RESEARCH_SCREENING_RECORD_LABEL
+      || source.sourceClass !== "internal_decision_record"
+      || source.sourceAuthority !== "primary"
+      || source.evidenceRole !== "context"
+      || source.documentId !== exact.sourceId
+      || source.sourceRevisionId !== exact.sourceRevisionId
+      || !fact.text.includes(
+        "Synthetic research-only context; no meeting or VC interaction occurred.",
+      )
+      || /expectedOutcome|expectedOutcomes/u.test(canonicalEvidenceJson(fact))
+    ) {
+      throw new Error(
+        "A Sample research screening XTrace parent lost its permanent non-interaction marker.",
+      );
+    }
+    return "sample_research_screening_record";
   }
   if (
     exact.bundle.interactions.length === 0

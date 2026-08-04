@@ -53,6 +53,51 @@ test("public report serializer sanitizes a malicious legacy next step", () => {
   );
 });
 
+test("public report serializer fails closed instead of hiding a malformed current analysis", () => {
+  const report = {
+    ...legacyReport("report_public_current_malformed"),
+    analysisStatus: "completed",
+    evidenceCoverage: {
+      acceptedPublicEvents: 0,
+      excludedPublicItems: 0,
+      truncatedPublicEvents: 0,
+      recalledDealCount: 1,
+      unavailableDealCount: 0,
+    },
+    counts: {
+      companyCount: 1,
+      beliefRevised: 0,
+      monitor: 0,
+      noMaterialChange: 1,
+      analysisUnavailable: 0,
+    },
+    priorityDealId: null,
+    companyAnalyses: [{ id: "malformed_current_analysis" }],
+    evidenceContext: {
+      state: "current",
+      schemaVersion: "run-evidence-context-v1",
+      evidenceMode: "live",
+      windowDays: 14,
+      anchorAt: "2026-08-03T12:00:00.000Z",
+      windowStartAt: "2026-07-20T12:00:00.000Z",
+      windowEndAt: "2026-08-03T12:00:00.000Z",
+      windowTimezone: "America/Los_Angeles",
+      snapshotId: null,
+      snapshotFingerprint: null,
+      contextFingerprint: `sha256:${"a".repeat(64)}`,
+      displayLabel: "Live evidence window",
+      eventCount: 0,
+      eventSetFingerprint: `sha256:${"b".repeat(64)}`,
+      bindingFingerprint: `sha256:${"c".repeat(64)}`,
+    },
+  } as unknown as IntelligenceReportRecord;
+
+  assert.throws(
+    () => toPublicReport(report),
+    /invalid current.*company analysis/i,
+  );
+});
+
 test("report API sanitizes a malicious next step from a legacy durable report", async () => {
   const reportId = "report_api_legacy_malicious";
   const storedLegacyReport = legacyReport(reportId);

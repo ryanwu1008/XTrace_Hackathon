@@ -1,7 +1,9 @@
 import {
   CompanyAnalysisSchema,
+  CompanyAnalysisCountsSchema,
   EvidenceCoverageSchema,
   OpportunityReportItemSchema,
+  parseCompanyAnalysisRead,
   ReportAnalysisStatusSchema,
   type CompanyAnalysis,
   type CompanyAnalysisCounts,
@@ -44,6 +46,7 @@ import {
   type DealRegistry,
 } from "./deal-registry";
 import {
+  APPROVED_PINNED_DEMO_SNAPSHOT_ID,
   parseReportEvidenceContextRow,
   parseRunEvidenceContextRow,
   type ReportEvidenceContext,
@@ -51,6 +54,12 @@ import {
 } from "../../lib/contracts/evidence-context";
 
 const MARKET_EVENT_WINDOW_DAYS = 14;
+const APPROVED_PINNED_LEGACY_ANALYSIS_COUNT = 23;
+
+type CompanyAnalysisReadPolicy =
+  | "legacy_quarantine"
+  | "current_audited"
+  | "approved_pinned_legacy";
 
 interface IntelligenceRepositoryClockOptions {
   now?: () => Date;
@@ -347,6 +356,111 @@ function validateReportReadBatch(
   return [...reports];
 }
 
+function isApprovedPinnedLegacyContext(
+  context: RunEvidenceContext,
+): boolean {
+  return context.state === "current"
+    && context.evidenceMode === "pinned"
+    && context.snapshotId === APPROVED_PINNED_DEMO_SNAPSHOT_ID;
+}
+
+function companyAnalysisReadPolicy(
+  context: RunEvidenceContext,
+): CompanyAnalysisReadPolicy {
+  if (context.state !== "current") return "legacy_quarantine";
+  return isApprovedPinnedLegacyContext(context)
+    ? "approved_pinned_legacy"
+    : "current_audited";
+}
+
+function persistedCompanyAnalysisCounts(
+  row: Record<string, unknown>,
+): CompanyAnalysisCounts {
+  const candidate = {
+    companyCount: row.company_count,
+    beliefRevised: row.belief_revised_count,
+    monitor: row.monitor_count,
+    noMaterialChange: row.no_material_change_count,
+    analysisUnavailable: row.analysis_unavailable_count,
+  };
+  const parsed = CompanyAnalysisCountsSchema.safeParse(candidate);
+  if (!parsed.success) {
+    throw new Error("A current report has malformed persisted CompanyAnalysis counts.");
+  }
+  return parsed.data;
+}
+
+function sameCompanyAnalysisCounts(
+  left: CompanyAnalysisCounts,
+  right: CompanyAnalysisCounts,
+): boolean {
+  return left.companyCount === right.companyCount
+    && left.beliefRevised === right.beliefRevised
+    && left.monitor === right.monitor
+    && left.noMaterialChange === right.noMaterialChange
+    && left.analysisUnavailable === right.analysisUnavailable;
+}
+
+function assertCurrentCompanyAnalysisAuditSet(
+  analyses: readonly CompanyAnalysis[],
+): void {
+  const universeIdentities = new Set<string>();
+  for (const analysis of analyses) {
+    const audit = analysis.currentRunAudit;
+    if (!audit || audit.stableDealId !== analysis.dealId) {
+      throw new Error("A current CompanyAnalysis audit does not match its stable Deal identity.");
+    }
+    universeIdentities.add(JSON.stringify([
+      audit.dealUniverseId,
+      audit.dealUniverseFingerprint,
+    ]));
+  }
+  if (universeIdentities.size !== 1) {
+    throw new Error("Current CompanyAnalysis audits do not share one immutable Deal universe.");
+  }
+}
+
+function assertCurrentReportReadIntegrity(input: {
+  row: Record<string, unknown>;
+  report: IntelligenceReportRecord;
+  runContext: RunEvidenceContext;
+}): void {
+  if (input.runContext.state !== "current") return;
+  const persisted = persistedCompanyAnalysisCounts(input.row);
+  const actual = countsFromAnalyses(input.report.companyAnalyses);
+  const outcomeTotal = persisted.beliefRevised
+    + persisted.monitor
+    + persisted.noMaterialChange
+    + persisted.analysisUnavailable;
+  if (
+    outcomeTotal !== persisted.companyCount
+    || !sameCompanyAnalysisCounts(persisted, actual)
+    || new Set(input.report.companyAnalyses.map(({ dealId }) => dealId)).size
+      !== input.report.companyAnalyses.length
+  ) {
+    throw new Error("A current report's persisted CompanyAnalysis counts are incomplete or inconsistent.");
+  }
+  const approvedPinnedLegacy = isApprovedPinnedLegacyContext(input.runContext);
+  if (
+    approvedPinnedLegacy
+    && persisted.companyCount !== APPROVED_PINNED_LEGACY_ANALYSIS_COUNT
+  ) {
+    throw new Error("The approved pinned legacy report must retain exactly 23 CompanyAnalyses.");
+  }
+  const auditedCount = input.report.companyAnalyses.filter((analysis) =>
+    analysis.currentRunAudit !== undefined
+  ).length;
+  if (approvedPinnedLegacy && auditedCount === 0) {
+    return;
+  }
+  if (auditedCount !== input.report.companyAnalyses.length) {
+    throw new Error("A current report cannot mix audited and legacy CompanyAnalyses.");
+  }
+  if (input.report.companyAnalyses.length > 0) {
+    assertCurrentCompanyAnalysisAuditSet(input.report.companyAnalyses);
+  }
+}
+
 function adaptOpportunityEvidenceRead(
   opportunities: readonly OpportunityReportItem[],
 ): OpportunityReportItem[] {
@@ -504,16 +618,61 @@ async function validateAuthoritativeCurrentReport(
 ): Promise<void> {
   if (report.evidenceBindingFingerprint === undefined) return;
   const analyses = report.companyAnalyses ?? [];
-  const deals = await dealRegistry.listForWorkspace(report.workspaceId);
-  const historicalStatusByDeal = new Map<string, (typeof deals)[number]["status"]>();
-  for (const deal of deals) {
-    if (deal.workspaceId !== report.workspaceId) {
-      throw new Error("The authoritative Deal registry crossed workspace identity.");
+  const auditedCount = analyses.filter((analysis) =>
+    analysis.currentRunAudit !== undefined
+  ).length;
+  if (auditedCount !== 0 && auditedCount !== analyses.length) {
+    throw new Error("A current report cannot mix run-bound and legacy analyses.");
+  }
+  const historicalStatusByDeal = new Map<string, CompanyAnalysis["dealStatus"]>();
+  const companyIdByDeal = new Map<string, string>();
+  if (auditedCount > 0) {
+    const universe = await dealRegistry.getRunDealUniverse({
+      workspaceId: report.workspaceId,
+      runId: report.runId,
+    });
+    if (
+      universe === null
+      || universe.workspaceId !== report.workspaceId
+      || universe.runId !== report.runId
+      || universe.dealCount !== analyses.length
+      || universe.members.length !== analyses.length
+    ) {
+      throw new Error("The authoritative run-bound Deal universe is missing or incomplete.");
     }
-    if (historicalStatusByDeal.has(deal.id)) {
-      throw new Error(`The authoritative Deal registry duplicated ${deal.id}.`);
+    for (const member of universe.members) {
+      if (historicalStatusByDeal.has(member.dealId)) {
+        throw new Error(`The authoritative Deal universe duplicated ${member.dealId}.`);
+      }
+      historicalStatusByDeal.set(member.dealId, member.dealStatus);
+      companyIdByDeal.set(member.dealId, member.companyId);
     }
-    historicalStatusByDeal.set(deal.id, deal.status);
+    for (const analysis of analyses) {
+      const audit = analysis.currentRunAudit!;
+      if (
+        audit.workspaceId !== report.workspaceId
+        || audit.companyId !== companyIdByDeal.get(analysis.dealId)
+        || audit.dealUniverseId !== universe.universeId
+        || audit.dealUniverseFingerprint !== universe.universeFingerprint
+        || audit.evidenceBindingFingerprint
+          !== report.evidenceBindingFingerprint
+      ) {
+        throw new Error(
+          `The run-bound CompanyAnalysis authority does not match ${analysis.dealId}.`,
+        );
+      }
+    }
+  } else {
+    const deals = await dealRegistry.listForWorkspace(report.workspaceId);
+    for (const deal of deals) {
+      if (deal.workspaceId !== report.workspaceId) {
+        throw new Error("The authoritative Deal registry crossed workspace identity.");
+      }
+      if (historicalStatusByDeal.has(deal.id)) {
+        throw new Error(`The authoritative Deal registry duplicated ${deal.id}.`);
+      }
+      historicalStatusByDeal.set(deal.id, deal.status);
+    }
   }
   for (const analysis of analyses) {
     const status = historicalStatusByDeal.get(analysis.dealId);
@@ -532,17 +691,17 @@ async function validateAuthoritativeCurrentReport(
   }
   const rankedIds = rankBeliefRevisionCandidates(analyses, {
     historicalStatusByDeal,
-    limit: 5,
+    limit: Number.MAX_SAFE_INTEGER,
   }).map(({ dealId }) => dealId);
   const opportunityIds = report.opportunities.map(({ dealId }) => dealId);
   if (
     rankedIds.length !== opportunityIds.length
     || rankedIds.some((dealId, index) => opportunityIds[index] !== dealId)
   ) {
-    throw new Error("The report opportunities do not equal the authoritative Top 5.");
+    throw new Error("The report opportunities do not equal all authoritative belief revisions in priority order.");
   }
   if ((report.priorityDealId ?? null) !== (rankedIds[0] ?? null)) {
-    throw new Error("The report priority Deal does not equal the authoritative Top 5.");
+    throw new Error("The report priority Deal does not equal the first authoritative belief revision.");
   }
 }
 
@@ -879,16 +1038,42 @@ export function createSupabaseIntelligenceRepository(options: {
   }
   function toAnalysis(
     row: Record<string, unknown>,
+    policy: CompanyAnalysisReadPolicy = "legacy_quarantine",
   ): CompanyAnalysis | null {
-    if (!Array.isArray(row.source_refs)) return null;
-    const sources = row.source_refs;
     const storedMarketEvidence = row.market_evidence;
+    const storedMarketEvidenceRecord = storedMarketEvidence
+        && typeof storedMarketEvidence === "object"
+        && !Array.isArray(storedMarketEvidence)
+      ? storedMarketEvidence as Record<string, unknown>
+      : null;
     const claimSupport = storedMarketEvidence
         && typeof storedMarketEvidence === "object"
         && !Array.isArray(storedMarketEvidence)
         && "claimSupport" in storedMarketEvidence
       ? storedMarketEvidence.claimSupport
       : undefined;
+    const currentRunAudit = storedMarketEvidenceRecord?.currentRunAudit;
+    const requireCurrentRunAudit = policy === "current_audited";
+    const strictRead = policy !== "legacy_quarantine";
+    const isCurrentAnalysis = requireCurrentRunAudit
+      || (currentRunAudit !== null && currentRunAudit !== undefined);
+    if (requireCurrentRunAudit && currentRunAudit == null) {
+      throw new Error("Invalid current Company analysis: currentRunAudit is missing.");
+    }
+    if (!Array.isArray(row.source_refs)) {
+      if (strictRead || isCurrentAnalysis) {
+        throw new Error("Invalid current Company analysis: source_refs is not an array.");
+      }
+      return null;
+    }
+    const sources = row.source_refs;
+    const marketEvidence = storedMarketEvidenceRecord === null
+      ? storedMarketEvidence
+      : Object.fromEntries(
+        Object.entries(storedMarketEvidenceRecord).filter(([key]) =>
+          key !== "claimSupport" && key !== "currentRunAudit"
+        ),
+      );
     const assessmentColumns = [
       row.belief_assessment_version,
       row.belief_direction,
@@ -923,7 +1108,7 @@ export function createSupabaseIntelligenceRepository(options: {
         ),
       ).size,
       investmentMemory: row.investment_memory,
-      marketEvidence: storedMarketEvidence,
+      marketEvidence,
       implications: row.implications,
       recommendedNextMove: row.recommended_next_move,
       companyBrief: row.company_brief,
@@ -938,17 +1123,24 @@ export function createSupabaseIntelligenceRepository(options: {
         gates: row.belief_gate_results,
         actions: row.belief_actions,
       } : undefined,
+      currentRunAudit,
       createdAt: row.created_at,
     });
     if (declaresAssessment) {
       try {
-        return CompanyAnalysisSchema.parse(candidate);
+        return parseCompanyAnalysisRead(candidate);
       } catch (error) {
         throw new Error("Invalid declared belief assessment.", { cause: error });
       }
     }
-    const parsed = CompanyAnalysisSchema.safeParse(candidate);
-    return parsed.success ? parsed.data : null;
+    try {
+      return parseCompanyAnalysisRead(candidate);
+    } catch (error) {
+      if (strictRead || isCurrentAnalysis) {
+        throw new Error("Invalid current Company analysis.", { cause: error });
+      }
+      return null;
+    }
   }
   function toReport(
     row: Record<string, unknown>,
@@ -1018,6 +1210,7 @@ export function createSupabaseIntelligenceRepository(options: {
   async function analysesForReportIds(
     workspaceId: string,
     reportIds: string[],
+    policiesByReportId: ReadonlyMap<string, CompanyAnalysisReadPolicy>,
   ): Promise<Map<string, CompanyAnalysis[]>> {
     const grouped = new Map<string, CompanyAnalysis[]>();
     if (reportIds.length === 0) return grouped;
@@ -1027,7 +1220,10 @@ export function createSupabaseIntelligenceRepository(options: {
       + `&report_id=in.${filter}&order=created_at.asc,company_name.asc`,
     ) as Record<string, unknown>[];
     for (const row of rows) {
-      const analysis = toAnalysis(row);
+      const analysis = toAnalysis(
+        row,
+        policiesByReportId.get(String(row.report_id)),
+      );
       if (!analysis) continue;
       const current = grouped.get(analysis.reportId) ?? [];
       current.push(analysis);
@@ -1044,15 +1240,30 @@ export function createSupabaseIntelligenceRepository(options: {
       + "&order=created_at.desc",
     ) as Record<string, unknown>[];
     const reportIds = rows.map((row) => String(row.id));
-    const analyses = await analysesForReportIds(workspaceId, reportIds);
     const runContexts = await currentRunContexts(workspaceId, rows);
+    const policiesByReportId = new Map(rows.map((row) => {
+      const context = runContexts.get(String(row.run_id));
+      return [
+        String(row.id),
+        companyAnalysisReadPolicy(context ?? { state: "legacy_unbound" }),
+      ] as const;
+    }));
+    const analyses = await analysesForReportIds(
+      workspaceId,
+      reportIds,
+      policiesByReportId,
+    );
     return validateReportReadBatch(rows.map((row) => {
       const reportId = String(row.id);
-      return toReport(
+      const runContext = runContexts.get(String(row.run_id))
+        ?? { state: "legacy_unbound" };
+      const report = toReport(
         row,
         analyses.get(reportId) ?? [],
-        runContexts.get(String(row.run_id)) ?? { state: "legacy_unbound" },
+        runContext,
       );
+      assertCurrentReportReadIntegrity({ row, report, runContext });
+      return report;
     }));
   }
   return {
@@ -1158,7 +1369,12 @@ export function createSupabaseIntelligenceRepository(options: {
             workspaceId: validated.workspaceId,
             marketEvidence: {
               ...analysis.marketEvidence,
-              claimSupport: analysis.claimSupport ?? [],
+              ...(analysis.claimSupport === undefined
+                ? {}
+                : { claimSupport: analysis.claimSupport }),
+              ...(analysis.currentRunAudit === undefined
+                ? {}
+                : { currentRunAudit: analysis.currentRunAudit }),
             },
             sourceRefs: analysis.sources,
             beliefAssessmentVersion: analysis.beliefAssessment?.schemaVersion ?? null,

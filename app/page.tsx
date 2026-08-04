@@ -1294,11 +1294,11 @@ function OverviewView({
           <header><span>LATEST INTELLIGENCE</span><button onClick={() => onNavigate("reports")}>VIEW REPORTS</button></header>
           {latestReport ? (
             <>
-              <h2>{latestReport.opportunities.length} Deals deserve another look</h2>
+              <h2>{latestReport.opportunities.length} Belief revisions requiring review</h2>
               <p>{latestReport.marketSummary}</p>
               {latestReport.opportunities.slice(0, 3).map((item) => (
                 <div className="vsee-mini-result" key={`${latestReport.id}-${item.dealId}`}>
-                  <span>#{item.rank}</span>
+                  <span>Priority #{item.rank}</span>
                   <div><strong>{companyByDeal.get(item.dealId) ?? item.dealId}</strong><small>{item.confidence} confidence · {Math.round(item.score * 100)}%</small></div>
                 </div>
               ))}
@@ -1743,7 +1743,7 @@ export function ReportsView({
   const report = reports.find((item) => item.id === focusedReportId) ?? reports[0];
   return (
     <div className="vsee-content">
-      <SectionTitle eyebrow="DECISION BRIEF" title="Cited reasons for a second look." copy="This page always shows the most recent intelligence report. Only medium- and high-confidence matches enter the Top 5. A recommendation is never proof that a company has improved; it is a reason for the investor to follow up." />
+      <SectionTitle eyebrow="BELIEF CHANGE ANALYSIS" title="Belief Revisions and cited reasons for a second look." copy="This page always shows the most recent intelligence report. Every supported Changed Belief enters the Underwriting Queue; Priority Order controls execution only. A recommendation is never proof that a company has improved—it is a reason for the investor to follow up." />
       {!report ? (
         <Empty title="No intelligence report yet" copy="Complete a scan to generate the first evidence-linked report." />
       ) : report.companyAnalyses.length ? (

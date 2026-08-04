@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import { canonicalEvidenceJson } from "./source-evidence";
+import {
+  WritableSourceRefV2Schema,
+  canonicalEvidenceJson,
+} from "./source-evidence";
 import { compareUtf8 } from "../format/canonical-order";
 
 const IdSchema = z.string().min(1).refine(
@@ -99,10 +102,25 @@ export const FinalizedChatSourceRefSchema = z.strictObject({
   documentId: IdSchema.nullable(),
   sourceRevisionId: IdSchema,
   contentFingerprint: FingerprintSchema,
+  canonicalSource: WritableSourceRefV2Schema,
   text: z.union([
     VerifiedExactSourceTextSchema,
     NormalizedSourceTextSchema,
   ]),
+}).superRefine((source, context) => {
+  if (
+    source.canonicalSource.id !== source.sourceId
+    || source.canonicalSource.documentId !== source.documentId
+    || source.canonicalSource.sourceRevisionId !== source.sourceRevisionId
+    || source.canonicalSource.contentFingerprint !== source.contentFingerprint
+    || canonicalEvidenceJson(source.canonicalSource.text)
+      !== canonicalEvidenceJson(source.text)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Finalized Chat source tuple must equal its canonical source",
+    });
+  }
 });
 export type FinalizedChatSourceRef = z.infer<
   typeof FinalizedChatSourceRefSchema

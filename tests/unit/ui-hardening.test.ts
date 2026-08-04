@@ -386,6 +386,14 @@ test("reports render the complete company intelligence hierarchy", async () => {
   assert.match(page, /CompanyIntelligenceReport/);
 });
 
+test("latest intelligence uses neutral changed-belief and priority wording", async () => {
+  const page = await readFile(pagePath, "utf8");
+
+  assert.match(page, /Belief revisions requiring review/);
+  assert.match(page, /Priority #\{item\.rank\}/);
+  assert.doesNotMatch(page, /Deals deserve another look/);
+});
+
 test("reports make structured image fallback and missing XTrace memory explicit", () => {
   const CompanyIntelligenceReport = (
     pageCompanyIntelligenceModule as unknown as {
@@ -693,19 +701,26 @@ test("source upload renders refresh-safe lifecycle, identity confirmation, and t
   assert.match(html, /revision_ready/);
 });
 
-test("underwriting summary renders Top-5 states in rank order before not-selected Deals", () => {
+test("underwriting summary renders every changed belief in priority order without cutoff language", () => {
   const html = renderToStaticMarkup(createElement(UnderwritingSummaryPanel, {
     batch: {
       batchId: "batch_1",
       status: "partial",
-      selections: [
-        selection("deal_not_selected", "not_selected", null, null),
-        selection("deal_failed", "failed", 5, "candidate_failed"),
-        selection("deal_completed", "completed", 1, "candidate_completed"),
-        selection("deal_running", "running", 2, "candidate_running"),
-        selection("deal_partial", "partial", 3, "candidate_partial"),
-        selection("deal_queued", "queued", 4, "candidate_queued"),
+      queue: [
+        queueEntry("deal_priority_six", "completed", 6),
+        queueEntry("deal_failed", "failed", 5),
+        queueEntry("deal_completed", "completed", 1),
+        queueEntry("deal_running", "running", 2),
+        queueEntry("deal_partial", "partial", 3),
+        queueEntry("deal_queued", "queued", 4),
       ],
+      underwritingStatusCounts: {
+        queued: 1,
+        running: 1,
+        completed: 2,
+        partial: 1,
+        failed: 1,
+      },
     },
     companyNames: {
       deal_completed: "Completed Co",
@@ -713,25 +728,35 @@ test("underwriting summary renders Top-5 states in rank order before not-selecte
       deal_partial: "Partial Co",
       deal_queued: "Queued Co",
       deal_failed: "Failed Co",
-      deal_not_selected: "Outside Co",
+      deal_priority_six: "Priority Six Co",
     },
     onOpenCandidate() {},
   }));
 
-  assert.match(html, /TOP-5 UNDERWRITING/);
-  assert.match(html, /independent named-advisory viewpoints/i);
+  assert.match(html, /Belief Revisions/);
+  assert.match(html, /Changed Beliefs/);
+  assert.match(html, /Underwriting Queue/);
+  assert.match(html, /Priority Order/);
+  assert.match(html, /Underwriting Status/);
+  assert.match(html, /Deep Underwriting/);
+  assert.match(html, /Investor Framework Perspectives/);
   assert.match(html, /exact public-source lineage/i);
-  assert.ok(html.indexOf("Completed Co") < html.indexOf("Outside Co"));
+  assert.ok(html.indexOf("Completed Co") < html.indexOf("Priority Six Co"));
+  assert.match(html, /Priority Six Co/);
+  assert.match(html, /Priority Order · #6/);
   for (const label of [
     "Completed",
     "Running",
     "Partial",
     "Queued",
     "Failed",
-    "Not selected",
   ]) {
     assert.match(html, new RegExp(label));
   }
+  assert.doesNotMatch(
+    html,
+    /Top[ -]?5|Selected for Top|rank cutoff|not selected|sixth.*reject/i,
+  );
 });
 
 test("underwriting detail preserves section order, lineage, public version pins, and draft-only actions", () => {
@@ -797,7 +822,7 @@ test("underwriting detail preserves section order, lineage, public version pins,
     "What happened?",
     "What is the impact?",
     "Which historical companies are affected?",
-    "Company underwriting",
+    "Investor Framework Perspectives",
     "Valuation and fund return",
     "Final conclusion",
     "What can you do?",
@@ -1153,25 +1178,26 @@ function upload(
   };
 }
 
-function selection(
+function queueEntry(
   dealId: string,
-  underwritingStatus:
-    | "not_selected"
+  status:
     | "queued"
     | "running"
     | "partial"
     | "completed"
-    | "unavailable"
     | "failed",
-  rank: number | null,
-  candidateRunId: string | null,
+  priorityRank: number,
 ) {
   return {
+    batchId: "batch_1",
     dealId,
-    underwritingStatus,
-    rank,
-    candidateRunId,
-    decision: underwritingStatus === "completed" ? "Advance" as const : null,
+    status,
+    priorityRank,
+    candidateRunId: `candidate_${dealId}`,
+    ...(status === "partial" || status === "failed"
+      ? { reason: `${status} persisted reason` }
+      : {}),
+    decision: status === "completed" ? "Advance" as const : null,
   };
 }
 

@@ -209,7 +209,7 @@ test(
   },
 );
 
-test("operator instructions require every migration through 0019", () => {
+test("operator instructions distinguish the complete local chain from the reviewed production boundary", () => {
   const readme = readFileSync(
     fileURLToPath(new URL("../../README.md", import.meta.url)),
     "utf8",
@@ -228,7 +228,7 @@ test("operator instructions require every migration through 0019", () => {
     },
   ];
   let previous = -1;
-  for (let index = 0; index <= 19; index += 1) {
+  for (let index = 0; index <= 24; index += 1) {
     const marker = `drizzle/${String(index).padStart(4, "0")}_`;
     const position = readme.indexOf(marker);
     assert.ok(position > previous, `${marker} must appear in migration order`);
@@ -246,15 +246,40 @@ test("operator instructions require every migration through 0019", () => {
     staleMigrationRange,
     "operator-doc regression must recognize the immediately previous release range",
   );
+  const staleMigrationRangeGlobal = new RegExp(
+    staleMigrationRange.source,
+    `${staleMigrationRange.flags}g`,
+  );
   for (const instruction of operatorInstructions) {
-    assert.doesNotMatch(
-      instruction.content,
-      staleMigrationRange,
-      `${instruction.path} must not retain a stale migration range`,
-    );
+    for (const match of instruction.content.matchAll(staleMigrationRangeGlobal)) {
+      const start = match.index ?? 0;
+      const reviewContext = instruction.content.slice(
+        Math.max(0, start - 180),
+        Math.min(instruction.content.length, start + match[0].length + 240),
+      );
+      assert.match(
+        reviewContext,
+        /production/iu,
+        `${instruction.path} may retain an older range only for the production boundary`,
+      );
+      assert.match(
+        reviewContext,
+        /reviewed|blocked|refus|not authoriz|only/iu,
+        `${instruction.path} must label the older production range as reviewed or blocked`,
+      );
+    }
   }
 
   const runbook = operatorInstructions[1]!.content;
+  assert.match(
+    readme,
+    /For a new \*\*local or disposable test\*\*[\s\S]{0,6000}drizzle\/0000_vsee_postgres\.sql[\s\S]{0,6000}drizzle\/0024_research_candidate_xtrace\.sql/iu,
+  );
+  assert.match(runbook, /reviewed production terminal remains `0018`/iu);
+  assert.match(
+    runbook,
+    /Migration `0019`[\s\S]{0,120}not received production catalog approval/iu,
+  );
   const maintenanceWindowSteps = [
     /stop (?:the )?Worker and (?:the )?Web writers/i,
     /no active scan or upload leases?/i,

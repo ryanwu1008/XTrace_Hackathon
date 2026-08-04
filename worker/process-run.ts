@@ -10,6 +10,7 @@ import {
   eligibleDealSnapshotFingerprint,
   type DealRegistry,
   type RegisteredDeal,
+  type RunDealUniverseBindingV1,
 } from "../db/repositories/deal-registry";
 import type { createRunsRepository } from "../db/repositories/runs";
 import {
@@ -26,6 +27,9 @@ import { DEMO_MARKET_REPORT_EVIDENCE } from "../lib/corpus/market-evidence";
 import {
   buildMatchingSources,
   buildStructuredMemoryContexts,
+  isSampleResearchScreeningAuthoritySource,
+  projectRecalledCanonicalSourceIds,
+  researchScreeningPriorCandidates,
 } from "../lib/matching/context";
 import type {
   GroundedMatch,
@@ -59,6 +63,8 @@ import type {
   RunEvidenceBindingV1,
 } from "../lib/contracts/evidence-context";
 import { reportEvidenceContextFromBinding } from "../lib/contracts/evidence-context";
+import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from "../lib/contracts/evidence-context";
+import { SAMPLE_RESEARCH_SCREENING_RECORD_LABEL } from "../lib/contracts/research-candidate";
 import type { MarketScanResult } from "../lib/market/types";
 
 type RunsRepository = ReturnType<typeof createRunsRepository>;
@@ -71,6 +77,8 @@ export interface ProcessRunDependencies {
     | "getAnalysisEligibleSnapshot"
     | "listAnalysisEligibleBundles"
     | "findForWorkspace"
+    | "bindRunDealUniverse"
+    | "getRunDealUniverse"
   >;
   underwriting: UnderwritingOrchestrator;
   importGate: ProductInputGate;
@@ -123,6 +131,7 @@ export async function processClaimedRun(
   let bundles: DealMemoryBundle[] = [];
   let eligibleDeals: RegisteredDeal[] = [];
   let eligibleSnapshotFingerprint = "";
+  let boundDealUniverse: RunDealUniverseBindingV1 | null = null;
   let activeStage = claimedRun.currentStage ?? "worker_setup";
   let activeStageStatus:
     | "running"
@@ -131,6 +140,9 @@ export async function processClaimedRun(
     | "failed"
     | undefined;
   let evidenceBindingFingerprint: string | undefined;
+  if (claimedRun.evidenceContext.state !== "current") {
+    throw new Error("Legacy-unbound runs cannot execute Worker analysis.");
+  }
   const updateStage = async (
     name: string,
     status: "running" | "skipped" | "completed" | "failed",
@@ -179,20 +191,59 @@ export async function processClaimedRun(
           return structuredClone(deal);
         }),
       );
-      eligibleSnapshotFingerprint =
+      const registrySnapshotFingerprint =
         eligibleDealSnapshotFingerprint(eligibleDeals);
       const snapshotAfter = await dependencies.dealRegistry
         .getAnalysisEligibleSnapshot(claimedRun.workspaceId);
       const bundleIds = bundles.map(({ dealId }) => dealId).sort();
       if (
         snapshotBefore.fingerprint !== snapshotAfter.fingerprint
-        || snapshotAfter.fingerprint !== eligibleSnapshotFingerprint
+        || snapshotAfter.fingerprint !== registrySnapshotFingerprint
         || snapshotAfter.count !== bundles.length
         || JSON.stringify([...snapshotAfter.dealIds].sort())
           !== JSON.stringify(bundleIds)
       ) {
         throw new Error(
           "The eligible Deal snapshot changed while the scan was starting.",
+        );
+      }
+      const selectedUniverse = selectRunDealUniverse({
+        run: claimedRun,
+        bundles,
+        deals: eligibleDeals,
+      });
+      bundles = selectedUniverse.bundles;
+      eligibleDeals = selectedUniverse.deals;
+      eligibleSnapshotFingerprint =
+        eligibleDealSnapshotFingerprint(eligibleDeals);
+      boundDealUniverse = await dependencies.dealRegistry.bindRunDealUniverse({
+        workspaceId: claimedRun.workspaceId,
+        runId: claimedRun.id,
+        universeId: `deal_universe_${claimedRun.id}`,
+        mode: claimedRun.evidenceContext.evidenceMode,
+        anchorAt: claimedRun.evidenceContext.anchorAt,
+        evidenceSnapshotId: claimedRun.evidenceContext.snapshotId,
+        evidenceSnapshotFingerprint:
+          claimedRun.evidenceContext.snapshotFingerprint,
+        members: eligibleDeals.map((deal, ordinal) => ({
+          ordinal,
+          dealId: deal.id,
+          companyId: deal.companyId,
+          dealStatus: deal.status,
+          analysisEligibleAt: deal.analysisEligibleAt!,
+        })),
+      });
+      const reloadedUniverse = await dependencies.dealRegistry
+        .getRunDealUniverse({
+          workspaceId: claimedRun.workspaceId,
+          runId: claimedRun.id,
+        });
+      if (
+        reloadedUniverse === null
+        || JSON.stringify(reloadedUniverse) !== JSON.stringify(boundDealUniverse)
+      ) {
+        throw new Error(
+          "The claimed run did not reload its exact immutable Deal universe.",
         );
       }
       await updateStage("import_confirmation", "completed");
@@ -216,9 +267,6 @@ export async function processClaimedRun(
         ]),
       ]],
     ));
-    if (claimedRun.evidenceContext.state !== "current") {
-      throw new Error("Legacy-unbound runs cannot execute Worker analysis.");
-    }
     await updateStage("market_scan", "running");
     const evidenceRuntime: ResolvedRunEvidenceRuntime =
       claimedRun.evidenceContext.evidenceMode === "pinned"
@@ -269,6 +317,8 @@ export async function processClaimedRun(
       : structuredContextsByDeal(bundles);
     const unavailableDealIds = new Set<string>();
     const structuredImageFallbackDealIds = new Set<string>();
+    const recallAttemptedDealIds = new Set<string>();
+    const recallFailureReasons = new Map<string, string>();
 
     if (claimedRun.mode === "xtrace") {
       // Ingest submission and job polling are an explicit separate stage.
@@ -283,6 +333,9 @@ export async function processClaimedRun(
         }
         return true;
       });
+      for (const bundle of xtraceRecallBundles) {
+        recallAttemptedDealIds.add(bundle.dealId);
+      }
       const recalled = await recallAllDealContexts({
         workspaceId: claimedRun.workspaceId,
         runId: claimedRun.id,
@@ -301,10 +354,14 @@ export async function processClaimedRun(
       contextsByDeal = recalled.contextsByDeal;
       for (const failure of recalled.failures) {
         unavailableDealIds.add(failure.dealId);
+        recallFailureReasons.set(failure.dealId, failure.message);
       }
       for (const bundle of xtraceRecallBundles) {
         if ((contextsByDeal.get(bundle.dealId)?.length ?? 0) === 0) {
           unavailableDealIds.add(bundle.dealId);
+          if (!recallFailureReasons.has(bundle.dealId)) {
+            recallFailureReasons.set(bundle.dealId, "XTRACE_RECALL_EMPTY");
+          }
         }
       }
       const recallWarnings: string[] = [];
@@ -404,6 +461,23 @@ export async function processClaimedRun(
       recallFailures: unavailableDealIds,
       structuredImageFallbackDealIds,
       groundedMatches,
+      currentRunAuthority: {
+        workspaceId: claimedRun.workspaceId,
+        dealUniverseId: boundDealUniverse!.universeId,
+        dealUniverseFingerprint: boundDealUniverse!.universeFingerprint,
+        evidenceContextFingerprint: evidenceRuntime.contextFingerprint,
+        evidenceBindingFingerprint: evidenceRuntime.bindingFingerprint,
+        consideredMarketEventIds: analysisEvents.map(({ id }) => id),
+        dealsById: new Map(eligibleDeals.map((deal) => [deal.id, {
+          companyId: deal.companyId,
+          priorDealStatus: deal.status,
+          analysisEligibleAt: deal.analysisEligibleAt!,
+          activeSourceRevisionIds: [...deal.activeSourceRevisionIds],
+          activeParentFingerprint: deal.activeSourceRevisionFingerprint!,
+        }])),
+        recallAttemptedDealIds,
+        recallFailureReasons,
+      },
     });
     const counts = countCompanyAnalyses(companyAnalyses);
     const opportunities = projectRecommendedOpportunities(companyAnalyses);
@@ -509,6 +583,83 @@ export async function processClaimedRun(
     });
     throw error;
   }
+}
+
+function selectRunDealUniverse(input: {
+  run: RunRecord;
+  bundles: DealMemoryBundle[];
+  deals: RegisteredDeal[];
+}): { bundles: DealMemoryBundle[]; deals: RegisteredDeal[] } {
+  const researchDealIds = new Set(input.bundles.flatMap((bundle) =>
+    hasPermanentResearchScreeningRecord(bundle) ? [bundle.dealId] : []
+  ));
+  if (
+    researchDealIds.size > 0
+    && (input.bundles.length !== 30 || researchDealIds.size !== 7)
+  ) {
+    throw new Error(
+      "The current research-expanded Deal registry must contain exactly 30 eligible Deals and seven permanent screening records.",
+    );
+  }
+  const approvedPinnedReplay = input.run.evidenceContext.state === "current"
+    && input.run.evidenceContext.evidenceMode === "pinned"
+    && input.run.evidenceContext.snapshotId
+      === APPROVED_PINNED_DEMO_SNAPSHOT_ID;
+  if (!approvedPinnedReplay) {
+    return {
+      bundles: structuredClone(input.bundles),
+      deals: structuredClone(input.deals),
+    };
+  }
+  if (input.bundles.length !== 30 || researchDealIds.size !== 7) {
+    throw new Error(
+      "The approved pinned replay requires the complete current 30-Deal registry before applying its legacy adapter.",
+    );
+  }
+  const bundles = input.bundles.filter(({ dealId }) =>
+    !researchDealIds.has(dealId)
+  );
+  const deals = input.deals.filter(({ id }) => !researchDealIds.has(id));
+  if (
+    bundles.length !== 23
+    || deals.length !== 23
+    || new Set(bundles.map(({ dealId }) => dealId)).size !== 23
+    || bundles.some(({ dealId }) => !deals.some(({ id }) => id === dealId))
+  ) {
+    throw new Error(
+      "The approved pinned replay legacy adapter did not resolve its exact 23-Deal universe.",
+    );
+  }
+  return { bundles: structuredClone(bundles), deals: structuredClone(deals) };
+}
+
+function hasPermanentResearchScreeningRecord(
+  bundle: DealMemoryBundle,
+): boolean {
+  const markerFacts = bundle.facts.filter((fact) =>
+    fact.text.startsWith(`${SAMPLE_RESEARCH_SCREENING_RECORD_LABEL}.`)
+    || fact.sources.some((source) =>
+      source.title === SAMPLE_RESEARCH_SCREENING_RECORD_LABEL
+    )
+  );
+  if (markerFacts.length === 0) return false;
+  if (
+    markerFacts.length !== 1
+    || bundle.status !== "screening"
+    || bundle.interactions.length !== 0
+    || markerFacts[0]!.sources.length !== 1
+  ) {
+    throw new Error(
+      "A Sample research screening Deal lost its permanent non-interaction identity.",
+    );
+  }
+  const source = parseSourceRefV2Read(markerFacts[0]!.sources[0]!);
+  if (!isSampleResearchScreeningAuthoritySource(source)) {
+    throw new Error(
+      "A Sample research screening Deal lost its exact source-document authority.",
+    );
+  }
+  return true;
 }
 
 async function resolvePinnedEvidenceRuntime(
@@ -688,10 +839,27 @@ function requireExactReloadedReport(input: {
     || context.eventSetFingerprint !== input.binding.eventSetFingerprint
     || context.bindingFingerprint !== input.binding.bindingFingerprint
     || context.snapshotFingerprint !== input.binding.snapshotFingerprint
-    || canonicalEvidenceJson(report.companyAnalyses)
-      !== canonicalEvidenceJson(input.expectedAnalyses)
-  ) throw new Error("The saved report did not reload with its exact run evidence binding.");
+    || canonicalAnalysisSetJson(report.companyAnalyses)
+      !== canonicalAnalysisSetJson(input.expectedAnalyses)
+  ) {
+    throw new Error(
+      "The saved report did not reload with its exact run evidence binding.",
+    );
+  }
   return report;
+}
+
+function canonicalAnalysisSetJson(
+  analyses: readonly CompanyAnalysis[],
+): string {
+  return canonicalEvidenceJson(
+    [...analyses]
+      .sort((left, right) => compareUtf8(left.id, right.id))
+      .map((analysis) => ({
+        ...analysis,
+        createdAt: new Date(analysis.createdAt).toISOString(),
+      })),
+  );
 }
 
 function isCanonicalImageOnlyBundle(bundle: DealMemoryBundle): boolean {
@@ -733,6 +901,10 @@ function matchingMemoryContexts(
   return bundles.flatMap((bundle) => {
     const contexts = contextsByDeal.get(bundle.dealId) ?? [];
     if (contexts.length === 0) return [];
+    const canonicalSourceIds = projectRecalledCanonicalSourceIds(
+      bundle,
+      contexts,
+    );
     const fixtureIds = uniqueStrings(
       contexts.flatMap((context) => context.fixtureIds),
     );
@@ -742,23 +914,27 @@ function matchingMemoryContexts(
         .slice(0, 3)
         .map((context) => context.text.slice(0, 1_200))
         .join("\n"),
-      sourceIds: uniqueStrings(
-        contexts.flatMap((context) => context.sourceIds),
-      ),
+      sourceIds: canonicalSourceIds,
       fixtureIds,
-      interactionCandidates: bundle.interactions
-        .filter((interaction) => fixtureIds.includes(interaction.id))
-        .map((interaction) => ({
-          id: interaction.id,
-          occurredAt: interaction.occurredAt,
-          sourceIds: [interaction.id],
-          revisitConditions: [...interaction.revisitConditions],
-          provenance: interaction.provenance,
-          label: interaction.label,
-          priorActions: interaction.priorActions
-            ? structuredClone(interaction.priorActions)
-            : undefined,
-        })),
+      interactionCandidates: [
+        ...bundle.interactions
+          .filter((interaction) => fixtureIds.includes(interaction.id))
+          .map((interaction) => ({
+            id: interaction.id,
+            occurredAt: interaction.occurredAt,
+            sourceIds: [interaction.id],
+            revisitConditions: [...interaction.revisitConditions],
+            provenance: interaction.provenance,
+            label: interaction.label,
+            priorActions: interaction.priorActions
+              ? structuredClone(interaction.priorActions)
+              : undefined,
+          })),
+        ...researchScreeningPriorCandidates(
+          bundle,
+          new Set(canonicalSourceIds),
+        ),
+      ],
     }];
   });
 }

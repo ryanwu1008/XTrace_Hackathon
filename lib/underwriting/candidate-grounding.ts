@@ -75,12 +75,16 @@ export interface CandidateGroundingPort {
   }): Promise<GroundedEvidencePack>;
 }
 
+type CandidateXTraceLineageRepository =
+  & Pick<XTraceLineageRepository, "resolve">
+  & Partial<Pick<XTraceLineageRepository, "resolveExact">>;
+
 export function createEvidencePackCandidateGrounding(options: {
   repository: EvidencePacksRepository;
   sourceRegistry: SourceRegistry;
   builder: EvidencePackBuilder;
   criticalEvidenceProfiles: CriticalEvidenceProfile[];
-  xtraceLineage?: Pick<XTraceLineageRepository, "resolve">;
+  xtraceLineage?: CandidateXTraceLineageRepository;
   resolveBenchmark(
     context: ResolvedUnderwritingContext,
   ): Promise<SelectedBenchmarkInput | null>;
@@ -327,7 +331,7 @@ async function resolveXTraceLineage(input: {
   deal: RegisteredDeal;
   sourceEvidence: SourceEvidenceInput[];
   sourceRevisionSnapshots: SourceRevision[];
-  repository?: Pick<XTraceLineageRepository, "resolve">;
+  repository?: CandidateXTraceLineageRepository;
   capturedAt: string;
 }): Promise<XTraceLineageSnapshot> {
   const memoryIds = uniqueSorted(input.analysis.investmentMemory.memoryIds);
@@ -355,11 +359,20 @@ async function resolveXTraceLineage(input: {
   const sourceIds = new Set<string>();
   const fixtureIds = new Set<string>();
   for (const memoryId of memoryIds) {
-    const lineage = await input.repository.resolve({
-      memoryId,
-      workspaceId: input.deal.workspaceId,
-      convId: `deal:${input.deal.id}`,
-    });
+    const usesExactLineage = input.repository.resolveExact !== undefined;
+    const lineage = usesExactLineage
+      ? await input.repository.resolveExact!({
+          memoryId,
+          workspaceId: input.deal.workspaceId,
+          dealId: input.deal.id,
+          activeParentFingerprint:
+            input.deal.activeSourceRevisionFingerprint!,
+        })
+      : await input.repository.resolve({
+          memoryId,
+          workspaceId: input.deal.workspaceId,
+          convId: `deal:${input.deal.id}`,
+        });
     if (
       !lineage
       || lineage.workspaceId !== input.deal.workspaceId
@@ -381,14 +394,26 @@ async function resolveXTraceLineage(input: {
       const exactSourceIds = uniqueSorted(
         exactRevisions.map((revision) => revision!.sourceId),
       );
-      if (!sameStringSet(exactSourceIds, lineage.sourceIds)) {
+      if (usesExactLineage && lineage.provenance === "demo_fixture") {
+        const exactFixtureIds = exactSourceIds.map(sampleFixtureIdForSource);
+        if (
+          lineage.sourceIds.length > 0
+          || !sameStringSet(exactFixtureIds, lineage.fixtureIds)
+        ) {
+          throw new CandidateGroundingUnavailableError([
+            "XTRACE_FIXTURE_LINEAGE_MISMATCH",
+          ]);
+        }
+      } else if (!sameStringSet(exactSourceIds, lineage.sourceIds)) {
         throw new CandidateGroundingUnavailableError([
           "XTRACE_SOURCE_LINEAGE_MISMATCH",
         ]);
       }
       for (const revision of exactRevisions) {
         sourceRevisionIds.add(revision!.id);
-        sourceIds.add(revision!.sourceId);
+        if (!(usesExactLineage && lineage.provenance === "demo_fixture")) {
+          sourceIds.add(revision!.sourceId);
+        }
       }
     } else {
       for (const evidenceId of lineage.sourceIds) {
@@ -423,6 +448,15 @@ async function resolveXTraceLineage(input: {
     fixtureIds: uniqueSorted([...fixtureIds]),
     capturedAt: input.capturedAt,
   };
+}
+
+function sampleFixtureIdForSource(sourceId: string): string {
+  if (!sourceId.startsWith("source_") || sourceId.length <= "source_".length) {
+    throw new CandidateGroundingUnavailableError([
+      "XTRACE_FIXTURE_LINEAGE_MISMATCH",
+    ]);
+  }
+  return sourceId.slice("source_".length);
 }
 
 function assertCandidateIdentity(input: {

@@ -692,15 +692,22 @@ const CanonicalMarketEventV2Schema = z.strictObject({
     || trigger.eventAtPrecision !== event.eventAtPrecision
     || trigger.publishedAt !== event.publishedAt
     || trigger.publishedAtPrecision !== event.publishedAtPrecision
-    || trigger.retrievedAt !== event.retrievedAt
-    || trigger.retrievedAtPrecision !== event.retrievedAtPrecision
     || trigger.updatedAt !== event.updatedAt
     || trigger.updatedAtPrecision !== event.updatedAtPrecision
-    || trigger.providerId !== event.providerId
   ) {
     context.addIssue({
       code: "custom",
       message: "Market-event provenance must match its trigger source",
+    });
+  }
+  if (
+    trigger.retrievedAt === null
+    || definitelyBefore(event.retrievedAt, trigger.retrievedAt)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Market-event collection cannot predate its trigger Source Revision retrieval",
     });
   }
 

@@ -185,6 +185,11 @@ export function createMemoryUnderwritingRunsRepository(
     );
   }
 
+  function priorityForCandidate(candidate: CandidateRun): number {
+    return selections.get(selectionIdentity(candidate.batchId, candidate.dealId))
+      ?.rank ?? Number.MAX_SAFE_INTEGER;
+  }
+
   function recomputeBatch(batchId: string): void {
     const stored = batchById(batchId);
     const batchCandidates = candidatesForBatch(batchId);
@@ -197,24 +202,7 @@ export function createMemoryUnderwritingRunsRepository(
         ? "completed"
         : stored.value.status;
     } else {
-      const terminal = batchCandidates.every((candidate) =>
-        ["completed", "unavailable", "failed"].includes(candidate.status)
-      );
-      if (!terminal) {
-        status = "running";
-      } else if (
-        batchCandidates.every((candidate) => candidate.status === "completed")
-      ) {
-        status = "completed";
-      } else if (
-        batchCandidates.every((candidate) =>
-          ["unavailable", "failed"].includes(candidate.status)
-        )
-      ) {
-        status = "failed";
-      } else {
-        status = "partial";
-      }
+      status = statusForCandidateBatch(batchCandidates)!;
     }
     stored.value = UnderwritingBatchSchema.parse({
       ...stored.value,
@@ -338,8 +326,7 @@ export function createMemoryUnderwritingRunsRepository(
         const selected = selection.status === "selected"
           && rank !== null
           && Number.isInteger(rank)
-          && rank > 0
-          && rank <= 5;
+          && rank > 0;
         if (selected && seenRanks.has(rank)) {
           throw new Error("Selected candidate ranks must be unique.");
         }
@@ -421,7 +408,8 @@ export function createMemoryUnderwritingRunsRepository(
           )
         )
         .sort((left, right) =>
-          left.createdAt.localeCompare(right.createdAt)
+          priorityForCandidate(left) - priorityForCandidate(right)
+          || left.dealId.localeCompare(right.dealId)
           || left.id.localeCompare(right.id)
         )[0];
       if (!candidate) return null;
@@ -1182,9 +1170,33 @@ function validateBatchInput(input: CreateBatchInput): CreateBatchInput {
 }
 
 function assertCanTerminate(candidate: CandidateRun): void {
-  if (!["queued", "running", "partial"].includes(candidate.status)) {
+  if (!["queued", "running"].includes(candidate.status)) {
     throw new Error("A terminal candidate cannot be changed.");
   }
+}
+
+/**
+ * A partial candidate has persisted useful artifacts and is terminal: it must
+ * not be reclaimed simply because it is not a fully completed artifact.
+ */
+export function statusForCandidateBatch(
+  candidates: readonly Pick<CandidateRun, "status">[],
+): UnderwritingBatch["status"] | null {
+  if (candidates.length === 0) return null;
+  if (candidates.every(({ status }) => status === "completed")) {
+    return "completed";
+  }
+  if (candidates.every(({ status }) =>
+    status === "unavailable" || status === "failed"
+  )) {
+    return "failed";
+  }
+  if (candidates.every(({ status }) =>
+    ["completed", "partial", "unavailable", "failed"].includes(status)
+  )) {
+    return "partial";
+  }
+  return "running";
 }
 
 function selectionIdentity(batchId: string, dealId: string): string {

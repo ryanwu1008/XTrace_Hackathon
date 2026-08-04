@@ -9,7 +9,12 @@ import { compareUtf8 } from "../format/canonical-order";
 import { withinPublicationWindow } from "../market/dedupe";
 
 const FingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
-const TimestampSchema = z.string().datetime({ offset: true });
+// PostgreSQL/PostgREST may serialize the same UTC instant with `+00:00` while
+// fixtures and API clients use `Z`. Canonicalize at the typed boundary so
+// evidence-window identity never depends on a transport-specific spelling.
+const TimestampSchema = z.string().datetime({ offset: true }).transform(
+  (value) => new Date(value).toISOString(),
+);
 const CalendarDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).refine(
   (value) => {
     const parsed = Date.parse(`${value}T00:00:00.000Z`);

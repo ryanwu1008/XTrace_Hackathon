@@ -19,9 +19,32 @@ import {
   getMarketEvidenceSnapshotsRepository,
   type MarketEvidenceSnapshotsRepository,
 } from "../db/repositories/market-evidence-snapshots";
+import {
+  createMemoryResearchCandidatesRepository,
+  getResearchCandidatesRepository,
+  type ResearchCandidatesRepository,
+} from "../db/repositories/research-candidates";
 import { loadBeliefReversalManifest } from "../lib/belief-reversal/manifest";
 import { buildSampleDecisionSourceRef } from "../lib/belief-reversal/sample-decision-source";
+import {
+  buildBeliefReversalResearchPublicSourceRef,
+  buildBeliefReversalSelectedPublicSourceRef,
+} from "../lib/belief-reversal/public-source-ref";
 import type { BeliefReversalResearchPackage } from "../lib/belief-reversal/contracts";
+import {
+  PublicEvidenceMemoryPayloadSchema,
+  ResearchCandidateDispositionMemoryPairSchema,
+  ResearchCandidateSchema,
+  ResearchDispositionMemoryPayloadSchema,
+  ResearchEvidenceGapSchema,
+  type PublicEvidenceMemoryPayload,
+  type ResearchCandidate,
+  type ResearchDispositionMemoryPayload,
+  type ResearchEvidenceGap,
+} from "../lib/contracts/research-candidate";
+import {
+  buildSampleResearchScreeningSourceRef,
+} from "../lib/belief-reversal/sample-research-screening-source";
 import {
   DealMemoryBundleSchema,
   type BeliefActionKind,
@@ -32,8 +55,7 @@ import {
   APPROVED_PINNED_DEMO_SNAPSHOT_ID,
 } from "../lib/contracts/evidence-context";
 import {
-  WritableSourceRefV2Schema,
-  type WritableSourceRefV2,
+  sourceTextForRetrieval,
   type WritableMarketEventV2,
 } from "../lib/contracts/source-evidence";
 import { refingerprintMarketEvent } from "../lib/market/identity";
@@ -54,7 +76,6 @@ const ACTION_POLICY_VERSION = "belief-action-policy-v1";
 const INTERACTION_SCHEMA_VERSION = "sample-decision-interaction-v1";
 const EXTRACTOR_ID = "reviewed-json-snapshot";
 const EXTRACTOR_VERSION = "belief-reversal-source-v1";
-const PROVIDER_ID = "belief_reversal_snapshot_v1";
 
 export interface BeliefReversalSeedDependencies {
   dataStore: BeliefReversalSeedDataStore;
@@ -63,6 +84,7 @@ export interface BeliefReversalSeedDependencies {
   dealRegistry: DealRegistry;
   evidencePacks: EvidencePacksRepository;
   marketEvidenceSnapshots: MarketEvidenceSnapshotsRepository;
+  researchCandidates?: ResearchCandidatesRepository;
 }
 
 export interface BeliefReversalSeedResult {
@@ -76,12 +98,16 @@ export interface BeliefReversalSeedResult {
     assignments: number;
     canonicalEvidence: number;
     sampleInteractions: number;
+    researchCandidates: number;
+    researchSourceAssignments: number;
+    researchEvidenceGaps: number;
   };
   totals: {
     acceptedCases: 4;
-    publicSources: 37;
+    publicSources: 55;
     sampleDecisionRecords: 4;
-    sourceParents: 41;
+    sampleResearchScreeningRecords: 7;
+    sourceParents: 66;
   };
 }
 
@@ -104,7 +130,7 @@ interface PlannedSource {
   dealId: string;
   companyId: string;
   companyName: string;
-  status: "passed" | "watchlist" | "invested";
+  status: "screening" | "passed" | "watchlist" | "invested";
 }
 
 interface PlannedCase {
@@ -129,49 +155,71 @@ interface BeliefReversalSeedPlan {
   sources: PlannedSource[];
 }
 
+type ResearchScreeningLedgerEntry = Extract<
+  BeliefReversalResearchPackage["candidateLedger"][number],
+  { disposition: "qualified_not_selected" }
+>;
+
+type ResolvedScreeningSource = Extract<
+  BeliefReversalResearchPackage["screeningSources"][number],
+  { status: "resolved" }
+>;
+
+interface PlannedResearchCase {
+  ledger: ResearchScreeningLedgerEntry;
+  company: { id: string; workspaceId: string; name: string };
+  deal: {
+    id: string;
+    workspaceId: string;
+    companyId: string;
+    companyName: string;
+    status: "screening";
+  };
+  publicSources: PlannedSource[];
+  resolvedSources: ResolvedScreeningSource[];
+  publicEvidence: SourceEvidenceInput[];
+  publicMemoryBundle: DealMemoryBundle;
+  publicMemoryLineage: DealMemoryLineage;
+  marketEvent: WritableMarketEventV2;
+}
+
+interface ResearchScreeningPlan {
+  cases: PlannedResearchCase[];
+  sources: PlannedSource[];
+}
+
+interface PlannedResearchDisposition {
+  candidate: ResearchCandidate;
+  dispositionMemory: ResearchDispositionMemoryPayload;
+  publicMemories: PublicEvidenceMemoryPayload[];
+  evidenceGap: ResearchEvidenceGap | null;
+  sampleSource: PlannedSource;
+  sampleEvidence: SourceEvidenceInput;
+  memoryBundle: DealMemoryBundle;
+  memoryLineage: DealMemoryLineage;
+}
+
 export async function runBeliefReversalDemoSeed(
   dependencies: BeliefReversalSeedDependencies,
   options: { manifest?: BeliefReversalResearchPackage } = {},
 ): Promise<BeliefReversalSeedResult> {
-  const plan = buildSeedPlan(options.manifest ?? loadBeliefReversalManifest());
+  const manifest = options.manifest ?? loadBeliefReversalManifest();
+  const selectedPlan = buildSeedPlan(manifest);
+  const researchPlan = buildResearchScreeningPlan(manifest);
+  const researchCandidates = dependencies.researchCandidates
+    ?? createMemoryResearchCandidatesRepository();
   const created = emptyCreatedCounts();
 
-  for (const source of plan.sources) {
-    increment(
-      created,
-      "privateObjects",
-      await dependencies.objectStorage.ensurePrivateObject({
-        key: source.document.objectKey,
-        bytes: source.bytes,
-        contentType: "application/json",
-      }),
-    );
-  }
-  for (const source of plan.sources) {
-    increment(
-      created,
-      "documents",
-      await dependencies.dataStore.ensureImmutableSourceDocument(
-        source.document,
-      ),
-    );
-    increment(
-      created,
-      "workspaceDocuments",
-      await dependencies.dataStore.ensureWorkspaceDocument({
-        workspaceId: WORKSPACE_ID,
-        documentId: source.document.id,
-      }),
-    );
-    const priorRevision = await dependencies.sourceRegistry.getRevision({
-      workspaceId: WORKSPACE_ID,
-      revisionId: source.revision.id,
-    });
-    await dependencies.sourceRegistry.createInitialRevision(source.revision);
-    if (priorRevision === null) created.sourceRevisions += 1;
-  }
+  await persistPlannedSources(
+    [...selectedPlan.sources, ...researchPlan.sources],
+    dependencies,
+    created,
+  );
 
-  for (const plannedCase of plan.cases) {
+  for (const plannedCase of [
+    ...selectedPlan.cases,
+    ...researchPlan.cases,
+  ]) {
     increment(
       created,
       "companies",
@@ -184,7 +232,7 @@ export async function runBeliefReversalDemoSeed(
     );
   }
 
-  for (const plannedCase of plan.cases) {
+  for (const plannedCase of selectedPlan.cases) {
     for (const source of plannedCase.sources) {
       const before = await dependencies.dealRegistry.findForWorkspace({
         workspaceId: WORKSPACE_ID,
@@ -228,26 +276,185 @@ export async function runBeliefReversalDemoSeed(
     );
   }
 
-  await dependencies.marketEvidenceSnapshots.create({
+  for (const plannedCase of researchPlan.cases) {
+    for (const source of plannedCase.publicSources) {
+      const before = await dependencies.dealRegistry.findForWorkspace({
+        workspaceId: WORKSPACE_ID,
+        dealId: plannedCase.deal.id,
+      });
+      const alreadyAssigned = before?.activeSourceRevisionIds.includes(
+        source.revision.id,
+      ) ?? false;
+      await dependencies.dealRegistry.confirmSourceAssignment({
+        requestId: `belief_reversal_assignment_${source.document.id}_v1`,
+        workspaceId: WORKSPACE_ID,
+        dealId: plannedCase.deal.id,
+        companyId: plannedCase.company.id,
+        companyName: plannedCase.company.name,
+        status: "screening",
+        sourceRevisionId: source.revision.id,
+        assignedByUserId: ASSIGNED_BY_USER_ID,
+        reason: "Approved research-screening public source snapshot.",
+        confirmedAt: source.revision.createdAt,
+        memoryBundle: plannedCase.publicMemoryBundle,
+        memoryLineage: plannedCase.publicMemoryLineage,
+      });
+      if (!alreadyAssigned) created.assignments += 1;
+    }
+    const priorEvidence = await dependencies.evidencePacks.listSourceEvidence({
+      workspaceId: WORKSPACE_ID,
+      dealId: plannedCase.deal.id,
+      sourceRevisionIds: plannedCase.publicSources.map(
+        (source) => source.revision.id,
+      ),
+    });
+    const priorEvidenceIds = new Set(priorEvidence.map((item) => item.id));
+    await dependencies.evidencePacks.putSourceEvidence(
+      plannedCase.publicEvidence,
+    );
+    created.canonicalEvidence += plannedCase.publicEvidence.filter(
+      (item) => !priorEvidenceIds.has(item.id),
+    ).length;
+  }
+
+  const researchContext = manifest.researchMemoryContext;
+  const researchSnapshot = await dependencies.marketEvidenceSnapshots.create({
+    schemaVersion: "market-evidence-snapshot-v1",
+    workspaceId: WORKSPACE_ID,
+    id: researchContext.snapshotId,
+    snapshotAsOfDate: researchContext.snapshotAsOfDate,
+    windowDays: 14,
+    anchorAt: researchContext.anchorAt,
+    windowStartAt: researchContext.windowStartAt,
+    windowEndAt: researchContext.windowEndAt,
+    windowTimezone: researchContext.windowTimezone,
+    events: researchPlan.cases.map(({ marketEvent }) => marketEvent),
+  });
+  if (
+    researchSnapshot.displayLabel !== researchContext.displayLabel
+    || researchSnapshot.anchorAt !== researchSnapshot.windowEndAt
+  ) {
+    throw new Error(
+      "Research-memory snapshot does not match its immutable evidence context.",
+    );
+  }
+
+  const dispositions = buildResearchDispositionPlan({
+    manifest,
+    researchPlan,
+    snapshotFingerprint: researchSnapshot.snapshotFingerprint,
+  });
+  await persistPlannedSources(
+    dispositions.map(({ sampleSource }) => sampleSource),
+    dependencies,
+    created,
+  );
+  for (const disposition of dispositions) {
+    const plannedCase = researchPlan.cases.find(
+      ({ ledger }) => ledger.id === disposition.candidate.id,
+    );
+    if (!plannedCase) {
+      throw new Error(
+        `Research disposition ${disposition.candidate.id} lost its Deal.`,
+      );
+    }
+    const before = await dependencies.dealRegistry.findForWorkspace({
+      workspaceId: WORKSPACE_ID,
+      dealId: plannedCase.deal.id,
+    });
+    const alreadyAssigned = before?.activeSourceRevisionIds.includes(
+      disposition.sampleSource.revision.id,
+    ) ?? false;
+    await dependencies.dealRegistry.confirmSourceAssignment({
+      requestId:
+        `belief_reversal_assignment_${disposition.sampleSource.document.id}_v1`,
+      workspaceId: WORKSPACE_ID,
+      dealId: plannedCase.deal.id,
+      companyId: plannedCase.company.id,
+      companyName: plannedCase.company.name,
+      status: "screening",
+      sourceRevisionId: disposition.sampleSource.revision.id,
+      assignedByUserId: ASSIGNED_BY_USER_ID,
+      reason: "Approved synthetic research-screening disposition source.",
+      confirmedAt: disposition.sampleSource.revision.createdAt,
+      memoryBundle: disposition.memoryBundle,
+      memoryLineage: disposition.memoryLineage,
+    });
+    if (!alreadyAssigned) created.assignments += 1;
+    const priorEvidence = await dependencies.evidencePacks.listSourceEvidence({
+      workspaceId: WORKSPACE_ID,
+      dealId: plannedCase.deal.id,
+      sourceRevisionIds: [disposition.sampleSource.revision.id],
+    });
+    await dependencies.evidencePacks.putSourceEvidence([
+      disposition.sampleEvidence,
+    ]);
+    if (!priorEvidence.some(({ id }) => id === disposition.sampleEvidence.id)) {
+      created.canonicalEvidence += 1;
+    }
+    const deal = await dependencies.dealRegistry.findForWorkspace({
+      workspaceId: WORKSPACE_ID,
+      dealId: plannedCase.deal.id,
+    });
+    if (!deal?.activeSourceRevisionFingerprint) {
+      throw new Error(
+        `Research Deal ${plannedCase.deal.id} has no active source fingerprint.`,
+      );
+    }
+    const registryResult = await researchCandidates.saveBundle({
+      candidate: disposition.candidate,
+      dispositionMemory: disposition.dispositionMemory,
+      activeParentFingerprint: deal.activeSourceRevisionFingerprint,
+      sources: [
+        ...disposition.publicMemories.map((payload) => ({
+          sourceId: payload.source.sourceId,
+          sourceRevisionId: payload.source.sourceRevisionId,
+          sourceRevisionFingerprint: payload.source.contentFingerprint,
+          payload,
+        })),
+        {
+          sourceId: disposition.sampleSource.document.id,
+          sourceRevisionId: disposition.sampleSource.revision.id,
+          sourceRevisionFingerprint: disposition.sampleSource.revision.contentHash,
+          payload: disposition.dispositionMemory,
+        },
+      ],
+      evidenceGap: disposition.evidenceGap,
+    });
+    created.researchCandidates += registryResult.created.candidate;
+    created.researchSourceAssignments +=
+      registryResult.created.sourceAssignments;
+    created.researchEvidenceGaps += registryResult.created.evidenceGaps;
+  }
+
+  const evidenceWindow = manifest.evidenceWindow;
+  const pinnedSnapshot = await dependencies.marketEvidenceSnapshots.create({
     schemaVersion: "market-evidence-snapshot-v1",
     workspaceId: WORKSPACE_ID,
     id: APPROVED_PINNED_DEMO_SNAPSHOT_ID,
-    snapshotAsOfDate: "2026-08-01",
+    snapshotAsOfDate: evidenceWindow.endAt.slice(0, 10),
     windowDays: 14,
-    anchorAt: "2026-08-01T23:59:59.999-07:00",
-    windowStartAt: "2026-07-18T00:00:00.000-07:00",
-    windowEndAt: "2026-08-01T23:59:59.999-07:00",
-    windowTimezone: "America/Los_Angeles",
-    events: plan.cases.flatMap(({ marketEvents }) => marketEvents),
+    anchorAt: evidenceWindow.endAt,
+    windowStartAt: evidenceWindow.startAt,
+    windowEndAt: evidenceWindow.endAt,
+    windowTimezone: evidenceWindow.timezone,
+    events: selectedPlan.cases.flatMap(({ marketEvents }) => marketEvents),
   });
+  if (
+    pinnedSnapshot.displayLabel !== evidenceWindow.displayLabel
+    || pinnedSnapshot.anchorAt !== pinnedSnapshot.windowEndAt
+  ) {
+    throw new Error("Pinned snapshot does not match the parsed manifest evidence window.");
+  }
 
   return {
     created,
     totals: {
       acceptedCases: 4,
-      publicSources: 37,
+      publicSources: 55,
       sampleDecisionRecords: 4,
-      sourceParents: 41,
+      sampleResearchScreeningRecords: 7,
+      sourceParents: 66,
     },
   };
 }
@@ -265,6 +472,7 @@ export async function runDefaultBeliefReversalDemoSeed(input: {
     dealRegistry: getDealRegistry(),
     evidencePacks: getEvidencePacksRepository(),
     marketEvidenceSnapshots: getMarketEvidenceSnapshotsRepository(),
+    researchCandidates: getResearchCandidatesRepository(),
   }));
   return runBeliefReversalDemoSeed(createDependencies());
 }
@@ -312,6 +520,7 @@ function buildSeedPlan(
           sourceClass: source.sourceClass,
           sourceAuthority: source.sourceAuthority,
           evidenceRole: source.evidenceRole,
+          entityKeys: [...source.entityKeys],
           eventAt: source.eventAt,
           publishedAt: source.publishedAt,
           publicationTimestamp: source.publicationTimestamp,
@@ -358,13 +567,11 @@ function buildSeedPlan(
     const sourceRefById = new Map(selectedCase.sources.map((researchSource) => {
       const source = sourceById.get(researchSource.id);
       if (!source) throw new Error(`Approved source ${researchSource.id} was not planned.`);
-      return [researchSource.id, publicSourceRef(
+      return [researchSource.id, buildBeliefReversalSelectedPublicSourceRef({
         manifest,
-        selectedCase.entityKeys,
-        researchSource,
-        source.revision.id,
-        source.revision.contentHash,
-      )] as const;
+        source: researchSource,
+        revision: source.revision,
+      })] as const;
     }));
     const marketEvents = selectedCase.events.map((event) => {
       const sources = event.sourceIds.map((sourceId) => {
@@ -398,7 +605,7 @@ function buildSeedPlan(
         canonicalUrl: trigger.canonicalUrl!,
         providerId: trigger.providerId!,
         contentFingerprint: `sha256:${"0".repeat(64)}`,
-        entityKeys: [...selectedCase.entityKeys],
+        entityKeys: [...event.entityKeys],
         triggerSourceId: trigger.id,
         sources,
       });
@@ -412,13 +619,11 @@ function buildSeedPlan(
       if (!researchSource || !source) {
         throw new Error(`Claim ${claim.id} is missing its approved source.`);
       }
-      const sourceRef = publicSourceRef(
+      const sourceRef = buildBeliefReversalSelectedPublicSourceRef({
         manifest,
-        selectedCase.entityKeys,
-        researchSource,
-        source.revision.id,
-        source.revision.contentHash,
-      );
+        source: researchSource,
+        revision: source.revision,
+      });
       const semanticFields = semanticFieldsBySource.get(researchSource.id)
         ?? [];
       return {
@@ -563,11 +768,431 @@ function buildSeedPlan(
   return { cases, sources };
 }
 
+function buildResearchScreeningPlan(
+  manifest: BeliefReversalResearchPackage,
+): ResearchScreeningPlan {
+  const ledgerEntries = manifest.candidateLedger.filter(
+    (entry): entry is ResearchScreeningLedgerEntry =>
+      entry.disposition === "qualified_not_selected",
+  );
+  const cases = ledgerEntries.map((ledger): PlannedResearchCase => {
+    const companyName = ledger.companyIdentity.brandName;
+    const resolvedSources = manifest.screeningSources.filter(
+      (source): source is ResolvedScreeningSource =>
+        source.status === "resolved" && source.candidateId === ledger.id,
+    );
+    const publicSources = resolvedSources.map((source) => plannedSource({
+      id: source.id,
+      title: source.title,
+      role: "public_web_snapshot",
+      companyName,
+      dealId: ledger.stableDealId,
+      snapshot: {
+        schemaVersion: "belief-reversal-research-source-snapshot-v1",
+        packageId: manifest.packageId,
+        candidateId: ledger.id,
+        source,
+      },
+      extractedAt: temporalTimestamp(source.retrievedAt)!,
+      companyId: ledger.companyId,
+      status: "screening",
+    }));
+    const plannedBySourceId = new Map(
+      publicSources.map((source) => [source.document.id, source]),
+    );
+    const sourceRefs = new Map(resolvedSources.map((source) => {
+      const planned = plannedBySourceId.get(source.id);
+      if (!planned) {
+        throw new Error(`Research source ${source.id} was not planned.`);
+      }
+      return [source.id, buildBeliefReversalResearchPublicSourceRef({
+        source,
+        revision: planned.revision,
+      })] as const;
+    }));
+    const publicEvidence = resolvedSources.map((source): SourceEvidenceInput => {
+      const planned = plannedBySourceId.get(source.id)!;
+      const sourceRef = sourceRefs.get(source.id)!;
+      return {
+        id: sourceRef.id,
+        workspaceId: WORKSPACE_ID,
+        dealId: ledger.stableDealId,
+        sourceId: source.id,
+        sourceRevisionId: planned.revision.id,
+        provenanceOrigin: "public_source",
+        field: "research_public_claim",
+        value: source.normalizedStatement,
+        unit: null,
+        currency: null,
+        periodStart: null,
+        periodEnd: null,
+        publishedAt: temporalTimestamp(
+          source.publicationTimestamp ?? source.publishedAt,
+        ),
+        eventAt: temporalTimestamp(source.eventAt),
+        retrievedAt: temporalTimestamp(source.retrievedAt)!,
+        locator: {
+          kind: "web_snapshot",
+          url: source.canonicalUrl,
+          excerpt: source.verbatimExcerpt,
+        },
+        sourceRole: source.sourceAuthority === "primary"
+          ? "first_party_filing"
+          : "independent_third_party",
+        assertionStatus: "reported",
+        verificationMethod: "reviewed_research_snapshot_v1",
+        freshness: "current",
+        acceptedForGate: true,
+        sourceRef,
+      };
+    });
+    const trigger = sourceRefs.get(ledger.triggeringEvent.sourceId);
+    const triggerSource = resolvedSources.find(
+      ({ id }) => id === ledger.triggeringEvent.sourceId,
+    );
+    if (
+      ledger.triggeringEvent.status !== "resolved"
+      || !trigger
+      || !triggerSource
+      || triggerSource.eventAt === null
+      || triggerSource.publishedAt === null
+    ) {
+      throw new Error(
+        `Research candidate ${ledger.id} has no exact resolved trigger.`,
+      );
+    }
+    const marketEvent = refingerprintMarketEvent({
+      schemaVersion: "market-event-v2",
+      adaptation: "canonical",
+      id: `event_research_${ledger.id.replace(/^candidate_/u, "")}`,
+      title: ledger.triggeringEvent.title,
+      eventType: "funding",
+      sectors: ["research_screening"],
+      themes: ["funding"],
+      summary: triggerSource.normalizedStatement,
+      positiveImplications: [],
+      negativeImplications: [],
+      eventAt: trigger.eventAt!,
+      eventAtPrecision: trigger.eventAtPrecision!,
+      publishedAt: trigger.publishedAt!,
+      publishedAtPrecision: trigger.publishedAtPrecision!,
+      retrievedAt: trigger.retrievedAt!,
+      retrievedAtPrecision: trigger.retrievedAtPrecision!,
+      updatedAt: null,
+      updatedAtPrecision: null,
+      confidence: "medium",
+      canonicalUrl: triggerSource.canonicalUrl,
+      providerId: "belief_reversal_research_snapshot_v1",
+      contentFingerprint: `sha256:${"0".repeat(64)}`,
+      entityKeys: [...ledger.entityKeys],
+      triggerSourceId: trigger.id,
+      sources: resolvedSources.flatMap((source) =>
+        source.evidenceRole !== "trigger"
+          || source.id === ledger.triggeringEvent.sourceId
+          ? [sourceRefs.get(source.id)!]
+          : []
+      ),
+    });
+    const publicMemoryBundle = DealMemoryBundleSchema.parse({
+      dealId: ledger.stableDealId,
+      companyName,
+      status: "screening",
+      facts: publicEvidence.map((item) => ({
+        text: item.value,
+        sources: [item.sourceRef!],
+      })),
+      interactions: [],
+    });
+    const publicMemoryLineage: DealMemoryLineage = {
+      evidence: Object.fromEntries(publicEvidence.map((item) => [item.id, {
+        workspaceId: WORKSPACE_ID,
+        dealId: ledger.stableDealId,
+        sourceId: item.sourceId,
+        sourceRevisionId: item.sourceRevisionId,
+      }])),
+      interactions: {},
+    };
+    return {
+      ledger,
+      company: {
+        id: ledger.companyId,
+        workspaceId: WORKSPACE_ID,
+        name: companyName,
+      },
+      deal: {
+        id: ledger.stableDealId,
+        workspaceId: WORKSPACE_ID,
+        companyId: ledger.companyId,
+        companyName,
+        status: "screening",
+      },
+      publicSources,
+      resolvedSources,
+      publicEvidence,
+      publicMemoryBundle,
+      publicMemoryLineage,
+      marketEvent,
+    };
+  });
+  const sources = cases.flatMap(({ publicSources }) => publicSources);
+  if (
+    cases.length !== 7
+    || sources.length !== 18
+    || new Set(sources.map(({ document }) => document.id)).size !== 18
+  ) {
+    throw new Error(
+      "The approved research-screening seed must contain 7 Deals and 18 resolved public parents.",
+    );
+  }
+  return { cases, sources };
+}
+
+function buildResearchDispositionPlan(input: {
+  manifest: BeliefReversalResearchPackage;
+  researchPlan: ResearchScreeningPlan;
+  snapshotFingerprint: string;
+}): PlannedResearchDisposition[] {
+  const context = input.manifest.researchMemoryContext;
+  const evidenceContext = {
+    mode: "pinned" as const,
+    scope: "research_only" as const,
+    formalReportEligible: false as const,
+    researchSnapshotVersion: context.researchSnapshotVersion,
+    snapshotId: context.snapshotId,
+    snapshotAsOfDate: context.snapshotAsOfDate,
+    snapshotFingerprint: input.snapshotFingerprint,
+    anchorAt: context.anchorAt,
+    windowStartAt: context.windowStartAt,
+    windowEndAt: context.windowEndAt,
+    windowTimezone: context.windowTimezone,
+    displayLabel: context.displayLabel,
+  };
+  const unresolvedSources = input.manifest.screeningSources.filter(
+    (source) => source.status === "unresolved",
+  );
+  const result = input.researchPlan.cases.map(
+    (plannedCase): PlannedResearchDisposition => {
+      const ledger = plannedCase.ledger;
+      const commonDisposition = {
+        disposition: ledger.disposition,
+        qualificationRationale: ledger.qualificationRationale,
+        notSelectedReason: ledger.notSelectedReason,
+        missingEvidence: [...ledger.missingEvidence],
+        counterevidenceAndLimits: [...ledger.counterevidenceAndLimits],
+        invalidatingEvidence: [...ledger.invalidatingEvidence],
+        upgradingEvidence: [...ledger.upgradingEvidence],
+        reconsiderationConditions: [...ledger.reconsiderationConditions],
+        actionDelta: structuredClone(ledger.actionDelta),
+        workflowEligibility: structuredClone(ledger.workflowEligibility),
+      };
+      const candidate = ResearchCandidateSchema.parse({
+        schemaVersion: "research-candidate-v1",
+        id: ledger.id,
+        workspaceId: WORKSPACE_ID,
+        companyId: ledger.companyId,
+        stableDealId: ledger.stableDealId,
+        dealStatus: "screening",
+        analysisEligible: true,
+        entityKeys: [...ledger.entityKeys],
+        identityStatus: ledger.companyIdentity.status,
+        ...commonDisposition,
+        sampleResearchScreeningRecordId:
+          ledger.sampleResearchScreeningRecordId,
+        evidenceContext,
+      });
+      const dispositionMemory = ResearchDispositionMemoryPayloadSchema.parse({
+        schemaVersion: "research-disposition-memory-v1",
+        memoryKind: "research_disposition",
+        id: ledger.sampleResearchScreeningRecordId,
+        workspaceId: WORKSPACE_ID,
+        candidateId: ledger.id,
+        companyId: ledger.companyId,
+        stableDealId: ledger.stableDealId,
+        dealStatus: "screening",
+        analysisEligible: true,
+        entityKeys: [...ledger.entityKeys],
+        evidenceContext,
+        provenance: "synthetic_research_record",
+        recordKind: "research_screening_disposition",
+        meetingOccurred: false,
+        vcInteraction: false,
+        label: "Sample research screening record",
+        recordedAt: context.anchorAt,
+        ...commonDisposition,
+      });
+      ResearchCandidateDispositionMemoryPairSchema.parse({
+        candidate,
+        dispositionMemory,
+      });
+      const sampleDocumentId = `source_${dispositionMemory.id}`;
+      const sampleSource = plannedSource({
+        id: sampleDocumentId,
+        title: dispositionMemory.label,
+        role: "sample_research_screening_record",
+        companyName: plannedCase.company.name,
+        dealId: plannedCase.deal.id,
+        snapshot: dispositionMemory,
+        extractedAt: context.anchorAt,
+        companyId: plannedCase.company.id,
+        status: "screening",
+      });
+      const sampleSourceRef = buildSampleResearchScreeningSourceRef({
+        payload: dispositionMemory,
+        documentId: sampleDocumentId,
+        sourceRevisionId: sampleSource.revision.id,
+        contentFingerprint: sampleSource.revision.contentHash,
+      });
+      const sampleEvidence: SourceEvidenceInput = {
+        id: dispositionMemory.id,
+        workspaceId: WORKSPACE_ID,
+        dealId: plannedCase.deal.id,
+        sourceId: sampleDocumentId,
+        sourceRevisionId: sampleSource.revision.id,
+        provenanceOrigin: "uploaded_document",
+        field: "research_disposition_context",
+        value: sourceTextForRetrieval(sampleSourceRef),
+        unit: null,
+        currency: null,
+        periodStart: null,
+        periodEnd: null,
+        publishedAt: null,
+        eventAt: null,
+        retrievedAt: context.anchorAt,
+        locator: {
+          kind: "text_range",
+          start: 0,
+          end: sourceTextForRetrieval(sampleSourceRef).length,
+          excerpt: sourceTextForRetrieval(sampleSourceRef),
+        },
+        sourceRole: "management",
+        assertionStatus: "reported",
+        verificationMethod: "synthetic_research_screening_record_v1",
+        freshness: "current",
+        acceptedForGate: false,
+        sourceRef: sampleSourceRef,
+      };
+      const publicMemories = plannedCase.resolvedSources.map((source) => {
+        const plannedSource = plannedCase.publicSources.find(
+          ({ document }) => document.id === source.id,
+        )!;
+        return PublicEvidenceMemoryPayloadSchema.parse({
+          schemaVersion: "research-public-evidence-memory-v1",
+          memoryKind: "public_evidence",
+          workspaceId: WORKSPACE_ID,
+          candidateId: ledger.id,
+          companyId: ledger.companyId,
+          stableDealId: ledger.stableDealId,
+          entityKeys: [...ledger.entityKeys],
+          evidenceContext,
+          source: {
+            sourceId: source.id,
+            sourceRevisionId: plannedSource.revision.id,
+            contentFingerprint: plannedSource.revision.contentHash,
+            title: source.title,
+            publisher: source.publisher,
+            canonicalUrl: source.canonicalUrl,
+            sourceClass: source.sourceClass,
+            sourceAuthority: source.sourceAuthority,
+            evidenceRole: source.evidenceRole,
+            entityKeys: [...source.entityKeys],
+            eventAt: source.eventAt,
+            publishedAt: source.publishedAt,
+            publicationTimestamp: source.publicationTimestamp,
+            retrievedAt: source.retrievedAt,
+            locator: source.locator,
+            verbatimExcerpt: source.verbatimExcerpt,
+            normalizedStatement: source.normalizedStatement,
+          },
+        });
+      });
+      const unresolved = unresolvedSources.find(
+        ({ candidateId }) => candidateId === ledger.id,
+      );
+      const evidenceGap = unresolved
+        ? ResearchEvidenceGapSchema.parse({
+            schemaVersion: "research-evidence-gap-v1",
+            id: unresolved.id,
+            workspaceId: WORKSPACE_ID,
+            candidateId: ledger.id,
+            companyId: ledger.companyId,
+            stableDealId: ledger.stableDealId,
+            entityKeys: [...ledger.entityKeys],
+            status: "unresolved",
+            title: unresolved.title,
+            publisher: unresolved.publisher,
+            surfacedUrl: unresolved.surfacedUrl,
+            retrievedAt: unresolved.retrievedAt,
+            reason: unresolved.reason,
+            memoryEligible: false,
+          })
+        : null;
+      const memoryBundle = DealMemoryBundleSchema.parse({
+        ...plannedCase.publicMemoryBundle,
+        facts: [
+          ...plannedCase.publicMemoryBundle.facts,
+          { text: sampleEvidence.value, sources: [sampleSourceRef] },
+        ],
+      });
+      const memoryLineage: DealMemoryLineage = {
+        evidence: {
+          ...plannedCase.publicMemoryLineage.evidence,
+          [sampleEvidence.id]: {
+            workspaceId: WORKSPACE_ID,
+            dealId: plannedCase.deal.id,
+            sourceId: sampleSource.document.id,
+            sourceRevisionId: sampleSource.revision.id,
+          },
+        },
+        interactions: {},
+      };
+      return {
+        candidate,
+        dispositionMemory,
+        publicMemories,
+        evidenceGap,
+        sampleSource,
+        sampleEvidence,
+        memoryBundle,
+        memoryLineage,
+      };
+    },
+  );
+  if (
+    result.length !== 7
+    || result.flatMap(({ publicMemories }) => publicMemories).length !== 18
+    || result.filter(({ evidenceGap }) => evidenceGap !== null).length !== 1
+  ) {
+    throw new Error(
+      "Research disposition plan must remain 7 synthetic records / 18 public parents / 1 unresolved gap.",
+    );
+  }
+  return result;
+}
+
 function semanticFieldsForCase(
   selectedCase: BeliefReversalResearchPackage["selectedCases"][number],
 ): Map<string, NonNullable<DealFact["semanticFields"]>> {
   type Projection = NonNullable<DealFact["semanticFields"]>[number];
   const result = new Map<string, NonNullable<DealFact["semanticFields"]>>();
+  const sourceByDocumentId = new Map(
+    selectedCase.sources.map((source) => [source.id, source]),
+  );
+  const sourceByClaimId = new Map(
+    selectedCase.sources.map((source) => [source.supportedClaimId, source]),
+  );
+  const sourceIdentity = (sourceId: string) => {
+    const source = sourceByDocumentId.get(sourceId)
+      ?? sourceByClaimId.get(sourceId);
+    if (!source) {
+      throw new Error(
+        `Semantic field source ${sourceId} is outside ${selectedCase.dealId}.`,
+      );
+    }
+    return {
+      documentId: source.id,
+      sourceRefId: source.supportedClaimId,
+    };
+  };
   const identity = (
     fieldId: Projection["fieldId"],
     classification: Projection["classification"],
@@ -582,9 +1207,10 @@ function semanticFieldsForCase(
     schemaVersion: "deal-semantic-field-v1" as const,
   });
   const add = (sourceId: string, projection: Projection): void => {
-    const current = result.get(sourceId) ?? [];
+    const attachmentId = sourceIdentity(sourceId).documentId;
+    const current = result.get(attachmentId) ?? [];
     current.push(projection);
-    result.set(sourceId, current);
+    result.set(attachmentId, current);
   };
   const addFact = (
     fieldId: Projection["fieldId"],
@@ -592,13 +1218,16 @@ function semanticFieldsForCase(
     sourceIds: readonly string[],
     extras: { basis?: string; asOfDate?: string } = {},
   ): void => {
+    const lineageSourceIds = sourceIds.map((sourceId) =>
+      sourceIdentity(sourceId).sourceRefId
+    );
     add(sourceIds[0]!, {
-      ...identity(fieldId, "fact", sourceIds),
+      ...identity(fieldId, "fact", lineageSourceIds),
       fieldId,
       classification: "fact",
       availability: "available",
       value,
-      sourceIds: [...sourceIds],
+      sourceIds: lineageSourceIds,
       ...extras,
     });
   };
@@ -607,13 +1236,16 @@ function semanticFieldsForCase(
     reason: string,
     checkedSourceIds: readonly string[],
   ): void => {
+    const lineageSourceIds = checkedSourceIds.map((sourceId) =>
+      sourceIdentity(sourceId).sourceRefId
+    );
     add(checkedSourceIds[0]!, {
-      ...identity(fieldId, "unavailable", checkedSourceIds),
+      ...identity(fieldId, "unavailable", lineageSourceIds),
       fieldId,
       classification: "unavailable",
       availability: "unavailable",
       reason,
-      checkedSourceIds: [...checkedSourceIds],
+      checkedSourceIds: lineageSourceIds,
     });
   };
 
@@ -657,17 +1289,21 @@ function semanticFieldsForCase(
       selectedCase.foundingDate.checkedSourceIds,
     );
   } else {
+    const foundingObservations = selectedCase.foundingDate.observations.map(
+      (observation) => ({
+        ...observation,
+        sourceId: sourceIdentity(observation.sourceId).sourceRefId,
+      }),
+    );
     add(selectedCase.foundingDate.observations[0]!.sourceId, {
       ...identity(
         "founding_date",
         "conflicting",
-        selectedCase.foundingDate.observations.map(({ sourceId }) => sourceId),
+        foundingObservations.map(({ sourceId }) => sourceId),
       ),
       fieldId: "founding_date",
       classification: "conflicting",
-      observations: selectedCase.foundingDate.observations.map(
-        (observation) => ({ ...observation }),
-      ),
+      observations: foundingObservations,
     });
   }
   add(selectedCase.profile.brandName.sourceId, {
@@ -737,11 +1373,12 @@ function semanticFieldsForCase(
   for (const unknown of selectedCase.unknowns) {
     add(selectedCase.profile.brandName.sourceId, {
       ...identity("unknowns", "unknown", [
-        `context-unknown:${createHash("sha256").update(unknown).digest("hex")}`,
+        `context-unknown:${createHash("sha256").update(unknown.reason).digest("hex")}`,
       ]),
       fieldId: "unknowns",
       classification: "unknown",
-      reason: unknown,
+      reason: unknown.reason,
+      externalLabel: unknown.externalLabel,
     });
   }
   return result;
@@ -750,13 +1387,16 @@ function semanticFieldsForCase(
 function plannedSource(input: {
   id: string;
   title: string;
-  role: "public_web_snapshot" | "sample_decision_record";
+  role:
+    | "public_web_snapshot"
+    | "sample_decision_record"
+    | "sample_research_screening_record";
   companyName: string;
   dealId: string;
   snapshot: unknown;
   extractedAt: string;
   companyId: string;
-  status: "passed" | "watchlist" | "invested";
+  status: "screening" | "passed" | "watchlist" | "invested";
 }): PlannedSource {
   const bytes = canonicalJsonBytes(input.snapshot);
   const checksum = sha256(bytes);
@@ -794,51 +1434,6 @@ function plannedSource(input: {
     companyName: input.companyName,
     status: input.status,
   };
-}
-
-function publicSourceRef(
-  manifest: BeliefReversalResearchPackage,
-  entityKeys: readonly string[],
-  source: BeliefReversalResearchPackage["selectedCases"][number]["sources"][number],
-  sourceRevisionId: string,
-  contentFingerprint: string,
-): WritableSourceRefV2 {
-  const publishedAt = source.publicationTimestamp ?? source.publishedAt;
-  return WritableSourceRefV2Schema.parse({
-    schemaVersion: "source-ref-v2",
-    adaptation: "canonical",
-    id: source.supportedClaimId,
-    provenance: "public_web",
-    title: source.title,
-    canonicalUrl: source.canonicalUrl,
-    documentId: source.id,
-    publisher: source.publisher,
-    providerId: PROVIDER_ID,
-    eventAt: source.eventAt,
-    eventAtPrecision: source.eventAt === null ? null : "date",
-    publishedAt,
-    publishedAtPrecision: publishedAt === null
-      ? null
-      : source.publicationTimestamp === null
-      ? "date"
-      : "timestamp",
-    retrievedAt: manifest.retrievalDate,
-    retrievedAtPrecision: "date",
-    updatedAt: null,
-    updatedAtPrecision: null,
-    entityKeys: [...entityKeys],
-    sourceClass: source.sourceClass,
-    sourceAuthority: source.sourceAuthority,
-    evidenceRole: source.evidenceRole,
-    sourceRevisionId,
-    locator: { kind: "web_text", selector: source.locator },
-    contentFingerprint,
-    text: {
-      status: "verified_exact",
-      verbatimExcerpt: source.verbatimExcerpt,
-      normalizedStatement: source.normalizedStatement,
-    },
-  });
 }
 
 function temporalTimestamp(value: string | null): string | null {
@@ -879,6 +1474,9 @@ function emptyCreatedCounts(): BeliefReversalSeedResult["created"] {
     assignments: 0,
     canonicalEvidence: 0,
     sampleInteractions: 0,
+    researchCandidates: 0,
+    researchSourceAssignments: 0,
+    researchEvidenceGaps: 0,
   };
 }
 
@@ -888,6 +1486,45 @@ function increment(
   result: UpsertResult<unknown>,
 ): void {
   if (result.created) counts[key] += 1;
+}
+
+async function persistPlannedSources(
+  sources: readonly PlannedSource[],
+  dependencies: BeliefReversalSeedDependencies,
+  created: BeliefReversalSeedResult["created"],
+): Promise<void> {
+  for (const source of sources) {
+    increment(
+      created,
+      "privateObjects",
+      await dependencies.objectStorage.ensurePrivateObject({
+        key: source.document.objectKey,
+        bytes: source.bytes,
+        contentType: "application/json",
+      }),
+    );
+    increment(
+      created,
+      "documents",
+      await dependencies.dataStore.ensureImmutableSourceDocument(
+        source.document,
+      ),
+    );
+    increment(
+      created,
+      "workspaceDocuments",
+      await dependencies.dataStore.ensureWorkspaceDocument({
+        workspaceId: WORKSPACE_ID,
+        documentId: source.document.id,
+      }),
+    );
+    const priorRevision = await dependencies.sourceRegistry.getRevision({
+      workspaceId: WORKSPACE_ID,
+      revisionId: source.revision.id,
+    });
+    await dependencies.sourceRegistry.createInitialRevision(source.revision);
+    if (priorRevision === null) created.sourceRevisions += 1;
+  }
 }
 
 async function main(): Promise<void> {

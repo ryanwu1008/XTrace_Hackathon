@@ -321,6 +321,7 @@ function finalization(input: {
       missingEvidence: [{
         fieldId: "arr",
         label: "arr",
+        externalLabel: "arr",
         reasonCode: "MISSING_CRITICAL_EVIDENCE",
         mostLikelyDecisionImpact:
           "Providing accepted evidence may raise or lower the formal decision ceiling.",
@@ -368,6 +369,7 @@ function finalization(input: {
       schemaVersion: "underwriting-schema-v1",
       settingsFingerprint: `sha256:${"b".repeat(64)}`,
       applicationCommit: "0002f6b",
+      companyAnalysisUnknowns: [],
     },
   };
 }
@@ -726,6 +728,82 @@ test("non-reuse finalization requires the exact immutable Evidence Pack build", 
   const completed = await runs.finalizeCandidate(payload);
   assert.equal(completed.status, "completed");
   assert.equal(artifacts.inspect().rowCounts.evidencePacks, 1);
+});
+
+test("finalization preserves generic blockers while accepting typed company/event unknowns", async () => {
+  const { artifacts, evidencePacks, runs, first } =
+    await twoClaimedCandidates();
+  const payload = guardedFinalization({
+    candidateRunId: first.candidate.id,
+    dealId: first.candidate.dealId,
+    workerId: "worker_1",
+    leaseToken: first.leaseToken,
+  });
+  const companySpecificUnknown = {
+    fieldId: `semantic-field-${"a".repeat(24)}`,
+    label:
+      "Akamai and Kyndryl channel bookings, margins, and sell-through remain unavailable.",
+    externalLabel: "Current partner bookings, margins, and sell-through",
+    reasonCode: "UNRESOLVED_COMPANY_OR_EVENT_UNKNOWN",
+    mostLikelyDecisionImpact:
+      "Resolving this company- or event-specific unknown may raise or lower the formal decision ceiling.",
+  };
+  for (const draft of payload.actionDrafts) {
+    if ("missingEvidence" in draft) {
+      draft.missingEvidence.push(companySpecificUnknown);
+    }
+  }
+  payload.versionSnapshot.companyAnalysisUnknowns = [{
+    fieldId: companySpecificUnknown.fieldId,
+    label: companySpecificUnknown.label,
+    externalLabel: companySpecificUnknown.externalLabel,
+  }];
+  await saveFinalizationBuild(evidencePacks, payload);
+
+  const forgedUnknown = structuredClone(payload);
+  for (const draft of forgedUnknown.actionDrafts) {
+    if ("missingEvidence" in draft) {
+      const unknown = draft.missingEvidence.find(
+        ({ reasonCode }) =>
+          reasonCode === "UNRESOLVED_COMPANY_OR_EVENT_UNKNOWN",
+      );
+      assert.ok(unknown);
+      unknown.fieldId = `semantic-field-${"b".repeat(24)}`;
+    }
+  }
+  await assert.rejects(
+    runs.finalizeCandidate(forgedUnknown),
+    /status-safe action drafts/i,
+  );
+
+  const missingGeneric = structuredClone(payload);
+  for (const draft of missingGeneric.actionDrafts) {
+    if ("missingEvidence" in draft) {
+      draft.missingEvidence = draft.missingEvidence.filter(
+        ({ fieldId }) => fieldId !== "arr",
+      );
+    }
+  }
+  await assert.rejects(
+    runs.finalizeCandidate(missingGeneric),
+    /status-safe action drafts/i,
+  );
+
+  const completed = await runs.finalizeCandidate(payload);
+  assert.equal(completed.status, "completed");
+  const savedDraft = artifacts.inspect().bundles[0]?.actionDrafts[0];
+  assert.ok(savedDraft && "missingEvidence" in savedDraft);
+  assert.deepEqual(
+    savedDraft.missingEvidence,
+    [{
+      fieldId: "arr",
+      label: "arr",
+      externalLabel: "arr",
+      reasonCode: "MISSING_CRITICAL_EVIDENCE",
+      mostLikelyDecisionImpact:
+        "Providing accepted evidence may raise or lower the formal decision ceiling.",
+    }, companySpecificUnknown],
+  );
 });
 
 test("failed finalization leaves no partial artifacts and retains the active lease", async () => {

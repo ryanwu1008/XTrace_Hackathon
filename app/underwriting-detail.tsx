@@ -16,6 +16,10 @@ import {
   lineageForClaim,
   versionRows,
 } from "./underwriting-view-model";
+import {
+  hasSampleResearchScreeningAuthority,
+  SAMPLE_RESEARCH_SCREENING_BADGE,
+} from "../lib/belief-reversal/sample-research-screening-authority";
 
 /** @deprecated Import CandidateUnderwritingDetail from the read model. */
 export type CandidateUnderwritingDetailDto = CandidateUnderwritingDetail;
@@ -277,6 +281,17 @@ export function UnderwritingDetailPanel({
             </small>
           </aside>
         )}
+        {analysis && hasSampleResearchScreeningAuthority(analysis.sources) && (
+          <aside className="vsee-sample-decision-record" role="note">
+            <strong className="vsee-sample-research-screening-label">
+              {SAMPLE_RESEARCH_SCREENING_BADGE}
+            </strong>
+            <p>
+              This is synthetic research-screening context, not a meeting or
+              VC interaction.
+            </p>
+          </aside>
+        )}
         <dl className="vsee-affected-company">
           <div><dt>Identity</dt><dd>{companyName}</dd></div>
           <div>
@@ -301,7 +316,7 @@ export function UnderwritingDetailPanel({
         </dl>
       </DetailSection>
 
-      <DetailSection number="04" title="Company underwriting">
+      <DetailSection number="04" title="Investor Framework Perspectives">
         {detail.judgments.length ? (
           <div className="vsee-framework-list">
             {detail.judgments.map((judgment) => (
@@ -756,7 +771,7 @@ function EvidenceCoveragePanel({
           value={coverage.decisionCeiling ?? "Unavailable"}
         />
         <Definition
-          label="Underwriting status"
+          label="Underwriting Status"
           value={humanize(coverage.underwritingStatus)}
         />
         <Definition

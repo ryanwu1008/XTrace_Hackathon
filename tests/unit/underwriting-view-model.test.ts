@@ -5,49 +5,157 @@ import {
   describeUploadState,
   financialCalculationLineage,
   lineageForClaim,
-  orderUnderwritingSelections,
+  orderUnderwritingQueue,
   versionRows,
 } from "../../app/underwriting-view-model";
 import {
   toProductSearchMessage,
 } from "../../app/product-search-view-model";
+import {
+  adaptCurrentUnderwritingQueueEntries,
+  adaptLegacyPinnedUnderwritingSelections,
+} from "../../lib/underwriting/read-model";
 
-test("underwriting selections retain every explicit state while ranking selected Deals first", () => {
-  const ordered = orderUnderwritingSelections([
+test("underwriting queue priority orders every candidate without using rank as eligibility", () => {
+  const ordered = orderUnderwritingQueue([
     {
-      dealId: "deal_not_selected",
-      underwritingStatus: "not_selected",
-      rank: null,
-      candidateRunId: null,
+      batchId: "batch_1",
+      dealId: "deal_priority_six",
+      priorityRank: 6,
+      status: "completed",
+      candidateRunId: "candidate_priority_six",
       decision: null,
     },
     {
+      batchId: "batch_1",
       dealId: "deal_partial",
-      underwritingStatus: "partial",
-      rank: 2,
+      priorityRank: 2,
+      status: "partial",
       candidateRunId: "candidate_partial",
+      reason: "A persisted stage completed only partially.",
       decision: "Watch",
     },
     {
+      batchId: "batch_1",
       dealId: "deal_queued",
-      underwritingStatus: "queued",
-      rank: 1,
+      priorityRank: 1,
+      status: "queued",
       candidateRunId: "candidate_queued",
       decision: null,
     },
   ]);
 
   assert.deepEqual(
-    ordered.map(({ dealId, underwritingStatus }) => [
+    ordered.map(({ dealId, status }) => [
       dealId,
-      underwritingStatus,
+      status,
     ]),
     [
       ["deal_queued", "queued"],
       ["deal_partial", "partial"],
-      ["deal_not_selected", "not_selected"],
+      ["deal_priority_six", "completed"],
     ],
   );
+});
+
+test("current read adapter queues every persisted admitted candidate including priority six and hides non-candidates", () => {
+  const selections = Array.from({ length: 7 }, (_, index) => ({
+    batchId: "batch_current",
+    dealId: `deal_${index + 1}`,
+    status: index < 6 ? "selected" as const : "not_selected" as const,
+    rank: index < 6 ? index + 1 : null,
+    reason: index < 6
+      ? `Admitted at priority ${index + 1}; priority does not affect eligibility.`
+      : "The analysis outcome was monitor.",
+  }));
+  const candidates = [
+    ["queued", null],
+    ["running", null],
+    ["completed", "2026-08-03T10:00:00.000Z"],
+    ["partial", "2026-08-03T10:00:00.000Z"],
+    ["failed", "2026-08-03T10:00:00.000Z"],
+    ["unavailable", "2026-08-03T10:00:00.000Z"],
+  ].map(([status, finalizedAt], index) => ({
+    id: `candidate_${index + 1}`,
+    batchId: "batch_current",
+    workspaceId: "workspace_1",
+    dealId: `deal_${index + 1}`,
+    status: status as "queued" | "running" | "completed" | "partial" | "failed" | "unavailable",
+    candidateAnalysisFingerprint: `sha256:candidate-${index + 1}`,
+    rerunOfId: null,
+    createdAt: "2026-08-03T09:00:00.000Z",
+    finalizedAt,
+  }));
+
+  const entries = adaptCurrentUnderwritingQueueEntries({
+    batchId: "batch_current",
+    selections,
+    candidates,
+  });
+
+  assert.equal(entries.length, 6);
+  assert.deepEqual(
+    entries.map(({ dealId, priorityRank, status }) => ({
+      dealId,
+      priorityRank,
+      status,
+    })),
+    [
+      { dealId: "deal_1", priorityRank: 1, status: "queued" },
+      { dealId: "deal_2", priorityRank: 2, status: "running" },
+      { dealId: "deal_3", priorityRank: 3, status: "completed" },
+      { dealId: "deal_4", priorityRank: 4, status: "partial" },
+      { dealId: "deal_5", priorityRank: 5, status: "failed" },
+      { dealId: "deal_6", priorityRank: 6, status: "failed" },
+    ],
+  );
+  assert.equal(entries.some(({ dealId }) => dealId === "deal_7"), false);
+  assert.equal(entries.every(({ candidateRunId }) => candidateRunId !== null), true);
+});
+
+test("explicit pinned legacy adapter maps rank to read-only historical priority without mutating persisted identity", () => {
+  const selections = Object.freeze([Object.freeze({
+    batchId: "batch_pinned",
+    dealId: "deal_historical_admitted",
+    status: "selected" as const,
+    rank: 3,
+    reason: "Historical admitted row.",
+  }), Object.freeze({
+    batchId: "batch_pinned",
+    dealId: "deal_historical_not_admitted",
+    status: "not_selected" as const,
+    rank: null,
+    reason: "Historical non-admission.",
+  })]);
+  const before = structuredClone(selections);
+
+  const adapted = adaptLegacyPinnedUnderwritingSelections({
+    snapshotId: "belief_reversal_2026_08_01",
+    selections,
+  });
+
+  assert.deepEqual(adapted, {
+    adapter: "legacy-pinned-priority-order-v1",
+    snapshotId: "belief_reversal_2026_08_01",
+    entries: [{
+      batchId: "batch_pinned",
+      dealId: "deal_historical_admitted",
+      historicalPriorityOrder: 3,
+      historicalAdmissionStatus: "historically_admitted",
+      historicalReason: "Historical admitted row.",
+    }, {
+      batchId: "batch_pinned",
+      dealId: "deal_historical_not_admitted",
+      historicalPriorityOrder: null,
+      historicalAdmissionStatus: "historically_not_admitted",
+      historicalReason: "Historical non-admission.",
+    }],
+  });
+  assert.deepEqual(selections, before);
+  assert.throws(() => adaptLegacyPinnedUnderwritingSelections({
+    snapshotId: "current_live_run",
+    selections,
+  }), /pinned/i);
 });
 
 test("upload presentation distinguishes retryable memory failure from terminal extraction failure", () => {

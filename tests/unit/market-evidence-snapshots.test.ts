@@ -119,6 +119,25 @@ test("report evidence parsing rejects a current run paired with an all-null or m
   );
 });
 
+test("database evidence timestamps normalize to canonical UTC ISO milliseconds", () => {
+  const run = parseRunEvidenceContextRow({
+    evidence_context_version: "run-evidence-context-v1",
+    evidence_mode: "pinned",
+    evidence_anchor_at: "2026-08-02T06:59:59+00:00",
+    evidence_window_start_at: "2026-07-19T07:00:00+00:00",
+    evidence_window_end_at: "2026-08-02T06:59:59+00:00",
+    evidence_window_timezone: "America/Los_Angeles",
+    evidence_snapshot_id: "belief_reversal_2026_08_01",
+    evidence_snapshot_fingerprint: `sha256:${"1".repeat(64)}`,
+    evidence_context_fingerprint: `sha256:${"2".repeat(64)}`,
+  });
+  assert.equal(run.state, "current");
+  if (run.state !== "current") throw new Error("Expected current evidence context.");
+  assert.equal(run.anchorAt, "2026-08-02T06:59:59.000Z");
+  assert.equal(run.windowStartAt, "2026-07-19T07:00:00.000Z");
+  assert.equal(run.windowEndAt, "2026-08-02T06:59:59.000Z");
+});
+
 test("snapshot request rejects malformed windows, timezone, empty sets, and out-of-window events", () => {
   const invalid = [
     { windowTimezone: "PST" },

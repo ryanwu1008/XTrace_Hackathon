@@ -29,9 +29,12 @@ investor a cited, replayable reason to perform a second look.
 4. Manually queue a scan of public information published in the latest 14
    days.
 5. The background Worker normalizes public evidence, recalls historical
-   context, ranks every eligible Deal, and records ranks after five as
-   `not_selected`.
-6. Selected candidates run through eight core checks plus up to twenty
+   context, and persists one Belief Change Analysis for every Deal in the
+   run-bound eligible universe.
+6. Every analysis admitted as `belief_revised` enters Deep Underwriting.
+   Deterministic score and stable Deal identity set queue priority only; rank
+   and processing capacity never truncate admission. Each candidate runs
+   through eight core checks plus up to twenty
    approved advisory frameworks. Each framework retains its own citations,
    judgment, and disagreements; advisory formal decision weight stays zero.
 7. Persist a report, report-underwriting detail, and latest-only action drafts.
@@ -66,12 +69,12 @@ The repository contains exactly:
 - 4 supplied market reports
 - 1 reference-only VC Brain document
 
-The nine pitch-deck files produce 19 Deal records. Eight files map one-to-one to
-Deals. `Pitch-combined-InterTwin-AI.pdf` remains one private source object but maps its 11
-pages to 11 page-scoped Deals: InterTwin.ai, UniKudo, Mirror, CouPro, IndieShow,
-HuMetric, Alpha Builders, INNFormNest, SilverMemory, Kanesh, and Fellowtrip.
-Every fact, memory bundle, match, and source link from that PDF must retain the
-correct page number.
+The nine pitch-deck files produce 19 of the Deal records. Eight files map
+one-to-one to Deals. `Pitch-combined-InterTwin-AI.pdf` remains one private
+source object but maps its 11 pages to 11 page-scoped Deals: InterTwin.ai,
+UniKudo, Mirror, CouPro, IndieShow, HuMetric, Alpha Builders, INNFormNest,
+SilverMemory, Kanesh, and Fellowtrip. Every fact, memory bundle, match, and
+source link from that PDF must retain the correct page number.
 
 The source PDFs are real supplied artifacts. The internal investment-state
 records are sample data and permanently display:
@@ -90,6 +93,50 @@ The fixed corpus is the demo's initial private knowledge base. It does not
 replace the live market scan: every product manual run still collects public
 evidence published in the latest 14 days.
 
+### Current 30-Deal acceptance contract
+
+The current registry contains exactly 30 Companies, 30 Deals, and 30
+analysis-eligible Deals. A completed current run binds that immutable universe
+and persists exactly 30 CompanyAnalyses. The four outcome counts
+(`belief_revised`, `monitor`, `no_material_change`, and
+`analysis_unavailable`) are evidence-window-dependent and must sum to 30. The
+versioned 2026-08-01 research package records `4 / 7 / 19 / 0`; the controlled
+2026-08-03 cold live run retains the 14-day authority and therefore expects
+`4 / 6 / 20 / 0`, because the Empirical Security item falls outside that live
+window. Neither distribution is a hard-coded runtime outcome.
+
+The current universe consists of the 19 pitch-deck Deals, the four reviewed
+belief-reversal fixture Deals (Henry AI, Smallest.ai, Hush Security, and
+Irregular), and the seven screening Deals below.
+
+The seven added screening Deals are Centralize, ChipAgents, Sent, Cascade,
+Cordant, Empirical Security, and Freight Hero. Their
+`Sample research screening record` is typed prior context, not a meeting, VC
+interaction, historical Pass, or gate-passing source by itself. A later run may
+naturally upgrade one of these Deals when stronger new evidence satisfies the
+same chronology, reconsideration, counterevidence, action-delta, confidence,
+and exact-lineage requirements used for every other Deal. The versioned
+2026-08-01 research package records all seven as `monitor`; in the controlled
+2026-08-03 live run Empirical Security is `no_material_change` because its item
+is outside the 14-day window, while the other six remain `monitor`. Those
+outcomes come from evidence and gates, never names or screening disposition.
+
+Every and only `belief_revised` analysis creates one immutable Deep
+Underwriting queue entry. Queue priority controls execution and display order;
+there is no rank or capacity admission cutoff. The historical 2026-08-01
+pinned report remains an immutable 23-analysis artifact with its original
+universe and fingerprints; current runs never mutate or use it as their
+universe.
+
+The first complete current-30 automated cold smoke passed on 2026-08-03
+(`1/1`, `73.7s`) against disposable loopback PostgreSQL 17.6. It verified 30
+CompanyAnalyses, the derived `4 / 6 / 20 / 0` outcomes, four Deep Underwriting
+jobs, immutable replay of the legacy 23-analysis report, and zero remote
+network attempts. The smoke-verified commit and deployment of that exact SHA
+to the authorized private non-production Staging target are still pending at
+this checkpoint. Production data, credentials, migrations, providers, and
+deployment targets remain outside this workflow.
+
 ## Setup
 
 Requirements:
@@ -102,9 +149,10 @@ Requirements:
 Copy `.env.example` to a local ignored environment file and configure the
 server-only values. Do not expose service keys through `NEXT_PUBLIC_*`.
 
-For a new database, apply every physical migration below in this exact order.
-For an existing database, begin with its first missing migration and continue
-without gaps:
+For a new **local or disposable test** database, apply every physical migration
+below in this exact order. For an existing local test database, begin with its
+first missing migration and continue without gaps. This physical list is not a
+production authorization list:
 
 1. [`drizzle/0000_vsee_postgres.sql`](drizzle/0000_vsee_postgres.sql)
 2. [`drizzle/0001_remove_report_delivery.sql`](drizzle/0001_remove_report_delivery.sql)
@@ -126,6 +174,11 @@ without gaps:
 18. [`drizzle/0017_public_sandbox_test_generations.sql`](drizzle/0017_public_sandbox_test_generations.sql)
 19. [`drizzle/0018_pgcrypto_registry_schema_usage.sql`](drizzle/0018_pgcrypto_registry_schema_usage.sql)
 20. [`drizzle/0019_belief_reversal_evidence_context.sql`](drizzle/0019_belief_reversal_evidence_context.sql)
+21. [`drizzle/0020_belief_reversal_demo_seed.sql`](drizzle/0020_belief_reversal_demo_seed.sql)
+22. [`drizzle/0021_exact_xtrace_lineage.sql`](drizzle/0021_exact_xtrace_lineage.sql)
+23. [`drizzle/0022_task9_finalization_authority.sql`](drizzle/0022_task9_finalization_authority.sql)
+24. [`drizzle/0023_pg17_market_event_validator.sql`](drizzle/0023_pg17_market_event_validator.sql)
+25. [`drizzle/0024_research_candidate_xtrace.sql`](drizzle/0024_research_candidate_xtrace.sql)
 
 `0008` introduces workspace-composite identities, `0009` adds immutable source
 revisions, `0010`–`0012` add versioned underwriting references and artifacts,
@@ -141,30 +194,36 @@ schema dependency used by canonical fingerprints. `0019` adds immutable
 market-evidence snapshots, run evidence bindings, persisted belief assessments,
 report evidence lineage, and immutable reasoner judgments. Its production
 launcher remains fail-closed until the exact reviewed PostgreSQL 17.6 catalog
-fingerprints are generated; do not alias them to `0018`. The bundled corpus
-loader retains only exact
+fingerprints are generated; do not alias them to `0018`. `0020`–`0024` are
+also local-only and have no production launcher authorization. `0023`
+adds the PostgreSQL 17 compatibility checkpoint for the shared-entity
+MarketEvent and belief gates, exact reasoner-judgment fingerprints, and the
+guarded finalizer path without rewriting `0019` or changing production
+authority. `0024` adds immutable old-23/current-30 Deal-universe bindings,
+persists the seven `qualified_not_selected` screening dispositions without
+excluding them from analysis, reuses the existing Deal-bound XTrace v2 lineage
+for 18 public and seven permanently labelled sample research parents, and
+prevents rank or processing capacity from truncating current-run underwriting
+admission. The
+bundled corpus loader
+retains only exact
 column-level immutable INSERT grants and uses conflict-ignore writes; canonical
 runtime-upload evidence remains writable only through controlled RPCs. Do not
 start Web or Worker against a partial chain.
 
-For the existing public-sandbox production database, do not infer its starting
-point from table names alone. Run the guarded baseline bootstrap followed by
-the forward launcher only inside the no-traffic maintenance window documented
-in [`docs/demo-runbook.md`](docs/demo-runbook.md). Stop all Web and Worker
-writes, prove the scan/upload queues are quiet, take a restorable database
-snapshot, run both launchers, and verify the chain through `0019` before
-restoring traffic:
+The reviewed production boundary remains `0018`. Migration `0019` and every
+later migration require a separate catalog review and explicit authorization.
+Do not run the forward launcher against production from this checkpoint. The
+Task 13 production-profile gate runs only against disposable PostgreSQL 17.6
+fixtures and must end with:
 
-```bash
-./scripts/bootstrap-production-baseline.zsh
-./scripts/apply-production-migrations.zsh
-```
+`SAFE_REFUSAL — production forward migration remains blocked`
 
-The bootstrap recognizes only the complete current baseline or the exact safe
-early upload prototype. It retains prototype columns and rows, refuses active
-or meaningful legacy payload, and stops on any partial or gapped `0008`/`0009`
-state. Do not bypass a refusal or run either launcher while the Web App or
-Worker can write to PostgreSQL.
+The launcher reaches reviewed `0018`, exits nonzero at unreviewed `0019`, and
+prints `Migration 0019 has no reviewed terminal catalog fingerprint; refusing
+mutation.` This verified refusal is not a production pass, migration approval,
+or deployment. See [`docs/demo-runbook.md`](docs/demo-runbook.md) for the
+blocked maintenance status. Never bypass the refusal.
 
 ```bash
 npm install
@@ -175,12 +234,12 @@ CI and release verification must run both `npm run test:migrations` and
 `npm run test:migrations:production-pg176`. The first command executes the
 general PostgreSQL migration suites serially. The second is the mandatory
 production-profile gate: it must run against a disposable PostgreSQL 17.6
-server and execute both the Supabase-shaped superuser and non-superuser
-`CREATEROLE` guarded-launcher paths with zero skips. It fails closed on any
-other server version or when either E2E is not executed. Together they avoid
-races between tests that exercise cluster-global roles, apply the complete
-`0000`–`0019` path, and fail when a disposable PostgreSQL database cannot be
-created.
+server and execute exactly three profiles with zero skips—the Supabase-shaped
+superuser, non-superuser `CREATEROLE`, and repaired-ACL paths. Each enclosing
+test passes only when the launcher itself exits nonzero at unreviewed `0019`,
+leaves `0019`–`0024` absent, and preserves the reviewed `0018` boundary and
+invariants. The general migration gate applies the complete local `0000`–`0024`
+chain. Neither gate authorizes production `0019` or later.
 
 ### Product authentication
 
@@ -257,9 +316,10 @@ worker heartbeat.
 
 ### Worker runbook
 
-1. For a new database, apply migrations `0000` through `0019` in order; for an
-   existing database, apply the migrations it is missing in order. Then seed
-   the corpus before starting the Worker.
+1. For a local or disposable development database, apply migrations `0000`
+   through `0024` in order, then seed the corpus before starting the Worker.
+   For production, use only its separately reviewed deployed boundary; this
+   checkpoint does not authorize `0019` or later.
 2. Start the Worker and wait for the container health status to become
    `healthy`.
 3. Confirm `/api/settings/health` reports both `postgres: true` and

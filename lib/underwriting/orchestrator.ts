@@ -18,7 +18,6 @@ import type { EvidencePack } from "../contracts/evidence";
 import type {
   CandidateRun,
   FundPolicySnapshot,
-  MissingEvidenceItem,
   ResolvedUnderwritingContext,
   UnderwritingBatch,
 } from "../contracts/underwriting";
@@ -54,6 +53,7 @@ import {
 import { DECISION_POLICY_V1 } from "./decision/rules";
 import { buildUnderwritingNarrative } from "./narrative";
 import { createActionDraftGenerator } from "./action-drafts";
+import { buildCandidateMissingEvidence } from "./missing-evidence";
 import {
   CandidateGroundingUnavailableError,
   type CandidateGroundingSnapshot,
@@ -92,7 +92,6 @@ export {
   CandidateProviderAttemptReplayError,
 } from "./candidate-stage-runtime";
 
-const MAX_AUTOMATIC_CANDIDATES = 5;
 const SELECTION_POLICY_VERSION = "top-five-belief-revised-v1";
 const DEFAULT_CANDIDATE_TIMEOUT_MS = 30_000;
 const DEFAULT_CANDIDATE_MAX_ATTEMPTS = 2;
@@ -257,7 +256,7 @@ export function createUnderwritingOrchestrator(options: {
       );
     }
     if (
-      ["completed", "unavailable", "failed"].includes(
+      ["completed", "partial", "unavailable", "failed"].includes(
         planned.candidate.status,
       )
     ) {
@@ -484,13 +483,8 @@ export function createUnderwritingOrchestrator(options: {
         input.analyses,
         new Map(input.eligibleDeals.map((deal) => [deal.id, deal.status])),
       );
-      const ranked = qualified.slice(0, MAX_AUTOMATIC_CANDIDATES);
-      const truncatedDealIds = new Set(
-        qualified.slice(MAX_AUTOMATIC_CANDIDATES)
-          .map(({ dealId }) => dealId),
-      );
       const ranks = new Map(
-        ranked.map((analysis, index) => [
+        qualified.map((analysis, index) => [
           analysis.dealId,
           index + 1,
         ]),
@@ -504,22 +498,21 @@ export function createUnderwritingOrchestrator(options: {
                 dealId: deal.id,
                 status: "not_selected" as const,
                 rank: null,
-                reason: truncatedDealIds.has(deal.id)
-                  ? "Truncation warning: candidate exceeded the automatic Top-5 budget; this is not negative evidence or a Pass decision."
-                  : "Not selected by the medium/high belief-revised eligibility policy; this is not a Pass decision.",
+                reason:
+                  "Not admitted because this CompanyAnalysis is not an eligible belief revision; this is not a Pass decision.",
               }
             : {
                 dealId: deal.id,
                 status: "selected" as const,
                 rank,
                 reason:
-                  `Selected at rank ${rank} by ${SELECTION_POLICY_VERSION}.`,
+                  `Admitted at priority ${rank} by ${SELECTION_POLICY_VERSION}; priority does not affect eligibility.`,
               };
         }),
       });
       const candidates = await options.runs.createSelectedCandidates({
         batchId: batch.id,
-        dealIds: ranked.map(({ dealId }) => dealId),
+        dealIds: qualified.map(({ dealId }) => dealId),
       });
       const analysesByDeal = new Map(
         input.analyses.map((analysis) => [analysis.dealId, analysis]),
@@ -912,6 +905,19 @@ export function createSourceGroundedCandidateExecutor(options: {
         decisionPolicy: selectedDecisionPolicy,
       }),
     });
+    const missingEvidence = buildCandidateMissingEvidence({
+      criticalFieldIds: pack.coverage.missingFieldIds,
+      structuredFields: input.analysis.companyBrief.structuredFields,
+    });
+    const companyAnalysisUnknowns = missingEvidence.flatMap((item) =>
+      item.reasonCode === "UNRESOLVED_COMPANY_OR_EVENT_UNKNOWN"
+        ? [{
+          fieldId: item.fieldId,
+          label: item.label,
+          externalLabel: item.externalLabel,
+        }]
+        : []
+    );
     const narrativeArtifacts = await input.stages.run({
       stage: "narrative_drafts",
       inputFingerprint: fingerprint({
@@ -921,6 +927,7 @@ export function createSourceGroundedCandidateExecutor(options: {
         judgments: lensResult.judgments,
         disagreements: lensResult.disagreements,
         decision: formalDecision,
+        missingEvidence,
       }),
       parseOutput: parseNarrativeArtifacts,
       operation: () => {
@@ -932,16 +939,6 @@ export function createSourceGroundedCandidateExecutor(options: {
           disagreements: lensResult.disagreements,
           decision: formalDecision,
         });
-        const missingEvidence =
-          pack.coverage.missingFieldIds.map<MissingEvidenceItem>(
-            (fieldId) => ({
-              fieldId,
-              label: fieldId.replaceAll("_", " "),
-              reasonCode: "MISSING_CRITICAL_EVIDENCE",
-              mostLikelyDecisionImpact:
-                "Providing accepted evidence may raise or lower the formal decision ceiling.",
-            }),
-          );
         const actionDrafts = createActionDraftGenerator({
           workspaceId: input.candidate.workspaceId,
           now,
@@ -1090,6 +1087,7 @@ export function createSourceGroundedCandidateExecutor(options: {
         schemaVersion: execution.schemaVersion,
         settingsFingerprint: execution.settingsFingerprint,
         applicationCommit: execution.applicationCommit,
+        companyAnalysisUnknowns,
       },
     };
   };
@@ -1290,7 +1288,7 @@ function statusForCandidates(
   }
   if (
     candidates.every(({ status }) =>
-      ["completed", "failed", "unavailable"].includes(status)
+      ["completed", "partial", "failed", "unavailable"].includes(status)
     )
   ) {
     return "partial";

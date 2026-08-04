@@ -9,8 +9,10 @@ import {
   type ClaimSupportV2,
   type CompanyAnalysisOutcome,
   type DealStatus,
+  type OpportunityScoreBreakdown,
   type OpportunityReportItem,
 } from "../contracts/domain";
+import { SAMPLE_RESEARCH_SCREENING_RECORD_LABEL } from "../contracts/research-candidate";
 import {
   assertConsistentCanonicalEvidenceUnits,
   sourceCanGroundOutputFact,
@@ -34,6 +36,8 @@ import {
   type OpportunityScoreInputs,
 } from "./scoring";
 import { rankGroundedBeliefRevisionCandidates } from "./ranking";
+import { compareUtf8 } from "../format/canonical-order";
+import { isSampleResearchScreeningAuthoritySource } from "./context";
 
 export interface MatchingDeal {
   id: string;
@@ -49,7 +53,7 @@ export interface MatchingMemoryContext {
   interactionCandidates?: MatchingPriorInteractionCandidate[];
 }
 
-export interface MatchingPriorInteractionCandidate {
+interface MatchingSampleDecisionCandidate {
   id: string;
   occurredAt: string;
   sourceIds: string[];
@@ -58,6 +62,22 @@ export interface MatchingPriorInteractionCandidate {
   label: "Sample decision record";
   priorActions?: BeliefAction[];
 }
+
+interface MatchingResearchScreeningCandidate {
+  id: string;
+  occurredAt: string;
+  sourceIds: string[];
+  revisitConditions: string[];
+  provenance: "source_document";
+  label: typeof SAMPLE_RESEARCH_SCREENING_RECORD_LABEL;
+  meetingOccurred: false;
+  vcInteraction: false;
+  priorActions?: BeliefAction[];
+}
+
+export type MatchingPriorInteractionCandidate =
+  | MatchingSampleDecisionCandidate
+  | MatchingResearchScreeningCandidate;
 
 export interface ReasonedMatch {
   dealId: string;
@@ -149,7 +169,43 @@ export interface GroundedMatch {
   demoFixtureIds: string[];
   claimSupport: ClaimSupportV2[];
   beliefAssessment?: BeliefChangeAssessmentV1;
+  screeningMonitorAssessment?: ScreeningMonitorAssessmentV1;
   analysisFailureReason?: string;
+}
+
+interface ScreeningMonitorAuditGate {
+  passed: boolean;
+  failureReason: string | null;
+}
+
+export interface ScreeningMonitorAssessmentV1 {
+  schemaVersion: "screening-monitor-assessment-v1";
+  priorContextAuthority: {
+    kind: "sample_research_screening_record";
+    id: string;
+    sourceIds: [string];
+    recordedAt: string;
+    provenance: "source_document";
+    label: typeof SAMPLE_RESEARCH_SCREENING_RECORD_LABEL;
+    meetingOccurred: false;
+    vcInteraction: false;
+  };
+  triggerEvent: {
+    id: string;
+    eventAt: string;
+    sourceIds: string[];
+  };
+  scoreBreakdown: OpportunityScoreBreakdown;
+  gates: {
+    chronology: ScreeningMonitorAuditGate;
+    revisitConditionMapping: ScreeningMonitorAuditGate;
+    counterevidence: ScreeningMonitorAuditGate;
+    actionDelta: ScreeningMonitorAuditGate;
+    allPassed: false;
+  };
+  direction: "none";
+  actions: BeliefAction[];
+  whyNotUnderwriting: string;
 }
 
 interface GroundedText {
@@ -309,9 +365,18 @@ export function createMatchingService(reasoner: MatchingReasoner) {
     const raw = await reasoner.reason(validatedInput);
     const rawGroups = Map.groupBy(raw, (match) => match.dealId);
     const grounded = input.deals.flatMap((deal) => {
+      const contexts = contextGroups.get(deal.id) ?? [];
+      const deterministicScreeningMonitor = buildScreeningMonitor({
+        deal,
+        contexts,
+        events,
+        sourceById,
+      });
+      if (deterministicScreeningMonitor) {
+        return [deterministicScreeningMonitor];
+      }
       const rows = rawGroups.get(deal.id) ?? [];
       if (rows.length === 0) return [];
-      const contexts = contextGroups.get(deal.id) ?? [];
       if (rows.length !== 1 || contexts.length !== 1) {
         return [unavailableMatch(
           deal,
@@ -486,8 +551,7 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         || !selectedPrior.priorActions
         || selectedPrior.sourceIds.length !== 1
         || selectedPrior.sourceIds[0] !== selectedPrior.id
-        || selectedPrior.provenance !== "demo_fixture"
-        || selectedPrior.label !== "Sample decision record"
+        || !isSupportedPriorContextCandidate(selectedPrior)
         || selectedPrior.sourceIds.some((sourceId) => eventSourceIds.has(sourceId))
       ) {
         return [unavailableMatch(
@@ -499,8 +563,7 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       if (
         !priorSource
         || priorSource.adaptation !== "canonical"
-        || priorSource.provenance !== "demo_fixture"
-        || priorSource.title !== "Sample decision record"
+        || !isMatchingPriorAuthoritySource(selectedPrior, priorSource)
         || priorSource.eventAt !== selectedPrior.occurredAt
       ) {
         return [unavailableMatch(
@@ -594,7 +657,9 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         nextStep: renderRecommendedNextMove(actions),
         relationship,
         events: [selectedEvent],
-        demoFixtureIds: [selectedPrior.id],
+        demoFixtureIds: selectedPrior.provenance === "demo_fixture"
+          ? [selectedPrior.id]
+          : [],
         sources: [...usedSourceIds].map((sourceId) => sourceById.get(sourceId)!),
         claimSupport,
         beliefAssessment: assessment,
@@ -625,6 +690,168 @@ export function createMatchingService(reasoner: MatchingReasoner) {
       );
     },
   };
+}
+
+function buildScreeningMonitor(input: {
+  deal: MatchingDeal;
+  contexts: MatchingMemoryContext[];
+  events: MarketEventV2[];
+  sourceById: Map<string, SourceRefV2>;
+}): GroundedMatch | null {
+  if (input.deal.status !== "screening" || input.contexts.length !== 1) {
+    return null;
+  }
+  const context = input.contexts[0]!;
+  if ((context.interactionCandidates ?? []).some(
+    ({ provenance }) => provenance === "demo_fixture",
+  )) return null;
+  const authorities = unique(context.sourceIds)
+    .map((sourceId) => input.sourceById.get(sourceId))
+    .filter((source): source is SourceRefV2 =>
+      source !== undefined && isSampleResearchScreeningAuthoritySource(source)
+    );
+  if (
+    authorities.length !== 1
+    || context.fixtureIds.includes(authorities[0]!.id)
+  ) return null;
+  const authority = authorities[0]!;
+  const authorityEntityKeys = new Set(authority.entityKeys);
+  const selectedEvent = [...input.events]
+    .filter((event) =>
+      event.adaptation === "canonical"
+      && event.eventAt !== null
+      && event.entityKeys.some((entityKey) => authorityEntityKeys.has(entityKey))
+      && event.sources.every(({ id }) => context.sourceIds.includes(id))
+    )
+    .sort((left, right) =>
+      right.eventAt!.localeCompare(left.eventAt!)
+      || compareUtf8(left.id, right.id)
+    )[0];
+  if (!selectedEvent) return null;
+  const triggerSourceId = selectedEvent.triggerSourceId;
+  if (triggerSourceId === null) return null;
+  const triggerSource = input.sourceById.get(triggerSourceId);
+  if (
+    !triggerSource
+    || triggerSource.provenance !== "public_web"
+    || !sourceCanGroundOutputFact(triggerSource)
+  ) return null;
+
+  const whyNow = sourceTextForRetrieval(triggerSource);
+  const previousContext = sourceTextForRetrieval(authority);
+  const scoreBreakdown = buildOpportunityScoreBreakdown({
+    eventRelevance: 0.75,
+    dealRelevance: 0.75,
+    priorContextStrength: 0.25,
+    evidenceQuality: selectedEvent.confidence === "high"
+      ? 0.75
+      : selectedEvent.confidence === "medium"
+      ? 0.55
+      : 0.35,
+  });
+  const chronologyPassed = Date.parse(authority.eventAt!)
+    < Date.parse(selectedEvent.eventAt!);
+  const actions = actionsForDealStatusAndDirection(input.deal.status, "none");
+  const whyNotUnderwriting =
+    "The Sample research screening record is typed research context, not a formal VC action; belief-revision hard gates remain fail-closed.";
+  const screeningMonitorAssessment: ScreeningMonitorAssessmentV1 = {
+    schemaVersion: "screening-monitor-assessment-v1",
+    priorContextAuthority: {
+      kind: "sample_research_screening_record",
+      id: authority.id,
+      sourceIds: [authority.id],
+      recordedAt: authority.eventAt!,
+      provenance: "source_document",
+      label: SAMPLE_RESEARCH_SCREENING_RECORD_LABEL,
+      meetingOccurred: false,
+      vcInteraction: false,
+    },
+    triggerEvent: {
+      id: selectedEvent.id,
+      eventAt: selectedEvent.eventAt!,
+      sourceIds: selectedEvent.sources.map(({ id }) => id),
+    },
+    scoreBreakdown,
+    gates: {
+      chronology: {
+        passed: chronologyPassed,
+        failureReason: chronologyPassed
+          ? null
+          : "The Sample research screening record does not predate the selected market event.",
+      },
+      revisitConditionMapping: {
+        passed: false,
+        failureReason:
+          "The already-bound event did not establish an exact mapping to a recorded research reconsideration condition.",
+      },
+      counterevidence: {
+        passed: false,
+        failureReason:
+          "Counterevidence was not fully adjudicated in the deterministic screening monitor check.",
+      },
+      actionDelta: {
+        passed: false,
+        failureReason:
+          "This screening assessment did not establish a changed action from the recorded research next-step boundary.",
+      },
+      allPassed: false,
+    },
+    direction: "none",
+    actions,
+    whyNotUnderwriting,
+  };
+  return {
+    dealId: input.deal.id,
+    dealStatus: input.deal.status,
+    outcome: "monitor",
+    confidence: scoreBreakdown.confidence,
+    score: scoreBreakdown.finalScore,
+    whyNow,
+    previousContext,
+    implications: { positive: [], negative: [] },
+    nextStep: renderRecommendedNextMove(actions),
+    relationship: "related",
+    events: [selectedEvent],
+    sources: uniqueByCanonicalId<SourceRefV2>([
+      ...selectedEvent.sources,
+      authority,
+    ], "source"),
+    demoFixtureIds: [],
+    claimSupport: [
+      ClaimSupportV2Schema.parse({
+        text: whyNow,
+        kind: sourceClaimSupportKind(triggerSource, whyNow),
+        sourceIds: [triggerSource.id],
+      }),
+      ClaimSupportV2Schema.parse({
+        text: previousContext,
+        kind: sourceClaimSupportKind(authority, previousContext),
+        sourceIds: [authority.id],
+      }),
+    ],
+    screeningMonitorAssessment,
+  };
+}
+
+function isSupportedPriorContextCandidate(
+  candidate: MatchingPriorInteractionCandidate,
+): boolean {
+  return candidate.provenance === "demo_fixture"
+    ? candidate.label === "Sample decision record"
+    : candidate.label === SAMPLE_RESEARCH_SCREENING_RECORD_LABEL
+      && candidate.meetingOccurred === false
+      && candidate.vcInteraction === false;
+}
+
+function isMatchingPriorAuthoritySource(
+  candidate: MatchingPriorInteractionCandidate,
+  source: SourceRefV2,
+): boolean {
+  return candidate.provenance === "demo_fixture"
+    ? source.provenance === "demo_fixture"
+      && source.title === "Sample decision record"
+    : isSampleResearchScreeningAuthoritySource(source)
+      && source.id === candidate.id;
 }
 
 function directionForImplications(

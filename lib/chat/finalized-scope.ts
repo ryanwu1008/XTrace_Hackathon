@@ -244,10 +244,10 @@ export async function loadExactFinalizedChatScope(input: {
       workspaceId: input.workspaceId,
       candidateRunId,
     });
-    if (candidate.status === "completed" && !loaded) {
+    if (["completed", "partial"].includes(candidate.status) && !loaded) {
       return insufficient("artifact_missing", requestedDealId);
     }
-    if (candidate.status !== "completed" && loaded) {
+    if (!["completed", "partial"].includes(candidate.status) && loaded) {
       return insufficient("artifact_identity_mismatch", requestedDealId);
     }
     if (loaded) {
@@ -425,7 +425,9 @@ function validateCandidateScope(input: {
       || candidate.batchId !== input.batch.id
       || candidate.workspaceId !== input.workspaceId
       || !input.analysisByDeal.has(candidate.dealId)
-      || !["completed", "unavailable", "failed"].includes(candidate.status)
+      || !["completed", "partial", "unavailable", "failed"].includes(
+        candidate.status,
+      )
       || candidate.finalizedAt === null
     ) {
       return "candidate_identity_mismatch";

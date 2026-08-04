@@ -33,6 +33,7 @@ import {
 } from "../../lib/contracts/source-evidence";
 import { metadataForBeliefActionKind } from "../../lib/reports/action-policy";
 import { buildSampleDecisionSourceRef } from "../../lib/belief-reversal/sample-decision-source";
+import { SAMPLE_RESEARCH_SCREENING_RECORD_LABEL } from "../../lib/contracts/research-candidate";
 
 export interface RegisteredDeal {
   id: string;
@@ -43,6 +44,32 @@ export interface RegisteredDeal {
   analysisEligibleAt: string | null;
   activeSourceRevisionFingerprint: string | null;
   activeSourceRevisionIds: string[];
+}
+
+export interface DealUniverseMemberV1 {
+  ordinal: number;
+  dealId: string;
+  companyId: string;
+  dealStatus: DealStatus;
+  analysisEligibleAt: string;
+}
+
+export interface BindRunDealUniverseInputV1 {
+  workspaceId: string;
+  runId: string;
+  universeId: string;
+  mode: "live" | "pinned";
+  anchorAt: string;
+  evidenceSnapshotId: string | null;
+  evidenceSnapshotFingerprint: string | null;
+  members: DealUniverseMemberV1[];
+}
+
+export interface RunDealUniverseBindingV1
+  extends BindRunDealUniverseInputV1 {
+  schemaVersion: "run-deal-universe-binding-v1";
+  universeFingerprint: string;
+  dealCount: number;
 }
 
 export interface ConfirmSourceAssignmentInput {
@@ -91,6 +118,13 @@ export interface DealSourceAssignment {
 }
 
 export interface DealRegistry {
+  bindRunDealUniverse(
+    input: BindRunDealUniverseInputV1,
+  ): Promise<RunDealUniverseBindingV1>;
+  getRunDealUniverse(input: {
+    workspaceId: string;
+    runId: string;
+  }): Promise<RunDealUniverseBindingV1 | null>;
   getAnalysisEligibleSnapshot(
     workspaceId: string,
   ): Promise<AnalysisEligibleSnapshot>;
@@ -311,6 +345,71 @@ export function eligibleDealSnapshotFingerprint(
   return sha256(lengthFrame(["eligible-deals-v2", ...frames]));
 }
 
+function validateDealUniverseInput(
+  input: BindRunDealUniverseInputV1,
+): BindRunDealUniverseInputV1 {
+  const candidate = structuredClone(input);
+  candidate.workspaceId = requiredWorkspaceId(candidate.workspaceId);
+  candidate.runId = requiredText(candidate.runId, "A run id");
+  candidate.universeId = requiredText(candidate.universeId, "A universe id");
+  candidate.anchorAt = requiredIsoDateTime(candidate.anchorAt, "A universe anchor");
+  if (candidate.mode !== "live" && candidate.mode !== "pinned") {
+    throw new Error("A Deal universe requires a live or pinned mode.");
+  }
+  const pinned = candidate.mode === "pinned";
+  if (
+    pinned !== (candidate.evidenceSnapshotId !== null)
+    || pinned !== (candidate.evidenceSnapshotFingerprint !== null)
+    || (candidate.evidenceSnapshotFingerprint !== null
+      && !/^sha256:[0-9a-f]{64}$/u.test(
+        candidate.evidenceSnapshotFingerprint,
+      ))
+  ) {
+    throw new Error("A Deal universe has an invalid evidence snapshot binding.");
+  }
+  if (candidate.members.length === 0) {
+    throw new Error("A Deal universe requires at least one member.");
+  }
+  const dealIds = new Set<string>();
+  for (const [index, member] of candidate.members.entries()) {
+    if (
+      member.ordinal !== index
+      || !member.dealId.trim()
+      || !member.companyId.trim()
+      || !DealStatusSchema.safeParse(member.dealStatus).success
+      || !Number.isFinite(Date.parse(member.analysisEligibleAt))
+      || dealIds.has(member.dealId)
+    ) {
+      throw new Error("Deal-universe members are malformed or duplicated.");
+    }
+    dealIds.add(member.dealId);
+  }
+  return candidate;
+}
+
+function dealUniverseFingerprint(input: BindRunDealUniverseInputV1): string {
+  return sha256(lengthFrame([
+    "deal-universe-snapshot-v1",
+    input.workspaceId,
+    input.universeId,
+    input.mode,
+    input.anchorAt,
+    input.evidenceSnapshotId ?? "",
+    input.evidenceSnapshotFingerprint ?? "",
+    ...input.members.flatMap((member) => [
+      String(member.ordinal),
+      member.dealId,
+      member.companyId,
+      member.dealStatus,
+      member.analysisEligibleAt,
+    ]),
+  ]));
+}
+
+function canonicalDealUniverse(binding: RunDealUniverseBindingV1): string {
+  return JSON.stringify(binding);
+}
+
 function compareUtf8(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
@@ -371,22 +470,58 @@ function canonicalDealFactFromRow(input: {
   if (item.sourceRef !== undefined) {
     const source = WritableSourceRefV2Schema.parse(item.sourceRef);
     const revision = input.revisionForId(rowIdentity.sourceRevisionId);
-    if (
+    const documentRole = input.roleForSource(rowIdentity.sourceId);
+    const sourceLocator = source.locator;
+    const commonIdentityHasDrift =
       source.id !== rowIdentity.id
-      || source.provenance !== "public_web"
       || source.documentId !== rowIdentity.sourceId
       || source.sourceRevisionId !== rowIdentity.sourceRevisionId
       || source.title !== input.titleForSource(rowIdentity.sourceId)
-      || input.roleForSource(rowIdentity.sourceId) !== "public_web_snapshot"
       || revision?.workspaceId !== rowIdentity.workspaceId
       || revision.sourceId !== rowIdentity.sourceId
       || revision.contentHash !== source.contentFingerprint
       || typeof item.value !== "string"
       || item.value.trim() === ""
-      || sourceTextForRetrieval(source) !== item.value
+      || sourceTextForRetrieval(source) !== item.value;
+    const isCanonicalPublicWeb =
+      source.provenance === "public_web"
+      && documentRole === "public_web_snapshot";
+    const isCanonicalSampleResearch =
+      source.provenance === "source_document"
+      && documentRole === "sample_research_screening_record"
+      && source.title === SAMPLE_RESEARCH_SCREENING_RECORD_LABEL
+      && source.documentId === `source_${source.id}`
+      && source.canonicalUrl === null
+      && source.publisher === "Internal Research Registry"
+      && source.providerId === "belief-reversal-research-seed-v1"
+      && source.eventAt !== null
+      && source.eventAtPrecision === "timestamp"
+      && source.publishedAt === null
+      && source.publishedAtPrecision === null
+      && source.retrievedAt === source.eventAt
+      && source.retrievedAtPrecision === "timestamp"
+      && source.sourceClass === "internal_decision_record"
+      && source.sourceAuthority === "primary"
+      && source.evidenceRole === "context"
+      && sourceLocator?.kind === "json_pointer"
+      && sourceLocator.pointer === "/record"
+      && source.text.status === "normalized_only"
+      && source.text.normalizedStatement.startsWith(
+        `${SAMPLE_RESEARCH_SCREENING_RECORD_LABEL}. Synthetic research-only context; no meeting or VC interaction occurred.`,
+      )
+      && item.provenanceOrigin === "uploaded_document"
+      && item.field === "research_disposition_context"
+      && item.verificationMethod
+        === "synthetic_research_screening_record_v1"
+      && item.acceptedForGate === false;
+    if (
+      commonIdentityHasDrift
+      || (!isCanonicalPublicWeb && !isCanonicalSampleResearch)
     ) {
       throw new Error(
-        "Canonical public-web evidence does not preserve exact source identity and reviewed text.",
+        documentRole === "sample_research_screening_record"
+          ? "Canonical Sample research screening evidence does not preserve its permanent non-interaction and non-gating identity."
+          : "Canonical public-web evidence does not preserve exact source identity and reviewed text.",
       );
     }
     return {
@@ -536,6 +671,8 @@ export function createMemoryDealRegistry(options: {
   const requestAssignments = new Map<string, DealSourceAssignment>();
   const externalEffects: string[] = [];
   const promotionLocks = new Map<string, Promise<void>>();
+  const dealUniverses = new Map<string, RunDealUniverseBindingV1>();
+  const runDealUniverses = new Map<string, RunDealUniverseBindingV1>();
   let assignmentSequence = 0;
 
   type PromotionState = {
@@ -757,6 +894,61 @@ export function createMemoryDealRegistry(options: {
 
     usesSourceRegistry(registry) {
       return registry === sourceRegistry;
+    },
+
+    async bindRunDealUniverse(rawInput) {
+      const input = validateDealUniverseInput(rawInput);
+      const universeKey = identity(input.workspaceId, input.universeId);
+      const runKey = identity(input.workspaceId, input.runId);
+      const candidate: RunDealUniverseBindingV1 = {
+        ...structuredClone(input),
+        schemaVersion: "run-deal-universe-binding-v1",
+        universeFingerprint: dealUniverseFingerprint(input),
+        dealCount: input.members.length,
+      };
+      const existingUniverse = dealUniverses.get(universeKey);
+      if (
+        existingUniverse
+        && canonicalDealUniverse(existingUniverse)
+          !== canonicalDealUniverse(candidate)
+      ) {
+        throw new Error(
+          "Deal-universe identity has different immutable content or fingerprint collision.",
+        );
+      }
+      const existingRun = runDealUniverses.get(runKey);
+      if (
+        existingRun
+        && canonicalDealUniverse(existingRun) !== canonicalDealUniverse(candidate)
+      ) {
+        throw new Error(
+          "Run Deal-universe binding has different immutable content.",
+        );
+      }
+      if (!existingUniverse) {
+        for (const member of input.members) {
+          const deal = deals.get(identity(input.workspaceId, member.dealId));
+          if (
+            !deal
+            || deal.companyId !== member.companyId
+            || deal.status !== member.dealStatus
+            || deal.analysisEligibleAt !== member.analysisEligibleAt
+          ) {
+            throw new Error(
+              "Deal-universe member is not one authoritative analysis-eligible Deal.",
+            );
+          }
+        }
+        dealUniverses.set(universeKey, structuredClone(candidate));
+      }
+      if (!existingRun) runDealUniverses.set(runKey, structuredClone(candidate));
+      return structuredClone(existingRun ?? candidate);
+    },
+
+    async getRunDealUniverse(input) {
+      return structuredClone(
+        runDealUniverses.get(identity(input.workspaceId, input.runId)) ?? null,
+      );
     },
 
     async getAnalysisEligibleSnapshot(workspaceId) {
@@ -1320,7 +1512,171 @@ export function createSupabaseDealRegistry(options: {
       (revisions.get(dealId) ?? []).map((value) => value.revisionId),
     );
   }
+  async function getRunDealUniverse(input: {
+    workspaceId: string;
+    runId: string;
+  }): Promise<RunDealUniverseBindingV1 | null> {
+    const workspaceId = requiredWorkspaceId(input.workspaceId);
+    const runId = requiredText(input.runId, "A run id");
+    const bindingQuery = new URLSearchParams({
+      workspace_id: `eq.${workspaceId}`,
+      run_id: `eq.${runId}`,
+      select:
+        "workspace_id,run_id,schema_version,universe_id,universe_fingerprint,deal_count",
+    });
+    const bindingRows = await request(
+      `/run_deal_universe_bindings_v1?${bindingQuery}`,
+    ) as Record<string, unknown>[];
+    if (bindingRows.length === 0) return null;
+    if (bindingRows.length !== 1) {
+      throw new Error("Run Deal-universe binding is ambiguous.");
+    }
+    const binding = bindingRows[0]!;
+    const universeId = String(binding.universe_id ?? "");
+    const snapshotQuery = new URLSearchParams({
+      workspace_id: `eq.${workspaceId}`,
+      universe_id: `eq.${universeId}`,
+      select:
+        "workspace_id,universe_id,schema_version,mode,anchor_at,evidence_snapshot_id,evidence_snapshot_fingerprint,deal_count,universe_fingerprint",
+    });
+    const memberQuery = new URLSearchParams({
+      workspace_id: `eq.${workspaceId}`,
+      universe_id: `eq.${universeId}`,
+      select:
+        "ordinal,deal_id,company_id,deal_status,analysis_eligible_at,member_fingerprint",
+      order: "ordinal.asc",
+    });
+    const [snapshotRows, memberRows] = await Promise.all([
+      request(`/deal_universe_snapshots_v1?${snapshotQuery}`) as Promise<
+        Record<string, unknown>[]
+      >,
+      request(`/deal_universe_snapshot_members_v1?${memberQuery}`) as Promise<
+        Record<string, unknown>[]
+      >,
+    ]);
+    if (snapshotRows.length !== 1) {
+      throw new Error("Run Deal-universe snapshot did not resolve exactly once.");
+    }
+    const snapshot = snapshotRows[0]!;
+    const parsedInput = validateDealUniverseInput({
+      workspaceId,
+      runId,
+      universeId,
+      mode: String(snapshot.mode) as "live" | "pinned",
+      anchorAt: String(snapshot.anchor_at),
+      evidenceSnapshotId: snapshot.evidence_snapshot_id === null
+        ? null
+        : String(snapshot.evidence_snapshot_id),
+      evidenceSnapshotFingerprint:
+        snapshot.evidence_snapshot_fingerprint === null
+          ? null
+          : String(snapshot.evidence_snapshot_fingerprint),
+      members: memberRows.map((member) => ({
+        ordinal: Number(member.ordinal),
+        dealId: String(member.deal_id),
+        companyId: String(member.company_id),
+        dealStatus: DealStatusSchema.parse(member.deal_status),
+        analysisEligibleAt: String(member.analysis_eligible_at),
+      })),
+    });
+    const universeFingerprint = String(binding.universe_fingerprint ?? "");
+    const dealCount = Number(binding.deal_count);
+    if (
+      binding.schema_version !== "run-deal-universe-binding-v1"
+      || String(binding.workspace_id) !== workspaceId
+      || String(binding.run_id) !== runId
+      || snapshot.schema_version !== "deal-universe-snapshot-v1"
+      || String(snapshot.workspace_id) !== workspaceId
+      || String(snapshot.universe_id) !== universeId
+      || snapshot.universe_fingerprint !== universeFingerprint
+      || Number(snapshot.deal_count) !== dealCount
+      || parsedInput.members.length !== dealCount
+      || !/^sha256:[0-9a-f]{64}$/u.test(universeFingerprint)
+    ) {
+      throw new Error("Run Deal-universe authority did not reload exactly.");
+    }
+    return {
+      ...parsedInput,
+      schemaVersion: "run-deal-universe-binding-v1",
+      universeFingerprint,
+      dealCount,
+    };
+  }
   return {
+    async bindRunDealUniverse(rawInput) {
+      const input = validateDealUniverseInput(rawInput);
+      const saved = await request(
+        "/rpc/save_deal_universe_snapshot_v1",
+        {
+          method: "POST",
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify({
+            p_payload: {
+              schemaVersion: "deal-universe-snapshot-v1",
+              workspaceId: input.workspaceId,
+              universeId: input.universeId,
+              mode: input.mode,
+              anchorAt: input.anchorAt,
+              evidenceSnapshotId: input.evidenceSnapshotId,
+              evidenceSnapshotFingerprint: input.evidenceSnapshotFingerprint,
+              members: input.members,
+            },
+          }),
+        },
+      ) as Record<string, unknown>;
+      const universeFingerprint = String(saved.universeFingerprint ?? "");
+      if (
+        saved.universeId !== input.universeId
+        || Number(saved.dealCount) !== input.members.length
+        || !/^sha256:[0-9a-f]{64}$/u.test(universeFingerprint)
+      ) {
+        throw new Error("Deal-universe snapshot RPC returned invalid authority.");
+      }
+      const bound = await request(
+        "/rpc/bind_run_deal_universe_v1",
+        {
+          method: "POST",
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify({
+            p_payload: {
+              schemaVersion: "run-deal-universe-binding-v1",
+              workspaceId: input.workspaceId,
+              runId: input.runId,
+              universeId: input.universeId,
+              universeFingerprint,
+            },
+          }),
+        },
+      ) as Record<string, unknown>;
+      if (
+        bound.runId !== input.runId
+        || bound.universeId !== input.universeId
+        || bound.universeFingerprint !== universeFingerprint
+        || Number(bound.dealCount) !== input.members.length
+      ) {
+        throw new Error("Run Deal-universe binding RPC returned invalid authority.");
+      }
+      const reloaded = await getRunDealUniverse({
+        workspaceId: input.workspaceId,
+        runId: input.runId,
+      });
+      if (
+        reloaded === null
+        || reloaded.universeFingerprint !== universeFingerprint
+        || canonicalDealUniverse(reloaded) !== canonicalDealUniverse({
+          ...input,
+          schemaVersion: "run-deal-universe-binding-v1",
+          universeFingerprint,
+          dealCount: input.members.length,
+        })
+      ) {
+        throw new Error("Bound run Deal universe did not reload exactly.");
+      }
+      return reloaded;
+    },
+
+    getRunDealUniverse,
+
     async getAnalysisEligibleSnapshot(workspaceId) {
       workspaceId = requiredWorkspaceId(workspaceId);
       const value = await request(

@@ -169,6 +169,73 @@ function companyAnalysis(
   };
 }
 
+function withCurrentRunAudit(
+  value: CompanyAnalysis,
+  options: { evidenceBindingFingerprint?: string } = {},
+): CompanyAnalysis {
+  const analysis = structuredClone(value);
+  analysis.score = 0;
+  analysis.confidence = "low";
+  analysis.currentRunAudit = {
+    schemaVersion: "company-analysis-current-run-audit-v1",
+    workspaceId: "workspace_demo",
+    companyId: `company_${analysis.dealId}`,
+    stableDealId: analysis.dealId,
+    priorDealStatus: analysis.dealStatus,
+    analysisEligibleAt: "2026-08-03T12:00:00.000Z",
+    dealUniverseId: "deal_universe_current_30",
+    dealUniverseFingerprint: `sha256:${"1".repeat(64)}`,
+    evidenceContextFingerprint: `sha256:${"2".repeat(64)}`,
+    evidenceBindingFingerprint:
+      options.evidenceBindingFingerprint ?? `sha256:${"3".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"4".repeat(64)}`,
+    sourceRevisionIds: ["revision_current_1"],
+    xtraceMemoryIds: [...analysis.investmentMemory.memoryIds],
+    priorMemory: {
+      kind: "investment",
+      previousMeetingSummary: analysis.investmentMemory.previousMeetingSummary,
+      decisionReason: analysis.investmentMemory.decisionReason,
+      concerns: analysis.investmentMemory.concerns,
+      revisitConditions: analysis.investmentMemory.revisitConditions,
+      lastEvaluatedAt: analysis.investmentMemory.lastEvaluatedAt,
+      sourceIds: analysis.investmentMemory.sourceIds,
+      fixtureIds: analysis.investmentMemory.fixtureIds,
+    },
+    consideredMarketEventIds: [],
+    matchedMarketEventIds: [],
+    scoreBreakdown: {
+      eventRelevance: 0,
+      dealRelevance: 0,
+      priorContextStrength: 0,
+      evidenceQuality: 0,
+      finalScore: 0,
+      confidence: "low",
+    },
+    gates: {
+      chronology: { passed: false, failureReason: "No matched event." },
+      revisitConditionMapping: { passed: false, failureReason: "No matched event." },
+      counterevidence: { passed: false, failureReason: "No matched event." },
+      actionDelta: { passed: false, failureReason: "No matched event." },
+      allPassed: false,
+    },
+    direction: "none",
+    actions: [{
+      kind: "no_new_action",
+      scope: "deal",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
+    outcome: "no_material_change",
+    nonChangeReason:
+      "No material market evidence matched this company during the current 14-day scan.",
+    analysisFailureReason: null,
+    whyNotUnderwriting:
+      "No material belief change was supported by the current evidence.",
+    recall: { attempted: true, succeeded: true, failureReason: null },
+  };
+  return analysis;
+}
+
 function completeReport(
   companyAnalyses = Array.from({ length: 19 }, (_, index) =>
     companyAnalysis(index + 1)
@@ -241,6 +308,30 @@ function authoritativeDealsFor(
         activeSourceRevisionFingerprint: `sha256:${"a".repeat(64)}`,
         activeSourceRevisionIds: [`revision_${analysis.dealId}`],
       }));
+    },
+    async getRunDealUniverse(input: { workspaceId: string; runId: string }) {
+      const audits = analyses.map((analysis) => analysis.currentRunAudit);
+      if (audits.some((audit) => audit === undefined)) return null;
+      const firstAudit = audits[0]!;
+      return {
+        schemaVersion: "run-deal-universe-binding-v1" as const,
+        workspaceId: input.workspaceId,
+        runId: input.runId,
+        universeId: firstAudit.dealUniverseId,
+        universeFingerprint: firstAudit.dealUniverseFingerprint,
+        mode: "live" as const,
+        anchorAt: "2026-08-03T12:00:00.000Z",
+        evidenceSnapshotId: null,
+        evidenceSnapshotFingerprint: null,
+        members: analyses.map((analysis, ordinal) => ({
+          ordinal,
+          dealId: analysis.dealId,
+          companyId: `company_${analysis.dealId}`,
+          dealStatus: analysis.dealStatus,
+          analysisEligibleAt: "2026-08-03T12:00:00.000Z",
+        })),
+        dealCount: analyses.length,
+      };
     },
   } as unknown as DealRegistry;
 }
@@ -672,6 +763,48 @@ test("current report writes reject missing authoritative registry Deals before n
 
   await assert.rejects(repository.saveReport(report), /authoritative.*Deal/i);
   assert.equal(fetches, 0);
+});
+
+test("current report validation uses the run-bound Deal universe instead of the mutable registry", async () => {
+  const analysis = withCurrentRunAudit(companyAnalysis(1));
+  const report = {
+    ...completeReport([analysis]),
+    evidenceBindingFingerprint:
+      analysis.currentRunAudit!.evidenceBindingFingerprint,
+  };
+  const repository = createMemoryIntelligenceRepository({
+    dealRegistry: {
+      async getRunDealUniverse() {
+        return {
+          schemaVersion: "run-deal-universe-binding-v1" as const,
+          workspaceId: report.workspaceId,
+          runId: report.runId,
+          universeId: analysis.currentRunAudit!.dealUniverseId,
+          mode: "live" as const,
+          anchorAt: "2026-08-03T13:34:43.000Z",
+          evidenceSnapshotId: null,
+          evidenceSnapshotFingerprint: null,
+          members: [{
+            ordinal: 0,
+            dealId: analysis.dealId,
+            companyId: analysis.currentRunAudit!.companyId,
+            dealStatus: analysis.dealStatus,
+            analysisEligibleAt: analysis.currentRunAudit!.analysisEligibleAt,
+          }],
+          universeFingerprint:
+            analysis.currentRunAudit!.dealUniverseFingerprint,
+          dealCount: 1,
+        };
+      },
+      async listForWorkspace() {
+        throw new Error("Mutable registry must not be read after run claim.");
+      },
+    } as unknown as DealRegistry,
+  });
+
+  const stored = await repository.saveReport(report);
+
+  assert.equal(stored.companyAnalyses[0]?.dealId, analysis.dealId);
 });
 
 test("Supabase market event reads reject declared malformed v2 payloads", async () => {
@@ -1137,6 +1270,7 @@ test("public reports contain intelligence only and no delivery state", async () 
     "companyAnalyses",
     "counts",
     "createdAt",
+    "evidenceContext",
     "evidenceCoverage",
     "id",
     "marketSummary",
@@ -2014,6 +2148,11 @@ test("Supabase report writes use the atomic report RPC", async () => {
     kind: "normalized_non_quote",
     sourceIds: [firstAnalysis.sources[0].id],
   }];
+  report.companyAnalyses = report.companyAnalyses.map((analysis) =>
+    withCurrentRunAudit(analysis, {
+      evidenceBindingFingerprint: report.evidenceBindingFingerprint,
+    })
+  );
   const repository = createSupabaseIntelligenceRepository({
     url: "https://example.supabase.co",
     serviceRoleKey: "test-service-role-key",
@@ -2088,6 +2227,14 @@ test("Supabase report writes use the atomic report RPC", async () => {
     body.p_analyses[0].marketEvidence.claimSupport,
     firstAnalysis.claimSupport,
   );
+  assert.equal(
+    Object.hasOwn(body.p_analyses[1].marketEvidence, "claimSupport"),
+    false,
+  );
+  assert.deepEqual(
+    body.p_analyses[1].marketEvidence.currentRunAudit,
+    report.companyAnalyses[1].currentRunAudit,
+  );
   assert.equal(body.p_report.companyCount, 19);
   assert.equal(body.p_report.eligibleSnapshotCount, 19);
   assert.equal(
@@ -2103,6 +2250,322 @@ test("Supabase report writes use the atomic report RPC", async () => {
   assert.equal(
     JSON.stringify(stored).includes("test-service-role-key"),
     false,
+  );
+});
+
+test("Supabase reads restore the versioned current-run audit from durable market evidence", async () => {
+  const analysis = withCurrentRunAudit(companyAnalysis(1));
+  const report = completeReport([analysis]);
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([{
+          id: report.runId,
+          ...CURRENT_REPORT_EVIDENCE_COLUMNS,
+        }]);
+      }
+      if (url.includes("/company_analyses?")) {
+        return Response.json([{
+          id: analysis.id,
+          workspace_id: report.workspaceId,
+          report_id: report.id,
+          run_id: analysis.runId,
+          deal_id: analysis.dealId,
+          company_name: analysis.companyName,
+          deal_status: analysis.dealStatus,
+          outcome: analysis.outcome,
+          confidence: analysis.confidence,
+          score: analysis.score,
+          investment_memory: analysis.investmentMemory,
+          market_evidence: {
+            ...analysis.marketEvidence,
+            currentRunAudit: analysis.currentRunAudit,
+          },
+          implications: analysis.implications,
+          recommended_next_move: analysis.recommendedNextMove,
+          company_brief: analysis.companyBrief,
+          source_refs: analysis.sources,
+          belief_assessment_version: null,
+          belief_direction: null,
+          belief_score_breakdown: null,
+          belief_gate_context: null,
+          belief_gate_results: null,
+          belief_actions: null,
+          created_at: analysis.createdAt,
+        }]);
+      }
+      if (url.includes("/intelligence_reports?")) {
+        return Response.json([{
+          id: report.id,
+          workspace_id: report.workspaceId,
+          run_id: report.runId,
+          created_at: report.createdAt,
+          market_summary: report.marketSummary,
+          opportunities: [],
+          analysis_status: "completed",
+          company_count: 1,
+          belief_revised_count: 0,
+          monitor_count: 0,
+          no_material_change_count: 1,
+          analysis_unavailable_count: 0,
+          priority_deal_id: null,
+          evidence_coverage: report.evidenceCoverage,
+          ...CURRENT_REPORT_EVIDENCE_COLUMNS,
+        }]);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  const stored = await repository.getReport(report.workspaceId, report.id);
+
+  assert.deepEqual(
+    stored?.companyAnalyses[0]?.currentRunAudit,
+    analysis.currentRunAudit,
+  );
+});
+
+test("Supabase report reads fail closed instead of hiding a malformed current-run analysis", async () => {
+  const analysis = withCurrentRunAudit(companyAnalysis(1));
+  const report = completeReport([analysis]);
+  const malformedCurrentRow = {
+    id: analysis.id,
+    workspace_id: report.workspaceId,
+    report_id: report.id,
+    run_id: analysis.runId,
+    deal_id: analysis.dealId,
+    company_name: analysis.companyName,
+    deal_status: analysis.dealStatus,
+    outcome: analysis.outcome,
+    confidence: analysis.confidence,
+    score: analysis.score,
+    investment_memory: null,
+    market_evidence: {
+      ...analysis.marketEvidence,
+      currentRunAudit: analysis.currentRunAudit,
+    },
+    implications: analysis.implications,
+    recommended_next_move: analysis.recommendedNextMove,
+    company_brief: analysis.companyBrief,
+    source_refs: analysis.sources,
+    belief_assessment_version: null,
+    belief_direction: null,
+    belief_score_breakdown: null,
+    belief_gate_context: null,
+    belief_gate_results: null,
+    belief_actions: null,
+    created_at: analysis.createdAt,
+  };
+  const repository = createSupabaseIntelligenceRepository({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    async fetchImpl(input) {
+      const url = String(input);
+      if (url.includes("/scan_runs?")) {
+        return Response.json([{
+          id: report.runId,
+          ...CURRENT_REPORT_EVIDENCE_COLUMNS,
+        }]);
+      }
+      if (url.includes("/company_analyses?")) {
+        return Response.json([malformedCurrentRow]);
+      }
+      if (url.includes("/intelligence_reports?")) {
+        return Response.json([{
+          id: report.id,
+          workspace_id: report.workspaceId,
+          run_id: report.runId,
+          created_at: report.createdAt,
+          market_summary: report.marketSummary,
+          opportunities: [],
+          analysis_status: "completed",
+          company_count: 1,
+          belief_revised_count: 0,
+          monitor_count: 0,
+          no_material_change_count: 1,
+          analysis_unavailable_count: 0,
+          priority_deal_id: null,
+          evidence_coverage: report.evidenceCoverage,
+          ...CURRENT_REPORT_EVIDENCE_COLUMNS,
+        }]);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    repository.listReports(report.workspaceId),
+    /invalid current.*company analysis/i,
+  );
+});
+
+test("Supabase current report reads fail closed when 30 persisted analyses degrade to 29 or zero", async () => {
+  const analyses = Array.from({ length: 30 }, (_, index) =>
+    withCurrentRunAudit(companyAnalysis(index + 1)),
+  );
+  const report = completeReport(analyses);
+  const analysisRows = analyses.map((analysis) => ({
+    id: analysis.id,
+    workspace_id: report.workspaceId,
+    report_id: report.id,
+    run_id: analysis.runId,
+    deal_id: analysis.dealId,
+    company_name: analysis.companyName,
+    deal_status: analysis.dealStatus,
+    outcome: analysis.outcome,
+    confidence: analysis.confidence,
+    score: analysis.score,
+    investment_memory: analysis.investmentMemory,
+    market_evidence: {
+      ...analysis.marketEvidence,
+      currentRunAudit: analysis.currentRunAudit,
+    },
+    implications: analysis.implications,
+    recommended_next_move: analysis.recommendedNextMove,
+    company_brief: analysis.companyBrief,
+    source_refs: analysis.sources,
+    belief_assessment_version: null,
+    belief_direction: null,
+    belief_score_breakdown: null,
+    belief_gate_context: null,
+    belief_gate_results: null,
+    belief_actions: null,
+    created_at: analysis.createdAt,
+  }));
+  const reportRow = {
+    id: report.id,
+    workspace_id: report.workspaceId,
+    run_id: report.runId,
+    created_at: report.createdAt,
+    market_summary: report.marketSummary,
+    opportunities: [],
+    analysis_status: "completed",
+    company_count: 30,
+    belief_revised_count: 0,
+    monitor_count: 0,
+    no_material_change_count: 30,
+    analysis_unavailable_count: 0,
+    priority_deal_id: null,
+    evidence_coverage: report.evidenceCoverage,
+    ...CURRENT_REPORT_EVIDENCE_COLUMNS,
+  };
+  const duplicateDeal = structuredClone(analysisRows);
+  duplicateDeal[29] = {
+    ...structuredClone(duplicateDeal[0]!),
+    id: "analysis_duplicate_deal",
+  };
+  const mismatchedUniverse = structuredClone(analysisRows);
+  const mismatchedAudit = mismatchedUniverse[29]!.market_evidence
+    .currentRunAudit!;
+  mismatchedUniverse[29] = {
+    ...mismatchedUniverse[29]!,
+    market_evidence: {
+      ...mismatchedUniverse[29]!.market_evidence,
+      currentRunAudit: {
+        ...mismatchedAudit,
+        dealUniverseFingerprint: `sha256:${"0".repeat(64)}`,
+      },
+    },
+  };
+  for (const degraded of [
+    analysisRows.slice(0, 29),
+    [],
+    duplicateDeal,
+    mismatchedUniverse,
+  ]) {
+    const repository = createSupabaseIntelligenceRepository({
+      url: "https://example.supabase.co",
+      serviceRoleKey: "test-service-role-key",
+      async fetchImpl(input) {
+        const url = String(input);
+        if (url.includes("/scan_runs?")) {
+          return Response.json([{ id: report.runId, ...CURRENT_REPORT_EVIDENCE_COLUMNS }]);
+        }
+        if (url.includes("/company_analyses?")) return Response.json(degraded);
+        if (url.includes("/intelligence_reports?")) return Response.json([reportRow]);
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+    await assert.rejects(
+      repository.getReport(report.workspaceId, report.id),
+      /current.*(count|analysis|incomplete)|persisted.*count/i,
+    );
+  }
+});
+
+test("the exact approved 23-analysis pinned artifact remains readable without currentRunAudit but cannot lose a row", async () => {
+  const analyses = Array.from({ length: 23 }, (_, index) => companyAnalysis(index + 1));
+  const report = completeReport(analyses);
+  const pinnedColumns = {
+    ...CURRENT_REPORT_EVIDENCE_COLUMNS,
+    evidence_mode: "pinned",
+    evidence_snapshot_id: "belief_reversal_2026_08_01",
+    evidence_snapshot_fingerprint: `sha256:${"f".repeat(64)}`,
+  };
+  const reportRow = {
+    id: report.id,
+    workspace_id: report.workspaceId,
+    run_id: report.runId,
+    created_at: report.createdAt,
+    market_summary: report.marketSummary,
+    opportunities: [],
+    analysis_status: "completed",
+    company_count: 23,
+    belief_revised_count: 0,
+    monitor_count: 0,
+    no_material_change_count: 23,
+    analysis_unavailable_count: 0,
+    priority_deal_id: null,
+    evidence_coverage: report.evidenceCoverage,
+    ...pinnedColumns,
+  };
+  const rows = analyses.map((analysis) => ({
+    id: analysis.id,
+    workspace_id: report.workspaceId,
+    report_id: report.id,
+    run_id: analysis.runId,
+    deal_id: analysis.dealId,
+    company_name: analysis.companyName,
+    deal_status: analysis.dealStatus,
+    outcome: analysis.outcome,
+    confidence: analysis.confidence,
+    score: analysis.score,
+    investment_memory: analysis.investmentMemory,
+    market_evidence: analysis.marketEvidence,
+    implications: analysis.implications,
+    recommended_next_move: analysis.recommendedNextMove,
+    company_brief: analysis.companyBrief,
+    source_refs: analysis.sources,
+    belief_assessment_version: null,
+    belief_direction: null,
+    belief_score_breakdown: null,
+    belief_gate_context: null,
+    belief_gate_results: null,
+    belief_actions: null,
+    created_at: analysis.createdAt,
+  }));
+  const read = (returnedRows: readonly Record<string, unknown>[]) =>
+    createSupabaseIntelligenceRepository({
+      url: "https://example.supabase.co",
+      serviceRoleKey: "test-service-role-key",
+      async fetchImpl(input) {
+        const url = String(input);
+        if (url.includes("/scan_runs?")) {
+          return Response.json([{ id: report.runId, ...pinnedColumns }]);
+        }
+        if (url.includes("/company_analyses?")) return Response.json(returnedRows);
+        if (url.includes("/intelligence_reports?")) return Response.json([reportRow]);
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    }).getReport(report.workspaceId, report.id);
+
+  assert.equal((await read(rows))?.companyAnalyses.length, 23);
+  await assert.rejects(
+    read(rows.slice(0, 22)),
+    /pinned.*(count|analysis)|persisted.*count/i,
   );
 });
 

@@ -13,6 +13,8 @@ import { getProductInputReadiness } from "../../lib/corpus/import-readiness";
 import { DEMO_DEAL_EVIDENCE } from "../../lib/corpus/evidence";
 import { DEMO_FIXTURES } from "../../lib/corpus/fixtures";
 import { listPreloadedDocuments } from "../../lib/corpus/manifest";
+import { loadBeliefReversalManifest } from "../../lib/belief-reversal/manifest";
+import { parseBeliefReversalManifest } from "../../lib/belief-reversal/contracts";
 import {
   createMemoryDemoDataStore,
   createMemoryPrivateObjectStorage,
@@ -155,14 +157,42 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     && value === "preferred"
     && rationale.startsWith("belief-reversal-demo-context-v1:")
   ));
-  const semanticFields = evidencePacks.inspect().sourceEvidence.flatMap(
+  const sourceEvidence = evidencePacks.inspect().sourceEvidence;
+  const semanticFields = sourceEvidence.flatMap(
     (item) => (item as unknown as {
       semanticFields?: Array<Record<string, unknown>>;
     }).semanticFields ?? [],
   );
+  const canonicalSourceRefIds = new Set(sourceEvidence.flatMap((item) => {
+    const sourceRef = (item as unknown as {
+      sourceRef?: { id?: unknown };
+    }).sourceRef;
+    return typeof sourceRef?.id === "string" ? [sourceRef.id] : [];
+  }));
   for (const field of semanticFields) {
     assert.match(String(field.id), /^semantic-field-[a-f0-9]{24}$/);
     assert.equal(field.schemaVersion, "deal-semantic-field-v1");
+    const referencedSourceIds = [
+      ...(Array.isArray(field.sourceIds) ? field.sourceIds : []),
+      ...(Array.isArray(field.checkedSourceIds) ? field.checkedSourceIds : []),
+      ...(Array.isArray(field.observations)
+        ? field.observations.flatMap((observation) =>
+          observation
+            && typeof observation === "object"
+            && "sourceId" in observation
+            && typeof observation.sourceId === "string"
+            ? [observation.sourceId]
+            : []
+        )
+        : []),
+    ];
+    assert.equal(
+      referencedSourceIds.every((sourceId) =>
+        canonicalSourceRefIds.has(String(sourceId))
+      ),
+      true,
+      `semantic field ${String(field.id)} must resolve through canonical SourceRef IDs`,
+    );
   }
   for (const fieldId of [
     "company_identity",
@@ -296,6 +326,95 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
       "schemaVersion" in source && source.schemaVersion === "source-ref-v2"
     )
   ));
+  const hushBundle = reversalBundles.find(({ dealId }) =>
+    dealId === "deal_hush_security_v1"
+  );
+  assert.ok(hushBundle);
+  const hushCrossCompanySource = hushBundle.facts.flatMap(({ sources }) =>
+    sources
+  ).find(({ id }) => id === "claim_hush_controls_limit_v1");
+  assert.ok(hushCrossCompanySource && "schemaVersion" in hushCrossCompanySource);
+  assert.deepEqual(hushCrossCompanySource.entityKeys, ["irregular"]);
+  const hushSourceRevision = sourceRegistry.inspect().revisions.find(
+    ({ sourceId }) => sourceId === "source_hush_anthropic_controls_v1",
+  );
+  assert.ok(hushSourceRevision);
+  assert.equal(
+    hushCrossCompanySource.contentFingerprint,
+    hushSourceRevision.contentHash,
+  );
+  const hushSourceSnapshotBytes = await objectStorage.readPrivateObject(
+    hushSourceRevision.objectKey,
+  );
+  assert.ok(hushSourceSnapshotBytes);
+  const hushSourceSnapshot = JSON.parse(
+    new TextDecoder().decode(hushSourceSnapshotBytes),
+  ) as { source?: { entityKeys?: unknown } };
+  assert.deepEqual(hushSourceSnapshot.source?.entityKeys, ["irregular"]);
+  const pinnedSnapshot = await marketEvidenceSnapshots.get(
+    "workspace_demo",
+    "belief_reversal_2026_08_01",
+  );
+  assert.ok(pinnedSnapshot);
+  const manifest = loadBeliefReversalManifest();
+  assert.deepEqual({
+    snapshotAsOfDate: pinnedSnapshot.snapshotAsOfDate,
+    anchorAt: pinnedSnapshot.anchorAt,
+    windowStartAt: pinnedSnapshot.windowStartAt,
+    windowEndAt: pinnedSnapshot.windowEndAt,
+    windowTimezone: pinnedSnapshot.windowTimezone,
+    displayLabel: pinnedSnapshot.displayLabel,
+  }, {
+    snapshotAsOfDate: manifest.evidenceWindow.endAt.slice(0, 10),
+    anchorAt: manifest.evidenceWindow.endAt,
+    windowStartAt: manifest.evidenceWindow.startAt,
+    windowEndAt: manifest.evidenceWindow.endAt,
+    windowTimezone: manifest.evidenceWindow.timezone,
+    displayLabel: manifest.evidenceWindow.displayLabel,
+  });
+  assert.equal(pinnedSnapshot.anchorAt, pinnedSnapshot.windowEndAt);
+  const hushEvent = pinnedSnapshot.events.find(({ id }) =>
+    id === "event_hush_series_a_v1"
+  );
+  assert.ok(hushEvent && "schemaVersion" in hushEvent);
+  assert.deepEqual(hushEvent.entityKeys, ["hush_security", "irregular"]);
+  assert.deepEqual(
+    hushEvent.sources.find(({ id }) =>
+      id === "claim_hush_controls_limit_v1"
+    )?.entityKeys,
+    ["irregular"],
+  );
+});
+
+test("pinned seed rejects an evidence-window drift under the same immutable snapshot ID", async () => {
+  const seedModule = await loadSeedModule();
+  const runBeliefReversalDemoSeed = seedModule.runBeliefReversalDemoSeed as (
+    dependencies: Record<string, unknown>,
+    options?: { manifest?: ReturnType<typeof loadBeliefReversalManifest> },
+  ) => Promise<unknown>;
+  const dataStore = createMemoryDemoDataStore();
+  const objectStorage = createMemoryPrivateObjectStorage();
+  const sourceRegistry = createMemorySourceRegistry();
+  const dealRegistry = createMemoryDealRegistry({ sourceRegistry });
+  const dependencies = {
+    dataStore,
+    objectStorage,
+    sourceRegistry,
+    dealRegistry,
+    evidencePacks: createMemoryEvidencePacksRepository(),
+    marketEvidenceSnapshots: createMemoryMarketEvidenceSnapshotsRepository(),
+  };
+  await runBeliefReversalDemoSeed(dependencies);
+
+  const driftedInput = structuredClone(loadBeliefReversalManifest()) as unknown as {
+    evidenceWindow: { endAt: string };
+  };
+  driftedInput.evidenceWindow.endAt = "2026-08-01T23:59:58-07:00";
+  const driftedManifest = parseBeliefReversalManifest(driftedInput);
+  await assert.rejects(
+    runBeliefReversalDemoSeed(dependencies, { manifest: driftedManifest }),
+    /snapshot identity collision/i,
+  );
 });
 
 test("actual Irregular seed evidence reaches one finalized core-only terminal artifact set", async () => {
@@ -323,6 +442,19 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
     .find(({ id }) => id === "deal_irregular_v1");
   assert.ok(deal);
   assert.equal(deal.status, "invested");
+  const irregularBundle = (
+    await dealRegistry.listAnalysisEligibleBundles("workspace_demo")
+  ).find(({ dealId }) => dealId === deal.id);
+  assert.ok(irregularBundle);
+  const structuredFields = irregularBundle.facts.flatMap(
+    ({ semanticFields }) => semanticFields ?? [],
+  );
+  assert.ok(structuredFields.some((field) =>
+    field.classification === "unknown"
+    && field.reason
+      === "Responsibility allocation, remediation durability, revenue, and retention remain unavailable."
+    && field.externalLabel === "Current remediation, revenue, and retention evidence"
+  ));
   const references = createMemoryUnderwritingReferencesRepository({ now });
   const profileId = "critical_evidence_series_a_enterprise_ai_v1";
   const criticalEvidenceProfile = await references.getCriticalEvidenceProfile(
@@ -399,6 +531,7 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
       actions: canonicalActions,
     },
     investmentMemory: { memoryIds: [] },
+    companyBrief: { structuredFields },
     sources: [],
     createdAt: now().toISOString(),
   } as unknown as CompanyAnalysis;
@@ -514,6 +647,23 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
   assert.deepEqual(statusSafeDrafts.map(({ format }) => format), [
     "internal_memo",
   ]);
+  const irregularUnknown = structuredFields.find((field) =>
+    field.classification === "unknown"
+  );
+  assert.ok(irregularUnknown?.classification === "unknown");
+  assert.deepEqual(payload.versionSnapshot.companyAnalysisUnknowns, [{
+    fieldId: irregularUnknown.id,
+    label: irregularUnknown.reason,
+    externalLabel: irregularUnknown.externalLabel,
+  }]);
+  assert.ok(statusSafeDrafts.every(({ missingEvidence }) =>
+    missingEvidence.some((item) =>
+      item.fieldId === irregularUnknown.id
+      && item.label === irregularUnknown.reason
+      && item.externalLabel === irregularUnknown.externalLabel
+      && item.reasonCode === "UNRESOLVED_COMPANY_OR_EVENT_UNKNOWN"
+    )
+  ));
   assert.ok(statusSafeDrafts.every(({ dealStatus, beliefDirection, actions }) =>
     dealStatus === "invested"
     && beliefDirection === "negative"

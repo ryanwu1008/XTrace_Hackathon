@@ -195,3 +195,52 @@ test("preserves every opposing named advisory opinion as an independent framewor
     /average|blend|consensus score/i,
   );
 });
+
+test("orders advisory conflicts by framework semantics instead of run-scoped judgment ids", async () => {
+  const context: ResolvedUnderwritingContext = {
+    id: "underwriting_context_seed_b2b_saas_v1",
+    contextVersion: "1",
+    stage: "seed",
+    businessModel: "b2b_saas",
+    geography: "us",
+    securityType: "preferred",
+    asOfDate: "2026-07-29",
+    criticalEvidenceProfileId: "critical_evidence_seed_b2b_saas_v1",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkCompatibility: "exact",
+    valuationMethodPolicyId: "valuation_method_seed_b2b_saas_v1",
+    decisionPolicyId: "decision_policy_seed_b2b_saas_v1",
+    frameworkPackId: SYNTHETIC_FRAMEWORK_PACK.id,
+  };
+  const cards = authorizedResearchComposites(
+    await loadResearchFrameworkCatalog({ context }),
+  )
+    .filter(({ experimentalAdvisory }) => experimentalAdvisory.applicable)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .slice(0, 3);
+  assert.equal(cards.length, 3);
+
+  const buildJudgments = (ids: readonly string[]) => cards.map((card, index) => ({
+    ...judgment({
+      id: ids[index]!,
+      cardId: card.id,
+      conclusion: index === 1 ? "negative" : "supportive",
+      supportIds: [`fact_${index}`],
+      counterIds: [`assumption_${index}`],
+    }),
+    frameworkMetadata: card.experimentalAdvisory,
+  }));
+  const first = buildFrameworkDisagreements({
+    judgments: buildJudgments(["judgment_z", "judgment_m", "judgment_a"]),
+    cards,
+  });
+  const second = buildFrameworkDisagreements({
+    judgments: buildJudgments(["judgment_a", "judgment_m", "judgment_z"]),
+    cards,
+  });
+
+  assert.deepEqual(
+    first.map(({ topic, explanation }) => ({ topic, explanation })),
+    second.map(({ topic, explanation }) => ({ topic, explanation })),
+  );
+});

@@ -25,6 +25,7 @@ import {
   metadataForBeliefActionKind,
   renderRecommendedNextMove,
 } from "../reports/action-policy";
+import { SAMPLE_RESEARCH_SCREENING_RECORD_LABEL } from "./research-candidate";
 
 export const ProvenanceSchema = z.enum([
   "source_document",
@@ -308,6 +309,7 @@ export const DealSemanticFieldSchema = z.discriminatedUnion("classification", [
     fieldId: z.literal("unknowns"),
     classification: z.literal("unknown"),
     reason: z.string().min(1),
+    externalLabel: z.string().min(1),
   }),
 ]);
 
@@ -355,7 +357,7 @@ export const MarketEventSchema = z.object({
 });
 
 export const OpportunityReportItemSchema = z.object({
-  rank: z.number().int().min(1).max(5),
+  rank: z.number().int().positive(),
   dealId: z.string().min(1),
   confidence: z.enum(["medium", "high"]),
   score: z.number().min(0).max(1),
@@ -525,8 +527,7 @@ export const BeliefRevisionGateResultsSchema = z.strictObject({
 export const BELIEF_CHANGE_ASSESSMENT_SCHEMA_VERSION =
   "belief-change-assessment-v1" as const;
 
-export const AuthoritativeBeliefGateContextSchema = z.strictObject({
-  priorInteraction: z.strictObject({
+const SampleDecisionPriorAuthoritySchema = z.strictObject({
     id: z.string().min(1),
     occurredAt: z.string().datetime({ offset: true }),
     sourceIds: z.array(z.string().min(1)).length(1),
@@ -534,7 +535,25 @@ export const AuthoritativeBeliefGateContextSchema = z.strictObject({
     priorActions: z.array(BeliefActionSchema).min(1),
     provenance: z.literal("demo_fixture"),
     label: z.literal(DEMO_FIXTURE_LABEL),
-  }),
+});
+
+const SampleResearchPriorAuthoritySchema = z.strictObject({
+  id: z.string().min(1),
+  occurredAt: z.string().datetime({ offset: true }),
+  sourceIds: z.array(z.string().min(1)).length(1),
+  revisitConditions: z.array(z.string().min(1)).min(1),
+  priorActions: z.array(BeliefActionSchema).min(1),
+  provenance: z.literal("source_document"),
+  label: z.literal(SAMPLE_RESEARCH_SCREENING_RECORD_LABEL),
+  meetingOccurred: z.literal(false),
+  vcInteraction: z.literal(false),
+});
+
+export const AuthoritativeBeliefGateContextSchema = z.strictObject({
+  priorInteraction: z.discriminatedUnion("provenance", [
+    SampleDecisionPriorAuthoritySchema,
+    SampleResearchPriorAuthoritySchema,
+  ]),
   triggerEvent: z.strictObject({
     id: z.string().min(1),
     eventAt: TemporalValueV2Schema,
@@ -546,6 +565,22 @@ export const AuthoritativeBeliefGateContextSchema = z.strictObject({
   const priorSource = gateContext.sources.find(
     (source) => source.id === gateContext.priorInteraction.sourceIds[0],
   );
+  const sampleDecisionAuthority =
+    gateContext.priorInteraction.provenance === "demo_fixture"
+    && priorSource?.provenance === "demo_fixture"
+    && priorSource.title === DEMO_FIXTURE_LABEL;
+  const sampleResearchAuthority =
+    gateContext.priorInteraction.provenance === "source_document"
+    && gateContext.priorInteraction.meetingOccurred === false
+    && gateContext.priorInteraction.vcInteraction === false
+    && priorSource?.provenance === "source_document"
+    && priorSource.title === SAMPLE_RESEARCH_SCREENING_RECORD_LABEL
+    && priorSource.sourceClass === "internal_decision_record"
+    && priorSource.sourceAuthority === "primary"
+    && priorSource.text.status === "normalized_only"
+    && priorSource.text.normalizedStatement.startsWith(
+      `${SAMPLE_RESEARCH_SCREENING_RECORD_LABEL}. Synthetic research-only context; no meeting or VC interaction occurred.`,
+    );
   if (
     gateContext.sources.some((source) => source.adaptation !== "canonical")
     || sourceIds.size !== gateContext.sources.length
@@ -556,15 +591,14 @@ export const AuthoritativeBeliefGateContextSchema = z.strictObject({
       !== gateContext.priorInteraction.id
     || priorSource === undefined
     || priorSource.adaptation !== "canonical"
-    || priorSource.provenance !== "demo_fixture"
-    || priorSource.title !== DEMO_FIXTURE_LABEL
+    || (!sampleDecisionAuthority && !sampleResearchAuthority)
     || priorSource.evidenceRole !== "context"
     || priorSource.eventAt !== gateContext.priorInteraction.occurredAt
   ) {
     context.addIssue({
       code: "custom",
       message:
-        "Authoritative gate context requires unique canonical trigger sources and an exact Sample decision record source binding",
+        "Authoritative gate context requires unique canonical trigger sources and an exact typed prior-context source binding",
     });
   }
   validateSourcePayloads(gateContext.sources, context);
@@ -810,6 +844,135 @@ export const CompanyBriefSchema = z.object({
   }
 });
 
+const CompanyAnalysisAuditGateSchema = z.strictObject({
+  passed: z.boolean(),
+  failureReason: GateFailureReasonSchema,
+}).superRefine(validateGateFailureReason);
+
+export const CompanyAnalysisAuditGatesSchema = z.strictObject({
+  chronology: CompanyAnalysisAuditGateSchema,
+  revisitConditionMapping: CompanyAnalysisAuditGateSchema,
+  counterevidence: CompanyAnalysisAuditGateSchema,
+  actionDelta: CompanyAnalysisAuditGateSchema,
+  allPassed: z.boolean(),
+}).superRefine((gates, context) => {
+  const allPassed = gates.chronology.passed
+    && gates.revisitConditionMapping.passed
+    && gates.counterevidence.passed
+    && gates.actionDelta.passed;
+  if (gates.allPassed !== allPassed) {
+    context.addIssue({
+      code: "custom",
+      message: "Current-run audit allPassed must equal all four persisted gates",
+    });
+  }
+});
+
+const CanonicalSha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+
+export const CompanyAnalysisCurrentRunAuditV1Schema = z.strictObject({
+  schemaVersion: z.literal("company-analysis-current-run-audit-v1"),
+  workspaceId: z.string().trim().min(1),
+  companyId: z.string().trim().min(1),
+  stableDealId: z.string().trim().min(1),
+  priorDealStatus: CanonicalDealStatusSchema,
+  analysisEligibleAt: z.string().datetime({ offset: true }),
+  dealUniverseId: z.string().trim().min(1),
+  dealUniverseFingerprint: CanonicalSha256Schema,
+  evidenceContextFingerprint: CanonicalSha256Schema,
+  evidenceBindingFingerprint: CanonicalSha256Schema,
+  activeParentFingerprint: CanonicalSha256Schema,
+  sourceRevisionIds: z.array(z.string().trim().min(1)).min(1),
+  xtraceMemoryIds: z.array(z.string().trim().min(1)),
+  priorMemory: z.strictObject({
+    kind: z.enum(["investment", "screening"]),
+    previousMeetingSummary: z.string().min(1),
+    decisionReason: z.string().min(1),
+    concerns: z.array(z.string().min(1)),
+    revisitConditions: z.array(z.string().min(1)),
+    lastEvaluatedAt: z.string().datetime({ offset: true }).nullable(),
+    sourceIds: z.array(z.string().trim().min(1)),
+    fixtureIds: z.array(z.string().trim().min(1)),
+  }),
+  consideredMarketEventIds: z.array(z.string().trim().min(1)),
+  matchedMarketEventIds: z.array(z.string().trim().min(1)),
+  scoreBreakdown: OpportunityScoreBreakdownSchema,
+  gates: CompanyAnalysisAuditGatesSchema,
+  direction: BeliefChangeDirectionSchema,
+  actions: z.array(BeliefActionSchema).min(1),
+  outcome: CompanyAnalysisOutcomeSchema,
+  nonChangeReason: z.string().trim().min(1).nullable(),
+  analysisFailureReason: z.string().trim().min(1).nullable(),
+  whyNotUnderwriting: z.string().trim().min(1).nullable(),
+  recall: z.strictObject({
+    attempted: z.boolean(),
+    succeeded: z.boolean(),
+    failureReason: z.string().trim().min(1).nullable(),
+  }),
+}).superRefine((audit, context) => {
+  for (const [label, values] of [
+    ["source revision", audit.sourceRevisionIds],
+    ["XTrace memory", audit.xtraceMemoryIds],
+    ["considered MarketEvent", audit.consideredMarketEventIds],
+    ["matched MarketEvent", audit.matchedMarketEventIds],
+  ] as const) {
+    if (new Set(values).size !== values.length) {
+      context.addIssue({ code: "custom", message: `${label} IDs must be unique` });
+    }
+  }
+  if (audit.matchedMarketEventIds.some((eventId) =>
+    !audit.consideredMarketEventIds.includes(eventId)
+  )) {
+    context.addIssue({
+      code: "custom",
+      message: "Matched MarketEvent IDs must be part of the considered run-bound set",
+    });
+  }
+  const recallShapeValid = audit.recall.attempted
+    ? audit.recall.succeeded
+      ? audit.recall.failureReason === null && audit.xtraceMemoryIds.length > 0
+      : audit.recall.failureReason !== null && audit.xtraceMemoryIds.length === 0
+    : !audit.recall.succeeded
+      && audit.recall.failureReason === null
+      && audit.xtraceMemoryIds.length === 0;
+  if (!recallShapeValid) {
+    context.addIssue({
+      code: "custom",
+      message: "Recall attempted, succeeded, failure, and XTrace memory lineage must agree",
+    });
+  }
+  if (
+    (audit.outcome === "no_material_change")
+      !== (audit.nonChangeReason !== null)
+    || (audit.outcome === "analysis_unavailable")
+      !== (audit.analysisFailureReason !== null)
+    || (audit.outcome === "belief_revised")
+      === (audit.whyNotUnderwriting !== null)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Current-run outcomes require exact failure, non-change, and no-underwriting reasons",
+    });
+  }
+  if (
+    audit.outcome === "belief_revised"
+    && (
+      audit.direction === "none"
+      || audit.direction === "unavailable"
+      || audit.scoreBreakdown.confidence === "low"
+      || !audit.gates.allPassed
+      || audit.matchedMarketEventIds.length === 0
+      || audit.analysisFailureReason !== null
+      || audit.recall.failureReason !== null
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Admitted belief revisions require complete score, gates, lineage, and no failure",
+    });
+  }
+});
+
 const CompanyAnalysisObjectSchema = z.object({
   id: z.string().min(1),
   reportId: z.string().min(1),
@@ -832,8 +995,77 @@ const CompanyAnalysisObjectSchema = z.object({
   recommendedNextMove: z.string().min(1),
   companyBrief: CompanyBriefSchema,
   sources: z.array(EvidenceSourceRefSchema),
+  currentRunAudit: CompanyAnalysisCurrentRunAuditV1Schema.optional(),
   createdAt: z.string().datetime({ offset: true }),
 }).superRefine((analysis, context) => {
+  const audit = analysis.currentRunAudit;
+  if (audit) {
+    const memory = analysis.investmentMemory;
+    if (
+      audit.stableDealId !== analysis.dealId
+      || audit.priorDealStatus !== analysis.dealStatus
+      || audit.outcome !== analysis.outcome
+      || audit.scoreBreakdown.finalScore !== analysis.score
+      || audit.scoreBreakdown.confidence !== analysis.confidence
+      || (audit.recall.attempted
+        && JSON.stringify(audit.xtraceMemoryIds)
+          !== JSON.stringify(memory.memoryIds))
+      || audit.priorMemory.previousMeetingSummary !== memory.previousMeetingSummary
+      || audit.priorMemory.decisionReason !== memory.decisionReason
+      || JSON.stringify(audit.priorMemory.concerns) !== JSON.stringify(memory.concerns)
+      || JSON.stringify(audit.priorMemory.revisitConditions)
+        !== JSON.stringify(memory.revisitConditions)
+      || audit.priorMemory.lastEvaluatedAt !== memory.lastEvaluatedAt
+      || JSON.stringify(audit.priorMemory.sourceIds) !== JSON.stringify(memory.sourceIds)
+      || JSON.stringify(audit.priorMemory.fixtureIds) !== JSON.stringify(memory.fixtureIds)
+      || JSON.stringify(audit.matchedMarketEventIds)
+        !== JSON.stringify(analysis.marketEvidence.eventIds)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Current-run audit must exactly match its CompanyAnalysis identity, memory, evidence, score, and outcome",
+      });
+    }
+    const assessment = analysis.beliefAssessment;
+    if (assessment) {
+      const summarizedGates = {
+        chronology: {
+          passed: assessment.gates.chronology.passed,
+          failureReason: assessment.gates.chronology.failureReason,
+        },
+        revisitConditionMapping: {
+          passed: assessment.gates.revisitConditionMapping.passed,
+          failureReason: assessment.gates.revisitConditionMapping.failureReason,
+        },
+        counterevidence: {
+          passed: assessment.gates.counterevidence.passed,
+          failureReason: assessment.gates.counterevidence.failureReason,
+        },
+        actionDelta: {
+          passed: assessment.gates.actionDelta.passed,
+          failureReason: assessment.gates.actionDelta.failureReason,
+        },
+        allPassed: assessment.gates.allPassed,
+      };
+      if (
+        audit.direction !== assessment.direction
+        || !beliefActionListsEqual(audit.actions, assessment.actions)
+        || JSON.stringify(audit.scoreBreakdown)
+          !== JSON.stringify(assessment.scoreBreakdown)
+        || JSON.stringify(audit.gates) !== JSON.stringify(summarizedGates)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Current-run audit must exactly preserve the authoritative belief assessment",
+        });
+      }
+    } else if (audit.outcome === "belief_revised") {
+      context.addIssue({
+        code: "custom",
+        message: "Current-run belief revisions require an authoritative belief assessment",
+      });
+    }
+  }
   const assessment = analysis.beliefAssessment;
   if (assessment) {
     const analysisSourceById = new Map(
@@ -844,9 +1076,12 @@ const CompanyAnalysisObjectSchema = z.object({
       (source) => analysisSourceById.has(source.id),
     );
     const prior = gateContext.priorInteraction;
+    const priorIsResearchScreening = prior.provenance === "source_document";
     const priorSourceIdsMatchMemory = prior.sourceIds.every((sourceId) =>
       analysis.investmentMemory.sourceIds.includes(sourceId)
-      && analysis.investmentMemory.fixtureIds.includes(sourceId)
+      && (priorIsResearchScreening
+        ? !analysis.investmentMemory.fixtureIds.includes(sourceId)
+        : analysis.investmentMemory.fixtureIds.includes(sourceId))
     );
     const priorActionsMatchMemory =
       analysis.investmentMemory.priorActions !== undefined
@@ -1037,17 +1272,39 @@ const CompanyAnalysisObjectSchema = z.object({
           === MEMORY_ANALYSIS_UNAVAILABLE
       && analysis.investmentMemory.decisionReason
           === MEMORY_ANALYSIS_UNAVAILABLE;
+    const researchPrior = analysis.beliefAssessment?.gateContext
+      .priorInteraction.provenance === "source_document"
+      ? analysis.beliefAssessment.gateContext.priorInteraction
+      : null;
+    const validResearchPriorMemory = researchPrior !== null
+      && fixedNoRecord
+      && analysis.investmentMemory.concerns.length === 0
+      && analysis.investmentMemory.lastEvaluatedAt === researchPrior.occurredAt
+      && JSON.stringify(analysis.investmentMemory.revisitConditions)
+        === JSON.stringify(researchPrior.revisitConditions)
+      && analysis.investmentMemory.priorActions !== undefined
+      && beliefActionListsEqual(
+        analysis.investmentMemory.priorActions,
+        researchPrior.priorActions,
+      )
+      && researchPrior.sourceIds.every((sourceId) =>
+        analysis.investmentMemory.sourceIds.includes(sourceId)
+      )
+      && analysis.companyBrief.decisionHistory.length === 0;
     if (
-      analysis.investmentMemory.lastEvaluatedAt !== null
-      || analysis.investmentMemory.concerns.length !== 0
-      || analysis.investmentMemory.revisitConditions.length !== 0
-      || analysis.companyBrief.decisionHistory.length !== 0
-      || (!fixedNoRecord && !fixedUnavailable)
+      !validResearchPriorMemory
+      && (
+        analysis.investmentMemory.lastEvaluatedAt !== null
+        || analysis.investmentMemory.concerns.length !== 0
+        || analysis.investmentMemory.revisitConditions.length !== 0
+        || analysis.companyBrief.decisionHistory.length !== 0
+        || (!fixedNoRecord && !fixedUnavailable)
+      )
     ) {
       context.addIssue({
         code: "custom",
         message:
-          "Investment memory without a Sample decision record may only use the fixed no-record payload",
+          "Investment memory without a Sample decision record may only use fixed no-record data or an exact non-interaction research authority",
       });
     }
   } else if (analysis.investmentMemory.lastEvaluatedAt === null) {
@@ -1088,6 +1345,59 @@ export const CompanyAnalysisSchema = z.unknown().superRefine(
     }
   },
 ).pipe(CompanyAnalysisObjectSchema);
+
+const LEGACY_COMPANY_UNKNOWN_EXTERNAL_LABEL =
+  "Current company evidence for review" as const;
+
+/**
+ * Read adapter for CompanyAnalysis JSON persisted before unknown fields gained
+ * an audience-safe external label. Canonical writes must continue to use
+ * CompanyAnalysisSchema directly.
+ */
+export function parseCompanyAnalysisRead(
+  value: unknown,
+): z.infer<typeof CompanyAnalysisSchema> {
+  const current = CompanyAnalysisSchema.safeParse(value);
+  if (current.success) return current.data;
+  if (typeof value !== "object" || value === null) throw current.error;
+  const companyBrief = (value as Record<string, unknown>).companyBrief;
+  if (typeof companyBrief !== "object" || companyBrief === null) {
+    throw current.error;
+  }
+  const structuredFields = (
+    companyBrief as Record<string, unknown>
+  ).structuredFields;
+  if (!Array.isArray(structuredFields)) throw current.error;
+
+  let adapted = false;
+  const normalizedFields = structuredFields.map((field) => {
+    if (
+      typeof field !== "object"
+      || field === null
+      || (field as Record<string, unknown>).schemaVersion
+        !== "deal-semantic-field-v1"
+      || (field as Record<string, unknown>).fieldId !== "unknowns"
+      || (field as Record<string, unknown>).classification !== "unknown"
+      || Object.prototype.hasOwnProperty.call(field, "externalLabel")
+    ) {
+      return field;
+    }
+    adapted = true;
+    return {
+      ...field,
+      externalLabel: LEGACY_COMPANY_UNKNOWN_EXTERNAL_LABEL,
+    };
+  });
+  if (!adapted) throw current.error;
+
+  return CompanyAnalysisSchema.parse({
+    ...value,
+    companyBrief: {
+      ...companyBrief,
+      structuredFields: normalizedFields,
+    },
+  });
+}
 
 export const ReportAnalysisStatusSchema = z.enum(["completed", "incomplete"]);
 
@@ -1166,6 +1476,9 @@ export type CompanyMarketEvidence = z.infer<
 >;
 export type CompanyRisk = z.infer<typeof CompanyRiskSchema>;
 export type CompanyBrief = z.infer<typeof CompanyBriefSchema>;
+export type CompanyAnalysisCurrentRunAuditV1 = z.infer<
+  typeof CompanyAnalysisCurrentRunAuditV1Schema
+>;
 export type CompanyAnalysis = z.infer<typeof CompanyAnalysisSchema>;
 
 export function evidenceSourceText(source: EvidenceSourceRef): string {

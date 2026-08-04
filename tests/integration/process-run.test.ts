@@ -23,11 +23,91 @@ import {
   exactSourceV2,
   marketEventV2,
   normalizedSourceV2,
+  TEST_SHA256_A,
 } from "../helpers/source-evidence-v2";
 
 const READY_IMPORT_GATE = {
   async assertReady() {},
 };
+
+function currentThirtyDealBundles(): DealMemoryBundle[] {
+  const original = buildPreloadedDealMemoryBundles();
+  const legacyAdditions = Array.from({ length: 4 }, (_, index) => {
+    const ordinal = index + 1;
+    const source = normalizedSourceV2(`legacy_addition_${ordinal}`, {
+      title: `Legacy addition ${ordinal}`,
+      canonicalUrl: `https://example.com/legacy-addition-${ordinal}`,
+      entityKeys: [`legacy-addition-${ordinal}`],
+      sourceRevisionId: `revision_legacy_addition_${ordinal}`,
+      contentFingerprint: TEST_SHA256_A,
+      text: {
+        status: "normalized_only",
+        normalizedStatement:
+          `Legacy addition ${ordinal} has verified company context.`,
+      },
+    });
+    return {
+      dealId: `deal_legacy_addition_${ordinal}`,
+      companyName: `Legacy Addition ${ordinal}`,
+      status: "screening" as const,
+      facts: [{
+        text: source.text.status === "normalized_only"
+          ? source.text.normalizedStatement
+          : "",
+        sources: [source],
+      }],
+      interactions: [],
+    };
+  });
+  const researchScreening = Array.from({ length: 7 }, (_, index) => {
+    const ordinal = index + 1;
+    const source = normalizedSourceV2(`sample_research_${ordinal}`, {
+      provenance: "source_document",
+      title: "Sample research screening record",
+      canonicalUrl: null,
+      documentId: `document_sample_research_${ordinal}`,
+      publisher: "Internal Research Registry",
+      providerId: "belief-reversal-research-seed-v1",
+      eventAt: "2026-08-01T12:00:00.000Z",
+      eventAtPrecision: "timestamp",
+      publishedAt: null,
+      publishedAtPrecision: null,
+      retrievedAt: "2026-08-01T12:00:00.000Z",
+      retrievedAtPrecision: "timestamp",
+      entityKeys: [`research-screening-${ordinal}`],
+      sourceClass: "internal_decision_record",
+      sourceAuthority: "primary",
+      evidenceRole: "context",
+      sourceRevisionId: `revision_sample_research_${ordinal}`,
+      locator: { kind: "json_pointer", pointer: "/record" },
+      contentFingerprint: TEST_SHA256_A,
+      text: {
+        status: "normalized_only",
+        normalizedStatement: [
+          "Sample research screening record.",
+          "Synthetic research-only context; no meeting or VC interaction occurred.",
+          "Disposition: qualified_not_selected.",
+          "Qualification: The company identity and evidence are verified.",
+          "Not selected reason: Evidence does not yet change a formal action.",
+          "Reconsideration conditions: Reconsider after stronger independent evidence.",
+        ].join(" "),
+      },
+    });
+    return {
+      dealId: `deal_research_screening_${ordinal}`,
+      companyName: `Research Screening ${ordinal}`,
+      status: "screening" as const,
+      facts: [{
+        text: source.text.status === "normalized_only"
+          ? source.text.normalizedStatement
+          : "",
+        sources: [source],
+      }],
+      interactions: [],
+    };
+  });
+  return [...original, ...legacyAdditions, ...researchScreening];
+}
 
 function authoritativeDeals(bundles: DealMemoryBundle[]) {
   const deals = new Map<string, RegisteredDeal>(
@@ -46,8 +126,38 @@ function authoritativeDeals(bundles: DealMemoryBundle[]) {
       }];
     }),
   );
+  const universes = new Map<string, Awaited<
+    ReturnType<DealRegistry["bindRunDealUniverse"]>
+  >>();
   return {
     dealRegistry: {
+      async bindRunDealUniverse(input: Parameters<
+        DealRegistry["bindRunDealUniverse"]
+      >[0]) {
+        const existing = universes.get(input.runId);
+        if (existing) return structuredClone(existing);
+        const binding = {
+          ...structuredClone(input),
+          schemaVersion: "run-deal-universe-binding-v1" as const,
+          universeFingerprint: eligibleDealSnapshotFingerprint(
+            input.members.map((member) => {
+              const deal = deals.get(member.dealId);
+              assert.ok(deal, `Missing registered Deal ${member.dealId}`);
+              return deal;
+            }),
+          ),
+          dealCount: input.members.length,
+        };
+        universes.set(input.runId, binding);
+        return structuredClone(binding);
+      },
+      async getRunDealUniverse(input: {
+        workspaceId: string;
+        runId: string;
+      }) {
+        assert.equal(input.workspaceId, "workspace_demo");
+        return structuredClone(universes.get(input.runId) ?? null);
+      },
       async listForWorkspace(workspaceId: string) {
         assert.equal(workspaceId, "workspace_demo");
         return structuredClone([...deals.values()]);
@@ -99,10 +209,11 @@ function authoritativeDeals(bundles: DealMemoryBundle[]) {
   };
 }
 
-function createTestIntelligenceRepository() {
-  const dealRegistry = authoritativeDeals(
+function createTestIntelligenceRepository(
+  dealRegistry: DealRegistry = authoritativeDeals(
     buildPreloadedDealMemoryBundles(),
-  ).dealRegistry as DealRegistry;
+  ).dealRegistry as DealRegistry,
+) {
   return createMemoryIntelligenceRepository({
     now: () => new Date("2026-07-24T12:00:00.000Z"),
     dealRegistry,
@@ -458,16 +569,6 @@ test("a current live Worker seals the exact selected events before saving its re
   const baseRuns = createRunsRepository(createMemoryDataClient({
     now: () => new Date("2026-07-23T12:00:00.000Z"),
   }));
-  const intelligenceBase = createTestIntelligenceRepository();
-  const observed = observeCurrentEvidenceSeams(baseRuns, intelligenceBase);
-  const { runs, intelligence } = observed;
-  const queued = await runs.create({
-    workspaceId: "workspace_demo",
-    mode: "structured",
-    windowDays: 14,
-  });
-  const run = await runs.claimNext("test-worker");
-  assert.equal(run?.id, queued.id);
   const bundles = buildPreloadedDealMemoryBundles();
   const ably = bundles.find(({ dealId }) => dealId === "deal_ably");
   assert.ok(ably);
@@ -504,12 +605,25 @@ test("a current live Worker seals the exact selected events before saving its re
         : source
     );
   }
+  const authoritative = authoritativeDeals(bundles);
+  const intelligenceBase = createTestIntelligenceRepository(
+    authoritative.dealRegistry as DealRegistry,
+  );
+  const observed = observeCurrentEvidenceSeams(baseRuns, intelligenceBase);
+  const { runs, intelligence } = observed;
+  const queued = await runs.create({
+    workspaceId: "workspace_demo",
+    mode: "structured",
+    windowDays: 14,
+  });
+  const run = await runs.claimNext("test-worker");
+  assert.equal(run?.id, queued.id);
   let downstreamEvents: NormalizedMarketEvent[] = [];
 
   const result = await processClaimedRun(run!, {
     runs,
     intelligence,
-    ...authoritativeDeals(bundles),
+    ...authoritative,
     importGate: READY_IMPORT_GATE,
     market: {
       async scanMarketWindow() {
@@ -617,7 +731,10 @@ test("a current live Worker seals the exact selected events before saving its re
 
 test("a current live Worker persists an explicit empty binding when no event is analysis-eligible", async () => {
   const baseRuns = createRunsRepository(createMemoryDataClient());
-  const intelligenceBase = createTestIntelligenceRepository();
+  const authoritative = authoritativeDeals(currentThirtyDealBundles());
+  const intelligenceBase = createTestIntelligenceRepository(
+    authoritative.dealRegistry as DealRegistry,
+  );
   const observed = observeCurrentEvidenceSeams(baseRuns, intelligenceBase);
   const { runs, intelligence } = observed;
   await runs.create({
@@ -632,7 +749,7 @@ test("a current live Worker persists an explicit empty binding when no event is 
   const result = await processClaimedRun(run, {
     runs,
     intelligence,
-    ...authoritativeDeals(buildPreloadedDealMemoryBundles()),
+    ...authoritative,
     importGate: READY_IMPORT_GATE,
     market: {
       async scanMarketWindow() {
@@ -689,8 +806,13 @@ test("a current live Worker persists an explicit empty binding when no event is 
     observed.binding()?.bindingFingerprint,
   );
   assert.equal(result.run.status, "completed");
-  assert.equal(result.report.companyAnalyses.length, 19);
-  assert.equal(result.report.counts.noMaterialChange, 19);
+  assert.equal(result.report.companyAnalyses.length, 30);
+  const dealUniverse = await authoritative.dealRegistry.getRunDealUniverse({
+    workspaceId: "workspace_demo",
+    runId: run.id,
+  });
+  assert.equal(dealUniverse?.dealCount, 30);
+  assert.equal(result.report.counts.noMaterialChange, 30);
   assert.equal(result.report.priorityDealId, null);
   assert.match(result.report.marketSummary, /1 item lacked a bounded market-change signal/i);
 });
@@ -738,7 +860,10 @@ test("a pinned Worker binds and reloads the exact snapshot without live provider
   });
   const run = await baseRuns.claimNext("test-worker");
   assert.ok(run);
-  const intelligenceBase = createTestIntelligenceRepository();
+  const authoritative = authoritativeDeals(currentThirtyDealBundles());
+  const intelligenceBase = createTestIntelligenceRepository(
+    authoritative.dealRegistry as DealRegistry,
+  );
   let marketProviderCalls = 0;
   let liveCatalogWrites = 0;
   let matchingEvents: unknown[] = [];
@@ -752,7 +877,7 @@ test("a pinned Worker binds and reloads the exact snapshot without live provider
         throw new Error("Pinned execution must not write the live Market catalog.");
       },
     },
-    ...authoritativeDeals(buildPreloadedDealMemoryBundles()),
+    ...authoritative,
     importGate: READY_IMPORT_GATE,
     market: {
       async scanMarketWindow() {
@@ -770,6 +895,15 @@ test("a pinned Worker binds and reloads the exact snapshot without live provider
   });
 
   assert.equal(result.run.status, "completed");
+  assert.equal(result.report.companyAnalyses.length, 23);
+  const dealUniverse = await authoritative.dealRegistry.getRunDealUniverse({
+    workspaceId: "workspace_demo",
+    runId: run.id,
+  });
+  assert.equal(dealUniverse?.dealCount, 23);
+  assert.ok(dealUniverse?.members.every(({ dealId }) =>
+    !dealId.startsWith("deal_research_screening_")
+  ));
   assert.equal(marketProviderCalls, 0);
   assert.equal(liveCatalogWrites, 0);
   assert.deepEqual(matchingEvents, snapshot.events);
@@ -813,11 +947,14 @@ test("XTrace recall failure never falls back to structured memory and marks the 
   });
   const run = await runs.claimNext("test-worker");
   assert.ok(run);
+  const authoritative = authoritativeDeals(buildPreloadedDealMemoryBundles());
 
   const result = await processClaimedRun(run, {
     runs,
-    intelligence: createTestIntelligenceRepository(),
-    ...authoritativeDeals(buildPreloadedDealMemoryBundles()),
+    intelligence: createTestIntelligenceRepository(
+      authoritative.dealRegistry as DealRegistry,
+    ),
+    ...authoritative,
     importGate: READY_IMPORT_GATE,
     market: {
       async scanMarketWindow() {
@@ -895,11 +1032,14 @@ test("normal process-run recall performs zero XTrace ingest-job polling", async 
   const run = await runs.claimNext("test-worker");
   assert.ok(run);
   const calls: string[] = [];
+  const authoritative = authoritativeDeals(buildPreloadedDealMemoryBundles());
 
   const result = await processClaimedRun(run, {
     runs,
-    intelligence: createTestIntelligenceRepository(),
-    ...authoritativeDeals(buildPreloadedDealMemoryBundles()),
+    intelligence: createTestIntelligenceRepository(
+      authoritative.dealRegistry as DealRegistry,
+    ),
+    ...authoritative,
     importGate: READY_IMPORT_GATE,
     market: {
       async scanMarketWindow() {
@@ -984,8 +1124,11 @@ test("bounds market evidence before XTrace and Claude while preserving all event
   });
   const run = await runs.claimNext("test-worker");
   assert.ok(run);
-  const intelligence = createTestIntelligenceRepository();
   const bundles = buildPreloadedDealMemoryBundles();
+  const authoritative = authoritativeDeals(bundles);
+  const intelligence = createTestIntelligenceRepository(
+    authoritative.dealRegistry as DealRegistry,
+  );
   const fetchedEvents = Array.from({ length: 23 }, (_, index) =>
     marketEvent(index)
   ).map((event) => refingerprintMarketEvent({
@@ -998,7 +1141,7 @@ test("bounds market evidence before XTrace and Claude while preserving all event
   const result = await processClaimedRun(run, {
     runs,
     intelligence,
-    ...authoritativeDeals(bundles),
+    ...authoritative,
     importGate: READY_IMPORT_GATE,
     market: {
       async scanMarketWindow() {
