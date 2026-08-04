@@ -106,6 +106,23 @@ export function formatReportDate(value: string) {
   });
 }
 
+export function formatEvidenceWindow(input: {
+  windowStartAt: string;
+  windowEndAt: string;
+  windowTimezone: string;
+}): string {
+  // Evidence windows are sealed calendar boundaries. Format their recorded
+  // calendar dates without silently shifting either boundary for the viewer's
+  // local timezone; the report also presents the sealed IANA timezone.
+  const formatBoundary = (value: string) => formatTemporalForDisplay({
+    value: value.slice(0, 10),
+    dateOnly: { month: "short", day: "numeric", year: "numeric" },
+    timestamp: { month: "short", day: "numeric", year: "numeric" },
+  });
+  void input.windowTimezone;
+  return `${formatBoundary(input.windowStartAt)} – ${formatBoundary(input.windowEndAt)}`;
+}
+
 // Grounded text is assembled from claim sentences, so the same source
 // sentence can repeat. Display-level dedupe only; the stored text and the
 // evidence trail are untouched.
@@ -341,11 +358,18 @@ function ReportEvidenceContextDetail({
     );
   }
   const pinned = context.evidenceMode === "pinned";
+  const evidenceWindow = formatEvidenceWindow(context);
   return (
     <section className="vsee-evidence-context-detail" role="note">
       <header>
         <strong>{pinned ? "PINNED DEMO REPLAY" : "LIVE EVIDENCE"}</strong>
-        <span>{context.displayLabel}</span>
+        <span className="vsee-evidence-context-window">
+          <span>Evidence window</span>
+          <b>{evidenceWindow}</b>
+        </span>
+        <small className="vsee-evidence-context-timezone">
+          {context.windowTimezone}
+        </small>
         {pinned && (
           <small>Historical evidence snapshot · Not current news</small>
         )}
@@ -356,8 +380,9 @@ function ReportEvidenceContextDetail({
         <Definition label="Anchor" value={formatReportDate(context.anchorAt)} />
         <Definition
           label="Evidence window"
-          value={`${formatReportDate(context.windowStartAt)} → ${formatReportDate(context.windowEndAt)} · ${context.windowTimezone}`}
+          value={evidenceWindow}
         />
+        <Definition label="Evidence timezone" value={context.windowTimezone} />
         <Definition label="Accepted events" value={String(context.eventCount)} />
         <Definition
           label="Snapshot ID"

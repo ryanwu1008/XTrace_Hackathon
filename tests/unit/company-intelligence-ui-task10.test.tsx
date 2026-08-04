@@ -842,10 +842,22 @@ test("IC Snapshot renders structured fact, unavailable, conflict, assumption, an
   assert.match(html, /WEIGHTED MATCH CONFIDENCE[\s\S]*Event relevance · 35%/);
 });
 
-test("report detail preserves its pinned replay identity instead of relying on the outer page banner", () => {
+test("report detail separates its evidence status and readable window from immutable context identity", () => {
   const analysis = analysisFixture();
+  const report = reportFixture(analysis);
+  const context = report.evidenceContext;
+  if (!context || context.state !== "current") {
+    throw new Error("The report fixture must include a current evidence context.");
+  }
+  report.evidenceContext = {
+    ...context,
+    evidenceMode: "live" as const,
+    snapshotId: null,
+    snapshotFingerprint: null,
+    displayLabel: "Live evidence window ending 2026-08-01T23:59:59.999Z",
+  };
   const html = renderToStaticMarkup(createElement(CompanyIntelligenceReport, {
-    report: reportFixture(analysis),
+    report,
     focused: true,
     allowDraft: false,
     onDraft() {},
@@ -854,10 +866,10 @@ test("report detail preserves its pinned replay identity instead of relying on t
     canSaveActionDrafts: false,
   }));
 
-  assert.match(html, /PINNED DEMO REPLAY/);
-  assert.match(html, /Demo evidence snapshot as of 2026-08-01/);
-  assert.match(html, /Historical evidence snapshot · Not current news/);
-  assert.match(html, /belief_reversal_2026_08_01/);
+  assert.match(html, /LIVE EVIDENCE[\s\S]*Evidence window/);
+  assert.match(html, /Jul 19, 2026 – Aug 1, 2026/);
+  assert.doesNotMatch(html, /2026-08-01T23:59:59\.999Z/);
+  assert.match(html, /Not applicable to live evidence/);
   assert.match(html, /Context fingerprint/);
   assert.match(html, new RegExp(CONTEXT_FINGERPRINT));
   assert.match(html, /Belief Change Analysis/);

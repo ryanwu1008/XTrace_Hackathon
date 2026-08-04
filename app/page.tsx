@@ -11,6 +11,7 @@ import {
 } from "./source-upload-flow";
 import {
   CompanyIntelligenceReport,
+  formatEvidenceWindow as formatReportEvidenceWindow,
   type IntelligenceReportView,
 } from "./company-intelligence";
 import {
@@ -296,6 +297,14 @@ export function buildChatApiRequest(input: {
   };
 }
 
+export function formatEvidenceWindow(input: {
+  windowStartAt: string;
+  windowEndAt: string;
+  windowTimezone: string;
+}): string {
+  return formatReportEvidenceWindow(input);
+}
+
 export function evidenceContextLabel(
   context: ReportEvidenceContext | RunEvidenceContext | undefined,
 ): string {
@@ -303,11 +312,9 @@ export function evidenceContextLabel(
     return "LEGACY REPORT · Evidence context unavailable";
   }
   if (context.evidenceMode === "pinned") {
-    return "displayLabel" in context
-      ? `PINNED DEMO REPLAY · ${context.displayLabel}`
-      : `PINNED DEMO REPLAY · ${context.snapshotId}`;
+    return `PINNED DEMO REPLAY · ${formatEvidenceWindow(context)}`;
   }
-  return `LIVE EVIDENCE · Live evidence window ending ${context.windowEndAt}`;
+  return `LIVE EVIDENCE · ${formatEvidenceWindow(context)}`;
 }
 
 export function canRunPinnedDemo(
