@@ -791,7 +791,7 @@ test("underwriting summary renders every changed belief in priority order withou
   );
 });
 
-test("underwriting queue and analyst synthesis use bounded responsive IC layouts", async () => {
+test("underwriting queue and editorial memo use readable responsive layouts", async () => {
   const css = await readFile(cssPath, "utf8");
 
   for (const contract of [
@@ -800,13 +800,17 @@ test("underwriting queue and analyst synthesis use bounded responsive IC layouts
     ".vsee-underwriting-priority{display:grid",
     ".vsee-underwriting-decision{display:grid",
     ".vsee-executive-memo-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))",
-    ".vsee-analyst-issue-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))",
-    ".vsee-analyst-issue{min-width:0;padding:18px",
+    ".vsee-memo-masthead{max-width:1100px",
+    ".vsee-underwriting-section{display:block;max-width:1100px",
+    ".vsee-framework-synthesis-table{width:100%;table-layout:fixed",
+    ".vsee-framework-synthesis-table th:nth-child(3){width:53%}",
+    ".vsee-valuation-diligence-table th:nth-child(3){width:54%}",
     ".vsee-framework-appendix{margin-top:22px",
     ".vsee-underwriting-events h4,.vsee-evidence-ledger strong,.vsee-evidence-ledger p,.vsee-evidence-ledger small,.vsee-evidence-ledger a{overflow-wrap:anywhere}",
     ".vsee-action-draft-list article,.vsee-action-draft-list p,.vsee-action-draft-list small,.vsee-action-draft-list dl,.vsee-action-draft-list dd{min-width:0;overflow-wrap:anywhere}",
     "@media(max-width:680px){.vsee-policy-summary,.vsee-impact-grid",
     ".vsee-underwriting-row{grid-template-columns:1fr;",
+    "@media(max-width:780px){.vsee-framework-synthesis-table",
   ]) {
     assert.ok(css.includes(contract), contract);
   }
@@ -872,13 +876,13 @@ test("underwriting detail preserves section order, lineage, public version pins,
   }));
 
   const orderedHeadings = [
-    "Executive Investment Snapshot",
+    "Executive Conclusion",
     "What Changed?",
     "Verified Company Snapshot",
-    "Company and Market Assessment",
-    "Named Analyst Panel",
+    "Investment Thesis Assessment",
+    "Investor Framework Synthesis",
     "Investment Committee Debate",
-    "Bear / Base / Bull Scenarios",
+    "Financial Case",
     "Valuation and Return Analysis",
     "VSee IC Synthesis",
     "Required Diligence",

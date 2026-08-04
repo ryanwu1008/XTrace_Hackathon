@@ -1,4 +1,5 @@
 import type { CandidateUnderwritingDetail } from "../lib/underwriting/read-model";
+import type { ScenarioInputField } from "../lib/contracts/underwriting";
 
 type ArticleAnalysisContext = {
   dealStatus: string;
@@ -57,7 +58,7 @@ export interface UnderwritingArticleViewModel {
         | "cannot_calculate"
         | "not_applicable"
         | "provider_or_lineage_unavailable";
-      fieldIds: string[];
+      fieldIds: ScenarioInputField[];
     }>;
   };
   finalPosition: {

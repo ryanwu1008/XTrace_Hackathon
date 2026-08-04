@@ -151,7 +151,21 @@ export function UnderwritingDetailPanel({
   return (
     <div className="vsee-underwriting-detail">
       <EvidenceContextNotice context={evidenceContext} />
-      <DetailSection number="01" title="Executive Investment Snapshot">
+      <header className="vsee-memo-masthead">
+        <span>DEEP UNDERWRITING</span>
+        <h1>{companyName}</h1>
+        <strong>
+          {analysis?.dealStatus === "invested"
+            ? "Portfolio Risk Re-underwriting Memorandum"
+            : "Investment Re-underwriting Memorandum"}
+        </strong>
+        <p>
+          As of {detail.evidencePack.asOfDate} · Deal status ·{" "}
+          {analysis ? humanize(analysis.dealStatus) : "Not recorded"} ·{" "}
+          Evidence-led IC review
+        </p>
+      </header>
+      <DetailSection number="01" title="Executive Conclusion">
         <ExecutiveDecisionMemo analysis={analysis} detail={detail} />
         <Definition label="IC Decision Ask" value={article.decisionAsk} />
       </DetailSection>
@@ -265,7 +279,7 @@ export function UnderwritingDetailPanel({
         </p>
       </DetailSection>
 
-      <DetailSection number="04" title="Company and Market Assessment">
+      <DetailSection number="04" title="Investment Thesis Assessment">
         <p>{analysis?.marketEvidence.explanation ?? detail.narrative}</p>
         <div className="vsee-impact-grid">
           <ListBlock
@@ -354,7 +368,7 @@ export function UnderwritingDetailPanel({
         </dl>
       </DetailSection>
 
-      <DetailSection number="05" title="Named Analyst Panel">
+      <DetailSection number="05" title="Investor Framework Synthesis">
         <AnalystPanelSynthesis detail={detail} panel={analystPanel} />
       </DetailSection>
 
@@ -412,8 +426,11 @@ export function UnderwritingDetailPanel({
         )}
       </DetailSection>
 
-      <DetailSection number="07" title="Bear / Base / Bull Scenarios">
-        <ScenarioModelPanel detail={detail} />
+      <DetailSection number="07" title="Financial Case">
+        <ScenarioModelPanel
+          detail={detail}
+          financialCase={article.financialCase}
+        />
       </DetailSection>
 
       <DetailSection number="08" title="Valuation and Return Analysis">
@@ -748,6 +765,14 @@ export function UnderwritingDetailPanel({
             value={String(detail.claimEdges.length)}
           />
         </details>
+        <details className="vsee-details vsee-scenario-audit-matrix">
+          <summary>
+            Complete scenario input matrix · {detail.scenarioModel.scenarios.length}
+            {" scenarios × "}
+            {detail.scenarioModel.scenarios[0]?.inputs.length ?? 0} inputs
+          </summary>
+          <ScenarioAuditMatrix detail={detail} />
+        </details>
         <FrameworkAppendix detail={detail} />
       </DetailSection>
 
@@ -847,8 +872,17 @@ function AnalystPanelSynthesis({
   detail: CandidateUnderwritingDetail;
   panel: ReturnType<typeof buildAnalystPanel>;
 }) {
+  const areasOfAgreement = [...new Set(
+    panel.groups.flatMap(({ strongestSupport }) => strongestSupport),
+  )].slice(0, 3);
+  const strongestCounterargument = panel.groups
+    .flatMap(({ strongestCounterevidence }) => strongestCounterevidence)[0];
+  const highestPriorityUnknown = panel.groups.flatMap(({ unknowns }) => unknowns)[0];
+  const principalDisagreement = detail.disagreements[0]?.explanation;
+  const panelConclusion = panel.groups[0]?.synthesizedView;
+
   return (
-    <div className="vsee-analyst-panel-summary">
+    <div className="vsee-framework-synthesis">
       <div className="vsee-analyst-panel-meta">
         <div>
           <span>ADVISORY PANEL</span>
@@ -864,60 +898,70 @@ function AnalystPanelSynthesis({
         <small>Public-source product synthesis · no endorsement</small>
       </div>
       <p>
-        Named public-source frameworks are grouped by the IC question they
-        illuminate. They remain advisory, independently persisted, and carry
+        Named public-source frameworks are synthesized by the IC question they
+        illuminate. They remain independently persisted, advisory, and carry
         zero formal decision weight.
       </p>
+      <section className="vsee-framework-editorial-lead">
+        <h4>Panel Conclusion</h4>
+        <p>
+          {panelConclusion
+            ?? "No applicable public-source framework conclusion was persisted for this memorandum."}
+        </p>
+        <dl>
+          <div>
+            <dt>Areas of Agreement</dt>
+            <dd>{areasOfAgreement.length
+              ? areasOfAgreement.join(" ")
+              : "No repeated affirmative support was persisted."}</dd>
+          </div>
+          <div>
+            <dt>Principal Disagreement</dt>
+            <dd>{principalDisagreement
+              ?? "No material framework disagreement was persisted."}</dd>
+          </div>
+          <div>
+            <dt>Strongest Counterargument</dt>
+            <dd>{strongestCounterargument
+              ?? "No material counterargument was persisted."}</dd>
+          </div>
+          <div>
+            <dt>IC Implication</dt>
+            <dd>{highestPriorityUnknown
+              ? `Resolve ${highestPriorityUnknown} through diligence; the persisted deterministic underwriting decision remains authoritative.`
+              : "Use the framework perspectives to prioritize diligence; the persisted deterministic underwriting decision remains authoritative."}</dd>
+          </div>
+        </dl>
+      </section>
       {panel.groups.length ? (
-        <div className="vsee-analyst-issue-grid">
-          {panel.groups.map((group) => (
-            <article className="vsee-analyst-issue" key={group.id}>
-              <header>
-                <div>
-                  <span>IC ISSUE</span>
-                  <h4>{group.title}</h4>
-                </div>
-                <b>{group.judgmentIds.length} views</b>
-              </header>
-              <p>{group.description}</p>
-              <Definition
-                label="Analysts"
-                value={group.participants.map(compactAnalystName).join(" · ")}
-              />
-              <Definition
-                label="Judgment range"
-                value={group.conclusions.map(humanize).join(" · ")}
-              />
-              <Definition
-                label="Strongest support"
-                value={group.strongestSupport[0] ?? "Unavailable"}
-              />
-              <Definition
-                label="Strongest counterevidence"
-                value={group.strongestCounterevidence[0] ?? "Unavailable"}
-              />
-              <Definition
-                label="Highest-priority unknown"
-                value={group.unknowns[0] ?? "Unavailable"}
-              />
-              <details className="vsee-details">
-                <summary>Open all persisted issue inputs</summary>
-                <Definition
-                  label="Judgment IDs"
-                  value={group.judgmentIds.join(" · ")}
-                />
-                <Definition
-                  label="All support"
-                  value={join(group.strongestSupport)}
-                />
-                <Definition
-                  label="All counterevidence"
-                  value={join(group.strongestCounterevidence)}
-                />
-                <Definition label="All unknowns" value={join(group.unknowns)} />
-              </details>
-            </article>
-          ))}
+        <div className="vsee-editorial-table-scroll">
+          <table className="vsee-framework-synthesis-table">
+            <thead>
+              <tr>
+                <th scope="col">IC Question</th>
+                <th scope="col">Representative Framework Lenses</th>
+                <th scope="col">Synthesized View</th>
+              </tr>
+            </thead>
+            <tbody>
+              {panel.groups.map((group) => (
+                <tr key={group.id}>
+                  <th scope="row" data-label="IC Question">
+                    <strong>{group.title}</strong>
+                    <small>{group.description}</small>
+                  </th>
+                  <td data-label="Representative Framework Lenses">
+                    <p>{group.participants.map(compactAnalystName).join(" · ")}</p>
+                    <small>
+                      {group.judgmentIds.length} views ·{" "}
+                      {group.conclusions.map(humanize).join(" · ")}
+                    </small>
+                  </td>
+                  <td data-label="Synthesized View">{group.synthesizedView}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : (
         <Unavailable copy="No active framework judgments are available for IC synthesis." />
@@ -1159,6 +1203,81 @@ function EvidenceConflictsPanel({
 }
 
 function ScenarioModelPanel({
+  detail,
+  financialCase,
+}: {
+  detail: CandidateUnderwritingDetail;
+  financialCase: ReturnType<
+    typeof buildUnderwritingArticleViewModel
+  >["financialCase"];
+}) {
+  const statusCopy = financialCase.status === "complete"
+    ? "All required scenario inputs are supported by persisted Facts or explicit Assumptions."
+    : financialCase.status === "partial"
+    ? `${financialCase.unavailableInputCount} of ${financialCase.totalInputCount} required scenario inputs cannot be calculated from current evidence.`
+    : `${financialCase.unavailableInputCount} of ${financialCase.totalInputCount} required scenario inputs are not supported by verified evidence. A complete Bear, Base, and Bull financial model cannot be produced without inventing inputs.`;
+
+  return (
+    <section className="vsee-financial-case">
+      <h4>Current modeling status</h4>
+      <p className={`vsee-model-status ${financialCase.status}`}>
+        <strong>{humanize(financialCase.status)}</strong>
+        {statusCopy}
+      </p>
+      <p>
+        This is an evidence limitation, not a system failure. Supported
+        portfolio actions remain visible, while valuation, MOIC, and IRR stay
+        constrained until the required evidence is obtained.
+      </p>
+      {financialCase.availableEvidence.length > 0 && (
+        <section className="vsee-known-financial-evidence">
+          <h4>Information currently available</h4>
+          <ul>
+            {financialCase.availableEvidence.map((value) => (
+              <li key={value}>{value}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {financialCase.requiredBeforeValuation.length > 0 && (
+        <>
+          <h4>Required Before Valuation</h4>
+          <div className="vsee-editorial-table-scroll">
+            <table className="vsee-valuation-diligence-table">
+              <thead>
+                <tr>
+                  <th scope="col">Priority</th>
+                  <th scope="col">Required Evidence</th>
+                  <th scope="col">Decision Use</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financialCase.requiredBeforeValuation.map((row) => (
+                  <tr key={row.id}>
+                    <td data-label="Priority">
+                      <strong>{humanize(row.priority)}</strong>
+                      <small>{humanize(row.readerState)}</small>
+                    </td>
+                    <th scope="row" data-label="Required Evidence">
+                      {row.requiredEvidence}
+                    </th>
+                    <td data-label="Decision Use">{row.decisionUse}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      <small className="vsee-audit-direction">
+        The complete scenario input matrix and exact unavailable reasons are
+        retained below in the audit appendix.
+      </small>
+    </section>
+  );
+}
+
+function ScenarioAuditMatrix({
   detail,
 }: {
   detail: CandidateUnderwritingDetail;

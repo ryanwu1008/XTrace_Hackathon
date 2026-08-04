@@ -228,3 +228,46 @@ even a minimal initial branch: the provider returned HTTP 500 and therefore no
 version or safe external test URL exists yet. The production project, data,
 credentials, and deployment were not read, modified, seeded, or used as a
 fallback.
+
+## 2026-08-04 editorial IC memo and typography acceptance
+
+This supplemental acceptance used a fresh disposable PostgreSQL database and
+the product's visible `WAKE AGENT & SCAN MARKET` action. It did not reuse a
+pre-generated current report. The immutable pinned report remained available
+as the 23-analysis historical artifact with baseline Report ID
+`report_16ae0004-45e3-4831-b1e3-5feabfed63ae`.
+
+- Browser-created live Report ID:
+  `report_f50af38d-060d-420d-b282-79cf62163887`.
+- Rendered live coverage: 30 eligible Deals, 30 Belief Change Checks, 4 belief
+  revisions, 4 monitor, 22 no material change, 0 unavailable analyses, 8
+  accepted public events, 30 recalled Deal memories, and 4 terminal Deep
+  Underwriting results.
+- Irregular opened as `Portfolio Risk Re-underwriting Memorandum` with the 14
+  approved information areas in order: Executive Conclusion, What Changed?,
+  Verified Company Snapshot, Investment Thesis Assessment, Investor Framework
+  Synthesis, Investment Committee Debate, Financial Case, Valuation and Return
+  Analysis, VSee IC Synthesis, Required Diligence, Status-aware Action Drafts,
+  Evidence Classification, Audit Appendix, and Final IC Position.
+- The main memo rendered zero individual scenario-input rows. Its Financial
+  Case rendered one explicit `not supportable` explanation, available evidence,
+  and seven grouped `Required Before Valuation` rows. The unchanged Audit
+  Appendix retained all 51 exact scenario input records.
+- Investor Framework Synthesis rendered 6 editorial IC-question rows, a Panel
+  Conclusion, Areas of Agreement, Principal Disagreement, Strongest
+  Counterargument, and IC Implication. The persisted panel remained advisory,
+  no-endorsement, and formal decision weight zero.
+- Desktop at 1280 × 720 measured: page copy 16px / 27.2px line height, memo
+  copy 16px / 27.2px, Synthesized View 16px / 26.4px, Decision Use 16px /
+  26.4px, navigation 12px, audit metadata 11px, and zero document or dialog
+  horizontal overflow.
+- Mobile at 390 × 844 measured: memo copy, Synthesized View, and Decision Use
+  remained 16px; navigation remained 11px; both editorial tables switched to
+  stacked block presentation; document and dialog horizontal overflow remained
+  zero.
+- The focused projection, route, renderer, fixture-safety, and UI suite passed
+  81/81 tests. TypeScript completed with zero errors, `git diff --check`
+  completed cleanly, and the vinext release build exited successfully.
+- All browser and Worker traffic remained on exact loopback endpoints backed by
+  disposable fixtures. No production endpoint, database, migration target, or
+  provider credential was read or modified.

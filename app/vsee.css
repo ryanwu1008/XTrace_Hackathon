@@ -323,3 +323,118 @@
 @media(max-width:1040px){.vsee-policy-summary{grid-template-columns:repeat(2,1fr)}.vsee-policy-summary>article:nth-child(3n){border-right:1px solid var(--line)}.vsee-policy-summary>article:nth-child(2n){border-right:0}.vsee-underwriting-section{grid-template-columns:170px 1fr}.vsee-underwriting-row{grid-template-columns:72px minmax(170px,1fr) 150px 120px}.vsee-underwriting-decision{grid-column:2/5}.vsee-underwriting-row>button{grid-column:4}.vsee-executive-memo-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.vsee-evidence-ledger,.vsee-impact-grid,.vsee-scenario-grid,.vsee-financial-grid,.vsee-then-now,.vsee-snapshot-grid,.vsee-ic-debate{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:980px){.vsee-policy-grid{grid-template-columns:1fr}.vsee-policy-versions>div>article{grid-template-columns:100px 130px 1fr}.vsee-policy-versions small{grid-column:1/-1}.vsee-underwriting-section{grid-template-columns:1fr}.vsee-underwriting-section>header{padding:18px 22px;border-right:0;border-bottom:1px solid var(--line)}.vsee-underwriting-section h3{font-size:22px}.vsee-upload-confirm-fields{grid-template-columns:1fr 1fr}.vsee-version-grid{grid-template-columns:1fr}.vsee-analyst-issue-grid{grid-template-columns:1fr}}
 @media(max-width:680px){.vsee-policy-summary,.vsee-impact-grid,.vsee-evidence-ledger,.vsee-scenario-grid,.vsee-financial-grid,.vsee-decision-dimensions,.vsee-action-list,.vsee-affected-company,.vsee-then-now,.vsee-snapshot-grid,.vsee-ic-debate,.vsee-evidence-classification{grid-template-columns:1fr}.vsee-policy-summary>article,.vsee-policy-summary>article:nth-child(3n){border-right:0}.vsee-policy-group dl>div{grid-template-columns:1fr;gap:6px}.vsee-policy-versions>div>article{grid-template-columns:1fr;gap:6px}.vsee-policy-dialog,.vsee-underwriting-dialog,.vsee-action-draft-dialog{width:100vw;max-width:none;max-height:calc(100dvh - 10px);margin:auto 0 0;border-width:1px 0 0}.vsee-policy-diff>article{grid-template-columns:1fr;gap:7px}.vsee-policy-diff b{text-align:left;transform:rotate(90deg)}.vsee-policy-dialog>div>footer,.vsee-upload-confirmation>footer,.vsee-action-draft-editor>footer{align-items:stretch;flex-direction:column}.vsee-policy-dialog footer p{margin:0}.vsee-upload-facts,.vsee-upload-confirm-fields,.vsee-upload-terminal-ids{grid-template-columns:1fr}.vsee-upload-facts>article{border-right:0}.vsee-underwriting-summary>header{flex-direction:column}.vsee-underwriting-status-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.vsee-underwriting-count{border-bottom:1px solid var(--line)}.vsee-underwriting-row{grid-template-columns:1fr;padding:18px}.vsee-underwriting-decision,.vsee-underwriting-row>button{grid-column:1}.vsee-underwriting-row>button{width:100%}.vsee-executive-memo-lead{grid-template-columns:1fr;gap:12px}.vsee-executive-memo-grid{grid-template-columns:1fr}.vsee-analyst-panel-meta{align-items:flex-start;flex-direction:column}.vsee-underwriting-detail>.vsee-evidence-context{grid-template-columns:1fr;padding:14px 18px}.vsee-underwriting-section>div{padding:18px}.vsee-underwriting-dialog-card>header,.vsee-action-draft-card>header{position:sticky;top:0;z-index:2;background:#0b0e0c}.vsee-action-draft-editor footer>div{display:grid;grid-template-columns:1fr}.vsee-action-draft-editor button{width:100%}}
+
+/* 2026-08-04 editorial IC memo and site-wide reading scale. */
+.vsee-shell{
+  --vsee-type-body:16px;
+  --vsee-type-body-small:15px;
+  --vsee-type-control:12px;
+  --vsee-type-meta:11px;
+}
+.vsee-shell :where(p,li){font-size:var(--vsee-type-body)!important;line-height:1.65}
+.vsee-shell :where(small,dt,time){font-size:var(--vsee-type-meta)!important;line-height:1.5}
+.vsee-shell :where(button,input,select,textarea){font-size:var(--vsee-type-control)!important;font-weight:650}
+.vsee-rail nav button span{font-size:12px!important;font-weight:700;letter-spacing:.065em}
+.vsee-eyebrow,.vsee-panel>header>span,.vsee-report>header>div>span,.vsee-status,.vsee-run-state,.vsee-confidence,.vsee-analysis-outcome,.vsee-analysis-badges>span,.vsee-sample-research-screening-label,.vsee-underwriting-status,.vsee-batch-state,.vsee-detail-meta>*{font-size:11px!important;line-height:1.4}
+.vsee-banner,.vsee-sandbox-warning,.vsee-source-actions>span,.vsee-loading,.vsee-unavailable{font-size:13px!important;line-height:1.55}
+.vsee-workflow-row>strong,.vsee-mini-result strong,.vsee-run-list strong,.vsee-run-list b,.vsee-import-assignments strong{font-size:15px}
+.vsee-search,.vsee-chat-form input{font-size:15px!important}
+.vsee-company-analysis-rows>button>p,.vsee-belief-assessment>p,.vsee-hard-gates>article p,.vsee-belief-assessment>dl dd,.vsee-underwriting-decision>span,.vsee-scan-progress-card header p,.vsee-reset-test-view-copy p{font-size:15px!important}
+.vsee-company-analysis-rows>button>div small,.vsee-company-analysis-rows>button>span:not(.vsee-analysis-outcome),.vsee-company-analysis-rows>button>b,.vsee-analysis-filters label>span,.vsee-analysis-filters select{font-size:11px!important}
+
+.vsee-memo-masthead{max-width:1100px;margin:0 auto;padding:54px 44px 46px;text-align:center;border-bottom:1px solid var(--line)}
+.vsee-memo-masthead>span{color:var(--lime);font:700 11px/1.4 var(--mono);letter-spacing:.16em}
+.vsee-memo-masthead h1{margin:16px 0 7px;color:#f0f3ef;font:400 clamp(38px,5vw,58px)/1.02 var(--serif);letter-spacing:-.035em}
+.vsee-memo-masthead>strong{display:block;color:#d5ddd7;font:400 clamp(20px,2.4vw,29px)/1.25 var(--serif)}
+.vsee-memo-masthead>p{margin:16px 0 0;color:#8d9690;font:650 12px/1.55 var(--mono)!important;letter-spacing:.035em}
+.vsee-underwriting-detail{padding-bottom:60px}
+.vsee-underwriting-section{display:block;max-width:1100px;margin:0 auto;border-bottom:1px solid var(--line)}
+.vsee-underwriting-section>header{padding:39px 44px 18px;border:0;background:transparent;display:flex;align-items:baseline;gap:17px}
+.vsee-underwriting-section>header>span{flex:0 0 auto;color:var(--lime);font:700 11px/1.4 var(--mono)}
+.vsee-underwriting-section h3{margin:0;font:400 clamp(26px,3vw,34px)/1.2 var(--serif)}
+.vsee-underwriting-section>div{min-width:0;padding:0 44px 44px}
+.vsee-underwriting-section>div>h4{margin:28px 0 12px;color:#bbc4be;font:700 12px/1.45 var(--mono);letter-spacing:.075em;text-transform:uppercase}
+.vsee-underwriting-section>div>p{max-width:900px;color:#c4ccc7;font-size:16px!important;line-height:1.7}
+.vsee-underwriting-section dl dd{font-size:15px;line-height:1.65}
+.vsee-executive-memo{gap:18px}
+.vsee-executive-memo-lead{border-width:1px 0;padding:23px 0;background:transparent}
+.vsee-executive-memo-grid{gap:0;border-top:1px solid var(--line);border-left:1px solid var(--line)}
+.vsee-executive-memo-grid>article{border:0;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:transparent;padding:18px}
+.vsee-executive-memo-blockers{padding:18px 0;border-width:1px 0;background:transparent}
+.vsee-executive-memo-blockers strong{font-size:15px}
+
+.vsee-framework-synthesis{display:grid;gap:28px}
+.vsee-analyst-panel-meta{padding:15px 0;border-width:1px 0;background:transparent}
+.vsee-analyst-panel-meta strong{font-size:23px}
+.vsee-framework-synthesis>p{max-width:900px;margin:0;color:#aeb7b1;font-size:16px!important;line-height:1.7}
+.vsee-framework-editorial-lead{padding:26px 0;border-top:1px solid rgba(199,255,74,.32);border-bottom:1px solid var(--line)}
+.vsee-framework-editorial-lead>h4{margin:0 0 12px;color:var(--lime);font:700 12px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.vsee-framework-editorial-lead>p{max-width:920px;margin:0 0 25px;color:#e0e6e1;font:400 20px/1.55 var(--serif)!important}
+.vsee-framework-editorial-lead dl{margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;border-top:1px solid var(--line);border-left:1px solid var(--line)}
+.vsee-framework-editorial-lead dl>div{min-width:0;padding:17px 18px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+.vsee-framework-editorial-lead dt{color:#89938d;font:700 11px/1.45 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.vsee-framework-editorial-lead dd{margin:8px 0 0;color:#c7cec9;font-size:16px;line-height:1.65}
+.vsee-editorial-table-scroll{max-width:100%;overflow-x:auto}
+.vsee-framework-synthesis-table{width:100%;table-layout:fixed;border-collapse:collapse;border-top:1px solid var(--line)}
+.vsee-framework-synthesis-table th:nth-child(1){width:22%}
+.vsee-framework-synthesis-table th:nth-child(2){width:25%}
+.vsee-framework-synthesis-table th:nth-child(3){width:53%}
+.vsee-framework-synthesis-table th,.vsee-framework-synthesis-table td{padding:19px 18px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);vertical-align:top;text-align:left;overflow-wrap:anywhere}
+.vsee-framework-synthesis-table th:last-child,.vsee-framework-synthesis-table td:last-child{border-right:0}
+.vsee-framework-synthesis-table thead th{color:#8d9791;font:700 11px/1.45 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.vsee-framework-synthesis-table tbody th strong{display:block;color:#e0e6e1;font:400 20px/1.25 var(--serif)}
+.vsee-framework-synthesis-table tbody th small{display:block;margin-top:9px;color:#89938d}
+.vsee-framework-synthesis-table tbody td{color:#c9d0cb;font-size:16px;line-height:1.65}
+.vsee-framework-synthesis-table tbody td p{margin:0;color:#d9dfda;font-size:15px!important;line-height:1.55}
+.vsee-framework-synthesis-table tbody td small{display:block;margin-top:9px;color:#849089}
+
+.vsee-financial-case{display:grid;gap:20px}
+.vsee-financial-case>h4{margin:9px 0 0;color:#bbc4be;font:700 12px/1.45 var(--mono);letter-spacing:.075em;text-transform:uppercase}
+.vsee-financial-case>p{max-width:900px;margin:0;color:#c4ccc7;font-size:16px!important;line-height:1.7}
+.vsee-model-status{padding:19px 21px;border-left:3px solid #d7a66e;background:rgba(215,166,110,.045)}
+.vsee-model-status.complete{border-left-color:var(--lime);background:rgba(199,255,74,.04)}
+.vsee-model-status>strong{display:block;margin-bottom:7px;color:#e6c28e;font:400 22px/1.2 var(--serif)}
+.vsee-model-status.complete>strong{color:var(--lime)}
+.vsee-known-financial-evidence{padding:19px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.vsee-known-financial-evidence h4{margin:0 0 12px;font:400 21px var(--serif)}
+.vsee-known-financial-evidence ul{margin:0;padding-left:21px;color:#c9d0cb}
+.vsee-valuation-diligence-table{width:100%;table-layout:fixed;border-collapse:collapse;border-top:1px solid var(--line)}
+.vsee-valuation-diligence-table th:nth-child(1){width:14%}
+.vsee-valuation-diligence-table th:nth-child(2){width:32%}
+.vsee-valuation-diligence-table th:nth-child(3){width:54%}
+.vsee-valuation-diligence-table th,.vsee-valuation-diligence-table td{padding:18px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);vertical-align:top;text-align:left;overflow-wrap:anywhere}
+.vsee-valuation-diligence-table th:last-child,.vsee-valuation-diligence-table td:last-child{border-right:0}
+.vsee-valuation-diligence-table thead th{color:#8d9791;font:700 11px/1.45 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.vsee-valuation-diligence-table tbody th{color:#e0e6e1;font:400 18px/1.45 var(--serif)}
+.vsee-valuation-diligence-table tbody td{color:#c1c9c4;font-size:16px;line-height:1.65}
+.vsee-valuation-diligence-table tbody td>strong,.vsee-valuation-diligence-table tbody td>small{display:block}
+.vsee-valuation-diligence-table tbody td>strong{color:#d7a66e;font-size:13px;text-transform:uppercase}
+.vsee-valuation-diligence-table tbody td>small{margin-top:7px;color:#85908a}
+.vsee-audit-direction{display:block;padding-top:5px;color:#8b958f}
+
+.vsee-scenario-audit-matrix{margin-top:18px}
+.vsee-scenario-model>p{color:#929c96;font-size:13px!important}
+.vsee-scenario-model-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:18px}
+.vsee-scenario-model-grid>section{min-width:0;border:1px solid var(--line)}
+.vsee-scenario-model-grid>section>h5{margin:0;padding:14px 16px;border-bottom:1px solid var(--line);color:var(--lime);font:400 21px var(--serif)}
+.vsee-scenario-model-grid article{min-width:0;padding:12px 15px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,.7fr);gap:7px 12px;align-items:baseline}
+.vsee-scenario-model-grid article:last-child{border-bottom:0}
+.vsee-scenario-model-grid article>span{color:#aab3ad;font-size:13px;overflow-wrap:anywhere}
+.vsee-scenario-model-grid article>strong{text-align:right;color:#d9dfda;font-size:13px;overflow-wrap:anywhere}
+.vsee-scenario-model-grid article>small,.vsee-scenario-model-grid article>.vsee-lineage-trace{grid-column:1/-1;color:#7f8983;overflow-wrap:anywhere}
+.vsee-scenario-model-grid article.unavailable>strong{color:#9a7f59}
+
+@media(max-width:1040px){
+  .vsee-scenario-model-grid{grid-template-columns:1fr}
+}
+@media(max-width:780px){.vsee-framework-synthesis-table,.vsee-framework-synthesis-table tbody,.vsee-valuation-diligence-table,.vsee-valuation-diligence-table tbody{display:block;width:100%}.vsee-framework-synthesis-table thead,.vsee-valuation-diligence-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}.vsee-framework-synthesis-table tr,.vsee-valuation-diligence-table tr{display:grid;width:100%;border-top:1px solid var(--line)}.vsee-framework-synthesis-table th,.vsee-framework-synthesis-table td,.vsee-valuation-diligence-table th,.vsee-valuation-diligence-table td{display:grid;width:auto!important;grid-template-columns:minmax(118px,.35fr) minmax(0,1fr);gap:15px;border-right:0;padding:16px 0}.vsee-framework-synthesis-table th::before,.vsee-framework-synthesis-table td::before,.vsee-valuation-diligence-table th::before,.vsee-valuation-diligence-table td::before{content:attr(data-label);color:#8d9791;font:700 11px/1.45 var(--mono);letter-spacing:.05em;text-transform:uppercase}.vsee-framework-synthesis-table td[data-label="Synthesized View"],.vsee-valuation-diligence-table td[data-label="Decision Use"]{display:block;padding:18px 0 23px}.vsee-framework-synthesis-table td[data-label="Synthesized View"]::before,.vsee-valuation-diligence-table td[data-label="Decision Use"]::before{display:block;margin-bottom:9px}.vsee-framework-editorial-lead dl{grid-template-columns:1fr}.vsee-memo-masthead{padding:42px 24px 34px}.vsee-underwriting-section>header{padding:32px 24px 16px}.vsee-underwriting-section>div{padding:0 24px 36px}}
+@media(max-width:680px){
+  .vsee-shell{--vsee-type-body:15px;--vsee-type-body-small:15px;--vsee-type-control:12px;--vsee-type-meta:11px}
+  .vsee-rail nav button>span{font-size:11px!important}
+  .vsee-underwriting-section>header{align-items:flex-start}
+  .vsee-underwriting-section h3{font-size:27px}
+  .vsee-underwriting-section>div{padding:0 18px 32px}
+  .vsee-memo-masthead{padding:35px 18px 30px}
+  .vsee-executive-memo-lead{grid-template-columns:1fr}
+  .vsee-framework-synthesis-table th,.vsee-framework-synthesis-table td,.vsee-valuation-diligence-table th,.vsee-valuation-diligence-table td{grid-template-columns:1fr;gap:7px}
+}

@@ -468,7 +468,7 @@ test("new-run summary presents all queue statuses and a sixth priority without s
   );
 });
 
-test("renders the exact 3 by 17 scenario model, full evidence state, premium lineage, and invested-negative action", () => {
+test("keeps the exact 3 by 17 scenario matrix in audit while the main memo consolidates missing inputs", () => {
   const props = {
     companyName: "Invested Risk Co",
     analysis: analysisFixture(),
@@ -479,8 +479,18 @@ test("renders the exact 3 by 17 scenario model, full evidence state, premium lin
     evidenceContext: PINNED_CONTEXT,
   };
   const html = renderToStaticMarkup(<UnderwritingDetailPanel {...props} />);
+  const auditIndex = html.indexOf("Audit Appendix");
+  const mainMemo = html.slice(0, auditIndex);
+  const auditAppendix = html.slice(auditIndex);
 
-  assert.equal(html.match(/data-scenario-input=/g)?.length, 51);
+  assert.equal(mainMemo.match(/data-scenario-input=/g)?.length ?? 0, 0);
+  assert.equal(auditAppendix.match(/data-scenario-input=/g)?.length, 51);
+  assert.match(mainMemo, /Current modeling status/);
+  assert.match(mainMemo, /45 of 51 required scenario inputs/);
+  assert.match(mainMemo, /Required Before Valuation/);
+  assert.match(mainMemo, /Required Evidence/);
+  assert.match(mainMemo, /Decision Use/);
+  assert.match(auditAppendix, /Complete scenario input matrix/);
   assert.match(html, /Formula policy · formula-policy-v9/);
   assert.match(html, /Probability weighted · Yes/);
   assert.match(html, /Fact · fact_ask/);
@@ -525,7 +535,7 @@ test("renders the exact 3 by 17 scenario model, full evidence state, premium lin
   assert.match(html, /Internal memo · Internal · Internal/);
   assert.match(html, /Latest ARR/);
   assert.match(html, /Could lower the current decision ceiling/);
-  assert.match(html, /Executive Investment Snapshot/);
+  assert.match(html, /Executive Conclusion/);
   assert.match(html, /VSee IC Synthesis/);
   assert.match(html, /Decision ceiling · Advance/);
   assert.match(html, /Critical missing evidence · net_retention/);
@@ -543,13 +553,13 @@ test("Deep Underwriting renders the approved complete IC article reading order",
   />);
 
   const headings = [
-    "Executive Investment Snapshot",
+    "Executive Conclusion",
     "What Changed?",
     "Verified Company Snapshot",
-    "Company and Market Assessment",
-    "Named Analyst Panel",
+    "Investment Thesis Assessment",
+    "Investor Framework Synthesis",
     "Investment Committee Debate",
-    "Bear / Base / Bull Scenarios",
+    "Financial Case",
     "Valuation and Return Analysis",
     "VSee IC Synthesis",
     "Required Diligence",
@@ -573,6 +583,76 @@ test("Deep Underwriting renders the approved complete IC article reading order",
   assert.match(html, /Conflicts/);
   assert.match(html, /Reported Valuation — 20000000 USD · corroborated/);
   assert.match(html, /Arr — 5000000 USD · reported/);
+  assert.match(html, /Portfolio Risk Re-underwriting Memorandum/);
+});
+
+test("Investor Framework Synthesis renders an editorial table instead of issue cards", () => {
+  const detail = detailFixture();
+  detail.judgments = [{
+    id: "judgment_marks",
+    frameworkCardId: "howard_marks_most_important_thing",
+    frameworkVersion: "1.0.0",
+    applicability: "applicable",
+    conclusion: "negative",
+    strongestSupport: "Operational exposure is material to the portfolio thesis.",
+    strongestCounterargument: "The incident may be remediable.",
+    supportEvidenceItemIds: ["fact_ask"],
+    counterEvidenceItemIds: [],
+    unusedEvidenceItemIds: [],
+    unknowns: ["Independent remediation evidence"],
+    limitations: ["Public evidence only"],
+    confidence: {
+      sourceReliability: "high",
+      evidenceStrength: "medium",
+      evidenceCoverage: "medium",
+      applicability: "high",
+      judgment: "medium",
+    },
+    claimEdges: [],
+    frameworkMetadata: {
+      packId: "howard_marks_most_important_thing_public_frameworks_v0_1",
+      packName: "Howard Marks / The Most Important Thing Public Frameworks — Research Draft",
+      packVersion: "0.1.0",
+      sourceCatalogId: "howard_marks_sources",
+      researchCutoff: "2026-07-28",
+      componentCardIds: [],
+      components: [],
+      sources: [],
+      formalDecisionWeight: "0",
+    },
+    fingerprint: "sha256:judgment",
+  } as CandidateUnderwritingDetail["judgments"][number]];
+  detail.disagreements = [{
+    id: "disagreement_1",
+    leftJudgmentId: "judgment_marks",
+    rightJudgmentId: "judgment_other",
+    topic: "company_quality_vs_price",
+    explanation: "Risk urgency conflicts with incomplete remediation evidence.",
+    evidenceItemIds: ["fact_ask"],
+  }];
+
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Invested Risk Co"
+    analysis={analysisFixture()}
+    detail={detail}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+
+  assert.match(html, /Panel Conclusion/);
+  assert.match(html, /Areas of Agreement/);
+  assert.match(html, /Principal Disagreement/);
+  assert.match(html, /Strongest Counterargument/);
+  assert.match(html, /IC Implication/);
+  assert.match(html, /IC Question/);
+  assert.match(html, /Representative Framework Lenses/);
+  assert.match(html, /Synthesized View/);
+  assert.match(html, /data-label="IC Question"/);
+  assert.match(html, /data-label="Representative Framework Lenses"/);
+  assert.match(html, /data-label="Synthesized View"/);
+  assert.match(html, /Operational exposure is material to the portfolio thesis/);
+  assert.doesNotMatch(html, /vsee-analyst-issue-grid/);
 });
 
 test("Deep Underwriting keeps pairwise framework noise out of the main IC reading flow", () => {
