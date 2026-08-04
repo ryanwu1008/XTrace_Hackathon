@@ -866,9 +866,18 @@ test("report detail separates its evidence status and readable window from immut
     canSaveActionDrafts: false,
   }));
 
-  assert.match(html, /LIVE EVIDENCE[\s\S]*Evidence window/);
-  assert.match(html, /Jul 19, 2026 – Aug 1, 2026/);
-  assert.doesNotMatch(html, /2026-08-01T23:59:59\.999Z/);
+  const auditMarker = "<summary>Evidence context and immutable identity</summary>";
+  const auditStart = html.indexOf(auditMarker);
+  assert.notEqual(auditStart, -1);
+  const primary = html.slice(0, auditStart);
+  const audit = html.slice(auditStart);
+
+  assert.match(primary, /LIVE EVIDENCE[\s\S]*Evidence window/);
+  assert.match(primary, /Jul 19, 2026 – Aug 1, 2026/);
+  assert.doesNotMatch(primary, /2026-08-01T23:59:59\.999Z/);
+  assert.match(audit, /Anchor timestamp[\s\S]*2026-08-01T23:59:59\.000-07:00/);
+  assert.match(audit, /Evidence window start timestamp[\s\S]*2026-07-19T00:00:00\.000-07:00/);
+  assert.match(audit, /Evidence window end timestamp[\s\S]*2026-08-01T23:59:59\.000-07:00/);
   assert.match(html, /Not applicable to live evidence/);
   assert.match(html, /Context fingerprint/);
   assert.match(html, new RegExp(CONTEXT_FINGERPRINT));

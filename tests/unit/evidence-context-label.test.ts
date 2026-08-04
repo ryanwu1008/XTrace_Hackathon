@@ -12,9 +12,9 @@ test("UI evidence labels present a readable evidence window for live, pinned rep
     state: "current" as const,
     schemaVersion: "run-evidence-context-v1" as const,
     windowDays: 14 as const,
-    anchorAt: "2026-08-01T23:59:59.999Z",
-    windowStartAt: "2026-07-18T00:00:00.000Z",
-    windowEndAt: "2026-08-01T23:59:59.999Z",
+    anchorAt: "2026-08-02T06:59:59.999Z",
+    windowStartAt: "2026-07-18T07:00:00.000Z",
+    windowEndAt: "2026-08-02T06:59:59.999Z",
     windowTimezone: "America/Los_Angeles",
     contextFingerprint: `sha256:${"1".repeat(64)}`,
   };
@@ -27,6 +27,14 @@ test("UI evidence labels present a readable evidence window for live, pinned rep
   assert.equal(
     formatEvidenceWindow(liveContext),
     "Jul 18, 2026 – Aug 1, 2026",
+  );
+  assert.equal(
+    formatEvidenceWindow({
+      windowStartAt: "2026-07-19T07:00:00.000Z",
+      windowEndAt: "2026-08-02T06:59:59.999Z",
+      windowTimezone: "America/Los_Angeles",
+    }),
+    "Jul 19, 2026 – Aug 1, 2026",
   );
   assert.equal(
     evidenceContextLabel(liveContext),

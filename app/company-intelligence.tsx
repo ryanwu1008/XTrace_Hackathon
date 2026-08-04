@@ -111,16 +111,13 @@ export function formatEvidenceWindow(input: {
   windowEndAt: string;
   windowTimezone: string;
 }): string {
-  // Evidence windows are sealed calendar boundaries. Format their recorded
-  // calendar dates without silently shifting either boundary for the viewer's
-  // local timezone; the report also presents the sealed IANA timezone.
-  const formatBoundary = (value: string) => formatTemporalForDisplay({
-    value: value.slice(0, 10),
-    dateOnly: { month: "short", day: "numeric", year: "numeric" },
-    timestamp: { month: "short", day: "numeric", year: "numeric" },
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: input.windowTimezone,
+    month: "short",
+    day: "numeric",
+    year: "numeric",
   });
-  void input.windowTimezone;
-  return `${formatBoundary(input.windowStartAt)} – ${formatBoundary(input.windowEndAt)}`;
+  return `${formatter.format(new Date(input.windowStartAt))} – ${formatter.format(new Date(input.windowEndAt))}`;
 }
 
 // Grounded text is assembled from claim sentences, so the same source
@@ -378,11 +375,20 @@ function ReportEvidenceContextDetail({
         <summary>Evidence context and immutable identity</summary>
         <Definition label="Evidence mode" value={context.evidenceMode} />
         <Definition label="Anchor" value={formatReportDate(context.anchorAt)} />
+        <Definition label="Anchor timestamp" value={context.anchorAt} />
         <Definition
           label="Evidence window"
           value={evidenceWindow}
         />
         <Definition label="Evidence timezone" value={context.windowTimezone} />
+        <Definition
+          label="Evidence window start timestamp"
+          value={context.windowStartAt}
+        />
+        <Definition
+          label="Evidence window end timestamp"
+          value={context.windowEndAt}
+        />
         <Definition label="Accepted events" value={String(context.eventCount)} />
         <Definition
           label="Snapshot ID"
