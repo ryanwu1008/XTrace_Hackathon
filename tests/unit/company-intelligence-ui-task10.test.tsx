@@ -908,6 +908,25 @@ test("report detail separates its evidence status and readable window from immut
   assert.match(multiEventHtml.slice(0, multiEventAuditStart), /4 accepted events/);
 });
 
+test("legacy report detail uses the structured evidence-context header", () => {
+  const report = reportFixture(analysisFixture());
+  report.evidenceContext = { state: "legacy_unbound" };
+  const html = renderToStaticMarkup(createElement(CompanyIntelligenceReport, {
+    report,
+    focused: true,
+    allowDraft: false,
+    onDraft() {},
+    showDemoProfiles: false,
+    underwritingEnabled: false,
+    canSaveActionDrafts: false,
+  }));
+
+  assert.match(
+    html,
+    /<section class="vsee-evidence-context-detail" role="note"><header><strong>LEGACY REPORT<\/strong><span class="vsee-evidence-context-window"><span>Evidence context<\/span><b>Unavailable<\/b><\/span><\/header><\/section>/,
+  );
+});
+
 test("product Deal history keeps the permanent Sample decision record label", () => {
   const html = renderToStaticMarkup(createElement(DealsView, {
     deals: [{

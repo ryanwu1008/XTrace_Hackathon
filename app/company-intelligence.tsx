@@ -349,8 +349,13 @@ function ReportEvidenceContextDetail({
   if (!context || context.state === "legacy_unbound") {
     return (
       <section className="vsee-evidence-context-detail" role="note">
-        <strong>LEGACY REPORT</strong>
-        <span>Evidence context unavailable</span>
+        <header>
+          <strong>LEGACY REPORT</strong>
+          <span className="vsee-evidence-context-window">
+            <span>Evidence context</span>
+            <b>Unavailable</b>
+          </span>
+        </header>
       </section>
     );
   }
