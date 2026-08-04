@@ -386,6 +386,31 @@ test("reports render the complete company intelligence hierarchy", async () => {
   assert.match(page, /CompanyIntelligenceReport/);
 });
 
+test("belief-change score and hard-gate details retain a readable report layout", async () => {
+  const css = await readFile(cssPath, "utf8");
+
+  assert.match(
+    css,
+    /\.vsee-belief-assessment\{[^}]*display:grid[^}]*gap:/,
+    "the assessment needs spacing instead of concatenated browser-default text",
+  );
+  assert.match(
+    css,
+    /\.vsee-score-breakdown\{[^}]*display:grid[^}]*grid-template-columns:/,
+    "score dimensions need a bounded responsive grid",
+  );
+  assert.match(
+    css,
+    /\.vsee-hard-gates>article\{[^}]*display:grid[^}]*border:/,
+    "each persisted hard gate needs a distinct readable card",
+  );
+  assert.match(
+    css,
+    /\.vsee-priority-grid li footer\{[^}]*display:flex[^}]*flex-wrap:wrap/,
+    "long source-revision links need to wrap instead of running together",
+  );
+});
+
 test("latest intelligence uses neutral changed-belief and priority wording", async () => {
   const page = await readFile(pagePath, "utf8");
 
