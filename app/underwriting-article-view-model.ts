@@ -1,5 +1,7 @@
 import type { CandidateUnderwritingDetail } from "../lib/underwriting/read-model";
 import type { ScenarioInputField } from "../lib/contracts/underwriting";
+import type { BeliefAction } from "../lib/contracts/domain";
+import { renderRecommendedNextMove } from "../lib/reports/action-policy";
 
 type ArticleAnalysisContext = {
   dealStatus: string;
@@ -11,16 +13,31 @@ type ArticleAnalysisContext = {
   };
   beliefAssessment?: {
     direction: string;
-    actions: Array<{
-      kind: string;
-      scope: string;
-      priority: string;
-    }>;
+    actions: BeliefAction[];
   };
 };
 
+type EvidencePackAssumption = CandidateUnderwritingDetail["evidencePack"]["assumptions"][number];
+
+export interface IcDecisionAskPresentation {
+  summary: string;
+  actionLines: string[];
+  scopes: string[];
+  priorities: string[];
+  visibility: string[];
+}
+
+export interface ModelingAssumptionsPresentation {
+  scenarioPricing: Array<{
+    scenario: "bear" | "base" | "bull";
+    displayValue: string;
+  }>;
+  remaining: EvidencePackAssumption[];
+}
+
 export interface UnderwritingArticleViewModel {
-  decisionAsk: string;
+  decisionAsk: IcDecisionAskPresentation;
+  modelingAssumptions: ModelingAssumptionsPresentation;
   thenNow: {
     then: string;
     now: string;
@@ -78,6 +95,7 @@ export function buildUnderwritingArticleViewModel(input: {
     && judgment.conclusion !== "abstain"
   );
   const primaryAction = input.analysis?.beliefAssessment?.actions[0];
+  const actions = input.analysis?.beliefAssessment?.actions ?? [];
   const nextAction = primaryAction
     ? [primaryAction.kind, primaryAction.scope, primaryAction.priority].join(" · ")
     : "Unavailable";
@@ -94,11 +112,44 @@ export function buildUnderwritingArticleViewModel(input: {
   const missingScenarioFields = new Set(
     unavailableScenarioInputs.map(({ field }) => field),
   );
+  const scenarioOrder = ["bear", "base", "bull"] as const;
+  const scenarioPricing = scenarioOrder.flatMap((scenario) => {
+    const assumption = input.detail.evidencePack.assumptions.find(
+      (candidate) =>
+        candidate.field === "scenario_price_multiplier"
+        && candidate.scenario === scenario,
+    );
+    return assumption
+      ? [{ scenario, displayValue: displayScenarioMultiplier(assumption.value) }]
+      : [];
+  });
 
   return {
-    decisionAsk: primaryAction
-      ? `Authorize ${primaryAction.kind.replaceAll("_", " ")} as a ${primaryAction.priority} priority ${primaryAction.scope} action.`
-      : "Unavailable — no status-aware action was persisted.",
+    decisionAsk: {
+      summary: actions.length
+        ? actions.length === 1
+          ? "Approve the following internal action."
+          : `Approve ${actions.length} coordinated internal actions.`
+        : "Unavailable — no status-aware action was persisted.",
+      actionLines: actions.map((action) =>
+        renderRecommendedNextMove([action])
+      ),
+      scopes: unique(actions.map(({ scope }) =>
+        `${titleCase(scope)} scope`
+      )),
+      priorities: unique(actions.map(({ priority }) =>
+        `${titleCase(priority)} priority`
+      )),
+      visibility: unique(actions.map(({ visibility }) =>
+        visibility === "internal_only" ? "Internal only" : titleCase(visibility)
+      )),
+    },
+    modelingAssumptions: {
+      scenarioPricing,
+      remaining: input.detail.evidencePack.assumptions.filter(
+        ({ field }) => field !== "scenario_price_multiplier",
+      ),
+    },
     thenNow: {
       then,
       now,
@@ -164,6 +215,21 @@ export function buildUnderwritingArticleViewModel(input: {
       nextAction,
     },
   };
+}
+
+function displayScenarioMultiplier(value: string): string {
+  const multiplier = Number(value);
+  if (!Number.isFinite(multiplier)) return `${value}×`;
+  if (multiplier === 1) return `${multiplier.toFixed(2)}× (Base)`;
+  const percentage = Number(((multiplier - 1) * 100).toFixed(2));
+  const sign = percentage < 0 ? "−" : "+";
+  return `${multiplier.toFixed(2)}× (${sign}${Math.abs(percentage)}%)`;
+}
+
+function titleCase(value: string): string {
+  return value
+    .replaceAll("_", " ")
+    .replace(/\b\w/gu, (character) => character.toUpperCase());
 }
 
 function displayFact(

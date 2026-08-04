@@ -263,6 +263,50 @@ function detailFixture(): CandidateUnderwritingDetail {
         provenanceOrigin: "recommended_policy",
         sensitivity: "high",
         requiresConfirmation: true,
+      }, {
+        id: "assumption_price_bear",
+        field: "scenario_price_multiplier",
+        value: "0.75",
+        unit: "decimal",
+        scenario: "bear",
+        rationale: "Bear scenario multiplier from the pinned Fund Policy.",
+        inputRefIds: ["fund_policy:workspace_demo:v1"],
+        provenanceOrigin: "recommended_policy",
+        sensitivity: "high",
+        requiresConfirmation: false,
+      }, {
+        id: "assumption_price_base",
+        field: "scenario_price_multiplier",
+        value: "1",
+        unit: "decimal",
+        scenario: "base",
+        rationale: "Base scenario multiplier from the pinned Fund Policy.",
+        inputRefIds: ["fund_policy:workspace_demo:v1"],
+        provenanceOrigin: "recommended_policy",
+        sensitivity: "high",
+        requiresConfirmation: false,
+      }, {
+        id: "assumption_price_bull",
+        field: "scenario_price_multiplier",
+        value: "1.25",
+        unit: "decimal",
+        scenario: "bull",
+        rationale: "Bull scenario multiplier from the pinned Fund Policy.",
+        inputRefIds: ["fund_policy:workspace_demo:v1"],
+        provenanceOrigin: "recommended_policy",
+        sensitivity: "high",
+        requiresConfirmation: false,
+      }, {
+        id: "assumption_security_type",
+        field: "security_type",
+        value: "preferred",
+        unit: null,
+        scenario: "all",
+        rationale: "Placeholder security type pending transaction documents.",
+        inputRefIds: ["company:deal_invested_negative:terms"],
+        provenanceOrigin: "recommended_policy",
+        sensitivity: "medium",
+        requiresConfirmation: true,
       }],
       conflicts: [{
         id: "conflict_arr",
@@ -561,6 +605,47 @@ test("keeps the exact 3 by 17 scenario matrix in audit while the main memo conso
   assert.match(html, /VSee IC Synthesis/);
   assert.match(html, /Decision ceiling · Advance/);
   assert.match(html, /Critical missing evidence · net_retention/);
+});
+
+test("presents modeling assumptions and the complete IC approval request without transport metadata in the memo", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Invested Risk Co"
+    analysis={analysisFixture()}
+    detail={detailFixture()}
+    drafts={[draftFixture()]}
+    canSaveDrafts={true}
+    onEditDraft={() => {}}
+    evidenceContext={PINNED_CONTEXT}
+  />);
+  const evidenceRegisterIndex = html.indexOf("Evidence and Source Register");
+  const auditIndex = html.indexOf("Audit Appendix");
+  assert.ok(evidenceRegisterIndex > 0);
+  assert.ok(auditIndex > evidenceRegisterIndex);
+  const mainMemo = html.slice(0, evidenceRegisterIndex);
+  const auditAppendix = html.slice(auditIndex);
+
+  assert.match(mainMemo, /Modeling Assumptions/);
+  assert.match(mainMemo, /Bear[\s\S]*0\.75× \(−25%\)/);
+  assert.match(mainMemo, /Base[\s\S]*1\.00× \(Base\)/);
+  assert.match(mainMemo, /Bull[\s\S]*1\.25× \(\+25%\)/);
+  assert.match(mainMemo, /Preferred equity[\s\S]*Requires confirmation/);
+  assert.doesNotMatch(
+    mainMemo,
+    /Changed assumptions|0\.75 decimal|fund_policy:|assumption_price_bear/i,
+  );
+  assert.match(
+    auditAppendix,
+    /Persisted assumption inventory[\s\S]*assumption_price_bear[\s\S]*fund_policy:/,
+  );
+
+  assert.match(mainMemo, /IC APPROVAL REQUEST/);
+  assert.match(mainMemo, /Pause follow-on investment activity/);
+  assert.match(mainMemo, /Begin an internal portfolio-risk review/);
+  assert.match(
+    mainMemo,
+    /Portfolio scope[\s\S]*High priority[\s\S]*Internal only/,
+  );
+  assert.doesNotMatch(mainMemo, /<button[^>]*>\s*(?:SEND|PUBLISH)/i);
 });
 
 test("Deep Underwriting renders the approved complete IC article reading order", () => {
@@ -889,7 +974,7 @@ test("renders an explicit unavailable state for every empty artifact area and le
   for (const copy of [
     "Evidence context unavailable",
     "No persisted Evidence Pack Facts are available",
-    "No changed assumptions were persisted",
+    "No modeling assumptions were persisted",
     "No persisted framework judgments are available",
     "No framework disagreements were persisted",
     "No persisted calculations are available",

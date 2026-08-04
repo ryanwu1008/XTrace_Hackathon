@@ -614,6 +614,174 @@
   gap:18px;
 }
 
+.vsee-ic-approval-request{
+  margin-top:24px;
+  padding:24px 0;
+  border-top:1px solid rgba(199,255,74,.42);
+  border-bottom:1px solid rgba(199,255,74,.25);
+  display:grid;
+  gap:14px;
+}
+.vsee-ic-approval-request>span{
+  color:var(--lime);
+  font:700 12px/1.4 var(--mono);
+  letter-spacing:.09em;
+}
+.vsee-ic-approval-request>strong{
+  color:#e4e9e5;
+  font:400 24px/1.3 var(--serif);
+}
+.vsee-ic-approval-request ol{
+  margin:0;
+  padding-left:24px;
+  display:grid;
+  gap:9px;
+  color:#cbd2cd;
+}
+.vsee-ic-approval-request li{
+  padding-left:5px;
+  font-size:16px;
+  line-height:1.65;
+}
+.vsee-ic-approval-metadata{display:flex;flex-wrap:wrap;gap:8px}
+.vsee-ic-approval-metadata>span{
+  padding:7px 9px;
+  border:1px solid #3d4841;
+  color:#aab3ad;
+  font:700 11px/1.35 var(--mono);
+  text-transform:uppercase;
+}
+.vsee-ic-approval-request>small{color:#86918b}
+
+.vsee-modeling-assumptions{margin-top:28px;display:grid;gap:20px}
+.vsee-modeling-assumptions>h4{
+  margin:0;
+  color:#bbc4be;
+  font:700 12px/1.45 var(--mono);
+  letter-spacing:.075em;
+  text-transform:uppercase;
+}
+.vsee-scenario-pricing-comparison{
+  padding:22px 0 0;
+  border-top:1px solid var(--line);
+  display:grid;
+  grid-template-columns:minmax(240px,.75fr) minmax(0,1.25fr);
+  gap:28px;
+  align-items:end;
+}
+.vsee-scenario-pricing-comparison>header{min-width:0}
+.vsee-scenario-pricing-comparison>header>span,
+.vsee-modeling-inputs>span{
+  display:block;
+  color:#89938d;
+  font:700 11px/1.4 var(--mono);
+  letter-spacing:.07em;
+}
+.vsee-scenario-pricing-comparison>header>strong{
+  display:block;
+  margin-top:8px;
+  color:#dfe5e0;
+  font:400 22px/1.35 var(--serif);
+}
+.vsee-scenario-pricing-comparison>header>p{
+  margin:10px 0 0;
+  color:#99a39d;
+  font-size:14px!important;
+  line-height:1.6;
+}
+.vsee-scenario-pricing-comparison>dl{
+  min-width:0;
+  margin:0;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  border-top:1px solid var(--line);
+  border-left:1px solid var(--line);
+}
+.vsee-scenario-pricing-comparison>dl>div{
+  min-width:0;
+  padding:16px;
+  border-right:1px solid var(--line);
+  border-bottom:1px solid var(--line);
+}
+.vsee-scenario-pricing-comparison dt{
+  color:#929c96;
+  font:700 11px/1.4 var(--mono);
+  text-transform:uppercase;
+}
+.vsee-scenario-pricing-comparison dd{
+  margin:8px 0 0;
+  color:#e0e6e1;
+  font:400 20px/1.3 var(--serif);
+  white-space:nowrap;
+}
+.vsee-modeling-inputs{
+  padding-top:20px;
+  border-top:1px solid var(--line);
+  display:grid;
+}
+.vsee-modeling-inputs>article{
+  min-width:0;
+  padding:17px 0;
+  border-bottom:1px solid var(--line);
+  display:grid;
+  grid-template-columns:minmax(200px,.6fr) minmax(0,1.4fr);
+  gap:24px;
+  align-items:center;
+}
+.vsee-modeling-inputs article small{
+  display:block;
+  color:#89938d;
+  font:700 11px/1.4 var(--mono);
+  text-transform:uppercase;
+}
+.vsee-modeling-inputs article strong{
+  display:block;
+  margin-top:6px;
+  color:#dce2dd;
+  font:400 21px/1.3 var(--serif);
+  overflow-wrap:anywhere;
+}
+.vsee-modeling-input-labels{display:flex;flex-wrap:wrap;gap:8px}
+.vsee-modeling-input-labels>span{
+  padding:6px 8px;
+  border:1px solid #4b554f;
+  color:#aeb7b1;
+  font:700 11px/1.4 var(--mono);
+}
+.vsee-modeling-input-labels>span:nth-child(2){
+  border-color:rgba(215,166,110,.5);
+  color:#d7a66e;
+}
+.vsee-assumption-audit-inventory>div{
+  display:grid;
+  gap:12px;
+  margin-bottom:18px;
+}
+.vsee-assumption-audit-inventory article{
+  min-width:0;
+  padding:14px;
+  border:1px solid var(--line);
+}
+.vsee-assumption-audit-inventory article dl{
+  margin:0;
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:12px 16px;
+}
+.vsee-assumption-audit-inventory article dl>div{min-width:0}
+.vsee-assumption-audit-inventory article dl>div.wide{grid-column:span 2}
+.vsee-assumption-audit-inventory dt{
+  color:#7f8983;
+  font:700 10px/1.4 var(--mono);
+  text-transform:uppercase;
+}
+.vsee-assumption-audit-inventory dd{
+  margin:5px 0 0;
+  color:#aeb7b1;
+  font:500 12px/1.5 var(--mono);
+  overflow-wrap:anywhere;
+}
+
 @media(max-width:680px){
   .vsee-evidence-ledger>article{grid-template-columns:1fr;gap:10px}
   .vsee-evidence-ledger-heading{grid-column:1;grid-row:auto}
@@ -625,4 +793,8 @@
   .vsee-action-draft-card-summary>footer{align-items:flex-start;flex-direction:column}
   .vsee-action-draft-card-summary>header>small{text-align:left}
   .vsee-action-draft-audit dl{grid-template-columns:1fr}
+  .vsee-scenario-pricing-comparison{grid-template-columns:1fr;gap:18px}
+  .vsee-modeling-inputs>article{grid-template-columns:1fr;gap:12px}
+  .vsee-assumption-audit-inventory article dl{grid-template-columns:1fr}
+  .vsee-assumption-audit-inventory article dl>div.wide{grid-column:auto}
 }

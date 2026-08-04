@@ -169,7 +169,7 @@ export function UnderwritingDetailPanel({
       </header>
       <DetailSection number="01" title="Executive Conclusion">
         <ExecutiveDecisionMemo analysis={analysis} detail={detail} />
-        <Definition label="IC Decision Ask" value={article.decisionAsk} />
+        <IcApprovalRequest decisionAsk={article.decisionAsk} />
       </DetailSection>
 
       <DetailSection number="02" title="What Changed?">
@@ -275,29 +275,9 @@ export function UnderwritingDetailPanel({
             values={["Unavailable — no impact horizon was persisted"]}
           />
         </div>
-        <h4>Changed assumptions</h4>
-        {detail.evidencePack.assumptions.length ? (
-          <div className="vsee-assumption-list">
-            {detail.evidencePack.assumptions.map((assumption) => (
-              <article key={assumption.id}>
-                <span>Assumption · {assumption.scenario}</span>
-                <strong>{humanize(assumption.field)}</strong>
-                <p>
-                  {assumption.value}{assumption.unit
-                    ? ` ${assumption.unit}`
-                    : ""}
-                </p>
-                <small>{assumption.rationale}</small>
-                <small>
-                  Persisted input references ·{" "}
-                  {assumption.inputRefIds.length
-                    ? assumption.inputRefIds.join(" · ")
-                    : "None"}
-                </small>
-              </article>
-            ))}
-          </div>
-        ) : <Unavailable copy="No changed assumptions were persisted." />}
+        <ModelingAssumptions
+          assumptions={article.modelingAssumptions}
+        />
         <EvidenceCoveragePanel detail={detail} />
         <EvidenceConflictsPanel detail={detail} />
         <h4>Deal Memory · Then vs Now</h4>
@@ -856,10 +836,174 @@ export function UnderwritingDetailPanel({
           </summary>
           <ScenarioAuditMatrix detail={detail} />
         </details>
+        <AssumptionAuditInventory
+          assumptions={detail.evidencePack.assumptions}
+        />
         <FrameworkAppendix detail={detail} />
       </DetailSection>
     </div>
   );
+}
+
+function IcApprovalRequest({
+  decisionAsk,
+}: {
+  decisionAsk: ReturnType<
+    typeof buildUnderwritingArticleViewModel
+  >["decisionAsk"];
+}) {
+  const metadata = [
+    ...decisionAsk.scopes,
+    ...decisionAsk.priorities,
+    ...decisionAsk.visibility,
+  ];
+  return (
+    <aside className="vsee-ic-approval-request" role="note">
+      <span>IC APPROVAL REQUEST</span>
+      <strong>{decisionAsk.summary}</strong>
+      {decisionAsk.actionLines.length ? (
+        <ol>
+          {decisionAsk.actionLines.map((line) => <li key={line}>{line}</li>)}
+        </ol>
+      ) : (
+        <p>No approval request can be presented without a persisted action.</p>
+      )}
+      {!!metadata.length && (
+        <div className="vsee-ic-approval-metadata">
+          {metadata.map((label) => <span key={label}>{label}</span>)}
+        </div>
+      )}
+      <small>
+        Human IC approval remains required. This request does not send,
+        publish, or execute an action.
+      </small>
+    </aside>
+  );
+}
+
+function ModelingAssumptions({
+  assumptions,
+}: {
+  assumptions: ReturnType<
+    typeof buildUnderwritingArticleViewModel
+  >["modelingAssumptions"];
+}) {
+  if (!assumptions.scenarioPricing.length && !assumptions.remaining.length) {
+    return (
+      <>
+        <h4>Modeling Assumptions</h4>
+        <Unavailable copy="No modeling assumptions were persisted." />
+      </>
+    );
+  }
+  return (
+    <section className="vsee-modeling-assumptions">
+      <h4>Modeling Assumptions</h4>
+      {!!assumptions.scenarioPricing.length && (
+        <div className="vsee-scenario-pricing-comparison">
+          <header>
+            <span>SCENARIO PRICING</span>
+            <strong>Price sensitivity around the Base case</strong>
+            <p>
+              These are modeling assumptions—not probabilities, confidence,
+              or public facts.
+            </p>
+          </header>
+          <dl>
+            {assumptions.scenarioPricing.map(({ scenario, displayValue }) => (
+              <div key={scenario}>
+                <dt>{humanize(scenario)}</dt>
+                <dd>{displayValue}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+      {!!assumptions.remaining.length && (
+        <div className="vsee-modeling-inputs">
+          <span>OTHER MODEL INPUTS</span>
+          {assumptions.remaining.map((assumption) => {
+            const preferredEquity = assumption.field === "security_type"
+              && assumption.value === "preferred";
+            return (
+              <article key={assumption.id}>
+                <div>
+                  <small>{humanize(assumption.field)}</small>
+                  <strong>
+                    {preferredEquity
+                      ? "Preferred equity"
+                      : displayModelingAssumption(assumption)}
+                  </strong>
+                </div>
+                <div className="vsee-modeling-input-labels">
+                  {preferredEquity && <span>Placeholder</span>}
+                  {assumption.requiresConfirmation && (
+                    <span>Requires confirmation</span>
+                  )}
+                  <span>{humanize(assumption.sensitivity)} sensitivity</span>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AssumptionAuditInventory({
+  assumptions,
+}: {
+  assumptions: CandidateUnderwritingDetail["evidencePack"]["assumptions"];
+}) {
+  return (
+    <details className="vsee-details vsee-assumption-audit-inventory">
+      <summary>
+        Persisted assumption inventory · {assumptions.length} inputs
+      </summary>
+      {assumptions.length ? (
+        <div>
+          {assumptions.map((assumption) => (
+            <article key={assumption.id}>
+              <dl>
+                <div><dt>ID</dt><dd>{assumption.id}</dd></div>
+                <div><dt>Field</dt><dd>{assumption.field}</dd></div>
+                <div><dt>Scenario</dt><dd>{assumption.scenario}</dd></div>
+                <div><dt>Value</dt><dd>{assumption.value}</dd></div>
+                <div><dt>Unit</dt><dd>{assumption.unit ?? "null"}</dd></div>
+                <div>
+                  <dt>Provenance origin</dt>
+                  <dd>{assumption.provenanceOrigin}</dd>
+                </div>
+                <div><dt>Sensitivity</dt><dd>{assumption.sensitivity}</dd></div>
+                <div>
+                  <dt>Requires confirmation</dt>
+                  <dd>{assumption.requiresConfirmation ? "true" : "false"}</dd>
+                </div>
+                <div className="wide">
+                  <dt>Rationale</dt><dd>{assumption.rationale}</dd>
+                </div>
+                <div className="wide">
+                  <dt>Input references</dt>
+                  <dd>{joinRaw(assumption.inputRefIds)}</dd>
+                </div>
+              </dl>
+            </article>
+          ))}
+        </div>
+      ) : <Unavailable copy="No persisted assumptions are available." />}
+    </details>
+  );
+}
+
+function displayModelingAssumption(
+  assumption: CandidateUnderwritingDetail["evidencePack"]["assumptions"][number],
+): string {
+  if (assumption.unit === "decimal") {
+    const decimal = Number(assumption.value);
+    if (Number.isFinite(decimal)) return `${decimal * 100}%`;
+  }
+  return `${assumption.value}${assumption.unit ? ` ${assumption.unit}` : ""}`;
 }
 
 function ExecutiveDecisionMemo({
