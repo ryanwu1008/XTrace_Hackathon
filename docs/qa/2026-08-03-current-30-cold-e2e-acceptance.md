@@ -317,3 +317,41 @@ terminated before restart; the replacement fixture then bound exactly to
 - All traffic and data remained in the disposable loopback fixture. No
   production endpoint, database, migration target, seed target, or credential
   was read or modified.
+
+## 2026-08-04 evidence context, modeling assumptions, and IC approval acceptance
+
+This supplemental acceptance used the visible `WAKE AGENT & SCAN MARKET`
+control against the disposable local PostgreSQL fixture. It created live Report
+ID `report_96790206-8b1e-4866-86ad-95bab3ae97d3`; it was not a pre-generated
+current report.
+
+- The completed run rendered 30 eligible Deals and exactly 30 Belief Change
+  Analyses: 4 belief revisions, 4 monitor, 22 no material change, and 0
+  unavailable. It retained 8 accepted public events, 30 recalled Deal memories,
+  and 4 completed Deep Underwriting results.
+- The report header and Irregular detail rendered `LIVE EVIDENCE` separately
+  from a readable Jul 21–Aug 4, 2026 evidence window, timezone, and accepted
+  event count. Raw ISO anchors remained available only in the audit disclosure.
+- The main memo rendered `Modeling Assumptions`, not `Changed assumptions`.
+  Scenario pricing displayed Bear `0.75× (−25%)`, Base `1.00× (Base)`, and Bull
+  `1.25× (+25%)`, explicitly identified as modeling inputs rather than facts,
+  probabilities, or confidence scores. Preferred equity rendered as a
+  placeholder requiring confirmation. Raw units, rationales, and input
+  references remained in the collapsed persisted-assumption inventory.
+- `IC APPROVAL REQUEST` rendered one readable approval summary and both
+  persisted invested-negative actions: pause follow-on investment activity and
+  begin an internal portfolio-risk review. The presentation included Portfolio
+  scope, High priority, and Internal only labels plus an explicit statement that
+  approval does not send, publish, or execute anything.
+- The underlying typed actions, report counts, Source Revision/XTrace lineage,
+  Evidence Pack content, immutable fingerprints, and action-draft-only safety
+  boundary were unchanged.
+- Desktop browser inspection found zero document or dialog horizontal overflow,
+  16px memo and IC-approval body text, and zero console warnings or errors.
+- Focused UI verification passed 30/30 tests. TypeScript completed with zero
+  errors; ESLint completed with zero errors and 9 pre-existing unused-variable
+  warnings; `git diff --check` was clean; and all five vinext release-build
+  environments completed successfully.
+- The local report remained available at `127.0.0.1:3100` for manual review.
+  No production endpoint, database, migration target, seed target, or provider
+  credential was read or modified.
