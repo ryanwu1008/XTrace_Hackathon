@@ -1333,25 +1333,33 @@ function EvidenceContextNotice({
     );
   }
   const pinned = context.evidenceMode === "pinned";
+  const evidenceWindow = formatEvidenceContextWindow(context);
   return (
     <aside
       className={`vsee-evidence-context ${context.evidenceMode}`}
       role="note"
     >
       <strong>{pinned ? "PINNED DEMO REPLAY" : "LIVE EVIDENCE"}</strong>
-      <p>{context.displayLabel}</p>
+      <span className="vsee-underwriting-evidence-window">
+        <span>Evidence window</span>
+        <b>{evidenceWindow}</b>
+      </span>
+      <div className="vsee-underwriting-evidence-meta">
+        <span>{context.windowTimezone}</span>
+        <span>
+          {context.eventCount} accepted {context.eventCount === 1 ? "event" : "events"}
+        </span>
+      </div>
       {pinned && (
-        <p>
-          Historical evidence snapshot—not current news. This underwriting
-          artifact belongs to its immutable pinned report; run a current scan
-          for the current Deal registry.
-        </p>
+        <>
+          <p className="vsee-underwriting-evidence-label">{context.displayLabel}</p>
+          <small>
+            Historical evidence snapshot—not current news. This underwriting
+            artifact belongs to its immutable pinned report; run a current scan
+            for the current Deal registry.
+          </small>
+        </>
       )}
-      <small>
-        14-day window · {formatDate(context.windowStartAt)} to{" "}
-        {formatDate(context.windowEndAt)} · {context.windowTimezone} ·{" "}
-        {context.eventCount} events
-      </small>
     </aside>
   );
 }
@@ -1969,6 +1977,19 @@ export function formatDate(value: string): string {
     dateOnly: options,
     timestamp: options,
   });
+}
+
+function formatEvidenceContextWindow(context: Pick<
+  Extract<ReportEvidenceContext, { state: "current" }>,
+  "windowStartAt" | "windowEndAt" | "windowTimezone"
+>): string {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: context.windowTimezone,
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  return `${formatter.format(new Date(context.windowStartAt))} – ${formatter.format(new Date(context.windowEndAt))}`;
 }
 
 function formatDateOnly(value: string): string {

@@ -648,6 +648,36 @@ test("presents modeling assumptions and the complete IC approval request without
   assert.doesNotMatch(mainMemo, /<button[^>]*>\s*(?:SEND|PUBLISH)/i);
 });
 
+test("renders live evidence context as a readable window instead of its transport label", () => {
+  const liveContext: ReportEvidenceContext = {
+    ...PINNED_CONTEXT,
+    evidenceMode: "live",
+    snapshotId: null,
+    snapshotFingerprint: null,
+    windowStartAt: "2026-07-21T07:00:00.000Z",
+    windowEndAt: "2026-08-04T06:59:59.999Z",
+    displayLabel: "Live evidence window ending 2026-08-04T06:59:59.999Z",
+    eventCount: 8,
+  };
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Invested Risk Co"
+    analysis={analysisFixture()}
+    detail={detailFixture()}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+    evidenceContext={liveContext}
+  />);
+  const notice = html.slice(0, html.indexOf("DEEP UNDERWRITING"));
+
+  assert.match(notice, /LIVE EVIDENCE/);
+  assert.match(notice, /Evidence window[\s\S]*Jul 21, 2026 – Aug 3, 2026/);
+  assert.match(notice, /America\/Los_Angeles/);
+  assert.match(notice, /8 accepted events/);
+  assert.doesNotMatch(notice, /Live evidence window ending/);
+  assert.doesNotMatch(notice, /2026-08-04T06:59:59\.999Z/);
+});
+
 test("Deep Underwriting renders the approved complete IC article reading order", () => {
   const html = renderToStaticMarkup(<UnderwritingDetailPanel
     companyName="Invested Risk Co"
