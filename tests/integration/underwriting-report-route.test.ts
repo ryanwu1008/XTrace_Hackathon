@@ -837,7 +837,7 @@ test("public sandbox renders the complete persisted canonical named-advisory rep
   assert.match(html, /Counterevidence/);
   assert.match(html, /Unknowns/);
   assert.match(html, /Limitations/);
-  assert.match(html, /Independent disagreements/);
+  assert.match(html, /Priority disagreements/);
   assert.match(html, /Exact source lineage/);
   assert.match(html, /Supporting Evidence Pack IDs/);
   assert.match(html, /Counterevidence Evidence Pack IDs/);

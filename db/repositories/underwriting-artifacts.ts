@@ -1455,13 +1455,15 @@ function validatePartialUnderwritingTerminalSemantics(input: {
     || input.valuation.scenarios.some((scenario) =>
       scenario.valuation !== null || scenario.calculationIds.length !== 0
     );
+  const formalCoreJudgments = input.judgments.filter(
+    (judgment) => judgment.frameworkMetadata === undefined,
+  );
   const hasUnavailableFrameworkViolation =
-    input.judgments.length === 0
-    || input.judgments.some((judgment) =>
+    formalCoreJudgments.length === 0
+    || formalCoreJudgments.some((judgment) =>
       judgment.applicability !== "unavailable"
       || judgment.conclusion !== "abstain"
-    )
-    || input.disagreements.length !== 0;
+    );
   if (
     hasUnavailableValuationViolation
     || hasUnavailableFrameworkViolation

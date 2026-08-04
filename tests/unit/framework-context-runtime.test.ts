@@ -143,7 +143,7 @@ test("partitions exact catalog and service instances by research security type",
   assert.strictEqual(sameConvertible.service, convertible.service);
 });
 
-test("unavailable geography resolves and replays one catalog service whose cards explicitly abstain", async () => {
+test("unavailable geography resolves and replays geography-agnostic advisory cards while specific cards abstain", async () => {
   let providerCalls = 0;
   const resolver = createContextAwareFrameworkLensResolver({
     execution,
@@ -171,11 +171,11 @@ test("unavailable geography resolves and replays one catalog service whose cards
     id: "same-unavailable-selection",
   });
   assert.strictEqual(replay, first);
-  assert.equal(first.catalog.composites.every(({ experimentalAdvisory }) =>
-    experimentalAdvisory.applicable === false
-    && experimentalAdvisory.components.length === 0
-    && experimentalAdvisory.componentCardIds.length === 0
-  ), true);
+  const applicableAdvisoryCount = first.catalog.composites.filter(
+    ({ experimentalAdvisory }) => experimentalAdvisory.applicable,
+  ).length;
+  assert.ok(applicableAdvisoryCount > 0);
+  assert.ok(applicableAdvisoryCount < first.catalog.composites.length);
 
   const result = await first.service.runAll({
     candidate: {
@@ -250,16 +250,25 @@ test("unavailable geography resolves and replays one catalog service whose cards
     calculations: [],
   });
 
-  assert.equal(providerCalls, 0);
+  assert.equal(providerCalls, applicableAdvisoryCount);
   assert.deepEqual(serviceReplay, result);
   assert.ok(result.judgments.length > 0);
-  assert.equal(result.judgments.every((judgment) =>
+  const coreJudgments = result.judgments.filter(
+    ({ frameworkMetadata }) => frameworkMetadata === undefined,
+  );
+  assert.equal(coreJudgments.every((judgment) =>
     judgment.applicability === "unavailable"
     && judgment.conclusion === "abstain"
     && judgment.limitations.some((limitation) =>
       /core-only.*geography.*unavailable/i.test(limitation)
     )
   ), true);
+  assert.equal(
+    result.judgments.filter(({ frameworkMetadata }) =>
+      frameworkMetadata?.context.geography === "unavailable"
+    ).length,
+    first.catalog.composites.length,
+  );
   assert.deepEqual(result.disagreements, []);
 });
 

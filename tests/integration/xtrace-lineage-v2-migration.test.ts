@@ -43,10 +43,10 @@ test("0021 remains contiguous before later local-only migrations while productio
   assert.equal(xtraceEntry?.tag, "0021_exact_xtrace_lineage");
   const finalizationEntry = journal.entries.find(({ idx }) => idx === 22);
   assert.equal(finalizationEntry?.tag, "0022_task9_finalization_authority");
-  assert.equal(journal.entries.at(-1)?.idx, 24);
+  assert.equal(journal.entries.at(-1)?.idx, 26);
   assert.equal(
     journal.entries.at(-1)?.tag,
-    "0024_research_candidate_xtrace",
+    "0026_geography_agnostic_advisory",
   );
   const launcher = readFileSync(fileURLToPath(new URL(
     "../../scripts/apply-production-migrations.zsh",

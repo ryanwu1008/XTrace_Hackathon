@@ -1745,23 +1745,29 @@ function buildFrameworkObservation(input: ClaudeCompleteInput): unknown {
   }
   const card = requireRecord(request.card, "framework Card");
   const pack = requireRecord(request.evidencePack, "framework Evidence Pack");
+  const factRecords = requireArray(pack.facts, "Evidence Pack Facts")
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => item !== null);
+  const assumptionRecords = requireArray(
+    pack.assumptions,
+    "Evidence Pack Assumptions",
+  ).map(asRecord).filter(
+    (item): item is Record<string, unknown> => item !== null,
+  );
+  const calculationRecords = optionalArray(
+    asRecord(request.valuationInputs)?.calculations,
+  ).map(asRecord).filter(
+    (item): item is Record<string, unknown> => item !== null,
+  );
+  const evidenceRecords = [
+    ...factRecords,
+    ...assumptionRecords,
+    ...calculationRecords,
+  ];
   const ids = uniqueStrings([
-    ...requireArray(pack.facts, "Evidence Pack Facts").flatMap((value) => {
-      const item = asRecord(value);
-      return typeof item?.id === "string" ? [item.id] : [];
-    }),
-    ...requireArray(pack.assumptions, "Evidence Pack Assumptions").flatMap(
-      (value) => {
-        const item = asRecord(value);
-        return typeof item?.id === "string" ? [item.id] : [];
-      },
+    ...evidenceRecords.flatMap((item) =>
+      typeof item.id === "string" ? [item.id] : []
     ),
-    ...optionalArray(
-      asRecord(request.valuationInputs)?.calculations,
-    ).flatMap((value) => {
-      const item = asRecord(value);
-      return typeof item?.id === "string" ? [item.id] : [];
-    }),
   ]).sort(compareUtf8);
   const cardId = requiredText(String(card.id ?? ""), "framework Card id");
   if (ids.length < 2) {
@@ -1781,21 +1787,39 @@ function buildFrameworkObservation(input: ClaudeCompleteInput): unknown {
   }
   const title = typeof card.title === "string" ? card.title : cardId;
   const conclusion = frameworkConclusion(title, cardId);
+  const prioritizedIds = prioritizeFrameworkEvidenceIds(
+    factRecords,
+    assumptionRecords,
+    calculationRecords,
+  );
+  const supportId = prioritizedIds[0] ?? ids[0]!;
+  const counterId = prioritizedIds[1] ?? ids[1]!;
+  const supportEvidence = describeFrameworkEvidence(evidenceRecords, supportId);
+  const counterEvidence = describeFrameworkEvidence(evidenceRecords, counterId);
+  const coverage = asRecord(pack.coverage);
+  const missingFields = optionalArray(coverage?.missingFieldIds)
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.replaceAll("_", " "));
   return {
     applicability: "applicable",
     conclusion,
-    supportEvidenceItemIds: [ids[0]],
-    counterEvidenceItemIds: [ids[1]],
-    unusedEvidenceItemIds: ids.slice(2),
-    strongestSupport:
-      "The cited immutable evidence item provides bounded support for this lens.",
+    supportEvidenceItemIds: [supportId],
+    counterEvidenceItemIds: [counterId],
+    unusedEvidenceItemIds: ids.filter((id) =>
+      id !== supportId && id !== counterId
+    ),
+    strongestSupport: conclusion === "supportive"
+      ? `${title} uses ${supportEvidence} as the strongest concrete input for a bounded supportive reading.`
+      : `${title} uses ${supportEvidence} as the strongest concrete input for a bounded cautious reading.`,
     strongestCounterargument:
-      "The cited immutable counterevidence item limits this lens.",
-    unknowns: [
-      "The Evidence Pack does not establish every operating outcome required by this lens.",
-    ],
+      `${counterEvidence} is the strongest persisted counterargument and limits how far this conclusion can be carried.`,
+    unknowns: missingFields.length
+      ? [`Critical missing evidence remains: ${missingFields.join(", ")}.`]
+      : [
+        "The immutable Evidence Pack does not establish every operating outcome required by this lens.",
+      ],
     limitations: [
-      "This deterministic E2E observation uses only supplied immutable item IDs.",
+      "This local deterministic report uses only the supplied immutable Evidence Pack and does not claim endorsement or private reasoning.",
     ],
     confidence: {
       sourceReliability: "medium",
@@ -1806,6 +1830,55 @@ function buildFrameworkObservation(input: ClaudeCompleteInput): unknown {
     },
     frameworkRuleRefs: [cardId],
   };
+}
+
+function prioritizeFrameworkEvidenceIds(
+  facts: readonly Record<string, unknown>[],
+  assumptions: readonly Record<string, unknown>[],
+  calculations: readonly Record<string, unknown>[],
+): string[] {
+  const fieldPriority = new Map([
+    ["customer_evidence", 0],
+    ["revenue", 1],
+    ["business_model", 2],
+    ["reported_valuation_basis", 3],
+    ["reported_valuation", 4],
+    ["stage", 5],
+    ["company_identity", 6],
+    ["official_domain", 7],
+  ]);
+  const orderedFacts = [...facts].sort((left, right) => {
+    const leftField = typeof left.field === "string" ? left.field : "";
+    const rightField = typeof right.field === "string" ? right.field : "";
+    return (fieldPriority.get(leftField) ?? 50)
+      - (fieldPriority.get(rightField) ?? 50)
+      || compareUtf8(String(left.id ?? ""), String(right.id ?? ""));
+  });
+  return uniqueStrings([
+    ...orderedFacts,
+    ...assumptions,
+    ...calculations,
+  ].flatMap((item) => typeof item.id === "string" ? [item.id] : []));
+}
+
+function describeFrameworkEvidence(
+  records: readonly Record<string, unknown>[],
+  id: string,
+): string {
+  const item = records.find((record) => record.id === id);
+  if (!item) return `the immutable evidence item ${id}`;
+  const field = typeof item.field === "string"
+    ? item.field.replaceAll("_", " ")
+    : "evidence";
+  const value = typeof item.value === "string"
+    ? item.value
+    : typeof item.output === "string"
+    ? item.output
+    : null;
+  const unit = typeof item.unit === "string" ? item.unit : null;
+  return value
+    ? `${field} (${value}${unit ? ` ${unit}` : ""})`
+    : `${field} evidence (${id})`;
 }
 
 function frameworkConclusion(

@@ -1752,7 +1752,14 @@ export function ReportsView({
             <strong>{evidenceContextLabel(report.evidenceContext)}</strong>
             {report.evidenceContext?.state === "current"
               && report.evidenceContext.evidenceMode === "pinned"
-              && <span> · Historical evidence snapshot—not current news.</span>}
+              && (
+                <span>
+                  {" · "}Historical artifact · {report.companyAnalyses.length}
+                  {" "}analyses preserved. Current Deal registry · {deals.length}
+                  {" "}Deals. Use WAKE AGENT &amp; SCAN MARKET to create a new
+                  current report.
+                </span>
+              )}
             {report.runId && onAsk && (
               <button onClick={() => onAsk(report)}>ASK THIS REPORT</button>
             )}

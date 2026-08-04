@@ -25,7 +25,7 @@ npm run test:e2e:belief-reversal
 - Node test duration: `73.700043708s`.
 - Main E2E body duration: `71.630830459s`.
 - Database: disposable loopback PostgreSQL `17.6` with PostgREST `12.2.3`.
-- Terminal migration: `0025_report_deal_universe_authority`.
+- Terminal migration: `0026_geography_agnostic_advisory`.
 - The test cleaned up its disposable database after completion.
 
 ## Required isolated environment
@@ -147,8 +147,8 @@ then switched to a newly persisted `LIVE EVIDENCE` report.
 
 - Private local preview: `http://127.0.0.1:3100/` (available only while the
   disposable acceptance fixture remains running on the test machine).
-- Browser-created Report ID:
-  `report_6cf6278f-6170-402a-b08c-1fb6344c0047`.
+- Browser-created Report ID for the latest full article acceptance:
+  `report_27e15106-ac31-47ac-a3b6-8ac986f7dae2`.
 - Rendered coverage: 30 eligible Deals, 30 Belief Change Checks, 4 belief
   revisions, 6 monitor, 20 no material change, and 0 unavailable.
 - Rendered queue: 4 completed Deep Underwriting results, with no Top-5 cutoff or
@@ -161,6 +161,24 @@ then switched to a newly persisted `LIVE EVIDENCE` report.
   Framework Perspectives, Bear/Base/Bull inputs, explicit unavailable
   valuation/calculations where evidence was insufficient, decision ceiling,
   and draft-only status-aware actions.
+- The final browser run rendered the approved complete IC reading order:
+  Executive Investment Snapshot, What Changed, Verified Company Snapshot,
+  Company and Market Assessment, compact Named Analyst Panel, Investment
+  Committee Debate, Bear/Base/Bull, Valuation and Return Analysis, VSee IC
+  Synthesis, Required Diligence, draft-only actions, Evidence Classification,
+  Audit Appendix, and Final IC Position.
+- The compact option-B Named Analyst Panel retained 19 applicable persisted
+  public-source product syntheses and 9 explicit abstentions/unavailable
+  records. It permanently displayed `NO ENDORSEMENT` and zero formal decision
+  weight. Main-body IC debate showed only 3 prioritized disagreements out of
+  90 persisted pairwise conflicts; complete artifacts remain in the audit
+  payload.
+- Verified Company Snapshot rendered readable field/value/assertion rows and
+  contained no raw `semantic-field-*` identifiers. Desktop acceptance at a
+  1280-pixel viewport measured zero document or dialog horizontal overflow.
+- A stale local fixture was found occupying port 3100 while a replacement
+  silently fell back to 3102. The browser launcher now passes `--strictPort`
+  and fails closed instead of announcing a URL backed by a different process.
 - Finalized Chat answered `Which new evidence changed the belief for Irregular?`
   from the persisted artifact, returning the Sample decision context, three
   exact public-source quotations, negative belief direction, revisit mapping,

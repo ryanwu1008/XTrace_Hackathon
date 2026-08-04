@@ -525,10 +525,82 @@ test("renders the exact 3 by 17 scenario model, full evidence state, premium lin
   assert.match(html, /Internal memo · Internal · Internal/);
   assert.match(html, /Latest ARR/);
   assert.match(html, /Could lower the current decision ceiling/);
-  assert.match(html, /Executive Decision Memo/);
+  assert.match(html, /Executive Investment Snapshot/);
   assert.match(html, /VSee IC Synthesis/);
   assert.match(html, /Decision ceiling · Advance/);
   assert.match(html, /Critical missing evidence · net_retention/);
+});
+
+test("Deep Underwriting renders the approved complete IC article reading order", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Invested Risk Co"
+    analysis={analysisFixture()}
+    detail={detailFixture()}
+    drafts={[draftFixture()]}
+    canSaveDrafts={true}
+    onEditDraft={() => {}}
+    evidenceContext={PINNED_CONTEXT}
+  />);
+
+  const headings = [
+    "Executive Investment Snapshot",
+    "What Changed?",
+    "Verified Company Snapshot",
+    "Company and Market Assessment",
+    "Named Analyst Panel",
+    "Investment Committee Debate",
+    "Bear / Base / Bull Scenarios",
+    "Valuation and Return Analysis",
+    "VSee IC Synthesis",
+    "Required Diligence",
+    "Status-aware Action Drafts",
+    "Evidence Classification",
+    "Audit Appendix",
+    "Final IC Position",
+  ];
+  let previousIndex = -1;
+  for (const heading of headings) {
+    const index = html.indexOf(heading);
+    assert.ok(index > previousIndex, `${heading} must appear in the approved order`);
+    previousIndex = index;
+  }
+  assert.match(html, /Bull Case/);
+  assert.match(html, /Bear Case/);
+  assert.match(html, /True Disagreement/);
+  assert.match(html, /Facts/);
+  assert.match(html, /Assumptions/);
+  assert.match(html, /Unknowns/);
+  assert.match(html, /Conflicts/);
+  assert.match(html, /Reported Valuation — 20000000 USD · corroborated/);
+  assert.match(html, /Arr — 5000000 USD · reported/);
+});
+
+test("Deep Underwriting keeps pairwise framework noise out of the main IC reading flow", () => {
+  const detail = detailFixture();
+  detail.disagreements = Array.from({ length: 5 }, (_, index) => ({
+    id: `disagreement_${index + 1}`,
+    leftJudgmentId: `judgment_left_${index + 1}`,
+    rightJudgmentId: `judgment_right_${index + 1}`,
+    topic: "independent_framework_conflict" as const,
+    explanation: `Persisted disagreement ${index + 1}`,
+    evidenceItemIds: ["fact_ask"],
+  }));
+
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Invested Risk Co"
+    analysis={analysisFixture()}
+    detail={detail}
+    drafts={[draftFixture()]}
+    canSaveDrafts={true}
+    onEditDraft={() => {}}
+    evidenceContext={PINNED_CONTEXT}
+  />);
+
+  assert.match(html, /Priority disagreements · 3 of 5/);
+  assert.match(html, /Persisted disagreement 1/);
+  assert.match(html, /Persisted disagreement 3/);
+  assert.doesNotMatch(html, /Persisted disagreement 4/);
+  assert.match(html, /not repeated in the main IC reading flow/);
 });
 
 test("Deep Underwriting permanently labels an exact synthetic research screening authority without impersonating a meeting", () => {

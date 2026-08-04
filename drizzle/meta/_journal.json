@@ -141,6 +141,13 @@
       "when": 1786183200000,
       "tag": "0025_report_deal_universe_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1786269600000,
+      "tag": "0026_geography_agnostic_advisory",
+      "breakpoints": true
     }
   ]
 }

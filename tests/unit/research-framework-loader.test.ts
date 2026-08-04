@@ -206,6 +206,31 @@ test("filters component cards by all four immutable context dimensions before au
   assert.equal(ventureDealsGlobal.includes("VD-01"), false);
 });
 
+test("unavailable Deal geography keeps geography-agnostic Cards eligible and rejects geography-specific Cards", async () => {
+  const catalog = await loadResearchFrameworkCatalog({
+    context: {
+      ...context,
+      analysisMode: "core_only",
+      geography: "unavailable",
+      benchmarkPackId: null,
+      benchmarkCompatibility: "unavailable",
+    },
+  });
+
+  assert.equal(
+    packComponentIds(catalog, "peter_thiel_public_frameworks_v0_1")
+      .includes("PT-01"),
+    true,
+    "an audited Card explicitly applicable to all geographies must not be removed merely because Deal geography is unknown",
+  );
+  assert.equal(
+    packComponentIds(catalog, "venture_deals_public_frameworks_v0_1")
+      .includes("VD-01"),
+    false,
+    "a United-States-specific Card must fail closed when Deal geography is unknown",
+  );
+});
+
 test("authorizes only exact composite objects emitted by this loader instance", async () => {
   const catalog = await loadResearchFrameworkCatalog({
     context,

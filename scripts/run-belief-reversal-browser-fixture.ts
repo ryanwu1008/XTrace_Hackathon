@@ -822,6 +822,22 @@ function browserFixtureWebPort(
   return port;
 }
 
+export function buildBeliefReversalBrowserFixtureWebArguments(
+  port: number,
+): string[] {
+  if (!Number.isSafeInteger(port) || port < 1_024 || port > 65_535) {
+    throw new Error("Browser fixture web port must be an unprivileged TCP port.");
+  }
+  return [
+    "dev",
+    "-H",
+    "127.0.0.1",
+    "-p",
+    String(port),
+    "--strictPort",
+  ];
+}
+
 export async function runBeliefReversalBrowserFixture(): Promise<void> {
   const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
   assertBeliefReversalBrowserFixtureCredentialIsolation(repositoryRoot);
@@ -951,7 +967,7 @@ export async function runBeliefReversalBrowserFixture(): Promise<void> {
     signalLatch.throwIfRequested();
     const web = await spawnLoggedFixtureChild({
       command: path.join(repositoryRoot, "node_modules", ".bin", "vinext"),
-      args: ["dev", "-H", "127.0.0.1", "-p", String(webPort)],
+      args: buildBeliefReversalBrowserFixtureWebArguments(webPort),
       environment: childEnvironment,
       workingDirectory: repositoryRoot,
       logPath: webLogPath,

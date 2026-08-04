@@ -16,12 +16,20 @@ import * as browserFixture from "../../scripts/run-belief-reversal-browser-fixtu
 import {
   buildBeliefReversalBrowserFixtureEnvironment,
   buildBeliefReversalBrowserFixtureAnnouncement,
+  buildBeliefReversalBrowserFixtureWebArguments,
   buildBeliefReversalHostedSitesEnvironment,
   createBeliefReversalBrowserFixtureSignalLatch,
   createIdempotentBrowserFixtureCleanup,
   handleBeliefReversalBrowserFixtureRequest,
   waitForBeliefReversalBrowserFixtureStop,
 } from "../../scripts/run-belief-reversal-browser-fixture";
+
+test("browser fixture refuses to fall back to a different web port", () => {
+  assert.deepEqual(
+    buildBeliefReversalBrowserFixtureWebArguments(3_100),
+    ["dev", "-H", "127.0.0.1", "-p", "3100", "--strictPort"],
+  );
+});
 
 test("browser fixture refuses ignored runtime credential files before provisioning", () => {
   const repositoryRoot = mkdtempSync(

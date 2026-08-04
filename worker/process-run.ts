@@ -547,9 +547,11 @@ export async function processClaimedRun(
         },
       });
       await updateStage("underwriting", "completed");
-    } catch {
-      const warning =
-        "Underwriting was partially unavailable; the legacy market report remains available.";
+    } catch (error) {
+      const warning = [
+        "Underwriting was partially unavailable; the legacy market report remains available.",
+        `Persisted failure reason: ${errorDetail(error)}`,
+      ].join(" ");
       warnings.push(warning);
       await updateStage("underwriting", "failed", warning);
     }

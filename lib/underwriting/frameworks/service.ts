@@ -486,6 +486,8 @@ export function createFrameworkLensService(options: {
               let attempts = 0;
               let repaired = false;
               if (
+                !experimentalAdvisory
+                &&
                 context.analysisMode === "core_only"
                 && context.geography === "unavailable"
               ) {

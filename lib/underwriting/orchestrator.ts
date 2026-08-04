@@ -413,7 +413,7 @@ export function createUnderwritingOrchestrator(options: {
       const completed = await options.runs.finalizeCandidate(payload);
       planned.candidate = completed;
       return completed;
-    } catch {
+    } catch (error) {
       const publicReason =
         "Candidate underwriting could not be atomically finalized.";
       await options.runs.markCandidateFailed({
@@ -421,7 +421,7 @@ export function createUnderwritingOrchestrator(options: {
         publicReason,
       });
       options.onWarning?.(
-        `Candidate ${planned.deal.id} finalization failed; previously completed candidates remain available.`,
+        `Candidate ${planned.deal.id} finalization failed; previously completed candidates remain available. Internal stage reason: ${boundedErrorDetail(error)}`,
       );
       const failed = terminalCandidate(claimed.candidate, "failed", now());
       planned.candidate = failed;
@@ -544,6 +544,13 @@ export function createUnderwritingOrchestrator(options: {
 
     processCandidate,
   };
+}
+
+function boundedErrorDetail(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 600) || "Unknown finalization error";
 }
 
 export function createSourceGroundedCandidateExecutor(options: {

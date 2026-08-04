@@ -368,6 +368,8 @@ const migrationNames = [
   "0022_task9_finalization_authority.sql",
   "0023_pg17_market_event_validator.sql",
   "0024_research_candidate_xtrace.sql",
+  "0025_report_deal_universe_authority.sql",
+  "0026_geography_agnostic_advisory.sql",
 ];
 
 const migrationTestNames = [
@@ -442,7 +444,7 @@ test("release verification has a mandatory PostgreSQL 17.6 Supabase profile gate
   );
 });
 
-test("the physical migration chain is contiguous from 0000 through 0024", async () => {
+test("the physical migration chain is contiguous from 0000 through 0026", async () => {
   const actual = (await readdir(new URL("drizzle/", repositoryRoot)))
     .filter((filename) => /^\d{4}_.+\.sql$/.test(filename))
     .sort();
@@ -450,7 +452,7 @@ test("the physical migration chain is contiguous from 0000 through 0024", async 
   assert.deepEqual(actual, migrationNames);
 });
 
-test("journaled forward migrations preserve physical order and include 0010 through 0024", async () => {
+test("journaled forward migrations preserve physical order and include 0010 through 0026", async () => {
   const journal = JSON.parse(
     await readFile(
       new URL("drizzle/meta/_journal.json", repositoryRoot),
@@ -463,7 +465,7 @@ test("journaled forward migrations preserve physical order and include 0010 thro
   );
 
   assert.deepEqual(
-    actualForwardEntries.filter((tag) => /^(?:001[0-9]|002[0-4])_/.test(tag)),
+    actualForwardEntries.filter((tag) => /^(?:001[0-9]|002[0-6])_/.test(tag)),
     physicalTags.slice(10),
   );
   let previousPhysicalPosition = -1;

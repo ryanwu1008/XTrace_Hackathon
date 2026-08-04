@@ -872,16 +872,24 @@ test("underwriting detail preserves section order, lineage, public version pins,
   }));
 
   const orderedHeadings = [
-    "Executive Decision Memo",
-    "Belief Change &amp; Market Evidence",
-    "Company Impact &amp; Evidence",
-    "Deal Memory · Then vs Now",
-    "Analyst Panel Synthesis",
-    "Financial Case",
+    "Executive Investment Snapshot",
+    "What Changed?",
+    "Verified Company Snapshot",
+    "Company and Market Assessment",
+    "Named Analyst Panel",
+    "Investment Committee Debate",
+    "Bear / Base / Bull Scenarios",
+    "Valuation and Return Analysis",
     "VSee IC Synthesis",
-    "Diligence &amp; Next Actions",
-    "Action drafts",
+    "Required Diligence",
+    "Status-aware Action Drafts",
+    "Evidence Classification",
+    "Audit Appendix",
+    "Final IC Position",
   ];
+  for (const heading of orderedHeadings) {
+    assert.notEqual(html.indexOf(heading), -1, heading);
+  }
   for (let index = 1; index < orderedHeadings.length; index += 1) {
     assert.ok(
       html.indexOf(orderedHeadings[index - 1])

@@ -539,8 +539,8 @@ function geographyMatches(
   selector: string,
   geography: ResearchContext["geography"],
 ): boolean {
-  if (geography === "unavailable") return false;
   if (selector === "all" || selector.startsWith("all_")) return true;
+  if (geography === "unavailable") return false;
   return geography === "us" && selector === "united_states";
 }
 

@@ -297,6 +297,56 @@ test("executes each applicable real pack once through a stable four-worker pool 
   assert.equal(peter.frameworkMetadata.formalDecisionWeight, "0");
 });
 
+test("core-only Deal context executes geography-agnostic named advisory packs without weakening the valuation ceiling", async () => {
+  const unavailableContext: ResolvedUnderwritingContext = {
+    ...context,
+    analysisMode: "core_only",
+    geography: "unavailable",
+    benchmarkPackId: null,
+    benchmarkCompatibility: "unavailable",
+  };
+  const catalog = await loadResearchFrameworkCatalog({
+    context: unavailableContext,
+  });
+  const requests: Array<Parameters<ClaudeClient["complete"]>[0]> = [];
+  const service = createFrameworkLensService({
+    client: {
+      async complete(request) {
+        requests.push(structuredClone(request));
+        return JSON.stringify(advisoryOutput(promptCard(request)));
+      },
+    },
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+  });
+
+  const result = await service.runAll({
+    ...runInput(),
+    context: unavailableContext,
+  });
+  const peter = result.judgments.find(({ frameworkMetadata }) =>
+    frameworkMetadata?.packId === "peter_thiel_public_frameworks_v0_1"
+  );
+  const ventureDeals = result.judgments.find(({ frameworkMetadata }) =>
+    frameworkMetadata?.packId === "venture_deals_public_frameworks_v0_1"
+  );
+
+  assert.ok(requests.length > 0);
+  assert.equal(peter?.applicability, "applicable");
+  assert.equal(peter?.conclusion, "supportive");
+  assert.equal(ventureDeals?.applicability, "applicable");
+  assert.equal(
+    ventureDeals?.frameworkMetadata?.components.some(
+      ({ frameworkId }) => frameworkId === "VD-01",
+    ),
+    false,
+    "the US-specific Venture Deals component must remain excluded even when another geography-agnostic component keeps the pack applicable",
+  );
+  assert.equal(unavailableContext.analysisMode, "core_only");
+  assert.equal(unavailableContext.benchmarkPackId, null);
+});
+
 test("replays advisory fingerprints without calls and never stores prompts or raw model responses", async () => {
   const catalog = await loadResearchFrameworkCatalog({
     context,

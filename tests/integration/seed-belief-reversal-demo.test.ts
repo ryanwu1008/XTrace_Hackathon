@@ -92,15 +92,18 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
   const first = await runBeliefReversalDemoSeed(dependencies);
   const second = await runBeliefReversalDemoSeed(dependencies);
   assert.deepEqual(first.created, {
-    privateObjects: 41,
-    documents: 41,
-    workspaceDocuments: 41,
-    companies: 4,
-    deals: 4,
-    sourceRevisions: 41,
-    assignments: 41,
-    canonicalEvidence: 37,
+    privateObjects: 66,
+    documents: 66,
+    workspaceDocuments: 66,
+    companies: 11,
+    deals: 11,
+    sourceRevisions: 66,
+    assignments: 66,
+    canonicalEvidence: 62,
     sampleInteractions: 4,
+    researchCandidates: 7,
+    researchSourceAssignments: 25,
+    researchEvidenceGaps: 1,
   });
   assert.deepEqual(second.created, {
     privateObjects: 0,
@@ -112,17 +115,20 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     assignments: 0,
     canonicalEvidence: 0,
     sampleInteractions: 0,
+    researchCandidates: 7,
+    researchSourceAssignments: 25,
+    researchEvidenceGaps: 1,
   });
 
   const snapshot = dataStore.inspect();
   assert.equal(listPreloadedDocuments().length, 14);
-  assert.equal(snapshot.documents.length, 55);
-  assert.equal(snapshot.workspaceDocuments.length, 41);
-  assert.equal(snapshot.companies.length, 23);
-  assert.equal(snapshot.deals.length, 23);
-  assert.equal(sourceRegistry.inspect().revisions.length, 55);
-  assert.equal(dealRegistry.inspect().assignments.length, 60);
-  assert.equal(evidencePacks.inspect().sourceEvidence.length, 37);
+  assert.equal(snapshot.documents.length, 80);
+  assert.equal(snapshot.workspaceDocuments.length, 66);
+  assert.equal(snapshot.companies.length, 30);
+  assert.equal(snapshot.deals.length, 30);
+  assert.equal(sourceRegistry.inspect().revisions.length, 80);
+  assert.equal(dealRegistry.inspect().assignments.length, 85);
+  assert.equal(evidencePacks.inspect().sourceEvidence.length, 62);
   const irregularProjection = projectUnderwritingEvidence(
     evidencePacks.inspect().sourceEvidence.filter(({ dealId }) =>
       dealId === "deal_irregular_v1"
@@ -194,7 +200,7 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
       `semantic field ${String(field.id)} must resolve through canonical SourceRef IDs`,
     );
   }
-  for (const fieldId of [
+  const requiredSemanticFieldIds = [
     "company_identity",
     "stage",
     "business_model",
@@ -207,22 +213,22 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     "cash",
     "burn",
     "runway",
-  ]) {
-    assert.ok(
-      semanticFields.some((field) => field.fieldId === fieldId),
-      `typed semantic projection must include ${fieldId}`,
-    );
-  }
-  assert.ok(semanticFields.some((field) =>
-    field.fieldId === "security_type"
-    && field.classification === "assumption"
+  ];
+  const persistedSemanticFieldIds = new Set(
+    semanticFields.map(({ fieldId }) => fieldId),
+  );
+  assert.deepEqual(
+    requiredSemanticFieldIds.filter((fieldId) =>
+      !persistedSemanticFieldIds.has(fieldId)
+    ),
+    [],
+    "typed semantic projection must include every required field",
+  );
+  assert.ok(irregularProjection.assumptions.some((field) =>
+    field.field === "security_type"
     && field.value === "preferred"
-    && field.basis === "assumption"
     && field.requiresConfirmation === true
-    && field.assumptionPolicyVersion === "belief-reversal-demo-context-v1"
-    && !("sourceIds" in field)
-    && typeof field.rationale === "string"
-    && typeof field.sourceBoundary === "string"
+    && field.rationale.startsWith("belief-reversal-demo-context-v1:")
   ));
   assert.ok(semanticFields.some((field) =>
     field.fieldId === "reported_valuation"
@@ -270,7 +276,15 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     "Empirical Security",
     "Freight Hero",
   ];
-  assert.ok(snapshot.deals.every((deal) => !qualifiedOnly.includes(deal.companyName)));
+  const registeredDeals = await dealRegistry.listForWorkspace("workspace_demo");
+  for (const companyName of qualifiedOnly) {
+    const matches = registeredDeals.filter((deal) =>
+      deal.companyName === companyName
+    );
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]!.status, "screening");
+    assert.ok(matches[0]!.analysisEligibleAt);
+  }
   assert.equal((await getProductInputReadiness(dataStore, "workspace_demo")).confirmedCount, 0);
 
   const productInputs = listPreloadedDocuments()
@@ -297,11 +311,12 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
   assert.equal((await getProductInputReadiness(dataStore, "workspace_demo")).confirmedCount, 13);
 
   const bundles = await dealRegistry.listAnalysisEligibleBundles("workspace_demo");
+  assert.equal(bundles.length, 30);
   const reversalBundles = bundles.filter((bundle) =>
     bundle.dealId.endsWith("_v1")
   );
-  assert.equal(reversalBundles.length, 4);
-  assert.equal(reversalBundles.flatMap((bundle) => bundle.facts).length, 37);
+  assert.equal(reversalBundles.length, 11);
+  assert.equal(reversalBundles.flatMap((bundle) => bundle.facts).length, 62);
   assert.equal(reversalBundles.flatMap((bundle) => bundle.interactions).length, 4);
   assert.ok(reversalBundles.flatMap((bundle) => bundle.interactions).every(
     (interaction) => {
@@ -366,9 +381,9 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     displayLabel: pinnedSnapshot.displayLabel,
   }, {
     snapshotAsOfDate: manifest.evidenceWindow.endAt.slice(0, 10),
-    anchorAt: manifest.evidenceWindow.endAt,
-    windowStartAt: manifest.evidenceWindow.startAt,
-    windowEndAt: manifest.evidenceWindow.endAt,
+    anchorAt: new Date(manifest.evidenceWindow.endAt).toISOString(),
+    windowStartAt: new Date(manifest.evidenceWindow.startAt).toISOString(),
+    windowEndAt: new Date(manifest.evidenceWindow.endAt).toISOString(),
     windowTimezone: manifest.evidenceWindow.timezone,
     displayLabel: manifest.evidenceWindow.displayLabel,
   });

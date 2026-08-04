@@ -17,6 +17,7 @@ import {
   versionRows,
 } from "./underwriting-view-model";
 import { buildAnalystPanel } from "./analyst-panel-view-model";
+import { buildUnderwritingArticleViewModel } from "./underwriting-article-view-model";
 import {
   hasSampleResearchScreeningAuthority,
   SAMPLE_RESEARCH_SCREENING_BADGE,
@@ -145,15 +146,17 @@ export function UnderwritingDetailPanel({
     /capital.*flow|funding.*flow/.test(fact.field)
   );
   const analystPanel = buildAnalystPanel(detail.judgments);
+  const article = buildUnderwritingArticleViewModel({ analysis, detail });
 
   return (
     <div className="vsee-underwriting-detail">
       <EvidenceContextNotice context={evidenceContext} />
-      <DetailSection number="01" title="Executive Decision Memo">
+      <DetailSection number="01" title="Executive Investment Snapshot">
         <ExecutiveDecisionMemo analysis={analysis} detail={detail} />
+        <Definition label="IC Decision Ask" value={article.decisionAsk} />
       </DetailSection>
 
-      <DetailSection number="02" title="Belief Change & Market Evidence">
+      <DetailSection number="02" title="What Changed?">
         <div className="vsee-detail-meta">
           <span>14-DAY EVENT WINDOW</span>
           <b>{detail.evidencePack.asOfDate}</b>
@@ -203,6 +206,20 @@ export function UnderwritingDetailPanel({
             detail={detail}
           />
         </div>
+        <div className="vsee-then-now">
+          <article>
+            <span>THEN / PRIOR BELIEF</span>
+            <p>{article.thenNow.then}</p>
+          </article>
+          <article>
+            <span>NOW / NEW EVIDENCE</span>
+            <p>{article.thenNow.now}</p>
+          </article>
+          <article>
+            <span>BELIEF-CHANGE MECHANISM</span>
+            <p>{article.thenNow.mechanism}</p>
+          </article>
+        </div>
         <h4>Evidence</h4>
         {detail.evidencePack.facts.length ? (
           <div className="vsee-evidence-ledger">
@@ -227,7 +244,28 @@ export function UnderwritingDetailPanel({
         )}
       </DetailSection>
 
-      <DetailSection number="03" title="Company Impact & Evidence">
+      <DetailSection number="03" title="Verified Company Snapshot">
+        <div className="vsee-snapshot-grid">
+          <ListBlock
+            title="Verified / gate-accepted facts"
+            values={article.companySnapshot.verifiedFacts}
+          />
+          <ListBlock
+            title="Reported or unverified facts"
+            values={article.companySnapshot.unverifiedFacts}
+          />
+          <ListBlock
+            title="Unknown / missing evidence"
+            values={article.companySnapshot.unknownFieldIds}
+          />
+        </div>
+        <p>
+          This snapshot classifies persisted evidence; it does not upgrade a
+          reported value into a verified fact.
+        </p>
+      </DetailSection>
+
+      <DetailSection number="04" title="Company and Market Assessment">
         <p>{analysis?.marketEvidence.explanation ?? detail.narrative}</p>
         <div className="vsee-impact-grid">
           <ListBlock
@@ -268,13 +306,7 @@ export function UnderwritingDetailPanel({
         ) : <Unavailable copy="No changed assumptions were persisted." />}
         <EvidenceCoveragePanel detail={detail} />
         <EvidenceConflictsPanel detail={detail} />
-      </DetailSection>
-
-      <DetailSection
-        number="04"
-        title="Deal Memory · Then vs Now"
-      >
-        <h4>Context</h4>
+        <h4>Deal Memory · Then vs Now</h4>
         {!!analysis?.investmentMemory.fixtureIds.length && (
           <aside className="vsee-sample-decision-record" role="note">
             <strong>Sample decision record · synthetic demo history</strong>
@@ -322,12 +354,33 @@ export function UnderwritingDetailPanel({
         </dl>
       </DetailSection>
 
-      <DetailSection number="05" title="Analyst Panel Synthesis">
+      <DetailSection number="05" title="Named Analyst Panel">
         <AnalystPanelSynthesis detail={detail} panel={analystPanel} />
-        {detail.disagreements.length ? (
+      </DetailSection>
+
+      <DetailSection number="06" title="Investment Committee Debate">
+        <div className="vsee-ic-debate">
+          <ListBlock title="Bull Case" values={article.debate.bull} />
+          <ListBlock title="Bear Case" values={article.debate.bear} />
+          <ListBlock
+            title="True Disagreement"
+            values={article.debate.trueDisagreement}
+          />
+        </div>
+        {article.debate.trueDisagreement.length ? (
           <section className="vsee-disagreements">
-            <h4>Material disagreements</h4>
-            {detail.disagreements.map((disagreement) => (
+            <h4>
+              Priority disagreements · {article.debate.trueDisagreement.length}
+              {detail.disagreements.length > article.debate.trueDisagreement.length
+                ? ` of ${detail.disagreements.length}`
+                : ""}
+            </h4>
+            {detail.disagreements
+              .filter(({ explanation }) =>
+                article.debate.trueDisagreement.includes(explanation)
+              )
+              .slice(0, article.debate.trueDisagreement.length)
+              .map((disagreement) => (
               <article key={disagreement.id}>
                 <strong>{humanize(disagreement.topic)}</strong>
                 <p>{disagreement.explanation}</p>
@@ -347,14 +400,23 @@ export function UnderwritingDetailPanel({
                 </details>
               </article>
             ))}
+            {detail.disagreements.length > article.debate.trueDisagreement.length && (
+              <p>
+                Remaining persisted pairwise conflicts stay available through
+                the audit payload; they are not repeated in the main IC reading flow.
+              </p>
+            )}
           </section>
         ) : (
           <Unavailable copy="No framework disagreements were persisted." />
         )}
-        <FrameworkAppendix detail={detail} />
       </DetailSection>
 
-      <DetailSection number="06" title="Financial Case">
+      <DetailSection number="07" title="Bear / Base / Bull Scenarios">
+        <ScenarioModelPanel detail={detail} />
+      </DetailSection>
+
+      <DetailSection number="08" title="Valuation and Return Analysis">
         <p className={`vsee-valuation-state ${detail.valuation.status}`}>
           {humanize(detail.valuation.status)}
           {detail.valuation.blockerCodes.length
@@ -377,7 +439,6 @@ export function UnderwritingDetailPanel({
         ) : (
           <Unavailable copy="No persisted calculations are available." />
         )}
-        <ScenarioModelPanel detail={detail} />
         {detail.valuation.scenarios.length ? (
           <div className="vsee-scenario-grid">
             {detail.valuation.scenarios.map((scenario) => (
@@ -486,7 +547,7 @@ export function UnderwritingDetailPanel({
         </div>
       </DetailSection>
 
-      <DetailSection number="07" title="VSee IC Synthesis">
+      <DetailSection number="09" title="VSee IC Synthesis">
         <div className="vsee-decision-dimensions">
           <Definition
             label="Company Quality"
@@ -529,7 +590,7 @@ export function UnderwritingDetailPanel({
         </details>
       </DetailSection>
 
-      <DetailSection number="08" title="Diligence & Next Actions">
+      <DetailSection number="10" title="Required Diligence">
         <div className="vsee-action-list">
           {detail.evidencePack.coverage.missingFieldIds.map((field) => (
             <article key={field}>
@@ -578,7 +639,7 @@ export function UnderwritingDetailPanel({
         </dl>
       </DetailSection>
 
-      <DetailSection number="09" title="Action drafts">
+      <DetailSection number="11" title="Status-aware Action Drafts">
         <p>
           These are persisted draft bodies only. Editing replaces the current
           body for the same draft identity.
@@ -645,6 +706,65 @@ export function UnderwritingDetailPanel({
             ))}
           </div>
         ) : <Unavailable copy="No action draft was finalized." />}
+      </DetailSection>
+
+      <DetailSection number="12" title="Evidence Classification">
+        <div className="vsee-evidence-classification">
+          <Definition
+            label="Facts"
+            value={String(article.evidenceClassification.factCount)}
+          />
+          <Definition
+            label="Assumptions"
+            value={String(article.evidenceClassification.assumptionCount)}
+          />
+          <Definition
+            label="Unknowns"
+            value={String(article.evidenceClassification.unknownCount)}
+          />
+          <Definition
+            label="Conflicts"
+            value={String(article.evidenceClassification.conflictCount)}
+          />
+        </div>
+        <p>
+          Facts retain exact Source Revision lineage. Assumptions remain
+          labeled inputs. Unknowns and conflicts constrain the decision
+          ceiling and are never silently filled.
+        </p>
+      </DetailSection>
+
+      <DetailSection number="13" title="Audit Appendix">
+        <details className="vsee-details" open>
+          <summary>Open exact report identity and evidence lineage</summary>
+          <Definition label="CandidateRun" value={detail.candidateRunId} />
+          <Definition label="Deal" value={detail.dealId} />
+          <Definition
+            label="Source Revisions"
+            value={joinRaw(detail.sourceRevisionIds)}
+          />
+          <Definition
+            label="Claim edges"
+            value={String(detail.claimEdges.length)}
+          />
+        </details>
+        <FrameworkAppendix detail={detail} />
+      </DetailSection>
+
+      <DetailSection number="14" title="Final IC Position">
+        <div className="vsee-final-ic-position">
+          <span>FORMAL RESULT</span>
+          <strong>{article.finalPosition.decision}</strong>
+          <p>
+            Decision ceiling · {article.finalPosition.ceiling} · Confidence ·{" "}
+            {humanize(article.finalPosition.confidence)}
+          </p>
+          <p>Next action · {humanize(article.finalPosition.nextAction)}</p>
+          <small>
+            Human IC approval remains required. No outreach, publication, or
+            transaction is executed automatically.
+          </small>
+        </div>
       </DetailSection>
     </div>
   );
@@ -927,7 +1047,13 @@ function EvidenceContextNotice({
     >
       <strong>{pinned ? "PINNED DEMO REPLAY" : "LIVE EVIDENCE"}</strong>
       <p>{context.displayLabel}</p>
-      {pinned && <p>Historical evidence snapshot—not current news.</p>}
+      {pinned && (
+        <p>
+          Historical evidence snapshot—not current news. This underwriting
+          artifact belongs to its immutable pinned report; run a current scan
+          for the current Deal registry.
+        </p>
+      )}
       <small>
         14-day window · {formatDate(context.windowStartAt)} to{" "}
         {formatDate(context.windowEndAt)} · {context.windowTimezone} ·{" "}
