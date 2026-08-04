@@ -68,6 +68,28 @@ drafts.
   semibold emphasis or a larger serif treatment; whole paragraphs must not be
   bolded.
 
+## Site-wide typography
+
+The readability correction applies to the complete VSee website, not only the
+Deep Underwriting dialog.
+
+- Page introductions, report narratives, company briefs, event summaries,
+  Deal context, Chat answers, Settings explanations, and other principal body
+  copy use a minimum 15–16px size and at least 1.55 line height.
+- Primary page explanations and long-form report prose use 16–18px.
+- Navigation labels, buttons, filters, table headings, status labels, and
+  operational controls use at least 11–12px with sufficient weight and
+  contrast.
+- Company and report titles retain the serif hierarchy and increase where the
+  current scale does not provide a clear reading entry point.
+- Audit-only IDs, hashes, version pins, timestamps, and source metadata may use
+  10–11px monospaced type. They must not determine the size of adjacent
+  analytical content.
+- Mobile layouts preserve the readable scale rather than shrinking body text;
+  layout stacking and wrapping handle the reduced width.
+- Increasing font size must not cause clipped controls, horizontal page
+  overflow, truncated navigation, or collapsed report tables.
+
 ## Investor Framework Synthesis
 
 The main report will not render one card per analyst or one card per IC issue.
@@ -159,6 +181,8 @@ explicit labels. Long prose must not be squeezed into a narrow column.
 - The main report reads as a continuous professional IC memo, not a dashboard
   card collection.
 - Main narrative text is visually readable at desktop and mobile widths.
+- The complete site uses the approved readable typography scale; principal UI
+  copy is no longer rendered at 6–11px.
 - `Synthesized View` is not squeezed and remains easy to scan.
 - `Required Before Valuation` has readable column proportions and responsive
   stacked behavior.
@@ -173,4 +197,3 @@ explicit labels. Long prose must not be squeezed into a narrow column.
   non-endorsement remain visible.
 - Automated renderer, view-model, responsive CSS, type, build, and local
   browser acceptance tests pass.
-
