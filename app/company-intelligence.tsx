@@ -364,9 +364,12 @@ function ReportEvidenceContextDetail({
           <span>Evidence window</span>
           <b>{evidenceWindow}</b>
         </span>
-        <small className="vsee-evidence-context-timezone">
-          {context.windowTimezone}
-        </small>
+        <div className="vsee-evidence-context-meta">
+          <small>{context.windowTimezone}</small>
+          <small>
+            {context.eventCount} accepted {context.eventCount === 1 ? "event" : "events"}
+          </small>
+        </div>
         {pinned && (
           <small>Historical evidence snapshot · Not current news</small>
         )}

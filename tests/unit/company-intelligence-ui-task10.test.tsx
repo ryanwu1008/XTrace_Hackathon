@@ -874,6 +874,7 @@ test("report detail separates its evidence status and readable window from immut
 
   assert.match(primary, /LIVE EVIDENCE[\s\S]*Evidence window/);
   assert.match(primary, /Jul 19, 2026 – Aug 1, 2026/);
+  assert.match(primary, /1 accepted event/);
   assert.doesNotMatch(primary, /2026-08-01T23:59:59\.999Z/);
   assert.match(audit, /Anchor timestamp[\s\S]*2026-08-01T23:59:59\.000-07:00/);
   assert.match(audit, /Evidence window start timestamp[\s\S]*2026-07-19T00:00:00\.000-07:00/);
@@ -891,6 +892,20 @@ test("report detail separates its evidence status and readable window from immut
     html,
     /Top[ -]?5|Selected for Top|rank cutoff|sixth.*reject/i,
   );
+
+  report.evidenceContext = { ...context, eventCount: 4 };
+  const multiEventHtml = renderToStaticMarkup(createElement(CompanyIntelligenceReport, {
+    report,
+    focused: true,
+    allowDraft: false,
+    onDraft() {},
+    showDemoProfiles: false,
+    underwritingEnabled: false,
+    canSaveActionDrafts: false,
+  }));
+  const multiEventAuditStart = multiEventHtml.indexOf(auditMarker);
+  assert.notEqual(multiEventAuditStart, -1);
+  assert.match(multiEventHtml.slice(0, multiEventAuditStart), /4 accepted events/);
 });
 
 test("product Deal history keeps the permanent Sample decision record label", () => {

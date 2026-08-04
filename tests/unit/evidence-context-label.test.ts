@@ -37,6 +37,14 @@ test("UI evidence labels present a readable evidence window for live, pinned rep
     "Jul 19, 2026 – Aug 1, 2026",
   );
   assert.equal(
+    formatEvidenceWindow({
+      windowStartAt: "2026-03-08T08:00:00.000Z",
+      windowEndAt: "2026-03-10T06:59:59.999Z",
+      windowTimezone: "America/Los_Angeles",
+    }),
+    "Mar 8, 2026 – Mar 9, 2026",
+  );
+  assert.equal(
     evidenceContextLabel(liveContext),
     "LIVE EVIDENCE · Jul 18, 2026 – Aug 1, 2026",
   );
