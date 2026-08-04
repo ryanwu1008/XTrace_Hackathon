@@ -1,14 +1,19 @@
 # Current 30-Deal Cold E2E Acceptance Record
 
-- Status: **automated cold smoke passed on 2026-08-03**
+- Status: **automated cold smoke and private local browser acceptance passed on 2026-08-03**
 - Cold smoke result: **PASS — 1/1 test, 73.7 seconds**
-- Smoke-verified commit: **not created**
-- Preview/Staging deployment: **not performed**
+- Smoke-verified company-mainline commit: **`3b6c34843a1e0c6854439641b0a2ca2467392a89`**
+- Browser-fixture transport commits: **`d6f8c47737fb4740ca852b4798a7c84325a30950`**, **`df475eb99547cc7c3b5fbba3e5e10b06d4ae0f18`**
+- Preview/Staging deployment: **private target created; provider source-branch initialization blocked publication**
 - Production access or mutation authorized: **no**
 
-This record captures the fresh cold-smoke evidence for the current company
-mainline. Browser acceptance against the private Staging deployment remains a
-separate post-deployment check and is not represented as complete here.
+This record captures the fresh cold-smoke evidence and a real browser
+click-through of the current company mainline. The browser acceptance used a
+disposable loopback database, the real persistent queue/Worker boundary, and a
+private local preview. An externally reachable private Staging version could
+not be published because the newly created Sites project's source repository
+returned HTTP 500 during initial branch creation; no production target was used
+as a fallback.
 
 ## Executed command and result
 
@@ -133,6 +138,54 @@ Underwriting candidates/jobs/artifacts. Priority order was Irregular, Henry AI,
 Hush Security, and Smallest AI; priority affected ordering only. Nine Finalized
 Chat route queries completed and 50 exact Source Revisions resolved.
 
+## Private local browser acceptance
+
+The browser acceptance clicked the product's `WAKE AGENT & SCAN MARKET` action;
+it did not open a pre-generated current report. The UI first showed a durable
+queued/running state, the fixture Worker claimed the run, and the Reports page
+then switched to a newly persisted `LIVE EVIDENCE` report.
+
+- Private local preview: `http://127.0.0.1:3100/` (available only while the
+  disposable acceptance fixture remains running on the test machine).
+- Browser-created Report ID:
+  `report_6cf6278f-6170-402a-b08c-1fb6344c0047`.
+- Rendered coverage: 30 eligible Deals, 30 Belief Change Checks, 4 belief
+  revisions, 6 monitor, 20 no material change, and 0 unavailable.
+- Rendered queue: 4 completed Deep Underwriting results, with no Top-5 cutoff or
+  rejected-by-rank semantics.
+- The seven screening Deals retained their `screening` status and the permanent
+  `Sample research screening record · synthetic, no meeting or VC interaction`
+  label.
+- Irregular's full Deep Underwriting opened from the new report and displayed
+  exact Source Revisions, facts/assumptions/unknowns, hard gates, Investor
+  Framework Perspectives, Bear/Base/Bull inputs, explicit unavailable
+  valuation/calculations where evidence was insufficient, decision ceiling,
+  and draft-only status-aware actions.
+- Finalized Chat answered `Which new evidence changed the belief for Irregular?`
+  from the persisted artifact, returning the Sample decision context, three
+  exact public-source quotations, negative belief direction, revisit mapping,
+  and the typed action delta from `evaluate_follow_on` to `pause_follow_on` plus
+  `portfolio_risk_review`.
+
+The click-through exposed one presentation defect: a current screening monitor
+had a persisted 62% score and typed audit gates but the Company Brief called it
+a legacy analysis. The UI now reads `currentRunAudit` when no formal
+`beliefAssessment` exists, displays the exact persisted score/gate reasons and
+why Underwriting did not start, and reserves the legacy fallback for analyses
+that have neither contract. The regression test was written failing first and
+then passed after the fix.
+
+## Report-quality parity evidence
+
+The focused parity and UI suite passed 47/47 tests after the browser finding.
+It compares the current 30-analysis report with the immutable 23-analysis
+baseline across report structure, lineage, evidence classifications, scenario
+coverage, calculations or typed unavailability, framework judgments,
+disagreements, formal decisions or typed unavailability, action drafts, and
+unbounded Underwriting admission. The release build also completed
+successfully. This is semantic-quality parity: missing evidence remains visibly
+unavailable instead of being replaced by invented numbers or conclusions.
+
 ## Isolation and replay evidence
 
 - All network requests were constrained to `http://127.0.0.1`; remote network
@@ -150,8 +203,10 @@ Chat route queries completed and 50 exact Source Revisions resolved.
 
 ## Release evidence gate
 
-This record now satisfies the automated cold-smoke gate for committing the
-authorized company-mainline changes and deploying that exact SHA to the
-separately authorized private non-production Staging target. The Staging URL,
-deployment identity, secrets/isolation check, browser click-through, and manual
-UI acceptance must be appended after deployment; they are not yet complete.
+This record satisfies the automated cold-smoke and private local browser gates
+for the authorized company-mainline changes. A new owner-only Sites project was
+created for private Staging, but its empty source repository could not accept
+even a minimal initial branch: the provider returned HTTP 500 and therefore no
+version or safe external test URL exists yet. The production project, data,
+credentials, and deployment were not read, modified, seeded, or used as a
+fallback.

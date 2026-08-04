@@ -604,6 +604,92 @@ test("failed hard gates show their exact persisted failure reason", () => {
   assert.match(html, /No cited counterevidence was retained\./);
 });
 
+test("current monitor analyses render persisted score and audit gates instead of a legacy fallback", () => {
+  const analysis = analysisFixture();
+  analysis.outcome = "monitor";
+  analysis.confidence = "medium";
+  analysis.score = 0.62;
+  analysis.beliefAssessment = undefined;
+  analysis.currentRunAudit = {
+    schemaVersion: "company-analysis-current-run-audit-v1",
+    workspaceId: "workspace_demo",
+    companyId: "company_example",
+    stableDealId: analysis.dealId,
+    priorDealStatus: analysis.dealStatus,
+    analysisEligibleAt: "2026-04-01T12:00:00.000Z",
+    dealUniverseId: "deal-universe-example",
+    dealUniverseFingerprint: SOURCE_FINGERPRINT,
+    evidenceContextFingerprint: CONTEXT_FINGERPRINT,
+    evidenceBindingFingerprint: BINDING_FINGERPRINT,
+    activeParentFingerprint: SNAPSHOT_FINGERPRINT,
+    sourceRevisionIds: ["revision_public_exact"],
+    xtraceMemoryIds: ["memory_fixture_example"],
+    priorMemory: {
+      kind: "investment",
+      previousMeetingSummary: analysis.investmentMemory.previousMeetingSummary,
+      decisionReason: analysis.investmentMemory.decisionReason,
+      concerns: analysis.investmentMemory.concerns,
+      revisitConditions: analysis.investmentMemory.revisitConditions,
+      lastEvaluatedAt: analysis.investmentMemory.lastEvaluatedAt,
+      sourceIds: analysis.investmentMemory.sourceIds,
+      fixtureIds: analysis.investmentMemory.fixtureIds,
+    },
+    consideredMarketEventIds: ["event_company_adoption"],
+    matchedMarketEventIds: ["event_company_adoption"],
+    scoreBreakdown: {
+      eventRelevance: 0.7,
+      dealRelevance: 0.6,
+      priorContextStrength: 0.6,
+      evidenceQuality: 0.5,
+      finalScore: 0.62,
+      confidence: "medium",
+    },
+    gates: {
+      chronology: { passed: true, failureReason: null },
+      revisitConditionMapping: {
+        passed: false,
+        failureReason: "The event does not satisfy the persisted revisit condition.",
+      },
+      counterevidence: { passed: true, failureReason: null },
+      actionDelta: {
+        passed: false,
+        failureReason: "The proposed action does not differ from the prior action.",
+      },
+      allPassed: false,
+    },
+    direction: "positive",
+    actions: [{
+      kind: "continue_monitoring",
+      scope: "deal",
+      priority: "standard",
+      visibility: "internal_only",
+    }],
+    outcome: "monitor",
+    nonChangeReason: null,
+    analysisFailureReason: null,
+    whyNotUnderwriting: "Required belief-revision hard gates did not all pass.",
+    recall: {
+      attempted: true,
+      succeeded: true,
+      failureReason: null,
+    },
+  };
+
+  const html = renderToStaticMarkup(createElement(CompanyBrief, {
+    analysis,
+    activeTab: "IC Snapshot",
+    onTab() {},
+    onClose() {},
+  }));
+
+  assert.match(html, /WEIGHTED MATCH CONFIDENCE[\s\S]*62% · medium/);
+  assert.match(html, /Revisit-condition mapping[\s\S]*Failed/);
+  assert.match(html, /The event does not satisfy the persisted revisit condition\./);
+  assert.match(html, /Why Deep Underwriting did not start/);
+  assert.match(html, /Required belief-revision hard gates did not all pass\./);
+  assert.doesNotMatch(html, /legacy analysis/);
+});
+
 test("decision history derives the permanent Sample decision record label from fixture lineage", () => {
   const analysis = analysisFixture();
   analysis.companyBrief.decisionHistory[0]!.title = "passed decision";

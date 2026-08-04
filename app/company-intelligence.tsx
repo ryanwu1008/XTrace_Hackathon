@@ -642,7 +642,8 @@ function actionListLabel(
 
 function BeliefAssessmentDetail({ analysis }: { analysis: CompanyAnalysis }) {
   const assessment = analysis.beliefAssessment;
-  if (!assessment) {
+  const audit = analysis.currentRunAudit;
+  if (!assessment && !audit) {
     return (
       <section className="vsee-belief-assessment" role="note">
         <strong>Weighted match assessment unavailable</strong>
@@ -650,42 +651,74 @@ function BeliefAssessmentDetail({ analysis }: { analysis: CompanyAnalysis }) {
       </section>
     );
   }
-  const score = assessment.scoreBreakdown;
-  const gates = assessment.gates;
-  const gateRows = [
-    {
-      label: "Chronology",
-      result: gates.chronology,
-      detail:
-        `${gates.chronology.priorInteractionId ?? "No prior interaction"} → ${gates.chronology.triggerEventId ?? "No trigger event"}`,
-    },
-    {
-      label: "Revisit-condition mapping",
-      result: gates.revisitConditionMapping,
-      detail: gates.revisitConditionMapping.revisitConditionText
-        ? `Condition #${(gates.revisitConditionMapping.revisitConditionIndex ?? 0) + 1}: ${gates.revisitConditionMapping.revisitConditionText} · Sources: ${gates.revisitConditionMapping.citedSourceIds.join(" · ")}`
-        : "No exact revisit condition was mapped.",
-    },
-    {
-      label: "Counterevidence",
-      result: gates.counterevidence,
-      detail: gates.counterevidence.statement
-        ? `${gates.counterevidence.statement} · Sources: ${gates.counterevidence.citedSourceIds.join(" · ") || "None"}`
-        : "No counterevidence statement was retained.",
-    },
-    {
-      label: "Action delta",
-      result: gates.actionDelta,
-      detail:
-        `Before: ${actionListLabel(gates.actionDelta.priorActions)} · After: ${actionListLabel(gates.actionDelta.proposedActions)}`,
-    },
-  ];
+  const score = assessment?.scoreBreakdown ?? audit!.scoreBreakdown;
+  const gates = assessment?.gates ?? audit!.gates;
+  const gateRows: Array<{
+    label: string;
+    result: { passed: boolean; failureReason: string | null };
+    detail: string;
+  }> = assessment
+    ? [
+      {
+        label: "Chronology",
+        result: assessment.gates.chronology,
+        detail:
+          `${assessment.gates.chronology.priorInteractionId ?? "No prior interaction"} → ${assessment.gates.chronology.triggerEventId ?? "No trigger event"}`,
+      },
+      {
+        label: "Revisit-condition mapping",
+        result: assessment.gates.revisitConditionMapping,
+        detail: assessment.gates.revisitConditionMapping.revisitConditionText
+          ? `Condition #${(assessment.gates.revisitConditionMapping.revisitConditionIndex ?? 0) + 1}: ${assessment.gates.revisitConditionMapping.revisitConditionText} · Sources: ${assessment.gates.revisitConditionMapping.citedSourceIds.join(" · ")}`
+          : "No exact revisit condition was mapped.",
+      },
+      {
+        label: "Counterevidence",
+        result: assessment.gates.counterevidence,
+        detail: assessment.gates.counterevidence.statement
+          ? `${assessment.gates.counterevidence.statement} · Sources: ${assessment.gates.counterevidence.citedSourceIds.join(" · ") || "None"}`
+          : "No counterevidence statement was retained.",
+      },
+      {
+        label: "Action delta",
+        result: assessment.gates.actionDelta,
+        detail:
+          `Before: ${actionListLabel(assessment.gates.actionDelta.priorActions)} · After: ${actionListLabel(assessment.gates.actionDelta.proposedActions)}`,
+      },
+    ]
+    : [
+      {
+        label: "Chronology",
+        result: audit!.gates.chronology,
+        detail: "Persisted current-run chronology verdict.",
+      },
+      {
+        label: "Revisit-condition mapping",
+        result: audit!.gates.revisitConditionMapping,
+        detail: "Persisted current-run revisit-condition verdict.",
+      },
+      {
+        label: "Counterevidence",
+        result: audit!.gates.counterevidence,
+        detail: "Persisted current-run counterevidence verdict.",
+      },
+      {
+        label: "Action delta",
+        result: audit!.gates.actionDelta,
+        detail: `Proposed: ${actionListLabel(audit!.actions)}`,
+      },
+    ];
   return (
     <section className="vsee-belief-assessment" aria-label="Match confidence and hard gates">
       <header>
         <span>WEIGHTED MATCH CONFIDENCE</span>
         <strong>{percentage(score.finalScore)} · {score.confidence}</strong>
       </header>
+      {!assessment && audit && (
+        <p>
+          Current-run Belief Change Check · persisted audit result for a non-underwritten analysis.
+        </p>
+      )}
       <div className="vsee-score-breakdown">
         <Definition label="Event relevance · 35%" value={percentage(score.eventRelevance)} />
         <Definition label="Deal relevance · 30%" value={percentage(score.dealRelevance)} />
@@ -715,6 +748,18 @@ function BeliefAssessmentDetail({ analysis }: { analysis: CompanyAnalysis }) {
           Overall hard-gate result · {gates.allPassed ? "Passed" : "Failed"}
         </p>
       </div>
+      {!assessment && audit?.nonChangeReason && (
+        <Definition label="Why no material change was recorded" value={audit.nonChangeReason} />
+      )}
+      {!assessment && audit?.analysisFailureReason && (
+        <Definition label="Why analysis was unavailable" value={audit.analysisFailureReason} />
+      )}
+      {!assessment && audit?.whyNotUnderwriting && (
+        <Definition
+          label="Why Deep Underwriting did not start"
+          value={audit.whyNotUnderwriting}
+        />
+      )}
     </section>
   );
 }
