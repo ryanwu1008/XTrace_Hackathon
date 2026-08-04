@@ -16,6 +16,7 @@ import {
   lineageForClaim,
   versionRows,
 } from "./underwriting-view-model";
+import { buildAnalystPanel } from "./analyst-panel-view-model";
 import {
   hasSampleResearchScreeningAuthority,
   SAMPLE_RESEARCH_SCREENING_BADGE,
@@ -143,11 +144,16 @@ export function UnderwritingDetailPanel({
   const capitalFlowFact = detail.evidencePack.facts.find((fact) =>
     /capital.*flow|funding.*flow/.test(fact.field)
   );
+  const analystPanel = buildAnalystPanel(detail.judgments);
 
   return (
     <div className="vsee-underwriting-detail">
       <EvidenceContextNotice context={evidenceContext} />
-      <DetailSection number="01" title="What happened?">
+      <DetailSection number="01" title="Executive Decision Memo">
+        <ExecutiveDecisionMemo analysis={analysis} detail={detail} />
+      </DetailSection>
+
+      <DetailSection number="02" title="Belief Change & Market Evidence">
         <div className="vsee-detail-meta">
           <span>14-DAY EVENT WINDOW</span>
           <b>{detail.evidencePack.asOfDate}</b>
@@ -221,7 +227,7 @@ export function UnderwritingDetailPanel({
         )}
       </DetailSection>
 
-      <DetailSection number="02" title="What is the impact?">
+      <DetailSection number="03" title="Company Impact & Evidence">
         <p>{analysis?.marketEvidence.explanation ?? detail.narrative}</p>
         <div className="vsee-impact-grid">
           <ListBlock
@@ -265,8 +271,8 @@ export function UnderwritingDetailPanel({
       </DetailSection>
 
       <DetailSection
-        number="03"
-        title="Which historical companies are affected?"
+        number="04"
+        title="Deal Memory · Then vs Now"
       >
         <h4>Context</h4>
         {!!analysis?.investmentMemory.fixtureIds.length && (
@@ -316,75 +322,11 @@ export function UnderwritingDetailPanel({
         </dl>
       </DetailSection>
 
-      <DetailSection number="04" title="Investor Framework Perspectives">
-        {detail.judgments.length ? (
-          <div className="vsee-framework-list">
-            {detail.judgments.map((judgment) => (
-            <article key={judgment.id}>
-              <header>
-                <div>
-                  <span>
-                    {judgment.frameworkMetadata
-                      ? `NAMED ADVISORY · ${judgment.frameworkMetadata.packName}`
-                      : "CORE FRAMEWORK"}
-                  </span>
-                  <h4>{humanize(judgment.frameworkCardId)}</h4>
-                </div>
-                <b>{judgment.applicability} · {judgment.conclusion}</b>
-              </header>
-              {judgment.frameworkMetadata && (
-                <>
-                  <p className="vsee-zero-weight">
-                    Advisory formal decision weight · 0
-                  </p>
-                  <AdvisoryFrameworkProvenance
-                    judgmentCardId={judgment.frameworkCardId}
-                    judgmentCardVersion={judgment.frameworkVersion}
-                    metadata={judgment.frameworkMetadata}
-                  />
-                </>
-              )}
-              <Definition
-                label="Support"
-                value={judgment.strongestSupport ?? "Unavailable"}
-              />
-              <Definition
-                label="Counterevidence"
-                value={judgment.strongestCounterargument ?? "Unavailable"}
-              />
-              <Definition
-                label="Supporting Evidence Pack IDs"
-                value={join(judgment.supportEvidenceItemIds)}
-              />
-              <Definition
-                label="Counterevidence Evidence Pack IDs"
-                value={join(judgment.counterEvidenceItemIds)}
-              />
-              <Definition label="Unknowns" value={join(judgment.unknowns)} />
-              <Definition
-                label="Limitations"
-                value={join(judgment.limitations)}
-              />
-              <Definition
-                label="Confidence"
-                value={[
-                  `source ${judgment.confidence.sourceReliability}`,
-                  `strength ${judgment.confidence.evidenceStrength}`,
-                  `coverage ${judgment.confidence.evidenceCoverage}`,
-                  `applicability ${judgment.confidence.applicability}`,
-                  `judgment ${judgment.confidence.judgment}`,
-                ].join(" · ")}
-              />
-              <ClaimTrace claimItemId={judgment.id} detail={detail} />
-            </article>
-            ))}
-          </div>
-        ) : (
-          <Unavailable copy="No persisted framework judgments are available." />
-        )}
+      <DetailSection number="05" title="Analyst Panel Synthesis">
+        <AnalystPanelSynthesis detail={detail} panel={analystPanel} />
         {detail.disagreements.length ? (
           <section className="vsee-disagreements">
-            <h4>Independent disagreements</h4>
+            <h4>Material disagreements</h4>
             {detail.disagreements.map((disagreement) => (
               <article key={disagreement.id}>
                 <strong>{humanize(disagreement.topic)}</strong>
@@ -409,9 +351,10 @@ export function UnderwritingDetailPanel({
         ) : (
           <Unavailable copy="No framework disagreements were persisted." />
         )}
+        <FrameworkAppendix detail={detail} />
       </DetailSection>
 
-      <DetailSection number="05" title="Valuation and fund return">
+      <DetailSection number="06" title="Financial Case">
         <p className={`vsee-valuation-state ${detail.valuation.status}`}>
           {humanize(detail.valuation.status)}
           {detail.valuation.blockerCodes.length
@@ -543,7 +486,7 @@ export function UnderwritingDetailPanel({
         </div>
       </DetailSection>
 
-      <DetailSection number="06" title="Final conclusion">
+      <DetailSection number="07" title="VSee IC Synthesis">
         <div className="vsee-decision-dimensions">
           <Definition
             label="Company Quality"
@@ -586,7 +529,7 @@ export function UnderwritingDetailPanel({
         </details>
       </DetailSection>
 
-      <DetailSection number="07" title="What can you do?">
+      <DetailSection number="08" title="Diligence & Next Actions">
         <div className="vsee-action-list">
           {detail.evidencePack.coverage.missingFieldIds.map((field) => (
             <article key={field}>
@@ -635,7 +578,7 @@ export function UnderwritingDetailPanel({
         </dl>
       </DetailSection>
 
-      <DetailSection number="08" title="Action drafts">
+      <DetailSection number="09" title="Action drafts">
         <p>
           These are persisted draft bodies only. Editing replaces the current
           body for the same draft identity.
@@ -705,6 +648,260 @@ export function UnderwritingDetailPanel({
       </DetailSection>
     </div>
   );
+}
+
+function ExecutiveDecisionMemo({
+  analysis,
+  detail,
+}: {
+  analysis: UnderwritingAnalysisContext | null;
+  detail: CandidateUnderwritingDetail;
+}) {
+  const assessment = analysis?.beliefAssessment;
+  const primaryAction = assessment?.actions[0];
+  const missingEvidence = detail.evidencePack.coverage.missingFieldIds;
+
+  return (
+    <div className="vsee-executive-memo">
+      <div className="vsee-executive-memo-lead">
+        <div>
+          <span>FORMAL RESULT</span>
+          <strong>{detail.decision.decision ?? "Unavailable"}</strong>
+        </div>
+        <p>
+          {analysis?.marketEvidence.explanation
+            ?? "A concise source-grounded market-impact summary was not persisted; review the evidence and IC synthesis below."}
+        </p>
+      </div>
+      <div className="vsee-executive-memo-grid">
+        <article>
+          <span>DECISION CEILING</span>
+          <strong>{detail.decision.decisionCeiling ?? "Unavailable"}</strong>
+          <small>
+            Decision ceiling · {detail.decision.decisionCeiling ?? "Unavailable"}
+          </small>
+        </article>
+        <article>
+          <span>CONFIDENCE</span>
+          <strong>{humanize(detail.decision.confidence)}</strong>
+          <small>Persisted underwriting confidence</small>
+        </article>
+        <article>
+          <span>BELIEF CHANGE</span>
+          <strong>{assessment ? humanize(assessment.direction) : "Unavailable"}</strong>
+          <small>
+            Deal status · {analysis ? humanize(analysis.dealStatus) : "Unavailable"}
+          </small>
+        </article>
+        <article>
+          <span>RECOMMENDED NEXT MOVE</span>
+          <strong>{primaryAction ? humanize(primaryAction.kind) : "Unavailable"}</strong>
+          <small>
+            {primaryAction
+              ? `${humanize(primaryAction.scope)} · ${humanize(primaryAction.priority)} priority`
+              : "No status-aware action was persisted"}
+          </small>
+        </article>
+      </div>
+      <div className="vsee-executive-memo-blockers">
+        <span>CRITICAL MISSING EVIDENCE</span>
+        <strong>
+          Critical missing evidence · {missingEvidence.length
+            ? missingEvidence.join(" · ")
+            : "None persisted"}
+        </strong>
+        <small>
+          Blocking conflicts · {detail.evidencePack.coverage.blockingConflictIds.length
+            ? detail.evidencePack.coverage.blockingConflictIds.join(" · ")
+            : "None persisted"}
+        </small>
+      </div>
+    </div>
+  );
+}
+
+function AnalystPanelSynthesis({
+  detail,
+  panel,
+}: {
+  detail: CandidateUnderwritingDetail;
+  panel: ReturnType<typeof buildAnalystPanel>;
+}) {
+  return (
+    <div className="vsee-analyst-panel-summary">
+      <div className="vsee-analyst-panel-meta">
+        <div>
+          <span>ADVISORY PANEL</span>
+          <strong>
+            {countLabel(panel.activeJudgmentCount, "active judgment")}
+            {" · "}{countLabel(
+              panel.abstainedJudgmentCount,
+              "abstained or unavailable",
+              false,
+            )}
+          </strong>
+        </div>
+        <small>Public-source product synthesis · no endorsement</small>
+      </div>
+      <p>
+        Named public-source frameworks are grouped by the IC question they
+        illuminate. They remain advisory, independently persisted, and carry
+        zero formal decision weight.
+      </p>
+      {panel.groups.length ? (
+        <div className="vsee-analyst-issue-grid">
+          {panel.groups.map((group) => (
+            <article className="vsee-analyst-issue" key={group.id}>
+              <header>
+                <div>
+                  <span>IC ISSUE</span>
+                  <h4>{group.title}</h4>
+                </div>
+                <b>{group.judgmentIds.length} views</b>
+              </header>
+              <p>{group.description}</p>
+              <Definition
+                label="Analysts"
+                value={group.participants.map(compactAnalystName).join(" · ")}
+              />
+              <Definition
+                label="Judgment range"
+                value={group.conclusions.map(humanize).join(" · ")}
+              />
+              <Definition
+                label="Strongest support"
+                value={group.strongestSupport[0] ?? "Unavailable"}
+              />
+              <Definition
+                label="Strongest counterevidence"
+                value={group.strongestCounterevidence[0] ?? "Unavailable"}
+              />
+              <Definition
+                label="Highest-priority unknown"
+                value={group.unknowns[0] ?? "Unavailable"}
+              />
+              <details className="vsee-details">
+                <summary>Open all persisted issue inputs</summary>
+                <Definition
+                  label="Judgment IDs"
+                  value={group.judgmentIds.join(" · ")}
+                />
+                <Definition
+                  label="All support"
+                  value={join(group.strongestSupport)}
+                />
+                <Definition
+                  label="All counterevidence"
+                  value={join(group.strongestCounterevidence)}
+                />
+                <Definition label="All unknowns" value={join(group.unknowns)} />
+              </details>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <Unavailable copy="No active framework judgments are available for IC synthesis." />
+      )}
+      {!detail.judgments.length && (
+        <Unavailable copy="No persisted framework judgments are available." />
+      )}
+    </div>
+  );
+}
+
+function FrameworkAppendix({
+  detail,
+}: {
+  detail: CandidateUnderwritingDetail;
+}) {
+  return (
+    <details className="vsee-details vsee-framework-appendix">
+      <summary>
+        Complete Framework Appendix · {detail.judgments.length} persisted
+        judgments
+      </summary>
+      <p>
+        Complete Investor Framework Perspectives with the original per-framework
+        conclusion, counterevidence, limitations, confidence dimensions, source
+        catalog, version pins, and Evidence Pack lineage.
+      </p>
+      {detail.judgments.length ? (
+        <div className="vsee-framework-list">
+          {detail.judgments.map((judgment) => (
+            <article key={judgment.id}>
+              <header>
+                <div>
+                  <span>
+                    {judgment.frameworkMetadata
+                      ? `NAMED ADVISORY · ${judgment.frameworkMetadata.packName}`
+                      : "CORE FRAMEWORK"}
+                  </span>
+                  <h4>{humanize(judgment.frameworkCardId)}</h4>
+                </div>
+                <b>{judgment.applicability} · {judgment.conclusion}</b>
+              </header>
+              {judgment.frameworkMetadata && (
+                <>
+                  <p className="vsee-zero-weight">
+                    Advisory formal decision weight · 0
+                  </p>
+                  <AdvisoryFrameworkProvenance
+                    judgmentCardId={judgment.frameworkCardId}
+                    judgmentCardVersion={judgment.frameworkVersion}
+                    metadata={judgment.frameworkMetadata}
+                  />
+                </>
+              )}
+              <Definition
+                label="Support"
+                value={judgment.strongestSupport ?? "Unavailable"}
+              />
+              <Definition
+                label="Counterevidence"
+                value={judgment.strongestCounterargument ?? "Unavailable"}
+              />
+              <Definition
+                label="Supporting Evidence Pack IDs"
+                value={join(judgment.supportEvidenceItemIds)}
+              />
+              <Definition
+                label="Counterevidence Evidence Pack IDs"
+                value={join(judgment.counterEvidenceItemIds)}
+              />
+              <Definition label="Unknowns" value={join(judgment.unknowns)} />
+              <Definition
+                label="Limitations"
+                value={join(judgment.limitations)}
+              />
+              <Definition
+                label="Confidence"
+                value={[
+                  `source ${judgment.confidence.sourceReliability}`,
+                  `strength ${judgment.confidence.evidenceStrength}`,
+                  `coverage ${judgment.confidence.evidenceCoverage}`,
+                  `applicability ${judgment.confidence.applicability}`,
+                  `judgment ${judgment.confidence.judgment}`,
+                ].join(" · ")}
+              />
+              <ClaimTrace claimItemId={judgment.id} detail={detail} />
+            </article>
+          ))}
+        </div>
+      ) : (
+        <Unavailable copy="No persisted framework judgments are available." />
+      )}
+    </details>
+  );
+}
+
+function countLabel(count: number, label: string, plural = true): string {
+  return `${count} ${label}${plural && count === 1 ? "" : plural ? "s" : ""}`;
+}
+
+function compactAnalystName(name: string): string {
+  return name
+    .replace(/\s+Public Frameworks\s+—\s+Research Draft$/i, "")
+    .replace(/\s+Public Frameworks$/i, "");
 }
 
 function EvidenceContextNotice({

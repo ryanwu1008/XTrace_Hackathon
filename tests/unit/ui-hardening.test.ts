@@ -765,6 +765,13 @@ test("underwriting summary renders every changed belief in priority order withou
   assert.match(html, /Underwriting Status/);
   assert.match(html, /Deep Underwriting/);
   assert.match(html, /Investor Framework Perspectives/);
+  assert.match(html, /class="vsee-underwriting-count"/);
+  assert.match(html, /class="vsee-underwriting-priority"/);
+  assert.match(html, /class="vsee-underwriting-decision"/);
+  assert.match(
+    html,
+    /Formal decision unavailable — open the report for blockers and decision ceilings\./,
+  );
   assert.match(html, /exact public-source lineage/i);
   assert.ok(html.indexOf("Completed Co") < html.indexOf("Priority Six Co"));
   assert.match(html, /Priority Six Co/);
@@ -782,6 +789,27 @@ test("underwriting summary renders every changed belief in priority order withou
     html,
     /Top[ -]?5|Selected for Top|rank cutoff|not selected|sixth.*reject/i,
   );
+});
+
+test("underwriting queue and analyst synthesis use bounded responsive IC layouts", async () => {
+  const css = await readFile(cssPath, "utf8");
+
+  for (const contract of [
+    ".vsee-underwriting-status-counts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr))",
+    ".vsee-underwriting-count{min-width:0;padding:10px 14px",
+    ".vsee-underwriting-priority{display:grid",
+    ".vsee-underwriting-decision{display:grid",
+    ".vsee-executive-memo-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))",
+    ".vsee-analyst-issue-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))",
+    ".vsee-analyst-issue{min-width:0;padding:18px",
+    ".vsee-framework-appendix{margin-top:22px",
+    ".vsee-underwriting-events h4,.vsee-evidence-ledger strong,.vsee-evidence-ledger p,.vsee-evidence-ledger small,.vsee-evidence-ledger a{overflow-wrap:anywhere}",
+    ".vsee-action-draft-list article,.vsee-action-draft-list p,.vsee-action-draft-list small,.vsee-action-draft-list dl,.vsee-action-draft-list dd{min-width:0;overflow-wrap:anywhere}",
+    "@media(max-width:680px){.vsee-policy-summary,.vsee-impact-grid",
+    ".vsee-underwriting-row{grid-template-columns:1fr;",
+  ]) {
+    assert.ok(css.includes(contract), contract);
+  }
 });
 
 test("underwriting detail preserves section order, lineage, public version pins, and draft-only actions", () => {
@@ -844,13 +872,14 @@ test("underwriting detail preserves section order, lineage, public version pins,
   }));
 
   const orderedHeadings = [
-    "What happened?",
-    "What is the impact?",
-    "Which historical companies are affected?",
-    "Investor Framework Perspectives",
-    "Valuation and fund return",
-    "Final conclusion",
-    "What can you do?",
+    "Executive Decision Memo",
+    "Belief Change &amp; Market Evidence",
+    "Company Impact &amp; Evidence",
+    "Deal Memory · Then vs Now",
+    "Analyst Panel Synthesis",
+    "Financial Case",
+    "VSee IC Synthesis",
+    "Diligence &amp; Next Actions",
     "Action drafts",
   ];
   for (let index = 1; index < orderedHeadings.length; index += 1) {
@@ -859,12 +888,25 @@ test("underwriting detail preserves section order, lineage, public version pins,
         < html.indexOf(orderedHeadings[index]),
     );
   }
+  const executiveLead = html.match(
+    /<div class="vsee-executive-memo-lead">([\s\S]*?)<\/div><div class="vsee-executive-memo-grid">/,
+  )?.[1] ?? "";
+  assert.match(executiveLead, /Carrier adoption accelerated\./);
+  assert.doesNotMatch(
+    executiveLead,
+    /Source-grounded diligence supports an Advance/,
+  );
   assert.match(html, />Calculation</);
   assert.match(html, />Fact</);
   assert.match(html, /Capital flow[\s\S]*?Unsupported/);
   assert.match(html, /Gross IRR[\s\S]*?Unsupported/);
   assert.match(html, /Stale benchmark/);
   assert.match(html, /Open disagreement evidence and lineage/);
+  assert.match(html, /Cross-cutting Decision Lenses/);
+  assert.match(html, /Complete Framework Appendix/);
+  assert.match(html, /1 active judgment/);
+  assert.match(html, /0 abstained or unavailable/);
+  assert.match(html, /Public-source product synthesis · no endorsement/);
   assert.match(
     html,
     /\/api\/source-revisions\/revision_1\/access/,

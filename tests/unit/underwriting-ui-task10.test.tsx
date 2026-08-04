@@ -525,6 +525,10 @@ test("renders the exact 3 by 17 scenario model, full evidence state, premium lin
   assert.match(html, /Internal memo · Internal · Internal/);
   assert.match(html, /Latest ARR/);
   assert.match(html, /Could lower the current decision ceiling/);
+  assert.match(html, /Executive Decision Memo/);
+  assert.match(html, /VSee IC Synthesis/);
+  assert.match(html, /Decision ceiling · Advance/);
+  assert.match(html, /Critical missing evidence · net_retention/);
 });
 
 test("Deep Underwriting permanently labels an exact synthetic research screening authority without impersonating a meeting", () => {

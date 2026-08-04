@@ -221,8 +221,9 @@ export function UnderwritingSummaryPanel({
           <p>
             All Changed Beliefs enter Deep Underwriting. Priority Order
             controls execution order only and never eligibility. Open finalized
-            work for calculations, Investor Framework Perspectives, Evidence
-            Pack IDs, and exact public-source lineage.
+            work for the decision memo, Analyst Panel Synthesis, complete
+            Investor Framework Perspectives, Evidence Pack IDs, and exact
+            public-source lineage.
           </p>
         </div>
         {batch && (
@@ -242,7 +243,7 @@ export function UnderwritingSummaryPanel({
           >
             {Object.entries(batch.underwritingStatusCounts).map(
               ([status, count]) => (
-                <span key={status}>
+                <span className="vsee-underwriting-count" key={status}>
                   {statusLabels[status as keyof typeof statusLabels]} · {count}
                 </span>
               ),
@@ -257,10 +258,14 @@ export function UnderwritingSummaryPanel({
                 className={`vsee-underwriting-row ${entry.status}`}
                 key={entry.dealId}
               >
-                <span className="vsee-underwriting-rank">
-                  Priority Order · #{entry.priorityRank}
-                </span>
-                <div>
+                <div className="vsee-underwriting-priority">
+                  <small>Priority Order</small>
+                  <strong>#{entry.priorityRank}</strong>
+                  <span className="vsee-visually-hidden">
+                    Priority Order · #{entry.priorityRank}
+                  </span>
+                </div>
+                <div className="vsee-underwriting-company">
                   <strong>
                     {companyNames[entry.dealId] ?? entry.dealId}
                   </strong>
@@ -270,7 +275,17 @@ export function UnderwritingSummaryPanel({
                 <span className="vsee-underwriting-status">
                   Underwriting Status · {statusLabels[entry.status]}
                 </span>
-                <span>{entry.decision ?? "Decision unavailable"}</span>
+                <div className="vsee-underwriting-decision">
+                  <small>IC RESULT</small>
+                  {entry.decision ? (
+                    <strong>{entry.decision}</strong>
+                  ) : (
+                    <span>
+                      Formal decision unavailable — open the report for blockers
+                      and decision ceilings.
+                    </span>
+                  )}
+                </div>
                 <button
                   onClick={() => onOpenCandidate(entry)}
                   disabled={!openable}
