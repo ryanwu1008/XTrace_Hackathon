@@ -61,7 +61,7 @@ export async function preflightBeliefReversalColdWorkerTarget(input: {
     input.environment ?? process.env,
   );
   const response = await (input.fetchImpl ?? fetch)(
-    `${configuration.postgrestUrl}/rpc/__vsee_task12_database_identity`,
+    `${configuration.postgrestUrl}/rest/v1/rpc/__vsee_task12_database_identity`,
     {
       method: "POST",
       headers: {

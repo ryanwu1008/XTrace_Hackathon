@@ -5,6 +5,9 @@ import {
   preflightBeliefReversalColdWorkerTarget,
   readBeliefReversalColdWorkerConfiguration,
 } from "../../scripts/run-belief-reversal-cold-worker";
+import { handleBeliefReversalBrowserFixtureRequest } from
+  "../../scripts/run-belief-reversal-browser-fixture";
+import { createMemoryPrivateObjectStorage } from "../../lib/storage/service";
 
 test("cold Worker accepts only disposable loopback provider and database boundaries", () => {
   assert.deepEqual(readBeliefReversalColdWorkerConfiguration({
@@ -81,7 +84,7 @@ test("cold Worker verifies the disposable database identity before any startup s
       fetchImpl: async (request, init) => {
         assert.equal(
           String(request),
-          "http://127.0.0.1:43123/rpc/__vsee_task12_database_identity",
+          "http://127.0.0.1:43123/rest/v1/rpc/__vsee_task12_database_identity",
         );
         assert.equal(init?.method, "POST");
         return Response.json("vsee_different_0123456789abcdef");
@@ -101,6 +104,40 @@ test("cold Worker verifies the disposable database identity before any startup s
     configuration.databaseName,
     "vsee_belief_browser_0123456789abcdef",
   );
+});
+
+test("cold Worker identity preflight traverses the browser fixture REST gateway", async () => {
+  const databaseName = "vsee_belief_browser_0123456789abcdef";
+  const serviceRoleKey = "test-only-service-role";
+  let upstreamCalls = 0;
+  const configuration = await preflightBeliefReversalColdWorkerTarget({
+    environment: {
+      NODE_ENV: "test",
+      SUPABASE_URL: "http://127.0.0.1:43123",
+      SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
+      BELIEF_REVERSAL_MARKET_FIXTURE_URL:
+        "http://127.0.0.1:43123/__fixture/market",
+      BELIEF_REVERSAL_FIXTURE_DATABASE: databaseName,
+    },
+    fetchImpl: (request, init) =>
+      handleBeliefReversalBrowserFixtureRequest({
+        request: new Request(request, init),
+        postgrestUrl: "http://127.0.0.1:49154",
+        objectStorage: createMemoryPrivateObjectStorage(),
+        serviceRoleKey,
+        fetchImpl: (async (upstreamRequest) => {
+          upstreamCalls += 1;
+          assert.equal(
+            String(upstreamRequest),
+            "http://127.0.0.1:49154/rpc/__vsee_task12_database_identity",
+          );
+          return Response.json(databaseName);
+        }) as typeof fetch,
+      }),
+  });
+
+  assert.equal(configuration.databaseName, databaseName);
+  assert.equal(upstreamCalls, 1);
 });
 
 test("cold Worker production rejection occurs before the identity request", async () => {
