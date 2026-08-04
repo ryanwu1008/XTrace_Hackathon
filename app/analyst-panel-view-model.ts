@@ -20,6 +20,7 @@ export interface AnalystIssueGroup {
   strongestSupport: string[];
   strongestCounterevidence: string[];
   unknowns: string[];
+  synthesizedView: string;
 }
 
 export interface AnalystPanelViewModel {
@@ -78,20 +79,28 @@ export function buildAnalystPanel(
 
   const groups = issues.map((issue) => {
     const members = active.filter((judgment) => classifyIssue(judgment) === issue.id);
+    const strongestSupport = unique(members.flatMap((judgment) =>
+      useful(judgment.strongestSupport) ? [judgment.strongestSupport] : []
+    ));
+    const strongestCounterevidence = unique(members.flatMap((judgment) =>
+      useful(judgment.strongestCounterargument)
+        ? [judgment.strongestCounterargument]
+        : []
+    ));
+    const unknowns = unique(members.flatMap((judgment) => judgment.unknowns));
     return {
       ...issue,
       judgmentIds: members.map(({ id }) => id),
       participants: unique(members.map(analystName)),
       conclusions: members.map(({ conclusion }) => conclusion),
-      strongestSupport: unique(members.flatMap((judgment) =>
-        useful(judgment.strongestSupport) ? [judgment.strongestSupport] : []
-      )),
-      strongestCounterevidence: unique(members.flatMap((judgment) =>
-        useful(judgment.strongestCounterargument)
-          ? [judgment.strongestCounterargument]
-          : []
-      )),
-      unknowns: unique(members.flatMap(({ unknowns }) => unknowns)),
+      strongestSupport,
+      strongestCounterevidence,
+      unknowns,
+      synthesizedView: editorialSynthesis({
+        support: strongestSupport[0],
+        counterevidence: strongestCounterevidence[0],
+        unknown: unknowns[0],
+      }),
     } satisfies AnalystIssueGroup;
   }).filter(({ judgmentIds }) => judgmentIds.length > 0);
 
@@ -189,4 +198,25 @@ function useful(value: string | null): value is string {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function editorialSynthesis(input: {
+  support?: string;
+  counterevidence?: string;
+  unknown?: string;
+}): string {
+  return [
+    input.support ? sentence(input.support) : "No affirmative support was persisted.",
+    input.counterevidence
+      ? `Counterpoint: ${sentence(input.counterevidence)}`
+      : "No material counterevidence was persisted.",
+    input.unknown
+      ? `Open question: ${sentence(input.unknown)}`
+      : "No additional open question was persisted.",
+  ].join(" ");
+}
+
+function sentence(value: string): string {
+  const trimmed = value.trim();
+  return /[.!?]$/u.test(trimmed) ? trimmed : `${trimmed}.`;
 }

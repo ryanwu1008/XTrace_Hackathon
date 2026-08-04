@@ -74,6 +74,10 @@ test("groups active named judgments by IC issue without dropping opposing views"
   assert.match(market.participants.join(" "), /Sequoia/);
   assert.match(market.strongestSupport.join(" "), /scarce technical wedge/);
   assert.match(market.strongestCounterevidence.join(" "), /durable trust/);
+  assert.equal(
+    market.synthesizedView,
+    "The category has a scarce technical wedge. Counterpoint: Containment failure weakens durable trust. Open question: Unknown for judgment_thiel.",
+  );
 
   for (const issueId of [
     "competitive_power",
