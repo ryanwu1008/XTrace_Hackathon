@@ -6,6 +6,9 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  resolveBeliefReversalBrowserFixtureWorkerBindings,
+} from "../../build/browser-fixture-worker-bindings";
+import {
   createMemoryPrivateObjectStorage,
   type PrivateObjectStorage,
 } from "../../lib/storage/service";
@@ -97,6 +100,7 @@ test("browser fixture child environment keeps only loopback test configuration a
       "/tmp/browser-fixture/vsee-belief-reversal-browser-0123456789abcdef-home/.config",
     TMPDIR: "/tmp/browser-fixture",
     NODE_ENV: "development",
+    BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME: "1",
     PUBLIC_APP_URL: "http://127.0.0.1:3100",
     VSEE_DEPLOYMENT_MODE: "public_sandbox",
     DEMO_WORKSPACE_ID: "workspace_demo",
@@ -132,6 +136,46 @@ test("browser fixture child environment keeps only loopback test configuration a
   for (const secretName of ["XTRACE_ORG_ID", "CRUNCHBASE_API_KEY"]) {
     assert.equal(secretName in environment, false);
   }
+});
+
+test("browser fixture exposes its allowlisted child environment as local Worker bindings only behind the fixture sentinel", () => {
+  const child = buildBeliefReversalBrowserFixtureEnvironment({
+    inheritedEnvironment: { PATH: "/usr/bin:/bin" },
+    proxyUrl: "http://127.0.0.1:43123",
+    serviceRoleKey: "task14-test-only-service-role-jwt",
+    webUrl: "http://127.0.0.1:3100",
+    resourceSuffix: "0123456789abcdef",
+    databaseName: "vsee_belief_browser_0123456789abcdef",
+  });
+
+  assert.equal(
+    resolveBeliefReversalBrowserFixtureWorkerBindings({
+      ...child,
+      BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME: undefined,
+    }),
+    undefined,
+  );
+  assert.deepEqual(
+    resolveBeliefReversalBrowserFixtureWorkerBindings(child),
+    {
+      PUBLIC_APP_URL: "http://127.0.0.1:3100",
+      VSEE_DEPLOYMENT_MODE: "public_sandbox",
+      DEMO_WORKSPACE_ID: "workspace_demo",
+      SUPABASE_URL: "http://127.0.0.1:43123",
+      SUPABASE_SERVICE_ROLE_KEY: "task14-test-only-service-role-jwt",
+      SUPABASE_STORAGE_BUCKET: "vsee-demo-sources",
+      DOCUMENT_URL_SIGNING_SECRET:
+        "vsee-task14-test-only-document-signing-secret-0123456789abcdef",
+      ANTHROPIC_MODEL: "claude-opus-4-8",
+      ANTHROPIC_API_KEY:
+        "belief-reversal-test-only-anthropic-0123456789abcdef",
+      XTRACE_API_KEY: "mmk_test_only_0123456789abcdef",
+      XTRACE_DRY_RUN: "1",
+      MARKET_USER_AGENT: "VSee belief-reversal browser fixture",
+      MARKET_OFFICIAL_FEEDS_JSON: "[]",
+      MARKET_PUBLISHER_FEEDS_JSON: "[]",
+    },
+  );
 });
 
 test("hosted Sites handoff exports only disposable fixture values and defers public URLs", () => {

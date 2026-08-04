@@ -2,6 +2,9 @@ import vinext from "vinext";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { resolveAssetDirectory } from "./build/asset-version";
+import {
+  resolveBeliefReversalBrowserFixtureWorkerBindings,
+} from "./build/browser-fixture-worker-bindings";
 import { sites } from "./build/sites-vite-plugin";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
@@ -47,6 +50,9 @@ export default defineConfig(async ({ command }) => {
     explicitVersion: process.env.VSEE_ASSET_VERSION,
     requireVersion: command === "build",
   });
+  const browserFixtureWorkerBindings = command === "serve"
+    ? resolveBeliefReversalBrowserFixtureWorkerBindings(process.env)
+    : undefined;
 
   return {
     build: { assetsDir },
@@ -59,7 +65,12 @@ export default defineConfig(async ({ command }) => {
       cloudflare({
         inspectorPort: false,
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        config: localBindingConfig,
+        config: {
+          ...localBindingConfig,
+          ...(browserFixtureWorkerBindings
+            ? { vars: browserFixtureWorkerBindings }
+            : {}),
+        },
       }),
     ],
   };

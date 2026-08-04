@@ -105,6 +105,7 @@ export function buildBeliefReversalBrowserFixtureEnvironment(
   );
   const environment: BrowserFixtureChildEnvironment = {
     NODE_ENV: "development",
+    BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME: "1",
     HOME: fixtureHomeDirectory,
     XDG_CONFIG_HOME: path.join(fixtureHomeDirectory, ".config"),
     CLOUDFLARE_VITE_FORCE_LOCAL: "true",
