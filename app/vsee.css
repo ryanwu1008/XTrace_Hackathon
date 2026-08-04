@@ -438,3 +438,181 @@
   .vsee-executive-memo-lead{grid-template-columns:1fr}
   .vsee-framework-synthesis-table th,.vsee-framework-synthesis-table td,.vsee-valuation-diligence-table th,.vsee-valuation-diligence-table td{grid-template-columns:1fr;gap:7px}
 }
+
+/* Narrative-first underwriting register and draft presentation. */
+.vsee-evidence-ledger{
+  grid-template-columns:1fr;
+  gap:0;
+  margin-top:14px;
+  border-top:1px solid var(--line);
+}
+.vsee-evidence-ledger>article{
+  padding:20px 0;
+  border:0;
+  border-bottom:1px solid var(--line);
+  background:transparent;
+  display:grid;
+  grid-template-columns:minmax(190px,.34fr) minmax(0,1fr);
+  column-gap:28px;
+  row-gap:8px;
+  align-items:start;
+}
+.vsee-evidence-ledger-heading{grid-column:1;grid-row:1/5;min-width:0}
+.vsee-evidence-ledger-heading>span{
+  display:block;
+  color:#7f8983;
+  font:700 11px/1.4 var(--mono);
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.vsee-evidence-ledger-heading>strong{
+  display:block;
+  margin-top:8px;
+  color:#dce2dd;
+  font:400 21px/1.3 var(--serif);
+  overflow-wrap:anywhere;
+}
+.vsee-evidence-ledger>article>p{
+  grid-column:2;
+  margin:0;
+  color:#d4dad6;
+  font-size:16px!important;
+  line-height:1.65;
+}
+.vsee-evidence-ledger>article>small{
+  grid-column:2;
+  color:#8a948e;
+  font-size:11px!important;
+}
+.vsee-fact-source-actions{
+  grid-column:2;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:9px 16px;
+}
+.vsee-fact-source-actions>a,
+.vsee-fact-source-actions .vsee-source-revision-link>a{
+  display:inline-flex;
+  margin:0;
+  color:var(--lime);
+  font:700 11px/1.45 var(--mono);
+  text-decoration:none;
+}
+.vsee-fact-source-actions .vsee-source-revision-link>a{
+  color:#9da7a1;
+  text-decoration:underline;
+  text-decoration-color:#4b554f;
+  text-underline-offset:3px;
+}
+
+.vsee-action-draft-evidence-summary{
+  margin:23px 0 8px;
+  padding:18px 20px;
+  border-left:3px solid #d7a66e;
+  background:rgba(215,166,110,.045);
+}
+.vsee-action-draft-evidence-summary>h4{
+  margin:0 0 12px;
+  color:#e4c18e;
+  font:400 21px/1.35 var(--serif);
+}
+.vsee-action-draft-evidence-summary ul{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.vsee-action-draft-evidence-summary li{display:grid;grid-template-columns:minmax(160px,.3fr) minmax(0,1fr);gap:18px}
+.vsee-action-draft-evidence-summary li strong{color:#d8ded9;font-size:15px}
+.vsee-action-draft-evidence-summary li span{color:#aab3ad;font-size:15px;line-height:1.55}
+.vsee-action-draft-list{gap:0;border-top:1px solid var(--line)}
+.vsee-action-draft-list>article.vsee-action-draft-card-summary{
+  padding:25px 0;
+  border:0;
+  border-bottom:1px solid var(--line);
+  background:transparent;
+  display:grid;
+  gap:15px;
+}
+.vsee-action-draft-card-summary>header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:28px;
+}
+.vsee-action-draft-card-summary>header>div{min-width:0}
+.vsee-action-draft-card-summary>header span{
+  color:#d7a66e;
+  font:700 11px/1.4 var(--mono);
+  letter-spacing:.07em;
+}
+.vsee-action-draft-card-summary h4{
+  margin:7px 0 0;
+  color:#e2e7e3;
+  font:400 25px/1.25 var(--serif);
+}
+.vsee-action-draft-card-summary>header>small{
+  color:#9aa49e;
+  font:700 11px/1.5 var(--mono);
+  text-align:right;
+  text-transform:uppercase;
+}
+.vsee-action-draft-list .vsee-action-draft-next-step{
+  max-width:900px;
+  color:#cbd2cd;
+  font-size:16px!important;
+  line-height:1.65;
+}
+.vsee-action-draft-content,
+.vsee-action-draft-audit{
+  padding:0;
+  border-top:1px solid #262d29;
+}
+.vsee-action-draft-content>summary,
+.vsee-action-draft-audit>summary{
+  padding:13px 0;
+  color:var(--lime);
+  cursor:pointer;
+  font:700 12px/1.45 var(--mono);
+  letter-spacing:.035em;
+}
+.vsee-action-draft-body{
+  max-width:82ch;
+  margin:0;
+  padding:20px 0 4px;
+  border-top:1px solid var(--line);
+  background:transparent;
+  color:#d7ddd8;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  font-family:inherit;
+  font-size:16px;
+  font-weight:400;
+  line-height:1.75;
+}
+.vsee-action-draft-audit dl{
+  margin:0;
+  padding:8px 0 4px;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:0;
+  border-top:1px solid var(--line);
+}
+.vsee-action-draft-audit dl>div{min-width:0;padding:13px 16px 13px 0}
+.vsee-action-draft-audit dt{color:#89938d;font:700 11px/1.45 var(--mono);text-transform:uppercase}
+.vsee-action-draft-audit dd{margin:7px 0 0;color:#b6beb9;font-size:14px;line-height:1.55}
+.vsee-action-draft-card-summary>footer{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+}
+
+@media(max-width:680px){
+  .vsee-evidence-ledger>article{grid-template-columns:1fr;gap:10px}
+  .vsee-evidence-ledger-heading{grid-column:1;grid-row:auto}
+  .vsee-evidence-ledger>article>p,
+  .vsee-evidence-ledger>article>small,
+  .vsee-fact-source-actions{grid-column:1}
+  .vsee-action-draft-evidence-summary li{grid-template-columns:1fr;gap:3px}
+  .vsee-action-draft-card-summary>header,
+  .vsee-action-draft-card-summary>footer{align-items:flex-start;flex-direction:column}
+  .vsee-action-draft-card-summary>header>small{text-align:left}
+  .vsee-action-draft-audit dl{grid-template-columns:1fr}
+}

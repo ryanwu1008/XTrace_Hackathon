@@ -17,6 +17,7 @@ import {
   versionRows,
 } from "./underwriting-view-model";
 import { buildAnalystPanel } from "./analyst-panel-view-model";
+import { buildActionDraftSection } from "./action-draft-view-model";
 import { buildUnderwritingArticleViewModel } from "./underwriting-article-view-model";
 import {
   hasSampleResearchScreeningAuthority,
@@ -146,6 +147,7 @@ export function UnderwritingDetailPanel({
     /capital.*flow|funding.*flow/.test(fact.field)
   );
   const analystPanel = buildAnalystPanel(detail.judgments);
+  const actionDraftSection = buildActionDraftSection(drafts);
   const article = buildUnderwritingArticleViewModel({ analysis, detail });
 
   return (
@@ -234,28 +236,6 @@ export function UnderwritingDetailPanel({
             <p>{article.thenNow.mechanism}</p>
           </article>
         </div>
-        <h4>Evidence</h4>
-        {detail.evidencePack.facts.length ? (
-          <div className="vsee-evidence-ledger">
-            {detail.evidencePack.facts.map((fact) => (
-              <article key={fact.id}>
-                <span>Fact</span>
-                <strong>{humanize(fact.field)}</strong>
-                <p>{fact.value}{fact.unit ? ` ${fact.unit}` : ""}</p>
-                <small>
-                  {humanize(fact.provenanceOrigin)} · {fact.assertionStatus}
-                  {" · "}{fact.freshness} ·{" "}
-                  {formatDate(
-                    fact.publishedAt ?? fact.eventAt ?? fact.retrievedAt,
-                  )}
-                </small>
-                <SourceRevisionLink revisionId={fact.sourceRevisionId} />
-              </article>
-            ))}
-          </div>
-        ) : (
-          <Unavailable copy="No persisted Evidence Pack Facts are available." />
-        )}
       </DetailSection>
 
       <DetailSection number="03" title="Verified Company Snapshot">
@@ -428,7 +408,6 @@ export function UnderwritingDetailPanel({
 
       <DetailSection number="07" title="Financial Case">
         <ScenarioModelPanel
-          detail={detail}
           financialCase={article.financialCase}
         />
       </DetailSection>
@@ -632,28 +611,6 @@ export function UnderwritingDetailPanel({
             </article>
           ))}
         </div>
-        <h4>Sources</h4>
-        {detail.sourceRevisionIds.length ? (
-          <div className="vsee-source-revisions">
-            {detail.sourceRevisionIds.map((revisionId) => (
-              <SourceRevisionLink
-                revisionId={revisionId}
-                key={revisionId}
-              />
-            ))}
-          </div>
-        ) : (
-          <Unavailable copy="No Source Revision lineage was persisted." />
-        )}
-        <h4>Versions</h4>
-        <dl className="vsee-version-grid">
-          {versionRows(detail.versionSnapshot).map((row) => (
-            <div key={row.label}>
-              <dt>{row.label}</dt>
-              <dd>{row.value}</dd>
-            </div>
-          ))}
-        </dl>
       </DetailSection>
 
       <DetailSection number="11" title="Status-aware Action Drafts">
@@ -666,66 +623,144 @@ export function UnderwritingDetailPanel({
             Draft saving is disabled in this read-only public demo.
           </p>
         )}
-        {drafts.length ? (
-          <div className="vsee-action-draft-list">
-            {drafts.map((draft) => (
-              <article key={draft.id}>
-                <b>DRAFT ONLY — NOT SENT OR PUBLISHED</b>
-                <span>{humanize(draft.audienceType)} draft</span>
-                <small>
-                  {humanize(draft.safety)} · {humanize(draft.deliveryMode)}
-                </small>
-                {draft.schemaVersion === "action-draft-v2" ? (
-                  <>
-                    <small>
-                      {humanize(draft.dealStatus ?? "unavailable")} ·{" "}
-                      {humanize(draft.beliefDirection ?? "unavailable")}
-                    </small>
-                    <small>
-                      {humanize(draft.format ?? "unavailable")} ·{" "}
-                      {humanize(draft.channel)} ·{" "}
-                      {humanize(draft.audienceType)}
-                    </small>
-                    <small>
-                      Actions · {draft.actions.map((action) =>
-                        `${humanize(action.kind)} (${humanize(action.scope)}, ${humanize(action.priority)})`
-                      ).join(" · ")}
-                    </small>
-                    {draft.missingEvidence.length ? (
-                      <dl>
-                        {draft.missingEvidence.map((item) => (
-                          <div key={`${draft.id}:${item.fieldId}`}>
-                            <dt>{item.label} · {item.reasonCode}</dt>
-                            <dd>{item.mostLikelyDecisionImpact}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    ) : (
-                      <small>
-                        No additional evidence request was persisted for this draft.
-                      </small>
-                    )}
-                  </>
-                ) : (
+        {actionDraftSection.drafts.length ? (
+          <>
+            {actionDraftSection.conflictingFieldIds.length > 0 && (
+              <aside className="vsee-action-draft-evidence-summary" role="alert">
+                <h4>Conflicting evidence-request metadata</h4>
+                <p>
+                  The report did not merge conflicting draft metadata for{" "}
+                  {actionDraftSection.conflictingFieldIds
+                    .map(humanize)
+                    .join(" · ")}. Review the individual audit records before use.
+                </p>
+              </aside>
+            )}
+            {actionDraftSection.missingEvidence.length ? (
+              <aside className="vsee-action-draft-evidence-summary" role="note">
+                <h4>Evidence required before these drafts can support a decision</h4>
+                <ul>
+                  {actionDraftSection.missingEvidence.map((item) => (
+                    <li key={item.fieldId}>
+                      <strong>{item.label}</strong>
+                      <span>{item.mostLikelyDecisionImpact}</span>
+                    </li>
+                  ))}
+                </ul>
+              </aside>
+            ) : actionDraftSection.conflictingFieldIds.length === 0 ? (
+              <p className="vsee-action-draft-evidence-summary">
+                No additional evidence request was persisted for these drafts.
+              </p>
+            ) : null}
+            <div className="vsee-action-draft-list">
+              {actionDraftSection.drafts.map(({ draft, title }) => (
+              <article className="vsee-action-draft-card-summary" key={draft.id}>
+                <header>
+                  <div>
+                    <span>DRAFT ONLY — NOT SENT OR PUBLISHED</span>
+                    <h4>{title}</h4>
+                  </div>
                   <small>
-                    Legacy draft safety classification and status-aware action
-                    metadata are unavailable.
+                    {humanize(draft.channel)} · {humanize(draft.audienceType)}
                   </small>
+                </header>
+                {draft.actions.length ? (
+                  <p className="vsee-action-draft-next-step">
+                    {draft.actions.map((action) =>
+                      `${humanize(action.kind)} · ${humanize(action.scope)} · ${humanize(action.priority)} priority`
+                    ).join(" · ")}
+                  </p>
+                ) : (
+                  <p className="vsee-action-draft-next-step">
+                    No typed action was persisted for this legacy draft.
+                  </p>
                 )}
-                <p>{draft.body}</p>
-                <small>
-                  Current body updated {formatDate(draft.updatedAt)}
-                </small>
-                <button onClick={() => onEditDraft(draft)}>
-                  EDIT CURRENT BODY
-                </button>
+                <details className="vsee-action-draft-content">
+                  <summary aria-label={`Read full ${title} draft`}>
+                    Read full draft
+                  </summary>
+                  <pre className="vsee-action-draft-body">{draft.body}</pre>
+                </details>
+                <details className="vsee-action-draft-audit">
+                  <summary aria-label={`Open audit metadata for ${title}`}>
+                    Audit metadata
+                  </summary>
+                  <dl>
+                    <div>
+                      <dt>Safety</dt>
+                      <dd>
+                        {humanize(draft.safety)} · {humanize(draft.deliveryMode)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Status context</dt>
+                      <dd>
+                        {humanize(draft.dealStatus ?? "unavailable")} ·{" "}
+                        {humanize(draft.beliefDirection ?? "unavailable")}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Format and audience</dt>
+                      <dd>
+                        {humanize(draft.format ?? "unavailable")} ·{" "}
+                        {humanize(draft.channel)} · {humanize(draft.audienceType)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Policy versions</dt>
+                      <dd>
+                        Draft {draft.draftPolicyVersion ?? "Unavailable"} · Action{" "}
+                        {draft.actionPolicyVersion ?? "Unavailable"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Missing evidence references</dt>
+                      <dd>
+                        {draft.missingEvidence.length
+                          ? draft.missingEvidence.map((item) =>
+                              `${item.fieldId} (${item.reasonCode})`
+                            ).join(" · ")
+                          : "None persisted"}
+                      </dd>
+                    </div>
+                  </dl>
+                </details>
+                <footer>
+                  <small>
+                    Current body updated {formatDate(draft.updatedAt)}
+                  </small>
+                  <button
+                    aria-label={`Edit current body for ${title}`}
+                    onClick={() => onEditDraft(draft)}
+                  >
+                    EDIT CURRENT BODY
+                  </button>
+                </footer>
               </article>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         ) : <Unavailable copy="No action draft was finalized." />}
       </DetailSection>
 
-      <DetailSection number="12" title="Evidence Classification">
+      <DetailSection number="12" title="Final IC Position">
+        <div className="vsee-final-ic-position">
+          <span>FORMAL RESULT</span>
+          <strong>{article.finalPosition.decision}</strong>
+          <p>
+            Decision ceiling · {article.finalPosition.ceiling} · Confidence ·{" "}
+            {humanize(article.finalPosition.confidence)}
+          </p>
+          <p>Next action · {humanize(article.finalPosition.nextAction)}</p>
+          <small>
+            Human IC approval remains required. No outreach, publication, or
+            transaction is executed automatically.
+          </small>
+        </div>
+      </DetailSection>
+
+      <DetailSection number="13" title="Evidence and Source Register">
         <div className="vsee-evidence-classification">
           <Definition
             label="Facts"
@@ -749,9 +784,33 @@ export function UnderwritingDetailPanel({
           labeled inputs. Unknowns and conflicts constrain the decision
           ceiling and are never silently filled.
         </p>
+        <h4>Source-backed Fact register</h4>
+        {detail.evidencePack.facts.length ? (
+          <div className="vsee-evidence-ledger">
+            {detail.evidencePack.facts.map((fact) => (
+              <article key={fact.id}>
+                <div className="vsee-evidence-ledger-heading">
+                  <span>Fact</span>
+                  <strong>{humanize(fact.field)}</strong>
+                </div>
+                <p>{fact.value}{fact.unit ? ` ${fact.unit}` : ""}</p>
+                <small>
+                  {humanize(fact.provenanceOrigin)} · {fact.assertionStatus}
+                  {" · "}{fact.freshness} ·{" "}
+                  {formatDate(
+                    fact.publishedAt ?? fact.eventAt ?? fact.retrievedAt,
+                  )}
+                </small>
+                <FactSourceActions fact={fact} />
+              </article>
+            ))}
+          </div>
+        ) : (
+          <Unavailable copy="No persisted Evidence Pack Facts are available." />
+        )}
       </DetailSection>
 
-      <DetailSection number="13" title="Audit Appendix">
+      <DetailSection number="14" title="Audit Appendix">
         <details className="vsee-details" open>
           <summary>Open exact report identity and evidence lineage</summary>
           <Definition label="CandidateRun" value={detail.candidateRunId} />
@@ -765,6 +824,30 @@ export function UnderwritingDetailPanel({
             value={String(detail.claimEdges.length)}
           />
         </details>
+        <h4>Source Revision inventory</h4>
+        {detail.sourceRevisionIds.length ? (
+          <div className="vsee-source-revisions">
+            {detail.sourceRevisionIds.map((revisionId) => (
+              <SourceRevisionLink
+                revisionId={revisionId}
+                key={revisionId}
+              >
+                Open stored source revision · {revisionId}
+              </SourceRevisionLink>
+            ))}
+          </div>
+        ) : (
+          <Unavailable copy="No Source Revision lineage was persisted." />
+        )}
+        <h4>Persisted contract versions</h4>
+        <dl className="vsee-version-grid">
+          {versionRows(detail.versionSnapshot).map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
         <details className="vsee-details vsee-scenario-audit-matrix">
           <summary>
             Complete scenario input matrix · {detail.scenarioModel.scenarios.length}
@@ -774,22 +857,6 @@ export function UnderwritingDetailPanel({
           <ScenarioAuditMatrix detail={detail} />
         </details>
         <FrameworkAppendix detail={detail} />
-      </DetailSection>
-
-      <DetailSection number="14" title="Final IC Position">
-        <div className="vsee-final-ic-position">
-          <span>FORMAL RESULT</span>
-          <strong>{article.finalPosition.decision}</strong>
-          <p>
-            Decision ceiling · {article.finalPosition.ceiling} · Confidence ·{" "}
-            {humanize(article.finalPosition.confidence)}
-          </p>
-          <p>Next action · {humanize(article.finalPosition.nextAction)}</p>
-          <small>
-            Human IC approval remains required. No outreach, publication, or
-            transaction is executed automatically.
-          </small>
-        </div>
       </DetailSection>
     </div>
   );
@@ -1068,6 +1135,44 @@ function compactAnalystName(name: string): string {
     .replace(/\s+Public Frameworks$/i, "");
 }
 
+function FactSourceActions({
+  fact,
+}: {
+  fact: CandidateUnderwritingDetail["evidencePack"]["facts"][number];
+}) {
+  const fieldLabel = humanize(fact.field);
+  const originalUrl = fact.sourceAction.kind === "original_public_source"
+    ? safeExternalHttpUrl(fact.sourceAction.url)
+    : undefined;
+  const page = fact.sourceAction.kind === "stored_source_revision"
+    ? fact.sourceAction.page ?? undefined
+    : undefined;
+
+  return (
+    <div className="vsee-fact-source-actions">
+      {originalUrl && (
+        <a
+          aria-label={`View original source for ${fieldLabel}`}
+          href={originalUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          View original source ↗
+        </a>
+      )}
+      <SourceRevisionLink
+        ariaLabel={`Open stored source revision for ${fieldLabel}`}
+        revisionId={fact.sourceRevisionId}
+        page={page}
+      >
+        {fact.sourceAction.kind === "original_public_source"
+          ? "Open archived evidence snapshot"
+          : "Open stored source revision"}
+      </SourceRevisionLink>
+    </div>
+  );
+}
+
 function EvidenceContextNotice({
   context,
 }: {
@@ -1203,10 +1308,8 @@ function EvidenceConflictsPanel({
 }
 
 function ScenarioModelPanel({
-  detail,
   financialCase,
 }: {
-  detail: CandidateUnderwritingDetail;
   financialCase: ReturnType<
     typeof buildUnderwritingArticleViewModel
   >["financialCase"];

@@ -25,6 +25,7 @@ import type {
 import { UnderwritingQueueEntrySchema } from "../contracts/underwriting";
 import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from "../contracts/evidence-context";
 import { evidenceQueryTokens } from "../demo/search";
+import { safeExternalHttpUrl } from "../security/safe-url";
 import { buildUnderwritingNarrative } from "./narrative";
 import {
   publicFrameworkLimitations,
@@ -338,6 +339,7 @@ export function toCandidateUnderwritingDetail(
         eventAt: fact.eventAt,
         retrievedAt: fact.retrievedAt,
         sourceRevisionId: fact.sourceRevisionId,
+        sourceAction: publicFactSourceAction(fact),
         provenanceOrigin: fact.provenanceOrigin,
         sourceRole: fact.sourceRole,
         assertionStatus: fact.assertionStatus,
@@ -416,6 +418,30 @@ export function toCandidateUnderwritingDetail(
     claimEdges: structuredClone(bundle.claimEdges),
     sourceRevisionIds: [...bundle.evidencePack.sourceRevisionIds],
     versionSnapshot: toPublicVersionSnapshot(bundle.versionSnapshot),
+  };
+}
+
+export type PublicFactSourceAction =
+  | {
+    kind: "original_public_source";
+    url: string;
+  }
+  | {
+    kind: "stored_source_revision";
+    page: number | null;
+  };
+
+function publicFactSourceAction(fact: Fact): PublicFactSourceAction {
+  if (
+    fact.provenanceOrigin === "public_source"
+    && fact.locator.kind === "web_snapshot"
+  ) {
+    const url = safeExternalHttpUrl(fact.locator.url);
+    if (url) return { kind: "original_public_source", url };
+  }
+  return {
+    kind: "stored_source_revision",
+    page: fact.locator.kind === "pdf_page" ? fact.locator.page : null,
   };
 }
 

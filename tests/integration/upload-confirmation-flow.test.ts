@@ -364,6 +364,20 @@ test("source revision access is workspace scoped and returns only URL plus expir
     Object.keys(accessPayload.data).sort(),
     ["expiresAt", "url"],
   );
+  const directNavigation = await accessRevision(
+    new Request(
+      "https://vsee.test/api/source-revisions/revision_private/access",
+      { headers: { accept: "text/html" } },
+    ),
+    params("revision_private"),
+    owner,
+  );
+  assert.equal(directNavigation.status, 307);
+  assert.equal(directNavigation.headers.get("cache-control"), "private, no-store");
+  assert.equal(
+    directNavigation.headers.get("location"),
+    new URL(accessPayload.data.url, "https://vsee.test").toString(),
+  );
   const content = await readDocument(
     new Request(new URL(accessPayload.data.url, "https://vsee.test")),
     params("revision_private"),

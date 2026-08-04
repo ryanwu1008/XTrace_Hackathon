@@ -10,6 +10,7 @@ import { UnderwritingSummaryPanel } from "../../app/underwriting-summary";
 import type { ReportEvidenceContext } from "../../lib/contracts/evidence-context";
 import type { SourceRefV2 } from "../../lib/contracts/source-evidence";
 import type { ScenarioInputField, ScenarioModel } from "../../lib/contracts/underwriting";
+import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import type {
   CandidateUnderwritingDetail,
   PublicActionDraft,
@@ -203,6 +204,10 @@ function detailFixture(): CandidateUnderwritingDetail {
         eventAt: null,
         retrievedAt: "2026-08-01T12:00:00.000Z",
         sourceRevisionId: "revision_ask",
+        sourceAction: {
+          kind: "original_public_source",
+          url: "https://public.example.test/reported-valuation",
+        },
         provenanceOrigin: "public_source",
         sourceRole: "independent_third_party",
         assertionStatus: "corroborated",
@@ -218,6 +223,10 @@ function detailFixture(): CandidateUnderwritingDetail {
         eventAt: null,
         retrievedAt: "2026-08-01T12:00:00.000Z",
         sourceRevisionId: "revision_left",
+        sourceAction: {
+          kind: "original_public_source",
+          url: "https://public.example.test/arr-left",
+        },
         provenanceOrigin: "public_source",
         sourceRole: "independent_third_party",
         assertionStatus: "reported",
@@ -233,6 +242,10 @@ function detailFixture(): CandidateUnderwritingDetail {
         eventAt: null,
         retrievedAt: "2026-08-01T12:00:00.000Z",
         sourceRevisionId: "revision_right",
+        sourceAction: {
+          kind: "original_public_source",
+          url: "https://public.example.test/arr-right",
+        },
         provenanceOrigin: "public_source",
         sourceRole: "independent_third_party",
         assertionStatus: "disputed",
@@ -479,10 +492,13 @@ test("keeps the exact 3 by 17 scenario matrix in audit while the main memo conso
     evidenceContext: PINNED_CONTEXT,
   };
   const html = renderToStaticMarkup(<UnderwritingDetailPanel {...props} />);
+  const evidenceRegisterIndex = html.indexOf("Evidence and Source Register");
   const auditIndex = html.indexOf("Audit Appendix");
-  const mainMemo = html.slice(0, auditIndex);
+  const mainMemo = html.slice(0, evidenceRegisterIndex);
+  const evidenceRegister = html.slice(evidenceRegisterIndex, auditIndex);
   const auditAppendix = html.slice(auditIndex);
 
+  assert.ok(evidenceRegisterIndex > 0);
   assert.equal(mainMemo.match(/data-scenario-input=/g)?.length ?? 0, 0);
   assert.equal(auditAppendix.match(/data-scenario-input=/g)?.length, 51);
   assert.match(mainMemo, /Current modeling status/);
@@ -491,6 +507,12 @@ test("keeps the exact 3 by 17 scenario matrix in audit while the main memo conso
   assert.match(mainMemo, /Required Evidence/);
   assert.match(mainMemo, /Decision Use/);
   assert.match(auditAppendix, /Complete scenario input matrix/);
+  assert.doesNotMatch(mainMemo, /vsee-evidence-ledger/);
+  assert.match(evidenceRegister, /vsee-evidence-ledger/);
+  assert.doesNotMatch(mainMemo, /vsee-source-revisions|vsee-version-grid/);
+  assert.match(auditAppendix, /vsee-source-revisions/);
+  assert.match(auditAppendix, /vsee-version-grid/);
+  assert.doesNotMatch(auditAppendix, /Final IC Position/);
   assert.match(html, /Formula policy · formula-policy-v9/);
   assert.match(html, /Probability weighted · Yes/);
   assert.match(html, /Fact · fact_ask/);
@@ -564,9 +586,9 @@ test("Deep Underwriting renders the approved complete IC article reading order",
     "VSee IC Synthesis",
     "Required Diligence",
     "Status-aware Action Drafts",
-    "Evidence Classification",
-    "Audit Appendix",
     "Final IC Position",
+    "Evidence and Source Register",
+    "Audit Appendix",
   ];
   let previousIndex = -1;
   for (const heading of headings) {
@@ -584,6 +606,86 @@ test("Deep Underwriting renders the approved complete IC article reading order",
   assert.match(html, /Reported Valuation — 20000000 USD · corroborated/);
   assert.match(html, /Arr — 5000000 USD · reported/);
   assert.match(html, /Portfolio Risk Re-underwriting Memorandum/);
+});
+
+test("Evidence register distinguishes the original public source from its archived snapshot", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Source Link Co"
+    analysis={analysisFixture()}
+    detail={detailFixture()}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+    evidenceContext={PINNED_CONTEXT}
+  />);
+  const start = html.indexOf("Evidence and Source Register");
+  const end = html.indexOf("Audit Appendix");
+  const register = html.slice(start, end);
+
+  assert.match(
+    register,
+    /href="https:\/\/public\.example\.test\/reported-valuation"[^>]*>View original source ↗<\/a>/,
+  );
+  assert.match(register, /Open archived evidence snapshot/);
+  assert.doesNotMatch(
+    register,
+    />Source Revision · revision_ask ↗<\/a>/,
+  );
+});
+
+test("Action Drafts summarize evidence once and keep complete bodies in readable disclosures", () => {
+  const actions = actionsForDealStatusAndDirection("watchlist", "positive");
+  const internal: PublicActionDraft = {
+    ...draftFixture(),
+    dealStatus: "watchlist",
+    beliefDirection: "positive",
+    actions,
+  };
+  const email: PublicActionDraft = {
+    ...internal,
+    id: "draft_founder_email",
+    format: "founder_email",
+    channel: "email",
+    audienceType: "founder",
+    body: "SUBJECT: Follow-up\n\nWe would like to request the remaining evidence.",
+  };
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Draft Presentation Co"
+    analysis={analysisFixture()}
+    detail={detailFixture()}
+    drafts={[email, internal]}
+    canSaveDrafts={true}
+    onEditDraft={() => {}}
+    evidenceContext={PINNED_CONTEXT}
+  />);
+  const start = html.indexOf("Status-aware Action Drafts");
+  const end = html.indexOf("Final IC Position");
+  const section = html.slice(start, end);
+
+  assert.equal(section.match(/class="vsee-action-draft-evidence-summary"/g)?.length, 1);
+  assert.equal(
+    section.match(/<summary[^>]*>Read full draft<\/summary>/g)?.length,
+    2,
+  );
+  assert.equal(
+    section.match(/<summary[^>]*>Audit metadata<\/summary>/g)?.length,
+    2,
+  );
+  assert.match(section, /aria-label="Read full Internal Underwriting Memo draft"/);
+  assert.match(section, /aria-label="Read full Founder Email draft"/);
+  assert.match(
+    section,
+    /<pre class="vsee-action-draft-body">INTERNAL UNDERWRITING ACTION MEMO — DRAFT ONLY\nPause follow-on pending risk review\.<\/pre>/,
+  );
+  assert.ok(
+    section.indexOf("Internal Underwriting Memo")
+      < section.indexOf("Founder Email"),
+  );
+  assert.equal(section.match(/EDIT CURRENT BODY/g)?.length, 2);
+  assert.doesNotMatch(
+    section,
+    /<button[^>]*>\s*(?:SEND|PUBLISH)/i,
+  );
 });
 
 test("Investor Framework Synthesis renders an editorial table instead of issue cards", () => {

@@ -271,3 +271,49 @@ as the 23-analysis historical artifact with baseline Report ID
 - All browser and Worker traffic remained on exact loopback endpoints backed by
   disposable fixtures. No production endpoint, database, migration target, or
   provider credential was read or modified.
+
+## 2026-08-04 narrative-first source and draft acceptance
+
+After the prior browser window and Docker Desktop were closed, the acceptance
+environment was recreated from a fresh disposable PostgreSQL database. Two
+confirmed stale project-local web processes occupying ports 3100 and 3101 were
+terminated before restart; the replacement fixture then bound exactly to
+`127.0.0.1:3100`.
+
+- Immutable pinned baseline Report ID:
+  `report_cebbb5ac-39fd-4072-8c36-f995e58ad299`.
+- The visible `WAKE AGENT & SCAN MARKET` control created live Report ID
+  `report_067bc764-4294-46a3-98f2-965939924d76`; this was not a pre-generated
+  current report.
+- The completed live report rendered 30 eligible Deals, 30 Belief Change
+  Analyses, 4 belief revisions, 4 monitor, 22 no material change, 0 unavailable,
+  and 4 completed Deep Underwriting results.
+- Irregular's live Deep Underwriting rendered the narrative-first order:
+  Executive Conclusion, What Changed?, Verified Company Snapshot, Investment
+  Thesis Assessment, Investor Framework Synthesis, Investment Committee
+  Debate, Financial Case, Valuation and Return Analysis, VSee IC Synthesis,
+  Required Diligence, Status-aware Action Drafts, Final IC Position, Evidence
+  and Source Register, and Audit Appendix.
+- The complete Fact register occurred only after Final IC Position. Each public
+  Fact displayed a safe canonical `View original source` action separately
+  from its stored Source Revision. Raw revision identities, version pins, the
+  51-cell scenario matrix, and the complete framework appendix remained in the
+  final audit section.
+- Action Draft missing evidence appeared once at section level. Full draft
+  bodies and audit metadata were collapsed by default; opening the body
+  preserved its paragraphs with `pre-wrap`. Edit remained available, and zero
+  Send or Publish controls were present.
+- At the visible 626-pixel browser width, the document and dialog each measured
+  `scrollWidth === clientWidth` (626 pixels). Draft body type measured 16px and
+  used `white-space: pre-wrap`.
+- Source Revision access retained JSON capability responses for application
+  fetches and returned a 307 redirect for direct browser navigation, so normal,
+  middle-click, context-menu, and no-JavaScript navigation no longer stop at a
+  JSON capability envelope.
+- The complete default test command finished with 1,631 tests: 1,560 passed,
+  0 failed, and 71 explicitly skipped by environment gates. TypeScript completed
+  with zero errors; ESLint completed with zero errors; `git diff --check` was
+  clean; and the five-environment vinext release build completed successfully.
+- All traffic and data remained in the disposable loopback fixture. No
+  production endpoint, database, migration target, seed target, or credential
+  was read or modified.

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createMemoryUnderwritingArtifactsRepository,
   createSupabaseUnderwritingArtifactsRepository,
+  type CandidateArtifactBundle,
   type CandidateFinalization,
 } from "../../db/repositories/underwriting-artifacts";
 import {
@@ -13,6 +14,7 @@ import {
 } from "../../db/repositories/underwriting-runs";
 import { ScenarioInputFieldSchema } from "../../lib/contracts/underwriting";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
+import { toCandidateUnderwritingDetail } from "../../lib/underwriting/read-model";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
 
 function deterministicOptions() {
@@ -239,6 +241,99 @@ function statusSafeFinalization(): CandidateFinalization {
     },
   };
 }
+
+test("public underwriting detail exposes only safe source actions from persisted Fact locators", () => {
+  const finalization = statusSafeFinalization();
+  const bundle: CandidateArtifactBundle = {
+    ...finalization,
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    claimEdges: finalization.calculationClaimEdges,
+  };
+  const publicFact: CandidateFinalization["evidencePack"]["facts"][number] = {
+    id: "fact_public_source",
+    analysisType: "fact",
+    provenanceOrigin: "public_source",
+    field: "company_identity",
+    value: "Source Link Co",
+    unit: null,
+    currency: null,
+    periodStart: null,
+    periodEnd: null,
+    publishedAt: "2026-07-29T12:00:00.000Z",
+    eventAt: null,
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+    sourceRevisionId: "revision_public_source",
+    locator: {
+      kind: "web_snapshot",
+      url: "https://public.example.test/source-link-co",
+      excerpt: "Source Link Co published a material company update.",
+    },
+    sourceRole: "independent_third_party",
+    assertionStatus: "reported",
+    verificationMethod: null,
+    freshness: "current",
+    acceptedForGate: false,
+  };
+  bundle.evidencePack.facts = [
+    publicFact,
+    {
+      ...publicFact,
+      id: "fact_management_web",
+      provenanceOrigin: "management",
+      sourceRevisionId: "revision_management_web",
+      sourceRole: "management",
+    },
+    {
+      ...publicFact,
+      id: "fact_uploaded_pdf",
+      provenanceOrigin: "uploaded_document",
+      sourceRevisionId: "revision_uploaded_pdf",
+      locator: {
+        kind: "pdf_page",
+        page: 7,
+        excerpt: "A private uploaded document excerpt.",
+      },
+      sourceRole: "management",
+    },
+    {
+      ...publicFact,
+      id: "fact_unsafe_public_url",
+      sourceRevisionId: "revision_unsafe_public_url",
+      locator: {
+        kind: "web_snapshot",
+        url: "javascript:alert(1)",
+        excerpt: "An unsafe URL must not become an active source action.",
+      },
+    },
+  ];
+  bundle.evidencePack.sourceRevisionIds = [
+    "revision_public_source",
+    "revision_management_web",
+    "revision_uploaded_pdf",
+    "revision_unsafe_public_url",
+  ];
+
+  const detail = toCandidateUnderwritingDetail(bundle);
+
+  assert.deepEqual(detail.evidencePack.facts[0]?.sourceAction, {
+    kind: "original_public_source",
+    url: "https://public.example.test/source-link-co",
+  });
+  assert.deepEqual(detail.evidencePack.facts[1]?.sourceAction, {
+    kind: "stored_source_revision",
+    page: null,
+  });
+  assert.deepEqual(detail.evidencePack.facts[2]?.sourceAction, {
+    kind: "stored_source_revision",
+    page: 7,
+  });
+  assert.deepEqual(detail.evidencePack.facts[3]?.sourceAction, {
+    kind: "stored_source_revision",
+    page: null,
+  });
+  assert.equal("locator" in detail.evidencePack.facts[0]!, false);
+});
 
 function forgedCoreOnlyUsFinalization(): CandidateFinalization {
   const value = structuredClone(statusSafeFinalization());

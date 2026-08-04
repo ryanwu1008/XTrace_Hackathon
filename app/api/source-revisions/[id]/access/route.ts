@@ -62,6 +62,21 @@ export async function GET(
       },
       expiresInSeconds: PRIVATE_READ_TTL_SECONDS,
     });
+    const acceptsHtml = request.headers.get("accept")
+      ?.toLowerCase()
+      .includes("text/html") ?? false;
+    if (
+      acceptsHtml
+      || request.headers.get("sec-fetch-mode")?.toLowerCase() === "navigate"
+    ) {
+      return new Response(null, {
+        status: 307,
+        headers: {
+          "cache-control": "private, no-store",
+          location: new URL(url, request.url).toString(),
+        },
+      });
+    }
     return jsonOk({
       url,
       expiresAt: new Date(expiresAtEpochSeconds * 1_000).toISOString(),

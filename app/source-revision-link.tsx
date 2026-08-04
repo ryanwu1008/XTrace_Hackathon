@@ -27,10 +27,12 @@ export function SourceRevisionLink({
   revisionId,
   page,
   children,
+  ariaLabel,
 }: {
   revisionId: string;
   page?: number;
   children?: React.ReactNode;
+  ariaLabel?: string;
 }) {
   const [error, setError] = useState("");
   const accessPath = sourceRevisionAccessPath(revisionId);
@@ -64,6 +66,7 @@ export function SourceRevisionLink({
   return (
     <span className="vsee-source-revision-link">
       <a
+        aria-label={ariaLabel}
         href={`${accessPath}${page ? `#page=${page}` : ""}`}
         onClick={(event) => void openRevision(event)}
         target="_blank"
