@@ -105,7 +105,7 @@ test("Chat header identifies the exact company and pinned evidence context", () 
   assert.match(html, /ASKING REPORT · report_chat_ui/);
   assert.match(html, /Pinned Example Co/);
   assert.match(html, /PINNED DEMO REPLAY/);
-  assert.match(html, /Demo evidence snapshot as of 2026-08-01/);
+  assert.match(html, /Jul 19, 2026 – Aug 1, 2026/);
 });
 
 test("read-only public demo Chat retains the explicit XTrace toggle", () => {

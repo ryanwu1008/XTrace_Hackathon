@@ -1023,7 +1023,9 @@ test("XTrace recall failure never falls back to structured memory and marks the 
 });
 
 test("normal process-run recall performs zero XTrace ingest-job polling", async () => {
-  const runs = createRunsRepository(createMemoryDataClient());
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  }));
   await runs.create({
     workspaceId: "workspace_demo",
     mode: "xtrace",
@@ -1116,7 +1118,9 @@ test("normal process-run recall performs zero XTrace ingest-job polling", async 
 });
 
 test("bounds market evidence before XTrace and Claude while preserving all events", async () => {
-  const runs = createRunsRepository(createMemoryDataClient());
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  }));
   await runs.create({
     workspaceId: "workspace_demo",
     mode: "xtrace",

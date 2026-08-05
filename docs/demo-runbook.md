@@ -31,7 +31,7 @@ XTrace organization ID.
 `SAFE_REFUSAL — production forward migration remains blocked`
 
 The reviewed production terminal remains `0018`. Migration `0019` and the
-local-only `0020`–`0024` chain have not received production catalog approval.
+local-only `0020`–`0026` chain have not received production catalog approval.
 Task 13 reads no production credentials and runs no launcher against
 production; its production-shaped launcher verification uses only disposable
 PostgreSQL 17.6 fixtures.
@@ -54,7 +54,7 @@ Supabase superuser, non-superuser `CREATEROLE`, and repaired ACL. The command
 must report three passing enclosing tests, zero failures, and zero skips. In
 each profile the forward launcher itself must exit nonzero with the exact
 unreviewed-`0019` refusal, while the test proves reviewed `0018` is complete,
-`0019`–`0024` are absent, invariants are unchanged, and no transaction remains
+`0019`–`0026` are absent, invariants are unchanged, and no transaction remains
 open. It deliberately fails on another server version, a missing database, a
 renamed/nonmatching test, or any run in which one of the three profiles does
 not execute. This is a `SAFE_REFUSAL` gate, not a migration-success gate.
@@ -131,8 +131,9 @@ Web request or Worker process can write to PostgreSQL.
 6. On disposable PostgreSQL 17.6 only, the expected forward result is a
    nonzero exit after reviewed `0018` with `Migration 0019 has no reviewed
    terminal catalog fingerprint; refusing mutation.` Verify `0019`, `0020`,
-   `0021`, `0022`, `0023`, and `0024` remain absent. Never describe that outcome as production
-   migrations passed, green, deployed, or authorized.
+   `0021`, `0022`, `0023`, `0024`, `0025`, and `0026` remain absent. Never
+   describe that outcome as production migrations passed, green, deployed, or
+   authorized.
 7. Resume the Web and the Worker only with the already-reviewed
    application/schema combination. A release that depends on `0019` or later
    remains blocked until the separate migration review is approved.
