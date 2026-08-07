@@ -8,6 +8,10 @@ import { assertDisposableDatabaseName } from "./require-loopback-postgres";
 export const POSTGRES_IMAGE = "postgres:17.6";
 export const POSTGREST_IMAGE = "postgrest/postgrest:v12.2.3";
 
+// Disposable, per-run, loopback-only credential. The cold E2E finishes in about
+// 75 seconds, but the browser fixture stays up for manual review.
+const FIXTURE_JWT_LIFETIME_SECONDS = 12 * 60 * 60;
+
 const E2E_OPT_IN_ERROR =
   "Belief-reversal E2E requires explicit REQUIRE_BELIEF_REVERSAL_E2E=1 opt-in.";
 const MIGRATION_OPT_IN_ERROR =
@@ -488,7 +492,10 @@ export function createServiceRoleJwt(input: {
   const header = encodeJwtPart({ alg: "HS256", typ: "JWT" });
   const payload = encodeJwtPart({
     aud: "authenticated",
-    exp: input.issuedAtSeconds + 3_600,
+    // The browser fixture holds this token for a whole manual review session.
+    // At one hour PostgREST started answering 401, which the transport treats
+    // as non-retryable, so the Worker exited and tore the environment down.
+    exp: input.issuedAtSeconds + FIXTURE_JWT_LIFETIME_SECONDS,
     iat: input.issuedAtSeconds,
     role: "service_role",
   });

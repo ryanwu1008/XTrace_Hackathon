@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MAXIMUM_CONSECUTIVE_HEARTBEAT_FAILURES,
   preflightBeliefReversalColdWorkerTarget,
   readBeliefReversalColdWorkerConfiguration,
+  shouldContinueAfterHeartbeatFailure,
 } from "../../scripts/run-belief-reversal-cold-worker";
+import { IntegrationTransportError } from "../../lib/api/errors";
 import { handleBeliefReversalBrowserFixtureRequest } from
   "../../scripts/run-belief-reversal-browser-fixture";
 import { createMemoryPrivateObjectStorage } from "../../lib/storage/service";
@@ -161,4 +164,29 @@ test("cold Worker production rejection occurs before the identity request", asyn
     /production/u,
   );
   assert.equal(identityRequests, 0);
+});
+
+test("a transport failure carries its HTTP status so the cause is diagnosable", () => {
+  const error = new IntegrationTransportError({
+    retryable: false,
+    status: 401,
+  });
+
+  assert.equal(error.status, 401);
+  assert.match(error.message, /401/u);
+  assert.equal(error.retryable, false);
+});
+
+test("worker survives isolated heartbeat failures but stops on a persistent one", () => {
+  assert.equal(shouldContinueAfterHeartbeatFailure(1), true);
+  assert.equal(
+    shouldContinueAfterHeartbeatFailure(
+      MAXIMUM_CONSECUTIVE_HEARTBEAT_FAILURES - 1,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldContinueAfterHeartbeatFailure(MAXIMUM_CONSECUTIVE_HEARTBEAT_FAILURES),
+    false,
+  );
 });

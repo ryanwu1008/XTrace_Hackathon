@@ -17,6 +17,17 @@ const WORKER_ID = process.env.WORKER_ID?.trim()
 const POLL_INTERVAL_MS = 250;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 
+// A heartbeat is a periodic call, so one failed attempt says nothing about
+// Worker health. Tolerate a bounded run of failures, then fail closed so a
+// genuinely unusable credential or gateway still stops the Worker.
+export const MAXIMUM_CONSECUTIVE_HEARTBEAT_FAILURES = 5;
+
+export function shouldContinueAfterHeartbeatFailure(
+  consecutiveFailures: number,
+): boolean {
+  return consecutiveFailures < MAXIMUM_CONSECUTIVE_HEARTBEAT_FAILURES;
+}
+
 export function readBeliefReversalColdWorkerConfiguration(
   environment: NodeJS.ProcessEnv = process.env,
 ) {
@@ -117,8 +128,24 @@ export async function runBeliefReversalColdWorker(): Promise<never> {
     `[${WORKER_ID}] cold Scan Worker ready with ${runtime.parents.length} exact Deal parents`,
   );
 
+  let consecutiveHeartbeatFailures = 0;
   for (;;) {
-    await runtime.runs.touchWorkerHeartbeat(WORKER_ID);
+    try {
+      await runtime.runs.touchWorkerHeartbeat(WORKER_ID);
+      consecutiveHeartbeatFailures = 0;
+    } catch (error) {
+      consecutiveHeartbeatFailures += 1;
+      console.error(
+        `[${WORKER_ID}] heartbeat failed `
+          + `(${consecutiveHeartbeatFailures}/${MAXIMUM_CONSECUTIVE_HEARTBEAT_FAILURES}): `
+          + errorMessage(error),
+      );
+      if (!shouldContinueAfterHeartbeatFailure(consecutiveHeartbeatFailures)) {
+        throw error;
+      }
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
     const claimed = await runtime.runs.claimNext(WORKER_ID);
     if (!claimed) {
       await delay(POLL_INTERVAL_MS);

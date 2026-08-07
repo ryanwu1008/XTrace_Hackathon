@@ -383,7 +383,7 @@ test("the service-role JWT is deterministic, test-only, and scoped to service_ro
     JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")),
     {
       aud: "authenticated",
-      exp: 1_800_003_600,
+      exp: 1_800_043_200,
       iat: 1_800_000_000,
       role: "service_role",
     },

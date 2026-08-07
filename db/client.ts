@@ -555,6 +555,7 @@ export function createSupabaseDataClient(options: SupabaseOptions): DataClient {
       }
       throw new IntegrationTransportError({
         retryable: isRetryableTransportStatus(response.status),
+        status: response.status,
       });
     }
     if (response.status === 204) return null;
