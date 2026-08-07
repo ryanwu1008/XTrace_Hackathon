@@ -615,6 +615,7 @@ export function verifyBeliefReversalCurrentColdReport(
 ): {
   priorityOrder: Array<{ dealId: string; priorityRank: number }>;
   screeningMonitorCount: number;
+  screeningNonRevisingCount: number;
 } {
   const unwrapped = unwrapData(raw);
   const top = asVerifierRecord(unwrapped);
@@ -669,15 +670,19 @@ export function verifyBeliefReversalCurrentColdReport(
     || report.counts.analysisUnavailableCount !== outcomes.analysis_unavailable
     || report.counts.underwritingCandidateCount !== outcomes.belief_revised
   ) fail("current cold report outcome counts are not analysis-derived");
-  if (expected && !isDeepStrictEqual(outcomes, {
-    belief_revised: expected.beliefRevised,
-    monitor: expected.monitor,
-    no_material_change: expected.noMaterialChange,
-    analysis_unavailable: expected.analysisUnavailable,
-  })) {
-    fail(
-      `current cold report outcome counts are not exact ${expected.beliefRevised}/${expected.monitor}/${expected.noMaterialChange}/${expected.analysisUnavailable}`,
-    );
+  if (expected) {
+    const capable = new Set(expected.beliefRevisionCapableDealIds);
+    const unexpected = report.companyAnalyses
+      .filter(({ outcome, dealId }) =>
+        outcome === "belief_revised" && !capable.has(dealId)
+      )
+      .map(({ dealId }) => dealId)
+      .sort();
+    if (unexpected.length > 0) {
+      fail(
+        `current cold report admitted belief revisions outside the reviewed case set: ${unexpected.join(",")}`,
+      );
+    }
   }
   const universes = new Set<string>();
   for (const analysis of report.companyAnalyses) {
@@ -705,14 +710,6 @@ export function verifyBeliefReversalCurrentColdReport(
       || analysis.currentRunAudit.priorMemory.kind !== "screening"
     )
   ) fail("current cold report did not preserve seven screening analyses");
-  if (expected?.screeningOutcomeByDeal) {
-    for (const analysis of screening) {
-      const expectedOutcome = expected.screeningOutcomeByDeal[analysis.dealId];
-      if (!expectedOutcome || analysis.outcome !== expectedOutcome) {
-        fail(`current cold screening outcome mismatch for ${analysis.dealId}`);
-      }
-    }
-  }
   const revised = report.companyAnalyses
     .filter(({ outcome }) => outcome === "belief_revised")
     .sort((left, right) =>
@@ -754,6 +751,9 @@ export function verifyBeliefReversalCurrentColdReport(
     })),
     screeningMonitorCount: screening.filter(
       ({ outcome }) => outcome === "monitor",
+    ).length,
+    screeningNonRevisingCount: screening.filter(({ outcome }) =>
+      outcome === "monitor" || outcome === "no_material_change"
     ).length,
   };
 }

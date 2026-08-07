@@ -587,7 +587,7 @@ test("keeps the exact 3 by 17 scenario matrix in audit while the main memo conso
   assert.match(html, /Demo evidence snapshot as of 2026-08-01/);
   assert.match(html, /Historical evidence snapshot—not current news/);
 
-  assert.match(html, /FORMAL UNDERWRITING DECISION/);
+  assert.match(html, /Advance authorizes continued diligence/);
   assert.match(html, /What this changes for the portfolio/);
   assert.match(html, /Negative belief change/);
   assert.match(html, /Pause follow on/);
@@ -603,7 +603,7 @@ test("keeps the exact 3 by 17 scenario matrix in audit while the main memo conso
   assert.match(html, /Could lower the current decision ceiling/);
   assert.match(html, /Decision Request/);
   assert.match(html, /VSee IC Synthesis/);
-  assert.match(html, /Decision ceiling · Advance/);
+  assert.match(html, /could go no further than Advance/);
   assert.match(html, /public sources do not disclose: net retention/);
 });
 

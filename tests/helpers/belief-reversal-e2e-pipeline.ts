@@ -531,12 +531,14 @@ export interface CurrentBeliefReversalColdPassLike {
   }>;
 }
 
+/**
+ * Outcome distributions depend on the run's evidence window, so they are
+ * derived rather than pinned. A fixed distribution rots the moment a fixture
+ * event ages past the window. What stays true on any date is which Deals are
+ * even capable of a belief revision, and that no screening Deal is.
+ */
 export interface CurrentColdExpectedOutcomes {
-  beliefRevised: number;
-  monitor: number;
-  noMaterialChange: number;
-  analysisUnavailable: number;
-  screeningOutcomeByDeal?: Readonly<Record<string, string>>;
+  beliefRevisionCapableDealIds: readonly string[];
 }
 
 const CURRENT_SCREENING_DEAL_IDS = new Set([
@@ -607,26 +609,26 @@ export function assertCurrentBeliefReversalColdPass(
       "Current cold acceptance requires report counts derived from exactly 30 CompanyAnalysis outcomes.",
     );
   }
-  if (expected && canonicalEvidenceJson({
-    beliefRevised: derivedCounts.beliefRevised,
-    monitor: derivedCounts.monitor,
-    noMaterialChange: derivedCounts.noMaterialChange,
-    analysisUnavailable: derivedCounts.analysisUnavailable,
-  }) !== canonicalEvidenceJson(expectedCountsOnly(expected))) {
-    const actual = [
-      derivedCounts.beliefRevised,
-      derivedCounts.monitor,
-      derivedCounts.noMaterialChange,
-      derivedCounts.analysisUnavailable,
-    ].join("/");
-    const screeningOutcomes = report.companyAnalyses
-      .filter(({ dealId }) => CURRENT_SCREENING_DEAL_IDS.has(dealId))
-      .map(({ dealId, outcome }) => `${dealId}=${outcome}`)
-      .sort()
-      .join(",");
+  const revisedDealIds = report.companyAnalyses
+    .filter(({ outcome }) => outcome === "belief_revised")
+    .map(({ dealId }) => dealId)
+    .sort();
+  const screeningRevised = revisedDealIds.filter((dealId) =>
+    CURRENT_SCREENING_DEAL_IDS.has(dealId)
+  );
+  if (screeningRevised.length > 0) {
     throw new Error(
-      `Current cold acceptance expected ${expected.beliefRevised}/${expected.monitor}/${expected.noMaterialChange}/${expected.analysisUnavailable} CompanyAnalysis outcomes but persisted ${actual}; screening=${screeningOutcomes}.`,
+      `Current cold acceptance found screening Deals admitted as belief_revised: ${screeningRevised.join(",")}.`,
     );
+  }
+  if (expected) {
+    const capable = new Set(expected.beliefRevisionCapableDealIds);
+    const unexpected = revisedDealIds.filter((dealId) => !capable.has(dealId));
+    if (unexpected.length > 0) {
+      throw new Error(
+        `Current cold acceptance admitted belief revisions outside the reviewed case set: ${unexpected.join(",")}.`,
+      );
+    }
   }
   const sharedUniverse = new Set<string>();
   for (const analysis of report.companyAnalyses) {
@@ -668,16 +670,6 @@ export function assertCurrentBeliefReversalColdPass(
     throw new Error(
       "Current cold acceptance requires seven screening prior-context analyses.",
     );
-  }
-  if (expected?.screeningOutcomeByDeal) {
-    for (const analysis of screening) {
-      const expectedOutcome = expected.screeningOutcomeByDeal[analysis.dealId];
-      if (!expectedOutcome || analysis.outcome !== expectedOutcome) {
-        throw new Error(
-          `Current cold screening outcome mismatch for ${analysis.dealId}.`,
-        );
-      }
-    }
   }
   const beliefRevised = report.companyAnalyses
     .filter(({ outcome }) => outcome === "belief_revised")
@@ -730,15 +722,6 @@ export function assertCurrentBeliefReversalColdPass(
   ) {
     throw new Error("Current cold terminal jobs are missing exact artifacts.");
   }
-}
-
-function expectedCountsOnly(expected: CurrentColdExpectedOutcomes) {
-  return {
-    beliefRevised: expected.beliefRevised,
-    monitor: expected.monitor,
-    noMaterialChange: expected.noMaterialChange,
-    analysisUnavailable: expected.analysisUnavailable,
-  };
 }
 
 export interface BeliefReversalPinnedPipelineResult {

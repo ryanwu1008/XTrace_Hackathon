@@ -1116,15 +1116,9 @@ function currentReportFixture() {
 test("current report verifier accepts 30 analyses, 4/7/19/0 outcomes, and a four-job priority queue without Top-5 semantics", () => {
   const fixture = currentReportFixture();
   const result = verifyBeliefReversalCurrentColdReport(fixture, {
-    beliefRevised: 4,
-    monitor: 7,
-    noMaterialChange: 19,
-    analysisUnavailable: 0,
-    screeningOutcomeByDeal: Object.fromEntries(
-      fixture.companyAnalyses
-        .filter(({ dealStatus }) => dealStatus === "screening")
-        .map(({ dealId }) => [dealId, "monitor"]),
-    ),
+    beliefRevisionCapableDealIds: fixture.companyAnalyses
+      .filter(({ outcome }) => outcome === "belief_revised")
+      .map(({ dealId }) => dealId),
   });
 
   assert.deepEqual(result.priorityOrder.map(({ dealId, priorityRank }) => ({

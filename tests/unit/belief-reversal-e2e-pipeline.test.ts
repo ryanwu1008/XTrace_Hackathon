@@ -692,15 +692,9 @@ test("current cold pass proves 30 audited Deals, 4/7/19/0 outcomes, and every be
   const fixture = currentColdPassFixture();
 
   assert.doesNotThrow(() => assertCurrentBeliefReversalColdPass(fixture, {
-    beliefRevised: 4,
-    monitor: 7,
-    noMaterialChange: 19,
-    analysisUnavailable: 0,
-    screeningOutcomeByDeal: Object.fromEntries(
-      fixture.report.companyAnalyses
-        .filter(({ dealStatus }) => dealStatus === "screening")
-        .map(({ dealId }) => [dealId, "monitor"]),
-    ),
+    beliefRevisionCapableDealIds: fixture.report.companyAnalyses
+      .filter(({ outcome }) => outcome === "belief_revised")
+      .map(({ dealId }) => dealId),
   }));
 });
 

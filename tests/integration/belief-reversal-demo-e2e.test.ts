@@ -57,20 +57,16 @@ const availability = probeBeliefReversalE2EAvailability({
   runner: runHarnessCommand,
 });
 
-const ACTUAL_CLOCK_COLD_EXPECTATION = {
-  beliefRevised: 4,
-  monitor: 6,
-  noMaterialChange: 20,
-  analysisUnavailable: 0,
-  screeningOutcomeByDeal: {
-    deal_centralize_v1: "monitor",
-    deal_chipagents_v1: "monitor",
-    deal_sent_v1: "monitor",
-    deal_cascade_v1: "monitor",
-    deal_cordant_v1: "monitor",
-    deal_empirical_security_v1: "no_material_change",
-    deal_freight_hero_v1: "monitor",
-  },
+// Which of the four reviewed cases actually revises depends on whether its
+// trigger event still falls inside the run's 14-day window, so the acceptance
+// pins the admissible set rather than a distribution that expires.
+const BELIEF_REVISION_CAPABLE = {
+  beliefRevisionCapableDealIds: [
+    "deal_henry_ai_v1",
+    "deal_hush_security_v1",
+    "deal_irregular_v1",
+    "deal_smallest_ai_v1",
+  ],
 } as const;
 
 const diagnosticLoopbackFetch: typeof fetch = async (request, init) => {
@@ -238,7 +234,7 @@ test(
         workspaceId: dataRuntime.workspaceId,
         runtime: currentRuntime,
         fetchImpl: repositoryFetch,
-        expectedCurrentOutcomes: ACTUAL_CLOCK_COLD_EXPECTATION,
+        expectedCurrentOutcomes: BELIEF_REVISION_CAPABLE,
       });
       assertBeliefReversalQualityParity(currentPipeline, pipeline.first);
       const common = {
@@ -307,7 +303,7 @@ test(
             routeDependencies,
           ),
         ),
-        ACTUAL_CLOCK_COLD_EXPECTATION,
+        BELIEF_REVISION_CAPABLE,
       );
       const isolationCounters = async () => {
         const provider = pipeline.readProviderInspection();
@@ -438,7 +434,7 @@ test(
       assert.equal(currentPipeline.report.companyAnalyses.length, 30);
       assert.equal(currentPipeline.cases.length, 4);
       assert.equal(currentPipeline.candidates.length, 4);
-      assert.equal(currentReportVerification.screeningMonitorCount, 6);
+      assert.equal(currentReportVerification.screeningNonRevisingCount, 7);
       assert.equal(currentReportVerification.priorityOrder.length, 4);
       assert.equal(pipeline.first.cases.every(({ gates }) =>
         gates.allPassed

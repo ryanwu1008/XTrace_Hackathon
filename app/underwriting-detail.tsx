@@ -183,17 +183,11 @@ export function UnderwritingDetailPanel({
           <Definition label="Fund Fit" value={detail.decision.fundFit} />
         </div>
         <div className="vsee-formal-decision">
-          <span>FORMAL UNDERWRITING DECISION</span>
-          <strong>{detail.decision.decision ?? "Unavailable"}</strong>
           <p>
             Advance authorizes continued diligence. Invest Candidate means
             policy gates support IC consideration. Neither is an investment
             approval; human final approval remains required.
           </p>
-          <small>
-            Ceiling · {detail.decision.decisionCeiling ?? "Unavailable"} ·{" "}
-            {detail.decision.confidence} confidence
-          </small>
           <ClaimTrace claimItemId={detail.decision.id} detail={detail} />
         </div>
         <StatusAwareActionPanel analysis={analysis} />
@@ -211,20 +205,6 @@ export function UnderwritingDetailPanel({
             </ul>
           ) : <p>No formal rule fired.</p>}
         </details>
-        <h4>Final IC Position</h4>
-        <div className="vsee-final-ic-position">
-          <span>FORMAL RESULT</span>
-          <strong>{article.finalPosition.decision}</strong>
-          <p>
-            Decision ceiling · {article.finalPosition.ceiling} · Confidence ·{" "}
-            {humanize(article.finalPosition.confidence)}
-          </p>
-          <p>Next action · {humanize(article.finalPosition.nextAction)}</p>
-          <small>
-            Human IC approval remains required. No outreach, publication, or
-            transaction is executed automatically.
-          </small>
-        </div>
       </DetailSection>
 
       <DetailSection number="02" title="What Changed">
