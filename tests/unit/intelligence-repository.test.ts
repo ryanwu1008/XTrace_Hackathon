@@ -894,7 +894,9 @@ test("Supabase market-event reads reject event, source, and intrinsic-unit batch
 });
 
 test("memory market-event authority rejects collisions before read egress", async () => {
-  const repository = createMemoryIntelligenceRepository();
+  const repository = createMemoryIntelligenceRepository({
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  });
   const first = event("memory_read_collision");
   await repository.saveMarketEvents([first], "workspace_demo");
   const conflicting = refingerprintMarketEvent({

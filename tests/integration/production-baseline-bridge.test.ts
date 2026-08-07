@@ -2002,7 +2002,10 @@ test(
           `${exactBoundary.stdout}${exactBoundary.stderr}`,
         );
 
-        executeSql("postgres", "grant service_role to anon");
+        // anon is cluster-global and another migration test file may already
+        // have created it NOINHERIT, which since PostgreSQL 16 becomes the
+        // membership default. Pin the hostile membership explicitly.
+        executeSql("postgres", "grant service_role to anon with inherit true");
         assert.equal(
           executeSql(database, `
             select
