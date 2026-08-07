@@ -364,6 +364,9 @@
 .vsee-underwriting-section h3{margin:0;font:400 clamp(26px,3vw,34px)/1.2 var(--serif)}
 .vsee-underwriting-section>div{min-width:0;padding:0 44px 44px}
 .vsee-underwriting-section>div>h4{margin:28px 0 12px;color:#bbc4be;font:700 12px/1.45 var(--mono);letter-spacing:.075em;text-transform:uppercase}
+/* These panels nest their heading inside an extra <section>, which escapes the
+   direct-child selector above. Keep them on the same section-label scale. */
+.vsee-evidence-coverage>h4,.vsee-evidence-conflicts>h4,.vsee-status-aware-actions>h4{margin:28px 0 12px;color:#bbc4be;font:700 12px/1.45 var(--mono);letter-spacing:.075em;text-transform:uppercase}
 .vsee-underwriting-section>div>p{max-width:900px;color:#c4ccc7;font-size:16px!important;line-height:1.7}
 .vsee-underwriting-section dl dd{font-size:15px;line-height:1.65}
 .vsee-executive-memo{gap:18px}

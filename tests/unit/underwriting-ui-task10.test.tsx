@@ -588,7 +588,7 @@ test("keeps the exact 3 by 17 scenario matrix in audit while the main memo conso
   assert.match(html, /Historical evidence snapshot—not current news/);
 
   assert.match(html, /FORMAL UNDERWRITING DECISION/);
-  assert.match(html, /STATUS-AWARE PORTFOLIO ACTION/);
+  assert.match(html, /What this changes for the portfolio/);
   assert.match(html, /Negative belief change/);
   assert.match(html, /Pause follow on/);
   assert.match(html, /Portfolio risk review/);
@@ -601,10 +601,10 @@ test("keeps the exact 3 by 17 scenario matrix in audit while the main memo conso
   assert.match(html, /Internal memo · Internal · Internal/);
   assert.match(html, /Latest ARR/);
   assert.match(html, /Could lower the current decision ceiling/);
-  assert.match(html, /Executive Conclusion/);
+  assert.match(html, /Decision Request/);
   assert.match(html, /VSee IC Synthesis/);
   assert.match(html, /Decision ceiling · Advance/);
-  assert.match(html, /Critical missing evidence · net_retention/);
+  assert.match(html, /public sources do not disclose: net retention/);
 });
 
 test("presents modeling assumptions and the complete IC approval request without transport metadata in the memo", () => {
@@ -643,7 +643,7 @@ test("presents modeling assumptions and the complete IC approval request without
   assert.match(mainMemo, /Begin an internal portfolio-risk review/);
   assert.match(
     mainMemo,
-    /Portfolio scope[\s\S]*High priority[\s\S]*Internal only/,
+    /portfolio-level decision[\s\S]*stays inside the fund[\s\S]*does not wait/,
   );
   assert.doesNotMatch(mainMemo, /<button[^>]*>\s*(?:SEND|PUBLISH)/i);
 });
@@ -690,20 +690,14 @@ test("Deep Underwriting renders the approved complete IC article reading order",
   />);
 
   const headings = [
-    "Executive Conclusion",
-    "What Changed?",
-    "Verified Company Snapshot",
-    "Investment Thesis Assessment",
-    "Investor Framework Synthesis",
-    "Investment Committee Debate",
-    "Financial Case",
-    "Valuation and Return Analysis",
-    "VSee IC Synthesis",
-    "Required Diligence",
-    "Status-aware Action Drafts",
-    "Final IC Position",
-    "Evidence and Source Register",
-    "Audit Appendix",
+    "Decision Request",
+    "What Changed",
+    "Company Position",
+    "Thesis Assessment",
+    "Financial and Valuation Status",
+    "Named Lens Readings",
+    "Recommendation and Next Steps",
+    "Appendix",
   ];
   let previousIndex = -1;
   for (const heading of headings) {
@@ -774,7 +768,7 @@ test("Action Drafts summarize evidence once and keep complete bodies in readable
     evidenceContext={PINNED_CONTEXT}
   />);
   const start = html.indexOf("Status-aware Action Drafts");
-  const end = html.indexOf("Final IC Position");
+  const end = html.indexOf("Evidence and Source Register");
   const section = html.slice(start, end);
 
   assert.equal(section.match(/class="vsee-action-draft-evidence-summary"/g)?.length, 1);

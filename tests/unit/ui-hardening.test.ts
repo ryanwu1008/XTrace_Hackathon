@@ -881,20 +881,14 @@ test("underwriting detail preserves section order, lineage, public version pins,
   }));
 
   const orderedHeadings = [
-    "Executive Conclusion",
-    "What Changed?",
-    "Verified Company Snapshot",
-    "Investment Thesis Assessment",
-    "Investor Framework Synthesis",
-    "Investment Committee Debate",
-    "Financial Case",
-    "Valuation and Return Analysis",
-    "VSee IC Synthesis",
-    "Required Diligence",
-    "Status-aware Action Drafts",
-    "Final IC Position",
-    "Evidence and Source Register",
-    "Audit Appendix",
+    "Decision Request",
+    "What Changed",
+    "Company Position",
+    "Thesis Assessment",
+    "Financial and Valuation Status",
+    "Named Lens Readings",
+    "Recommendation and Next Steps",
+    "Appendix",
   ];
   for (const heading of orderedHeadings) {
     assert.notEqual(html.indexOf(heading), -1, heading);
@@ -906,7 +900,7 @@ test("underwriting detail preserves section order, lineage, public version pins,
     );
   }
   const executiveLead = html.match(
-    /<div class="vsee-executive-memo-lead">([\s\S]*?)<\/div><div class="vsee-executive-memo-grid">/,
+    /<div class="vsee-executive-memo-lead">([\s\S]*?)<\/div><p class="vsee-executive-memo-reading">/,
   )?.[1] ?? "";
   assert.match(executiveLead, /Carrier adoption accelerated\./);
   assert.doesNotMatch(

@@ -35,8 +35,50 @@ export interface ModelingAssumptionsPresentation {
   remaining: EvidencePackAssumption[];
 }
 
+export interface NamedLensReading {
+  judgmentId: string;
+  frameworkCardId: string;
+  frameworkVersion: string;
+  displayName: string;
+  stance: "supportive" | "mixed" | "negative";
+  support: string | null;
+  counterargument: string | null;
+  unknowns: string[];
+  limitations: string[];
+  evidenceItemIds: string[];
+  inPrioritizedDisagreement: boolean;
+}
+
+export interface NamedLensReadingsPresentation {
+  readings: NamedLensReading[];
+  passagesDiscriminate: boolean;
+  withheldCount: number;
+  panel: {
+    activeCount: number;
+    abstainedCount: number;
+    unavailableCount: number;
+    supportiveCount: number;
+    negativeCount: number;
+  };
+}
+
+export interface DiligenceItem {
+  fieldId: string;
+  label: string;
+  settlesDisagreement: string | null;
+  unblocks: string | null;
+  priority: "critical" | "high" | null;
+}
+
+export interface DiligencePresentation {
+  orderingBasis: "prioritized_disagreement" | "calculation_unblock";
+  items: DiligenceItem[];
+}
+
 export interface UnderwritingArticleViewModel {
   decisionAsk: IcDecisionAskPresentation;
+  namedLensReadings: NamedLensReadingsPresentation;
+  diligence: DiligencePresentation;
   modelingAssumptions: ModelingAssumptionsPresentation;
   thenNow: {
     then: string;
@@ -124,7 +166,15 @@ export function buildUnderwritingArticleViewModel(input: {
       : [];
   });
 
+  const namedLensReadings = buildNamedLensReadings(input.detail);
+  const requiredBeforeValuation = valuationDiligenceCatalog.filter((
+    { fieldIds },
+  ) => fieldIds.some((fieldId) => missingScenarioFields.has(fieldId)));
+  const diligence = buildDiligenceOrder(input.detail, requiredBeforeValuation);
+
   return {
+    namedLensReadings,
+    diligence,
     decisionAsk: {
       summary: actions.length
         ? actions.length === 1
@@ -204,9 +254,7 @@ export function buildUnderwritingArticleViewModel(input: {
           acceptedForGate && financialEvidenceFields.has(field)
         )
         .map(displayFact),
-      requiredBeforeValuation: valuationDiligenceCatalog.filter(({ fieldIds }) =>
-        fieldIds.some((fieldId) => missingScenarioFields.has(fieldId))
-      ),
+      requiredBeforeValuation,
     },
     finalPosition: {
       decision: input.detail.decision.decision ?? "Unavailable",
@@ -248,6 +296,206 @@ function useful(value: string | null): value is string {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+const MAXIMUM_NAMED_LENS_READINGS = 6;
+
+// Ordering is derived, and the rule is conditional. When the disagreeing lenses
+// all report the same unknowns there is nothing to discriminate on, so the memo
+// falls back to calculation order rather than manufacturing a priority the data
+// cannot support.
+function buildDiligenceOrder(
+  detail: CandidateUnderwritingDetail,
+  requiredBeforeValuation: Array<{
+    priority: "critical" | "high";
+    requiredEvidence: string;
+    decisionUse: string;
+    fieldIds: readonly string[];
+  }>,
+): DiligencePresentation {
+  const judgmentsById = new Map(
+    detail.judgments.map((judgment) => [judgment.id, judgment]),
+  );
+  const disagreeingJudgmentIds = new Set<string>();
+  for (const disagreement of detail.disagreements) {
+    disagreeingJudgmentIds.add(disagreement.leftJudgmentId);
+    disagreeingJudgmentIds.add(disagreement.rightJudgmentId);
+  }
+  const unknownSignatures = new Set(
+    [...disagreeingJudgmentIds].flatMap((id) => {
+      const judgment = judgmentsById.get(id);
+      return judgment ? [JSON.stringify([...judgment.unknowns].sort())] : [];
+    }),
+  );
+  const discriminates = unknownSignatures.size > 1;
+
+  const settledBy = new Map<string, string>();
+  if (discriminates) {
+    for (const disagreement of detail.disagreements) {
+      for (const judgmentId of [disagreement.leftJudgmentId, disagreement.rightJudgmentId]) {
+        const judgment = judgmentsById.get(judgmentId);
+        if (!judgment) continue;
+        const text = judgment.unknowns.join(" ").toLowerCase();
+        for (const fieldId of detail.evidencePack.coverage.missingFieldIds) {
+          if (!settledBy.has(fieldId) && text.includes(fieldId.toLowerCase())) {
+            settledBy.set(fieldId, disagreement.id);
+          }
+        }
+      }
+    }
+  }
+
+  const requirementByField = new Map<
+    string,
+    { priority: "critical" | "high"; decisionUse: string }
+  >();
+  for (const requirement of requiredBeforeValuation) {
+    for (const fieldId of requirement.fieldIds) {
+      if (!requirementByField.has(fieldId)) {
+        requirementByField.set(fieldId, {
+          priority: requirement.priority,
+          decisionUse: requirement.decisionUse,
+        });
+      }
+    }
+  }
+
+  const items: DiligenceItem[] = detail.evidencePack.coverage.missingFieldIds.map(
+    (fieldId) => {
+      const requirement = requirementByField.get(fieldId);
+      return {
+        fieldId,
+        label: titleCase(fieldId),
+        settlesDisagreement: settledBy.get(fieldId) ?? null,
+        unblocks: requirement?.decisionUse ?? null,
+        priority: requirement?.priority ?? null,
+      };
+    },
+  );
+
+  const priorityRank = (item: DiligenceItem): number => {
+    if (item.settlesDisagreement) return 0;
+    if (item.priority === "critical") return 1;
+    if (item.priority === "high") return 2;
+    return 3;
+  };
+  const ordered = [...items].sort((left, right) =>
+    priorityRank(left) - priorityRank(right)
+  );
+
+  return {
+    orderingBasis: discriminates
+      ? "prioritized_disagreement"
+      : "calculation_unblock",
+    items: ordered,
+  };
+}
+
+// A passage may only reach the reader when it resolves both to a card the pack
+// actually contains and to evidence this candidate actually holds. Anything else
+// is withheld; the renderer must never substitute generic prose for it.
+function buildNamedLensReadings(
+  detail: CandidateUnderwritingDetail,
+): NamedLensReadingsPresentation {
+  const evidenceItemIds = new Set<string>([
+    ...detail.evidencePack.facts.map(({ id }) => id),
+    ...detail.evidencePack.assumptions.map(({ id }) => id),
+  ]);
+  const prioritized = new Set<string>();
+  for (const disagreement of detail.disagreements) {
+    prioritized.add(disagreement.leftJudgmentId);
+    prioritized.add(disagreement.rightJudgmentId);
+  }
+
+  const panel = {
+    activeCount: 0,
+    abstainedCount: 0,
+    unavailableCount: 0,
+    supportiveCount: 0,
+    negativeCount: 0,
+  };
+  const eligible: NamedLensReading[] = [];
+  let withheldCount = 0;
+
+  for (const judgment of detail.judgments) {
+    if (judgment.applicability === "unavailable") {
+      panel.unavailableCount += 1;
+      continue;
+    }
+    if (judgment.applicability !== "applicable" || judgment.conclusion === "abstain") {
+      panel.abstainedCount += 1;
+      continue;
+    }
+    panel.activeCount += 1;
+    if (judgment.conclusion === "supportive") panel.supportiveCount += 1;
+    if (judgment.conclusion === "negative") panel.negativeCount += 1;
+
+    // Named lens readings cover the public-source advisory packs only; a core
+    // framework judgment carries no pack catalog to resolve the card against.
+    // A composite advisory card ID is `framework_advisory:<packId>:<hash>`, so
+    // the declared pack must be the one the card ID itself claims. This stops a
+    // judgment being presented under a pack it did not come from.
+    const metadata = judgment.frameworkMetadata;
+    const cardIdParts = judgment.frameworkCardId.split(":");
+    const cardResolves = metadata !== undefined
+      && cardIdParts.length === 3
+      && cardIdParts[0] === "framework_advisory"
+      && cardIdParts[1] === metadata.packId;
+    const usedEvidenceItemIds = [
+      ...judgment.supportEvidenceItemIds,
+      ...judgment.counterEvidenceItemIds,
+    ].filter((id) => evidenceItemIds.has(id));
+    if (!cardResolves || usedEvidenceItemIds.length === 0) {
+      withheldCount += 1;
+      continue;
+    }
+
+    eligible.push({
+      judgmentId: judgment.id,
+      frameworkCardId: judgment.frameworkCardId,
+      frameworkVersion: judgment.frameworkVersion,
+      displayName: metadata?.packName ?? judgment.frameworkCardId,
+      stance: judgment.conclusion,
+      support: judgment.strongestSupport,
+      counterargument: judgment.strongestCounterargument,
+      unknowns: [...judgment.unknowns],
+      limitations: [...judgment.limitations],
+      evidenceItemIds: unique(usedEvidenceItemIds),
+      inPrioritizedDisagreement: prioritized.has(judgment.id),
+    });
+  }
+
+  // A shared template emits the same argument for every lens, varying only the
+  // pack name. Those judgments still pass traceability, so uniformity is tested
+  // separately: strip the pack name and see whether anything remains different.
+  const argumentSignatures = new Set(
+    eligible.map(({ displayName, support, counterargument }) =>
+      [support ?? "", counterargument ?? ""]
+        .join(" ")
+        .split(displayName)
+        .join("")
+        .replace(/\s+/gu, " ")
+        .trim()
+        .toLowerCase()
+    ),
+  );
+  // Uniformity needs at least two passages to compare; a single lens cannot
+  // repeat anyone.
+  const uniform = eligible.length > 1 && argumentSignatures.size === 1;
+  const passagesDiscriminate = !uniform;
+
+  const readings = passagesDiscriminate
+    ? [
+      ...eligible.filter(({ inPrioritizedDisagreement }) =>
+        inPrioritizedDisagreement
+      ),
+      ...eligible.filter(({ inPrioritizedDisagreement }) =>
+        !inPrioritizedDisagreement
+      ),
+    ].slice(0, MAXIMUM_NAMED_LENS_READINGS)
+    : [];
+
+  return { readings, passagesDiscriminate, withheldCount, panel };
 }
 
 const financialEvidenceFields = new Set([

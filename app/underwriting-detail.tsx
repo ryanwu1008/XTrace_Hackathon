@@ -167,12 +167,67 @@ export function UnderwritingDetailPanel({
           Evidence-led IC review
         </p>
       </header>
-      <DetailSection number="01" title="Executive Conclusion">
+      <DetailSection number="01" title="Decision Request">
         <ExecutiveDecisionMemo analysis={analysis} detail={detail} />
         <IcApprovalRequest decisionAsk={article.decisionAsk} />
+        <h4>VSee IC Synthesis</h4>
+        <div className="vsee-decision-dimensions">
+          <Definition
+            label="Company Quality"
+            value={detail.decision.companyQuality}
+          />
+          <Definition
+            label="Price Attractiveness"
+            value={detail.decision.priceAttractiveness}
+          />
+          <Definition label="Fund Fit" value={detail.decision.fundFit} />
+        </div>
+        <div className="vsee-formal-decision">
+          <span>FORMAL UNDERWRITING DECISION</span>
+          <strong>{detail.decision.decision ?? "Unavailable"}</strong>
+          <p>
+            Advance authorizes continued diligence. Invest Candidate means
+            policy gates support IC consideration. Neither is an investment
+            approval; human final approval remains required.
+          </p>
+          <small>
+            Ceiling · {detail.decision.decisionCeiling ?? "Unavailable"} ·{" "}
+            {detail.decision.confidence} confidence
+          </small>
+          <ClaimTrace claimItemId={detail.decision.id} detail={detail} />
+        </div>
+        <StatusAwareActionPanel analysis={analysis} />
+        <details className="vsee-details">
+          <summary>Open decision trace</summary>
+          {detail.decision.firedRules.length ? (
+            <ul>
+              {detail.decision.firedRules.map((rule) => (
+                <li key={rule.ruleId}>
+                  {rule.ruleId} · {rule.result} · ceiling{" "}
+                  {rule.appliedCeiling ?? "none"} · veto{" "}
+                  {rule.veto ? "yes" : "no"}
+                </li>
+              ))}
+            </ul>
+          ) : <p>No formal rule fired.</p>}
+        </details>
+        <h4>Final IC Position</h4>
+        <div className="vsee-final-ic-position">
+          <span>FORMAL RESULT</span>
+          <strong>{article.finalPosition.decision}</strong>
+          <p>
+            Decision ceiling · {article.finalPosition.ceiling} · Confidence ·{" "}
+            {humanize(article.finalPosition.confidence)}
+          </p>
+          <p>Next action · {humanize(article.finalPosition.nextAction)}</p>
+          <small>
+            Human IC approval remains required. No outreach, publication, or
+            transaction is executed automatically.
+          </small>
+        </div>
       </DetailSection>
 
-      <DetailSection number="02" title="What Changed?">
+      <DetailSection number="02" title="What Changed">
         <div className="vsee-detail-meta">
           <span>14-DAY EVENT WINDOW</span>
           <b>{detail.evidencePack.asOfDate}</b>
@@ -238,28 +293,29 @@ export function UnderwritingDetailPanel({
         </div>
       </DetailSection>
 
-      <DetailSection number="03" title="Verified Company Snapshot">
+      <DetailSection number="03" title="Company Position">
         <div className="vsee-snapshot-grid">
           <ListBlock
-            title="Verified / gate-accepted facts"
+            title="Accepted for this decision"
             values={article.companySnapshot.verifiedFacts}
           />
           <ListBlock
-            title="Reported or unverified facts"
+            title="Recorded but not accepted"
             values={article.companySnapshot.unverifiedFacts}
           />
           <ListBlock
-            title="Unknown / missing evidence"
+            title="Not available at all"
             values={article.companySnapshot.unknownFieldIds}
           />
         </div>
         <p>
-          This snapshot classifies persisted evidence; it does not upgrade a
-          reported value into a verified fact.
+          Accepting a value means the gates allowed this memorandum to reason
+          with it. It does not mean anyone independently confirmed it, and each
+          entry keeps the standing its source gave it.
         </p>
       </DetailSection>
 
-      <DetailSection number="04" title="Investment Thesis Assessment">
+      <DetailSection number="04" title="Thesis Assessment">
         <p>{analysis?.marketEvidence.explanation ?? detail.narrative}</p>
         <div className="vsee-impact-grid">
           <ListBlock
@@ -328,71 +384,10 @@ export function UnderwritingDetailPanel({
         </dl>
       </DetailSection>
 
-      <DetailSection number="05" title="Investor Framework Synthesis">
-        <AnalystPanelSynthesis detail={detail} panel={analystPanel} />
-      </DetailSection>
-
-      <DetailSection number="06" title="Investment Committee Debate">
-        <div className="vsee-ic-debate">
-          <ListBlock title="Bull Case" values={article.debate.bull} />
-          <ListBlock title="Bear Case" values={article.debate.bear} />
-          <ListBlock
-            title="True Disagreement"
-            values={article.debate.trueDisagreement}
-          />
-        </div>
-        {article.debate.trueDisagreement.length ? (
-          <section className="vsee-disagreements">
-            <h4>
-              Priority disagreements · {article.debate.trueDisagreement.length}
-              {detail.disagreements.length > article.debate.trueDisagreement.length
-                ? ` of ${detail.disagreements.length}`
-                : ""}
-            </h4>
-            {detail.disagreements
-              .filter(({ explanation }) =>
-                article.debate.trueDisagreement.includes(explanation)
-              )
-              .slice(0, article.debate.trueDisagreement.length)
-              .map((disagreement) => (
-              <article key={disagreement.id}>
-                <strong>{humanize(disagreement.topic)}</strong>
-                <p>{disagreement.explanation}</p>
-                <small>
-                  {disagreement.leftJudgmentId} ↔{" "}
-                  {disagreement.rightJudgmentId}
-                </small>
-                <details className="vsee-details">
-                  <summary>Open disagreement evidence and lineage</summary>
-                  {disagreement.evidenceItemIds.map((itemId) => (
-                    <ItemLineage
-                      itemId={itemId}
-                      detail={detail}
-                      key={itemId}
-                    />
-                  ))}
-                </details>
-              </article>
-            ))}
-            {detail.disagreements.length > article.debate.trueDisagreement.length && (
-              <p>
-                Remaining persisted pairwise conflicts stay available through
-                the audit payload; they are not repeated in the main IC reading flow.
-              </p>
-            )}
-          </section>
-        ) : (
-          <Unavailable copy="No framework disagreements were persisted." />
-        )}
-      </DetailSection>
-
-      <DetailSection number="07" title="Financial Case">
+      <DetailSection number="05" title="Financial and Valuation Status">
         <ScenarioModelPanel
           financialCase={article.financialCase}
         />
-      </DetailSection>
-
-      <DetailSection number="08" title="Valuation and Return Analysis">
         <p className={`vsee-valuation-state ${detail.valuation.status}`}>
           {humanize(detail.valuation.status)}
           {detail.valuation.blockerCodes.length
@@ -523,50 +518,62 @@ export function UnderwritingDetailPanel({
         </div>
       </DetailSection>
 
-      <DetailSection number="09" title="VSee IC Synthesis">
-        <div className="vsee-decision-dimensions">
-          <Definition
-            label="Company Quality"
-            value={detail.decision.companyQuality}
+      <DetailSection number="06" title="Named Lens Readings">
+        <AnalystPanelSynthesis detail={detail} panel={analystPanel} />
+        <div className="vsee-ic-debate">
+          <ListBlock title="Bull Case" values={article.debate.bull} />
+          <ListBlock title="Bear Case" values={article.debate.bear} />
+          <ListBlock
+            title="True Disagreement"
+            values={article.debate.trueDisagreement}
           />
-          <Definition
-            label="Price Attractiveness"
-            value={detail.decision.priceAttractiveness}
-          />
-          <Definition label="Fund Fit" value={detail.decision.fundFit} />
         </div>
-        <div className="vsee-formal-decision">
-          <span>FORMAL UNDERWRITING DECISION</span>
-          <strong>{detail.decision.decision ?? "Unavailable"}</strong>
-          <p>
-            Advance authorizes continued diligence. Invest Candidate means
-            policy gates support IC consideration. Neither is an investment
-            approval; human final approval remains required.
-          </p>
-          <small>
-            Ceiling · {detail.decision.decisionCeiling ?? "Unavailable"} ·{" "}
-            {detail.decision.confidence} confidence
-          </small>
-          <ClaimTrace claimItemId={detail.decision.id} detail={detail} />
-        </div>
-        <StatusAwareActionPanel analysis={analysis} />
-        <details className="vsee-details">
-          <summary>Open decision trace</summary>
-          {detail.decision.firedRules.length ? (
-            <ul>
-              {detail.decision.firedRules.map((rule) => (
-                <li key={rule.ruleId}>
-                  {rule.ruleId} · {rule.result} · ceiling{" "}
-                  {rule.appliedCeiling ?? "none"} · veto{" "}
-                  {rule.veto ? "yes" : "no"}
-                </li>
-              ))}
-            </ul>
-          ) : <p>No formal rule fired.</p>}
-        </details>
+        {article.debate.trueDisagreement.length ? (
+          <section className="vsee-disagreements">
+            <h4>
+              Priority disagreements · {article.debate.trueDisagreement.length}
+              {detail.disagreements.length > article.debate.trueDisagreement.length
+                ? ` of ${detail.disagreements.length}`
+                : ""}
+            </h4>
+            {detail.disagreements
+              .filter(({ explanation }) =>
+                article.debate.trueDisagreement.includes(explanation)
+              )
+              .slice(0, article.debate.trueDisagreement.length)
+              .map((disagreement) => (
+              <article key={disagreement.id}>
+                <strong>{humanize(disagreement.topic)}</strong>
+                <p>{disagreement.explanation}</p>
+                <small>
+                  {disagreement.leftJudgmentId} ↔{" "}
+                  {disagreement.rightJudgmentId}
+                </small>
+                <details className="vsee-details">
+                  <summary>Open disagreement evidence and lineage</summary>
+                  {disagreement.evidenceItemIds.map((itemId) => (
+                    <ItemLineage
+                      itemId={itemId}
+                      detail={detail}
+                      key={itemId}
+                    />
+                  ))}
+                </details>
+              </article>
+            ))}
+            {detail.disagreements.length > article.debate.trueDisagreement.length && (
+              <p>
+                Remaining persisted pairwise conflicts stay available through
+                the audit payload; they are not repeated in the main IC reading flow.
+              </p>
+            )}
+          </section>
+        ) : (
+          <Unavailable copy="No framework disagreements were persisted." />
+        )}
       </DetailSection>
 
-      <DetailSection number="10" title="Required Diligence">
+      <DetailSection number="07" title="Recommendation and Next Steps">
         <div className="vsee-action-list">
           {detail.evidencePack.coverage.missingFieldIds.map((field) => (
             <article key={field}>
@@ -591,9 +598,7 @@ export function UnderwritingDetailPanel({
             </article>
           ))}
         </div>
-      </DetailSection>
-
-      <DetailSection number="11" title="Status-aware Action Drafts">
+        <h4>Status-aware Action Drafts</h4>
         <p>
           These are persisted draft bodies only. Editing replaces the current
           body for the same draft identity.
@@ -724,23 +729,8 @@ export function UnderwritingDetailPanel({
         ) : <Unavailable copy="No action draft was finalized." />}
       </DetailSection>
 
-      <DetailSection number="12" title="Final IC Position">
-        <div className="vsee-final-ic-position">
-          <span>FORMAL RESULT</span>
-          <strong>{article.finalPosition.decision}</strong>
-          <p>
-            Decision ceiling · {article.finalPosition.ceiling} · Confidence ·{" "}
-            {humanize(article.finalPosition.confidence)}
-          </p>
-          <p>Next action · {humanize(article.finalPosition.nextAction)}</p>
-          <small>
-            Human IC approval remains required. No outreach, publication, or
-            transaction is executed automatically.
-          </small>
-        </div>
-      </DetailSection>
-
-      <DetailSection number="13" title="Evidence and Source Register">
+      <DetailSection number="A" title="Appendix">
+        <h4>Evidence and Source Register</h4>
         <div className="vsee-evidence-classification">
           <Definition
             label="Facts"
@@ -788,9 +778,7 @@ export function UnderwritingDetailPanel({
         ) : (
           <Unavailable copy="No persisted Evidence Pack Facts are available." />
         )}
-      </DetailSection>
-
-      <DetailSection number="14" title="Audit Appendix">
+        <h4>Audit Appendix</h4>
         <details className="vsee-details" open>
           <summary>Open exact report identity and evidence lineage</summary>
           <Definition label="CandidateRun" value={detail.candidateRunId} />
@@ -869,9 +857,9 @@ function IcApprovalRequest({
         <p>No approval request can be presented without a persisted action.</p>
       )}
       {!!metadata.length && (
-        <div className="vsee-ic-approval-metadata">
-          {metadata.map((label) => <span key={label}>{label}</span>)}
-        </div>
+        <p className="vsee-ic-approval-nature">
+          {describeApprovalNature(decisionAsk)}
+        </p>
       )}
       <small>
         Human IC approval remains required. This request does not send,
@@ -1014,7 +1002,6 @@ function ExecutiveDecisionMemo({
   detail: CandidateUnderwritingDetail;
 }) {
   const assessment = analysis?.beliefAssessment;
-  const primaryAction = assessment?.actions[0];
   const missingEvidence = detail.evidencePack.coverage.missingFieldIds;
 
   return (
@@ -1029,49 +1016,21 @@ function ExecutiveDecisionMemo({
             ?? "A concise source-grounded market-impact summary was not persisted; review the evidence and IC synthesis below."}
         </p>
       </div>
-      <div className="vsee-executive-memo-grid">
-        <article>
-          <span>DECISION CEILING</span>
-          <strong>{detail.decision.decisionCeiling ?? "Unavailable"}</strong>
-          <small>
-            Decision ceiling · {detail.decision.decisionCeiling ?? "Unavailable"}
-          </small>
-        </article>
-        <article>
-          <span>CONFIDENCE</span>
-          <strong>{humanize(detail.decision.confidence)}</strong>
-          <small>Persisted underwriting confidence</small>
-        </article>
-        <article>
-          <span>BELIEF CHANGE</span>
-          <strong>{assessment ? humanize(assessment.direction) : "Unavailable"}</strong>
-          <small>
-            Deal status · {analysis ? humanize(analysis.dealStatus) : "Unavailable"}
-          </small>
-        </article>
-        <article>
-          <span>RECOMMENDED NEXT MOVE</span>
-          <strong>{primaryAction ? humanize(primaryAction.kind) : "Unavailable"}</strong>
-          <small>
-            {primaryAction
-              ? `${humanize(primaryAction.scope)} · ${humanize(primaryAction.priority)} priority`
-              : "No status-aware action was persisted"}
-          </small>
-        </article>
-      </div>
-      <div className="vsee-executive-memo-blockers">
-        <span>CRITICAL MISSING EVIDENCE</span>
-        <strong>
-          Critical missing evidence · {missingEvidence.length
-            ? missingEvidence.join(" · ")
-            : "None persisted"}
-        </strong>
-        <small>
-          Blocking conflicts · {detail.evidencePack.coverage.blockingConflictIds.length
-            ? detail.evidencePack.coverage.blockingConflictIds.join(" · ")
-            : "None persisted"}
-        </small>
-      </div>
+      <p className="vsee-executive-memo-reading">
+        {describeDecisionReach({
+          decision: detail.decision.decision,
+          ceiling: detail.decision.decisionCeiling,
+          confidence: detail.decision.confidence,
+          direction: assessment?.direction ?? null,
+          dealStatus: analysis?.dealStatus ?? null,
+        })}
+      </p>
+      <p className="vsee-executive-memo-reading">
+        {describeMissingEvidence(
+          missingEvidence,
+          detail.evidencePack.coverage.blockingConflictIds,
+        )}
+      </p>
     </div>
   );
 }
@@ -1603,7 +1562,7 @@ function StatusAwareActionPanel({
   if (!assessment) {
     return (
       <section className="vsee-status-aware-actions">
-        <h4>STATUS-AWARE DEAL ACTION</h4>
+        <h4>What this changes for the deal</h4>
         <Unavailable copy="Belief-change direction and status-aware actions are unavailable." />
       </section>
     );
@@ -1615,8 +1574,8 @@ function StatusAwareActionPanel({
     <section className="vsee-status-aware-actions">
       <h4>
         {portfolio
-          ? "STATUS-AWARE PORTFOLIO ACTION"
-          : "STATUS-AWARE DEAL ACTION"}
+          ? "What this changes for the portfolio"
+          : "What this changes for the deal"}
       </h4>
       <p>{humanize(assessment.direction)} belief change</p>
       <small>Deal status · {humanize(analysis.dealStatus)}</small>
@@ -1633,6 +1592,100 @@ function StatusAwareActionPanel({
       </div>
     </section>
   );
+}
+
+// Domain vocabulary is explained where a reader first meets it. A separate
+// glossary reads as an appendix and is not encountered at the point of doubt.
+const EVIDENCE_TERM_GLOSS: Readonly<Record<string, string>> = {
+  arr: "ARR, the annual recurring revenue a subscription business books",
+  burn: "burn, the cash the company spends each month",
+  cash: "cash on hand",
+  runway: "runway, how long the current cash lasts at that burn",
+  net_retention: "net retention, how much existing customers grow or shrink",
+  growth: "growth rate",
+  gross_margin: "gross margin",
+  contribution_margin:
+    "contribution margin, what is left after the costs of serving a customer",
+};
+
+function glossEvidenceField(fieldId: string): string {
+  return EVIDENCE_TERM_GLOSS[fieldId] ?? humanize(fieldId).toLowerCase();
+}
+
+function joinReadable(values: readonly string[]): string {
+  if (values.length <= 1) return values[0] ?? "";
+  return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`;
+}
+
+function describeDecisionReach(input: {
+  decision: string | null;
+  ceiling: string | null;
+  confidence: string;
+  direction: string | null;
+  dealStatus: string | null;
+}): string {
+  const reach = input.decision === null
+    ? "This analysis does not reach a formal investment conclusion."
+    : `The formal conclusion is ${humanize(input.decision)}.`;
+  const limit = input.ceiling === null
+    ? " The evidence does not support stating how far a conclusion could go."
+    : ` On the current evidence it could go no further than ${humanize(input.ceiling)}.`;
+  const strength =
+    ` Confidence in that reading is ${humanize(input.confidence).toLowerCase()}.`;
+  const belief = input.direction === null
+    ? ""
+    : ` The direction of the change is ${humanize(input.direction).toLowerCase()}`
+      + (input.dealStatus
+        ? `, against a position the fund already holds as ${humanize(input.dealStatus).toLowerCase()}.`
+        : ".");
+  return `${reach}${limit}${strength}${belief}`;
+}
+
+function describeApprovalNature(decisionAsk: {
+  scopes: readonly string[];
+  priorities: readonly string[];
+  visibility: readonly string[];
+}): string {
+  const portfolioWide = decisionAsk.scopes.some((scope) =>
+    /portfolio/iu.test(scope)
+  );
+  const urgent = decisionAsk.priorities.some((priority) =>
+    /high/iu.test(priority)
+  );
+  const internal = decisionAsk.visibility.some((visibility) =>
+    /internal/iu.test(visibility)
+  );
+  const where = portfolioWide
+    ? "This is a portfolio-level decision rather than one about a single round"
+    : "This decision is scoped to this deal";
+  const who = internal
+    ? ", stays inside the fund, and reaches no one at the company"
+    : "";
+  const when = urgent
+    ? ". It does not wait for the next financing event."
+    : ".";
+  return `${where}${who}${when}`;
+}
+
+function describeMissingEvidence(
+  missingFieldIds: readonly string[],
+  blockingConflictIds: readonly string[],
+): string {
+  const missing = missingFieldIds.length === 0
+    ? "No critical input is missing from the evidence this memorandum used."
+    : `The analysis is limited by ${
+      missingFieldIds.length === 1 ? "one input" : `${missingFieldIds.length} inputs`
+    } that public sources do not disclose: ${
+      joinReadable(missingFieldIds.map(glossEvidenceField))
+    }. Nothing was estimated in their place.`;
+  const conflicts = blockingConflictIds.length === 0
+    ? ""
+    : ` ${
+      blockingConflictIds.length === 1
+        ? "One piece of evidence contradicts another"
+        : `${blockingConflictIds.length} pieces of evidence contradict one another`
+    } and the contradiction is unresolved, so it also holds the conclusion back.`;
+  return `${missing}${conflicts}`;
 }
 
 function DetailSection({
