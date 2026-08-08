@@ -120,6 +120,36 @@ test("analyst issue synthesis is deterministic and retains uncategorized core le
   );
 });
 
+test("panel synthesis is withheld when every issue reads the same once the pack name is removed", () => {
+  const shared = {
+    support: "uses customer evidence as the strongest concrete input.",
+    counter: "revenue is the strongest persisted counterargument.",
+  };
+  // Pack IDs that land in different IC issue groups, so the panel really does
+  // have several groups to compare.
+  const packs = [
+    ["peter_thiel_public_frameworks_v0_1", "Peter Thiel Public Frameworks"],
+    ["bill_gurley_public_frameworks_v0_1", "Bill Gurley Public Frameworks"],
+    ["howard_marks_most_important_thing_public_frameworks_v0_1",
+      "Howard Marks Public Frameworks"],
+  ];
+  const panel = buildAnalystPanel(packs.map(([packId, packName], index) => ({
+    ...judgment({
+      id: `judgment_${index}`,
+      packId,
+      packName,
+      conclusion: index === 0 ? "negative" : "supportive",
+      support: `${packName} ${shared.support}`,
+      counter: `${packName} ${shared.counter}`,
+    }),
+    // A shared template repeats the open question too.
+    unknowns: ["Critical missing evidence remains: arr, burn, cash, runway."],
+  })));
+
+  assert.equal(panel.synthesisDiscriminates, false);
+  assert.equal(panel.activeJudgmentCount, 3);
+});
+
 function judgment({
   id,
   packId = "named_pack",

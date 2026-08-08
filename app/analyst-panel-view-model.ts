@@ -24,6 +24,13 @@ export interface AnalystIssueGroup {
 }
 
 export interface AnalystPanelViewModel {
+  /**
+   * False when every issue group synthesizes to the same sentence once the
+   * pack name is removed, which is what a shared generation template produces.
+   * The renderer withholds the synthesis rather than repeating one sentence
+   * under several headings.
+   */
+  synthesisDiscriminates: boolean;
   totalJudgmentCount: number;
   activeJudgmentCount: number;
   abstainedJudgmentCount: number;
@@ -104,7 +111,19 @@ export function buildAnalystPanel(
     } satisfies AnalystIssueGroup;
   }).filter(({ judgmentIds }) => judgmentIds.length > 0);
 
+  const synthesisSignatures = new Set(
+    groups.map(({ synthesizedView, participants }) =>
+      participants
+        .reduce((view: string, name: string) => view.split(name).join(""), synthesizedView)
+        .replace(/\s+/gu, " ")
+        .trim()
+        .toLowerCase()
+    ),
+  );
+
   return {
+    synthesisDiscriminates: groups.length < 2
+      || synthesisSignatures.size * 2 >= groups.length,
     totalJudgmentCount: judgments.length,
     activeJudgmentCount: active.length,
     abstainedJudgmentCount: abstained.length,

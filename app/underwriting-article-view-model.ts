@@ -480,8 +480,11 @@ function buildNamedLensReadings(
     ),
   );
   // Uniformity needs at least two passages to compare; a single lens cannot
-  // repeat anyone.
-  const uniform = eligible.length > 1 && argumentSignatures.size === 1;
+  // repeat anyone. Near-duplicates count as uniform too: a template that swaps
+  // one stance word still argues the same thing, so require the distinct
+  // signatures to reach half the passages.
+  const uniform = eligible.length > 1
+    && argumentSignatures.size * 2 < eligible.length;
   const passagesDiscriminate = !uniform;
 
   const readings = passagesDiscriminate

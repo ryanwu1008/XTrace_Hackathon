@@ -411,91 +411,9 @@ export function UnderwritingDetailPanel({
         ) : (
           <Unavailable copy="No persisted valuation scenarios are available." />
         )}
-        <div className="vsee-financial-grid">
-          <LineageValue
-            label="Ask"
-            value={detail.valuation.currentAsk}
-            display={formatMoney(detail.valuation.currentAsk)}
-            lineage={factForAsk
-              ? { kind: "Fact", itemId: factForAsk.id }
-              : null}
-            detail={detail}
-          />
-          <LineageValue
-            label="Maximum acceptable pre-money"
-            value={detail.valuation.maximumAcceptablePreMoney}
-            display={formatMoney(detail.valuation.maximumAcceptablePreMoney)}
-            lineage={financialCalculationLineage({
-              field: "maximumAcceptablePreMoney",
-              value: detail.valuation.maximumAcceptablePreMoney,
-              calculations: detail.calculations,
-              valuationCalculationIds: detail.valuation.calculationIds,
-            })}
-            detail={detail}
-          />
-          <LineageValue
-            label="Initial ownership"
-            value={detail.valuation.initialOwnership}
-            display={formatPercent(detail.valuation.initialOwnership)}
-            lineage={financialCalculationLineage({
-              field: "initialOwnership",
-              value: detail.valuation.initialOwnership,
-              calculations: detail.calculations,
-              valuationCalculationIds: detail.valuation.calculationIds,
-            })}
-            detail={detail}
-          />
-          <LineageValue
-            label="Post-dilution ownership"
-            value={detail.valuation.postDilutionOwnership}
-            display={formatPercent(detail.valuation.postDilutionOwnership)}
-            lineage={financialCalculationLineage({
-              field: "postDilutionOwnership",
-              value: detail.valuation.postDilutionOwnership,
-              calculations: detail.calculations,
-              valuationCalculationIds: detail.valuation.calculationIds,
-            })}
-            detail={detail}
-          />
-          <LineageValue
-            label="Gross MOIC"
-            value={detail.valuation.grossMoic}
-            display={detail.valuation.grossMoic
-              ? `${detail.valuation.grossMoic}×`
-              : "Unavailable"}
-            lineage={financialCalculationLineage({
-              field: "grossMoic",
-              value: detail.valuation.grossMoic,
-              calculations: detail.calculations,
-              valuationCalculationIds: detail.valuation.calculationIds,
-            })}
-            detail={detail}
-          />
-          <LineageValue
-            label="Gross IRR"
-            value={detail.valuation.grossIrr}
-            display={formatPercent(detail.valuation.grossIrr)}
-            lineage={financialCalculationLineage({
-              field: "grossIrr",
-              value: detail.valuation.grossIrr,
-              calculations: detail.calculations,
-              valuationCalculationIds: detail.valuation.calculationIds,
-            })}
-            detail={detail}
-          />
-          <LineageValue
-            label="Pricing premium"
-            value={detail.valuation.pricingPremium}
-            display={formatPercent(detail.valuation.pricingPremium)}
-            lineage={financialCalculationLineage({
-              field: "pricingPremium",
-              value: detail.valuation.pricingPremium,
-              calculations: detail.calculations,
-              valuationCalculationIds: detail.valuation.calculationIds,
-            })}
-            detail={detail}
-          />
-        </div>
+        {article.financialCase.status === "not_supportable" ? null : (
+          <ValuationLineageGrid detail={detail} factForAsk={factForAsk} />
+        )}
       </DetailSection>
 
       <DetailSection number="06" title="Named Lens Readings">
@@ -710,6 +628,10 @@ export function UnderwritingDetailPanel({
       </DetailSection>
 
       <DetailSection number="A" title="Appendix">
+        <details className="vsee-details vsee-valuation-audit-grid">
+          <summary>Complete valuation and return lineage</summary>
+          <ValuationLineageGrid detail={detail} factForAsk={factForAsk} />
+        </details>
         <h4>Evidence and Source Register</h4>
         <div className="vsee-evidence-classification">
           <Definition
@@ -1055,8 +977,10 @@ function AnalystPanelSynthesis({
       <section className="vsee-framework-editorial-lead">
         <h4>Panel Conclusion</h4>
         <p>
-          {panelConclusion
-            ?? "No applicable public-source framework conclusion was persisted for this memorandum."}
+          {!panel.synthesisDiscriminates
+            ? "Every issue synthesized to the same sentence once the framework name was removed, so no panel conclusion is shown. The panel counts and the recorded disagreements below remain exact."
+            : panelConclusion
+              ?? "No applicable public-source framework conclusion was persisted for this memorandum."}
         </p>
         <dl>
           <div>
@@ -1666,6 +1590,102 @@ function describeMissingEvidence(
         : `${blockingConflictIds.length} pieces of evidence contradict one another`
     } and the contradiction is unresolved, so it also holds the conclusion back.`;
   return `${missing}${conflicts}`;
+}
+
+function ValuationLineageGrid({
+  detail,
+  factForAsk,
+}: {
+  detail: CandidateUnderwritingDetail;
+  factForAsk: CandidateUnderwritingDetail["evidencePack"]["facts"][number] | undefined;
+}) {
+  return (
+          <div className="vsee-financial-grid">
+            <LineageValue
+              label="Ask"
+              value={detail.valuation.currentAsk}
+              display={formatMoney(detail.valuation.currentAsk)}
+              lineage={factForAsk
+                ? { kind: "Fact", itemId: factForAsk.id }
+                : null}
+              detail={detail}
+            />
+            <LineageValue
+              label="Maximum acceptable pre-money"
+              value={detail.valuation.maximumAcceptablePreMoney}
+              display={formatMoney(detail.valuation.maximumAcceptablePreMoney)}
+              lineage={financialCalculationLineage({
+                field: "maximumAcceptablePreMoney",
+                value: detail.valuation.maximumAcceptablePreMoney,
+                calculations: detail.calculations,
+                valuationCalculationIds: detail.valuation.calculationIds,
+              })}
+              detail={detail}
+            />
+            <LineageValue
+              label="Initial ownership"
+              value={detail.valuation.initialOwnership}
+              display={formatPercent(detail.valuation.initialOwnership)}
+              lineage={financialCalculationLineage({
+                field: "initialOwnership",
+                value: detail.valuation.initialOwnership,
+                calculations: detail.calculations,
+                valuationCalculationIds: detail.valuation.calculationIds,
+              })}
+              detail={detail}
+            />
+            <LineageValue
+              label="Post-dilution ownership"
+              value={detail.valuation.postDilutionOwnership}
+              display={formatPercent(detail.valuation.postDilutionOwnership)}
+              lineage={financialCalculationLineage({
+                field: "postDilutionOwnership",
+                value: detail.valuation.postDilutionOwnership,
+                calculations: detail.calculations,
+                valuationCalculationIds: detail.valuation.calculationIds,
+              })}
+              detail={detail}
+            />
+            <LineageValue
+              label="Gross MOIC"
+              value={detail.valuation.grossMoic}
+              display={detail.valuation.grossMoic
+                ? `${detail.valuation.grossMoic}×`
+                : "Unavailable"}
+              lineage={financialCalculationLineage({
+                field: "grossMoic",
+                value: detail.valuation.grossMoic,
+                calculations: detail.calculations,
+                valuationCalculationIds: detail.valuation.calculationIds,
+              })}
+              detail={detail}
+            />
+            <LineageValue
+              label="Gross IRR"
+              value={detail.valuation.grossIrr}
+              display={formatPercent(detail.valuation.grossIrr)}
+              lineage={financialCalculationLineage({
+                field: "grossIrr",
+                value: detail.valuation.grossIrr,
+                calculations: detail.calculations,
+                valuationCalculationIds: detail.valuation.calculationIds,
+              })}
+              detail={detail}
+            />
+            <LineageValue
+              label="Pricing premium"
+              value={detail.valuation.pricingPremium}
+              display={formatPercent(detail.valuation.pricingPremium)}
+              lineage={financialCalculationLineage({
+                field: "pricingPremium",
+                value: detail.valuation.pricingPremium,
+                calculations: detail.calculations,
+                valuationCalculationIds: detail.valuation.calculationIds,
+              })}
+              detail={detail}
+            />
+          </div>
+  );
 }
 
 function DetailSection({
