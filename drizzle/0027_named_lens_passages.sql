@@ -1507,6 +1507,40 @@ begin
       select count(*) <> count(distinct item ->> 'judgmentOrCatalogCandidateId')
       from jsonb_array_elements(dispositions) item
     )
+    or (
+      select count(*)
+      from jsonb_array_elements(p_payload -> 'judgments') judgment
+      where judgment ->> 'analysisType' = 'framework_judgment'
+        and judgment ->> 'applicability' = 'applicable'
+        and judgment ->> 'conclusion' in ('supportive', 'mixed', 'negative')
+        and jsonb_typeof(judgment -> 'frameworkMetadata') = 'object'
+    ) <> (
+      select count(*)
+      from jsonb_array_elements(catalog) consideration
+      where consideration ->> 'initialDisposition' = 'judgment_eligible'
+    )
+    or exists (
+      select 1
+      from jsonb_array_elements(p_payload -> 'judgments') judgment
+      where judgment ->> 'analysisType' = 'framework_judgment'
+        and judgment ->> 'applicability' = 'applicable'
+        and judgment ->> 'conclusion' in ('supportive', 'mixed', 'negative')
+        and jsonb_typeof(judgment -> 'frameworkMetadata') = 'object'
+        and not exists (
+          select 1
+          from jsonb_array_elements(catalog) consideration
+          where consideration ->> 'initialDisposition'
+              = 'judgment_eligible'
+            and consideration ->> 'judgmentId'
+              is not distinct from judgment ->> 'id'
+            and consideration ->> 'judgmentOrCatalogCandidateId'
+              is not distinct from judgment ->> 'id'
+            and consideration ->> 'frameworkCardId'
+              is not distinct from judgment ->> 'frameworkCardId'
+            and consideration ->> 'frameworkVersion'
+              is not distinct from judgment ->> 'frameworkVersion'
+        )
+    )
     or exists (
       select 1
       from jsonb_array_elements(catalog) with ordinality item(value, ordinal)

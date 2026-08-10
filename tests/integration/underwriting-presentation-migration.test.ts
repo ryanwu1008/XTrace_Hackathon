@@ -1071,6 +1071,30 @@ test(
           error: /catalog|applicab|judgment|limited coverage/iu,
         },
         {
+          name: "four applicable judgments omitted to two-catalog limited coverage",
+          prepare: (payload, context, targetDatabase) => {
+            payload.namedLensCatalogConsiderations =
+              payload.namedLensCatalogConsiderations.slice(0, 2);
+            payload.namedLensDispositions =
+              payload.namedLensDispositions.slice(0, 2);
+            payload.namedLensAttemptRefs =
+              payload.namedLensAttemptRefs.slice(0, 2);
+            payload.namedLensPassages = payload.namedLensPassages.slice(0, 2);
+            payload.namedLensPresentation.synthesis.judgmentIds =
+              payload.namedLensPresentation.synthesis.judgmentIds.slice(0, 2);
+            payload.namedLensPresentation.segmentCitations =
+              payload.namedLensPresentation.segmentCitations.slice(0, 2);
+            payload.namedLensPresentation.firstScreenProjectionRefs
+              .selectedJudgmentIds = payload.namedLensPresentation
+                .firstScreenProjectionRefs.selectedJudgmentIds.slice(0, 2);
+            (payload as any).terminalReasonCodes = [
+              "limited_framework_coverage",
+            ];
+            reserveAndSettleAttempts(context, targetDatabase, payload);
+          },
+          error: /catalog|applicab|judgment|limited coverage/iu,
+        },
+        {
           name: "fabricated premise without saved Card and public-source grounding",
           prepare: (payload, context, targetDatabase) => {
             payload.namedLensPassages[0]!.premise = {
