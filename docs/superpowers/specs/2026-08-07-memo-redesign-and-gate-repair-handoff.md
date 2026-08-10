@@ -26,7 +26,7 @@ then the no-Top-5 addendum, then the approved presentation designs.
 
 ## 1. What this session changed
 
-Five commits, 23 files, +1,412 / −409.
+Six commits, 24 files.
 
 | Commit | Subject |
 |---|---|
@@ -35,6 +35,7 @@ Five commits, 23 files, +1,412 / −409.
 | `ab34677` | rebuild the memo as seven decision-first sections |
 | `a86a9a2` | derive cold-acceptance outcomes from the run's evidence window |
 | `92729bc` | close two gaps the browser pass exposed |
+| `78b6cdb` | this document |
 
 Product code touched: `lib/api/errors.ts`, `db/client.ts`,
 `scripts/run-belief-reversal-cold-worker.ts`, `app/underwriting-detail.tsx`,
@@ -156,6 +157,25 @@ differ by one word — 420 identical characters, "supportive" versus "cautious".
 **Disagreement records do not discriminate here.** All three prioritized
 disagreements cite the same two `semantic-field-*` evidence items, and every
 judgment's `unknowns` names the same four missing fields.
+
+### 4.1 A CSS pattern that silently drops styling
+
+Seven `vsee-*` classes are used in `app/underwriting-detail.tsx` but defined in no
+stylesheet. Three of them broke visible styling, because the section-label rule
+is a **direct-child selector**, `.vsee-underwriting-section > div > h4`. Wrapping
+a heading in an extra `<section>` escapes it, and with no rule for the wrapper
+class the heading fell back to the browser default — serif, sentence case, in a
+memorandum where every other label is uppercase monospace. Fixed for
+`vsee-evidence-coverage`, `vsee-evidence-conflicts`, and
+`vsee-status-aware-actions`.
+
+Still undefined, and believed harmless because their children are styled by other
+rules: `vsee-advisory-contract`, `vsee-advisory-provenance`,
+`vsee-analysis-source-links`, `vsee-sample-decision-record`, plus three added
+this session — `vsee-executive-memo-reading`, `vsee-ic-approval-nature`,
+`vsee-valuation-audit-grid`. Their rendering was checked in the browser. Before
+adding another wrapper, check whether it sits between a direct-child selector and
+its target.
 
 ## 5. Gate 3: what was pinned and what replaced it
 
@@ -287,10 +307,44 @@ observation has not been made.
 
 **Deployment** is where the 2026-08-05 handoff left it. The blocker is an
 isolated Supabase on migrations `0000`–`0026`; production remains reviewed only
-through `0018`. Cloudflare is a viable Web host — `wrangler.jsonc` names the
-worker `vsee-vc`, `npx vinext deploy` is the historical command, and the
-long-running Worker ran on the owner's Mac — but the data plane is the blocker,
-not the Web host.
+through `0018`. See Section 9.1 for what was learned about the targets.
+
+### 9.1 Deployment reconnaissance
+
+Read-only probes only. No deployment was performed and no production data was
+read or modified.
+
+**The public Sites URL still serves the old build.** `/api/settings/health`
+reports `public_sandbox` with `worker: false`, and the asset namespace resolves to
+`8eda7448`. This confirms DEP-001 and DEP-003 rather than changing them: the Web
+is live, no Worker is attached, so the scan path cannot complete there.
+
+**Correction to the 2026-08-05 handoff, Section 16.** That document states the
+private Staging Sites project identity "was not persisted". It was. Commit
+`beb6fa0` on the detached worktree at `/private/tmp/vsee-private-staging-3b6c348`
+sets `.openai/hosting.json` to project `appgprj_6a714b15f3488191998e357436151354`.
+Whether that project is still usable was not tested.
+
+**Cloudflare is authenticated and already configured — which is the hazard.**
+`wrangler.jsonc` names the worker `vsee-vc`, matching the stale URL recorded in
+TD-OPS-003, and that worker already holds secrets including
+`SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, `DOCUMENT_URL_SIGNING_SECRET`,
+and the market feeds. Its health shows `postgres: true` with the confirmed corpus,
+so **those secrets point at the production Supabase.** Running `npx vinext deploy`
+without changing them would put code that needs `0019`–`0026` in front of a
+database reviewed only through `0018`, in a writable anonymous mode. Deploy to a
+new worker name instead, or change the secrets first.
+
+**A Staging Supabase project was started and abandoned.** Keychain entries
+`vsee-staging-supabase-url`, `vsee-staging-supabase-service-role-key`, and
+`vsee-staging-supabase-db-url` exist. **They are known bad**: the stored
+service-role key was truncated to two JWT segments, and the database URL contains
+an unescaped `@` in the password so the host fails to parse. The REST endpoint
+returned 401 and Storage returned `Invalid Compact JWS`. The project reference is
+`gvkhitbljkrnzjzxtyua`; whether the project still exists was not rechecked. Treat
+these entries as unverified and re-derive them before use. They are distinct from
+the production entries, which have no `staging` in their names and must not be
+overwritten.
 
 ## 10. Do not
 
