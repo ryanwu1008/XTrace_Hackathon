@@ -174,6 +174,33 @@ const presentation = {
     evidenceItemIds: ["fact_1"],
     publicSourceIds: [],
     claimIds: [],
+    judgmentUnknownRefs: [],
+    judgmentLimitationRefs: [],
+    evidenceRequestRefs: [],
+    stanceRefs: [],
+    advisoryPostureRefs: [],
+  }, {
+    judgmentId: "judgment_1",
+    segment: "unknown_boundary",
+    evidenceItemIds: [],
+    publicSourceIds: [],
+    claimIds: [],
+    judgmentUnknownRefs: ["Net retention"],
+    judgmentLimitationRefs: [],
+    evidenceRequestRefs: ["request_retention_cohort"],
+    stanceRefs: [],
+    advisoryPostureRefs: [],
+  }, {
+    judgmentId: "judgment_1",
+    segment: "conditional_conclusion",
+    evidenceItemIds: [],
+    publicSourceIds: [],
+    claimIds: [],
+    judgmentUnknownRefs: [],
+    judgmentLimitationRefs: [],
+    evidenceRequestRefs: [],
+    stanceRefs: ["supportive"],
+    advisoryPostureRefs: ["supports_further_diligence"],
   }],
   firstScreenProjectionRefs: {
     decisionId: "decision_1",
@@ -296,5 +323,23 @@ test("requires canonical decision-critical and selection evidence IDs", () => {
       { kind: "fired_rule", id: "rule_2" },
       { kind: "fired_rule", id: "rule_1" },
     ],
+  }));
+});
+
+test("preserves ranked selected judgment order while requiring uniqueness", () => {
+  const ranked = {
+    ...presentation,
+    firstScreenProjectionRefs: {
+      ...presentation.firstScreenProjectionRefs,
+      selectedJudgmentIds: ["judgment_z", "judgment_a"],
+    },
+  };
+  assert.deepEqual(NamedLensPresentationSchema.parse(ranked), ranked);
+  assert.throws(() => NamedLensPresentationSchema.parse({
+    ...ranked,
+    firstScreenProjectionRefs: {
+      ...ranked.firstScreenProjectionRefs,
+      selectedJudgmentIds: ["judgment_z", "judgment_z"],
+    },
   }));
 });

@@ -431,6 +431,16 @@ export const NamedLensPresentationSchema = z.strictObject({
     evidenceItemIds: z.array(z.string().min(1)),
     publicSourceIds: z.array(z.string().min(1)),
     claimIds: z.array(z.string().min(1)),
+    judgmentUnknownRefs: z.array(z.string().min(1)),
+    judgmentLimitationRefs: z.array(z.string().min(1)),
+    evidenceRequestRefs: z.array(z.string().min(1)),
+    stanceRefs: z.array(z.enum([
+      "supportive",
+      "mixed",
+      "negative",
+      "abstain",
+    ])),
+    advisoryPostureRefs: z.array(AdvisoryPostureSchema),
   }).superRefine((value, context) => {
     requireCanonicalStrings(
       value.evidenceItemIds,
@@ -447,14 +457,66 @@ export const NamedLensPresentationSchema = z.strictObject({
       context,
       "Segment citation claim IDs",
     );
+    requireCanonicalStrings(
+      value.judgmentUnknownRefs,
+      context,
+      "Segment citation judgment-unknown references",
+    );
+    requireCanonicalStrings(
+      value.judgmentLimitationRefs,
+      context,
+      "Segment citation judgment-limitation references",
+    );
+    requireCanonicalStrings(
+      value.evidenceRequestRefs,
+      context,
+      "Segment citation evidence-request references",
+    );
+    requireCanonicalStrings(
+      value.stanceRefs,
+      context,
+      "Segment citation stance references",
+    );
+    requireCanonicalStrings(
+      value.advisoryPostureRefs,
+      context,
+      "Segment citation advisory-posture references",
+    );
+    const hasEvidence = value.evidenceItemIds.length > 0;
+    const hasPremise = value.publicSourceIds.length > 0
+      || value.claimIds.length > 0;
+    const hasUnknownBoundary = value.judgmentUnknownRefs.length > 0
+      || value.judgmentLimitationRefs.length > 0
+      || value.evidenceRequestRefs.length > 0;
+    const hasConclusion = value.stanceRefs.length > 0
+      || value.advisoryPostureRefs.length > 0;
     if (
-      value.evidenceItemIds.length === 0
-      && value.publicSourceIds.length === 0
-      && value.claimIds.length === 0
+      !hasEvidence && !hasPremise && !hasUnknownBoundary && !hasConclusion
     ) {
       context.addIssue({
         code: "custom",
         message: "Every presentation segment citation must carry a reference.",
+      });
+    }
+    const validReferenceKinds = value.segment === "premise"
+      ? hasPremise && !hasEvidence && !hasUnknownBoundary && !hasConclusion
+      : value.segment === "case_application"
+        || value.segment === "synthesis"
+      ? hasEvidence && !hasPremise && !hasUnknownBoundary && !hasConclusion
+      : value.segment === "countercase"
+      ? (hasEvidence || value.evidenceRequestRefs.length > 0)
+        && !hasPremise
+        && value.judgmentUnknownRefs.length === 0
+        && value.judgmentLimitationRefs.length === 0
+        && !hasConclusion
+      : value.segment === "unknown_boundary"
+      ? hasUnknownBoundary && !hasEvidence && !hasPremise && !hasConclusion
+      : hasConclusion && !hasEvidence && !hasPremise && !hasUnknownBoundary;
+    if (!validReferenceKinds) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Presentation segment citation reference kinds must match the cited segment.",
       });
     }
   })),
@@ -468,7 +530,7 @@ export const NamedLensPresentationSchema = z.strictObject({
       context,
       "First-screen decision evidence IDs",
     );
-    requireCanonicalStrings(
+    requireUniqueStrings(
       value.selectedJudgmentIds,
       context,
       "First-screen selected judgment IDs",
@@ -531,6 +593,19 @@ function requireCanonicalStrings(
   label: string,
 ): void {
   requireCanonicalUnique(values, (value) => value, context, label);
+}
+
+function requireUniqueStrings(
+  values: readonly string[],
+  context: z.core.$RefinementCtx,
+  label: string,
+): void {
+  if (new Set(values).size !== values.length) {
+    context.addIssue({
+      code: "custom",
+      message: `${label} must be unique.`,
+    });
+  }
 }
 
 function requireCanonicalUnique<T>(

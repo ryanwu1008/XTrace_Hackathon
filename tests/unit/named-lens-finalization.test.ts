@@ -17,6 +17,7 @@ import type { EvidencePack } from "../../lib/contracts/evidence";
 import type {
   DecisionResult,
   FrameworkJudgment,
+  ResolvedUnderwritingContext,
 } from "../../lib/contracts/underwriting";
 import type {
   NamedLensDisposition,
@@ -25,8 +26,48 @@ import type {
   NamedLensProviderAttempt,
   NamedLensProviderAttemptRef,
 } from "../../lib/contracts/named-lens";
+import {
+  authorizedResearchComposites,
+  loadResearchFrameworkCatalog,
+} from "../../lib/underwriting/frameworks/research-loader";
 
 const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
+
+const researchContext: ResolvedUnderwritingContext = {
+  id: "underwriting_context_seed_b2b_saas_v1",
+  contextVersion: "1",
+  stage: "seed",
+  businessModel: "b2b_saas",
+  geography: "us",
+  securityType: "preferred",
+  asOfDate: "2026-07-29",
+  criticalEvidenceProfileId: "critical_evidence_seed_b2b_saas_v1",
+  benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+  benchmarkCompatibility: "exact",
+  valuationMethodPolicyId: "valuation_method_seed_b2b_saas_v1",
+  decisionPolicyId: "decision_policy_seed_b2b_saas_v1",
+  frameworkPackId: "framework_pack_synthetic_universal_saas_ai_v1",
+};
+const researchCatalog = await loadResearchFrameworkCatalog({
+  context: researchContext,
+});
+const advisoryCard = (() => {
+  const card = authorizedResearchComposites(researchCatalog).find(
+    ({ experimentalAdvisory }) =>
+      experimentalAdvisory.components.length >= 2,
+  );
+  if (!card) throw new Error("Expected a multi-component advisory fixture.");
+  return card;
+})();
+const advisoryMetadata = advisoryCard.experimentalAdvisory;
+const premiseComponent = advisoryMetadata.components[0]!;
+const premiseSourceRef = premiseComponent.sourceRefs[0]!;
+const rankedJudgmentIds = [
+  "judgment_z",
+  "judgment_a",
+  "judgment_m",
+  "judgment_b",
+] as const;
 
 function currentArtifacts(count = 4) {
   const evidencePack = {
@@ -39,10 +80,10 @@ function currentArtifacts(count = 4) {
   const judgments = Array.from({ length: 4 }, (_, index) => {
     const ordinal = index + 1;
     return {
-      id: `judgment_${ordinal}`,
+      id: rankedJudgmentIds[index]!,
       analysisType: "framework_judgment",
-      frameworkCardId: `CARD-${ordinal}`,
-      frameworkVersion: "1.0.0",
+      frameworkCardId: advisoryCard.id,
+      frameworkVersion: advisoryCard.version,
       applicability: "applicable",
       conclusion: ordinal % 2 === 0 ? "negative" : "supportive",
       supportEvidenceItemIds: [`fact_${ordinal}`],
@@ -64,6 +105,7 @@ function currentArtifacts(count = 4) {
         kind: "grounded_counterevidence",
         evidenceRequestRefs: [],
       },
+      frameworkMetadata: advisoryMetadata,
       fingerprint: `judgment-${ordinal}`,
     } satisfies FrameworkJudgment;
   });
@@ -78,13 +120,13 @@ function currentArtifacts(count = 4) {
     evidenceDomainCodes: ["customer"],
     premise: {
       text: "The public framework tests durable customer demand.",
-      componentFrameworkId: judgment.frameworkCardId,
-      componentVersion: judgment.frameworkVersion,
+      componentFrameworkId: premiseComponent.frameworkId,
+      componentVersion: premiseComponent.version,
       cardFieldRef: "decisionQuestions[0]",
-      publicSourceIds: [`source_${index + 1}`],
-      claimIds: [`CLAIM-${index + 1}`],
-      locator: { kind: "web_section", value: `Section ${index + 1}` },
-      attributionScope: "person_direct",
+      publicSourceIds: [premiseSourceRef.sourceId],
+      claimIds: premiseSourceRef.claimIds,
+      locator: premiseSourceRef.locator,
+      attributionScope: premiseSourceRef.attributionScope,
     },
     caseApplication: {
       text: "Saved company evidence applies the framework.",
@@ -169,6 +211,44 @@ function currentArtifacts(count = 4) {
     attemptNumber: attempt.attemptNumber,
     attemptFingerprint: attempt.attemptFingerprint,
   } satisfies NamedLensProviderAttemptRef));
+  const segmentCitations: NamedLensPresentation["segmentCitations"] =
+    passages.map((passage, index) => ({
+      judgmentId: passage.judgmentId,
+      segment: "case_application",
+      evidenceItemIds: [`fact_${index + 1}`],
+      publicSourceIds: [],
+      claimIds: [],
+      judgmentUnknownRefs: [],
+      judgmentLimitationRefs: [],
+      evidenceRequestRefs: [],
+      stanceRefs: [],
+      advisoryPostureRefs: [],
+    }));
+  segmentCitations.push({
+    judgmentId: passages[0]!.judgmentId,
+    segment: "unknown_boundary",
+    evidenceItemIds: [],
+    publicSourceIds: [],
+    claimIds: [],
+    judgmentUnknownRefs: passages[0]!.unknownBoundary.judgmentUnknownRefs,
+    judgmentLimitationRefs: [],
+    evidenceRequestRefs: [],
+    stanceRefs: [],
+    advisoryPostureRefs: [],
+  }, {
+    judgmentId: passages[0]!.judgmentId,
+    segment: "conditional_conclusion",
+    evidenceItemIds: [],
+    publicSourceIds: [],
+    claimIds: [],
+    judgmentUnknownRefs: [],
+    judgmentLimitationRefs: [],
+    evidenceRequestRefs: [],
+    stanceRefs: [passages[0]!.conditionalConclusion.stance],
+    advisoryPostureRefs: [
+      passages[0]!.conditionalConclusion.advisoryPosture,
+    ],
+  });
   const presentation = {
     schemaVersion: "decision-first-named-lens-v1",
     rendererVersion: "named-lens-renderer-v1",
@@ -177,16 +257,10 @@ function currentArtifacts(count = 4) {
     synthesis: {
       branch: "principal_disagreement",
       text: "The selected readings disagree on customer adoption.",
-      judgmentIds: passages.map(({ judgmentId }) => judgmentId),
+      judgmentIds: passages.map(({ judgmentId }) => judgmentId).toSorted(),
       evidenceItemIds: passages.map((_, index) => `fact_${index + 1}`),
     },
-    segmentCitations: passages.map((passage, index) => ({
-      judgmentId: passage.judgmentId,
-      segment: "case_application",
-      evidenceItemIds: [`fact_${index + 1}`],
-      publicSourceIds: [],
-      claimIds: [],
-    })),
+    segmentCitations,
     firstScreenProjectionRefs: {
       decisionId: "decision_1",
       decisionEvidenceItemIds: ["fact_1"],
@@ -286,7 +360,7 @@ test("resolves critical, passage, and disposition refs to the saved pack and jud
     ...valid,
     dispositions: [{
       ...valid.dispositions[0]!,
-      judgmentId: "judgment_2",
+      judgmentId: valid.judgments[1]!.id,
     }, ...valid.dispositions.slice(1)],
   }), /judgment|identity/i);
   assert.throws(() => validateNamedLensFinalization({
@@ -301,6 +375,51 @@ test("resolves critical, passage, and disposition refs to the saved pack and jud
       },
     }, ...valid.passages.slice(1)],
   }), /counterevidence|boundary|request|partition/i);
+});
+
+test("grounds premises in the exact advisory component card and source claim", () => {
+  const valid = currentArtifacts();
+  assert.doesNotThrow(() => validateNamedLensFinalization(valid));
+  const secondComponent = advisoryMetadata.components[1]!;
+  const invalidPremises = [
+    {
+      ...valid.passages[0]!.premise,
+      componentFrameworkId: secondComponent.frameworkId,
+    },
+    {
+      ...valid.passages[0]!.premise,
+      componentVersion: "9.9.9",
+    },
+    {
+      ...valid.passages[0]!.premise,
+      cardFieldRef: "decisionQuestions[999]",
+    },
+    {
+      ...valid.passages[0]!.premise,
+      publicSourceIds: [secondComponent.sourceRefs[0]!.sourceId],
+    },
+    {
+      ...valid.passages[0]!.premise,
+      claimIds: ["FOREIGN-CLAIM"],
+    },
+    {
+      ...valid.passages[0]!.premise,
+      locator: { kind: "web_section" as const, value: "Foreign locator" },
+    },
+    {
+      ...valid.passages[0]!.premise,
+      attributionScope: "external_empirical" as const,
+    },
+  ];
+  for (const premise of invalidPremises) {
+    assert.throws(() => validateNamedLensFinalization({
+      ...valid,
+      passages: [{
+        ...valid.passages[0]!,
+        premise,
+      }, ...valid.passages.slice(1)],
+    }), /premise|component|source|claim|ground/i);
+  }
 });
 
 test("resolves presentation refs to the exact decision, selections, passages, and pack", () => {
@@ -335,6 +454,67 @@ test("resolves presentation refs to the exact decision, selections, passages, an
       }, ...valid.presentation.segmentCitations.slice(1)],
     },
   }), /citation|segment|passage/i);
+  assert.throws(() => validateNamedLensFinalization({
+    ...valid,
+    presentation: {
+      ...valid.presentation,
+      firstScreenProjectionRefs: {
+        ...valid.presentation.firstScreenProjectionRefs,
+        selectedJudgmentIds: [
+          valid.presentation.firstScreenProjectionRefs.selectedJudgmentIds[1]!,
+          valid.presentation.firstScreenProjectionRefs.selectedJudgmentIds[0]!,
+          ...valid.presentation.firstScreenProjectionRefs.selectedJudgmentIds
+            .slice(2),
+        ],
+      },
+    },
+  }), /presentation|selection|position|order/i);
+});
+
+test("resolves unknown and conclusion citations only to their saved segment fields", () => {
+  const valid = currentArtifacts();
+  assert.doesNotThrow(() => validateNamedLensFinalization(valid));
+  const unknownIndex = valid.presentation.segmentCitations.findIndex(
+    ({ segment }) => segment === "unknown_boundary",
+  );
+  const conclusionIndex = valid.presentation.segmentCitations.findIndex(
+    ({ segment }) => segment === "conditional_conclusion",
+  );
+  const withCitation = (
+    index: number,
+    citation: NamedLensPresentation["segmentCitations"][number],
+  ) => ({
+    ...valid,
+    presentation: {
+      ...valid.presentation,
+      segmentCitations: valid.presentation.segmentCitations.map(
+        (existing, candidateIndex) =>
+          candidateIndex === index ? citation : existing,
+      ),
+    },
+  });
+  const unknown = valid.presentation.segmentCitations[unknownIndex]!;
+  assert.throws(() => validateNamedLensFinalization(withCitation(
+    unknownIndex,
+    { ...unknown, judgmentUnknownRefs: ["Foreign unknown"] },
+  )), /citation|unknown|segment/i);
+  assert.throws(() => validateNamedLensFinalization(withCitation(
+    unknownIndex,
+    {
+      ...unknown,
+      judgmentUnknownRefs: [],
+      judgmentLimitationRefs: ["Unknown 1"],
+    },
+  )), /citation|unknown|limitation|segment/i);
+  const conclusion = valid.presentation.segmentCitations[conclusionIndex]!;
+  assert.throws(() => validateNamedLensFinalization(withCitation(
+    conclusionIndex,
+    { ...conclusion, stanceRefs: ["negative"] },
+  )), /citation|conclusion|stance|segment/i);
+  assert.throws(() => validateNamedLensFinalization(withCitation(
+    conclusionIndex,
+    { ...conclusion, advisoryPostureRefs: ["urges_caution"] },
+  )), /citation|conclusion|posture|segment/i);
 });
 
 test("persists attempt transitions before finalization and keeps partial artifacts canonical-only", async () => {

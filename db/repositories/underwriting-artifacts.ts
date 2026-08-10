@@ -30,6 +30,7 @@ import {
   type DecisionResult,
   type FundPolicySnapshot,
   type FrameworkDisagreement,
+  type FrameworkAdvisoryMetadata,
   type FrameworkJudgment,
   type ResolvedUnderwritingContext,
   type ScenarioModel,
@@ -1624,8 +1625,6 @@ export function validateNamedLensFinalization(input: {
       || passage.judgmentId !== judgment.id
       || passage.frameworkCardId !== judgment.frameworkCardId
       || passage.frameworkVersion !== judgment.frameworkVersion
-      || passage.premise.componentFrameworkId !== judgment.frameworkCardId
-      || passage.premise.componentVersion !== judgment.frameworkVersion
       || disposition.decisionQuestionCode !== passage.decisionQuestionCode
       || disposition.stance !== passage.conditionalConclusion.stance
       || disposition.advisoryPosture
@@ -1669,6 +1668,17 @@ export function validateNamedLensFinalization(input: {
     ) {
       throw new Error(
         "Named Lens passage segments must stay within the saved judgment partitions and identity.",
+      );
+    }
+    if (
+      !currentJudgment.data.frameworkMetadata
+      || !frameworkPremiseResolvesExactly(
+        passage.premise,
+        currentJudgment.data.frameworkMetadata,
+      )
+    ) {
+      throw new Error(
+        "Named Lens premise must resolve to an exact advisory component Card field and public source claim.",
       );
     }
   }
@@ -1733,6 +1743,24 @@ export function validateNamedLensFinalization(input: {
     const allowedClaims = citation.segment === "premise"
       ? passage?.premise.claimIds ?? []
       : [];
+    const allowedUnknowns = citation.segment === "unknown_boundary"
+      ? passage?.unknownBoundary.judgmentUnknownRefs ?? []
+      : [];
+    const allowedLimitations = citation.segment === "unknown_boundary"
+      ? passage?.unknownBoundary.judgmentLimitationRefs ?? []
+      : [];
+    const allowedEvidenceRequests = citation.segment === "unknown_boundary"
+      ? passage?.unknownBoundary.evidenceRequestRefs ?? []
+      : citation.segment === "countercase"
+      ? passage?.countercase.evidenceRequestRefs ?? []
+      : [];
+    const allowedStances = citation.segment === "conditional_conclusion"
+      ? [passage?.conditionalConclusion.stance]
+      : [];
+    const allowedAdvisoryPostures =
+      citation.segment === "conditional_conclusion"
+        ? [passage?.conditionalConclusion.advisoryPosture]
+        : [];
     if (
       !passage
       || citation.evidenceItemIds.some((id) =>
@@ -1740,6 +1768,19 @@ export function validateNamedLensFinalization(input: {
       )
       || citation.publicSourceIds.some((id) => !allowedSources.includes(id))
       || citation.claimIds.some((id) => !allowedClaims.includes(id))
+      || citation.judgmentUnknownRefs.some((ref) =>
+        !allowedUnknowns.includes(ref)
+      )
+      || citation.judgmentLimitationRefs.some((ref) =>
+        !allowedLimitations.includes(ref)
+      )
+      || citation.evidenceRequestRefs.some((ref) =>
+        !allowedEvidenceRequests.includes(ref)
+      )
+      || citation.stanceRefs.some((ref) => !allowedStances.includes(ref))
+      || citation.advisoryPostureRefs.some((ref) =>
+        !allowedAdvisoryPostures.includes(ref)
+      )
     ) {
       throw new Error(
         "Presentation segment citations must resolve to the selected persisted passage segment.",
@@ -1762,6 +1803,63 @@ export function validateNamedLensFinalization(input: {
       "Named Lens terminal status requires canonical explicit coverage reasons.",
     );
   }
+}
+
+function frameworkPremiseResolvesExactly(
+  premise: NamedLensPassage["premise"],
+  metadata: FrameworkAdvisoryMetadata,
+): boolean {
+  if (!metadata.componentCardIds.includes(premise.componentFrameworkId)) {
+    return false;
+  }
+  const component = metadata.components.find(({ frameworkId }) =>
+    frameworkId === premise.componentFrameworkId
+  );
+  if (
+    !component
+    || component.version !== premise.componentVersion
+    || typeof resolveCardField(component, premise.cardFieldRef) !== "string"
+  ) {
+    return false;
+  }
+  const sourceCatalogIds = new Set(
+    metadata.sources.map(({ sourceId }) => sourceId),
+  );
+  return premise.publicSourceIds.every((sourceId) => {
+    if (!sourceCatalogIds.has(sourceId)) return false;
+    return component.sourceRefs.some((sourceRef) =>
+      sourceRef.sourceId === sourceId
+      && sourceRef.attributionScope === premise.attributionScope
+      && isDeepStrictEqual(sourceRef.locator, premise.locator)
+      && premise.claimIds.every((claimId) =>
+        sourceRef.claimIds.includes(claimId)
+      )
+    );
+  });
+}
+
+function resolveCardField(
+  component: FrameworkAdvisoryMetadata["components"][number],
+  cardFieldRef: string,
+): unknown {
+  if (!/^[A-Za-z][A-Za-z0-9]*(?:(?:\.[A-Za-z][A-Za-z0-9]*)|(?:\[\d+\]))*$/.test(
+    cardFieldRef,
+  )) {
+    return undefined;
+  }
+  const path = cardFieldRef.match(/[A-Za-z][A-Za-z0-9]*|\d+/g) ?? [];
+  let value: unknown = component;
+  for (const key of path) {
+    if (
+      value === null
+      || typeof value !== "object"
+      || !Object.prototype.hasOwnProperty.call(value, key)
+    ) {
+      return undefined;
+    }
+    value = (value as Record<string, unknown>)[key];
+  }
+  return value;
 }
 
 function statusSafeMissingEvidenceMatches(
