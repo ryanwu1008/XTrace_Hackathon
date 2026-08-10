@@ -24,6 +24,7 @@ import {
   UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
 } from "../contracts/named-lens";
 import type {
+  CandidateCheckpoint,
   CandidateRun,
   FundPolicySnapshot,
   ResolvedUnderwritingContext,
@@ -53,11 +54,15 @@ import {
 import { createValuationEngine } from "./valuation/service";
 import type { ValuationEngine } from "./valuation/contracts";
 import type { FrameworkLensService } from "./frameworks/service";
-import { DECISION_TAXONOMY_VERSION } from
+import {
+  DECISION_TAXONOMY_DIGEST,
+  DECISION_TAXONOMY_VERSION,
+} from
   "./frameworks/decision-taxonomy";
 import { IntegrationTransportError } from "../api/errors";
 import {
   createDecisionEngine,
+  selectFormalDecisionJudgments,
   type DecisionEngine,
 } from "./decision/engine";
 import { DECISION_POLICY_V1 } from "./decision/rules";
@@ -75,6 +80,7 @@ import {
   parseFrameworkCatalogBinding,
   parseFrameworkLensResult,
   parseGroundedEvidencePack,
+  parseNamedLensPresentationArtifacts,
   parseNarrativeArtifacts,
   parseValuationArtifactSet,
 } from "./stage-replay";
@@ -82,6 +88,11 @@ import {
   CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
   createFrameworkLensStageInputFingerprint,
 } from "./frameworks/passage-contract";
+import {
+  CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY,
+  NamedLensProviderTimeoutPolicySchema,
+  type NamedLensProviderTimeoutPolicy,
+} from "./frameworks/timeout-policy";
 import {
   CandidateBudgetExhaustedError,
   CandidateStageTimeoutError,
@@ -92,6 +103,8 @@ import {
   type CandidateStagePolicy,
   type CandidateStageRuntime,
 } from "./candidate-stage-runtime";
+import { buildNamedLensPresentationArtifacts } from
+  "./named-lens-presentation";
 
 export {
   CandidateBudgetExhaustedError,
@@ -106,7 +119,10 @@ export {
   CandidateProviderAttemptReplayError,
 } from "./candidate-stage-runtime";
 
-const SELECTION_POLICY_VERSION = "top-five-belief-revised-v1";
+export const UNDERWRITING_ADMISSION_POLICY_VERSION =
+  "all-belief-revisions-v1";
+export const UNDERWRITING_REFRESH_SEMANTICS_VERSION =
+  "refresh-new-canonical-never-alias-v1" as const;
 const DEFAULT_CANDIDATE_TIMEOUT_MS = 30_000;
 const DEFAULT_CANDIDATE_MAX_ATTEMPTS = 2;
 const DEFAULT_CANDIDATE_LEASE_SECONDS = 120;
@@ -135,6 +151,8 @@ export interface CandidateExecutorInput {
   deal: RegisteredDeal;
   fundPolicy: FundPolicySnapshot;
   batchInputFingerprint: string;
+  reportId: string;
+  refreshNonce: string | null;
   referenceCatalog: UnderwritingReferenceCatalogSnapshot;
   workerId: string;
   leaseToken: string;
@@ -149,6 +167,8 @@ interface PlannedCandidate {
   deal: RegisteredDeal;
   fundPolicy: FundPolicySnapshot;
   batchInputFingerprint: string;
+  reportId: string;
+  refreshNonce: string | null;
 }
 
 export interface SourceGroundedCandidateExecutionSettings {
@@ -166,7 +186,7 @@ export interface FrameworkLensExecutionSelection {
   service: FrameworkLensService;
 }
 
-interface FrameworkCatalogBinding {
+export interface FrameworkCatalogBinding {
   catalogVersion: string;
   catalogFingerprint: string;
   corpusDigest: string;
@@ -193,6 +213,7 @@ export interface UnderwritingOrchestrator {
     analyses: CompanyAnalysis[];
     eligibleDeals: RegisteredDeal[];
     forceRefresh: boolean;
+    refreshNonce?: string;
     evidenceFrame?: UnderwritingEvidenceFrameV1;
   }): Promise<UnderwritingBatch>;
   processCandidate(candidateRunId: string): Promise<CandidateRun>;
@@ -309,6 +330,7 @@ export function createUnderwritingOrchestrator(options: {
       now,
     });
     let finalization: CandidateExecutionResult | undefined;
+    let executionError: unknown;
     try {
       finalization = await options.candidateExecutor({
         candidate: claimed.candidate,
@@ -316,6 +338,8 @@ export function createUnderwritingOrchestrator(options: {
         deal: planned.deal,
         fundPolicy: planned.fundPolicy,
         batchInputFingerprint: planned.batchInputFingerprint,
+        reportId: planned.reportId,
+        refreshNonce: planned.refreshNonce,
         referenceCatalog,
         workerId: ORCHESTRATOR_WORKER_ID,
         leaseToken: claimed.leaseToken,
@@ -323,40 +347,20 @@ export function createUnderwritingOrchestrator(options: {
         stages,
         signal: controller.signal,
       });
-    } catch {}
+    } catch (error) {
+      executionError = error;
+    }
     if (!finalization) {
-      const finalizationInputFingerprint = fingerprint({
-        stage: "finalization",
-        candidateRunId,
-        batchInputFingerprint: planned.batchInputFingerprint,
-      });
-      try {
-        await options.runs.saveCheckpoint({
-          candidateRunId,
-          stage: "finalization",
-          status: "failed",
-          inputFingerprint: finalizationInputFingerprint,
-          outputFingerprint: null,
-          outputPayload: null,
-          attemptCount: 1,
-          costUnits: 0,
-          tokenUnits: 0,
-          actualTokenUnits: 0,
-          providerAttempts: [],
-          reasonCode: "CANDIDATE_BOUNDED_EXECUTION_FAILED",
-          publicReason:
-            "Candidate underwriting failed during bounded stage execution.",
-          savedAt: now().toISOString(),
-          workerId: ORCHESTRATOR_WORKER_ID,
-          leaseToken: claimed.leaseToken,
-        });
-      } catch {}
+      // A current finalization checkpoint is identity-bearing only after the
+      // complete persisted graph and all semantic pins exist. Recording an
+      // unpinned failed placeholder here would either weaken replay authority
+      // or block a lease-recovered execution from saving the exact graph.
       await options.runs.markCandidateFailed({
         candidateRunId,
         publicReason: "Candidate underwriting failed after bounded retries.",
       });
       options.onWarning?.(
-        `Candidate ${planned.deal.id} underwriting failed during bounded stage execution; completed candidates remain available.`,
+        `Candidate ${planned.deal.id} underwriting failed during bounded stage execution; completed candidates remain available. Internal stage reason: ${boundedErrorDetail(executionError)}`,
       );
       const failed = terminalCandidate(claimed.candidate, "failed", now());
       planned.candidate = failed;
@@ -399,10 +403,44 @@ export function createUnderwritingOrchestrator(options: {
         && key !== "candidateRunId"
       ),
     ) as CandidateFinalizationPayload;
+    let currentFinalizationIdentity: ReturnType<
+      typeof requireCurrentFinalizationCheckpointIdentity
+    >;
+    try {
+      const frameworkCatalog = requireCompletedFrameworkCatalogCheckpoint(
+        await options.runs.listCheckpoints({
+          workspaceId: claimed.candidate.workspaceId,
+          candidateRunId,
+        }),
+      );
+      currentFinalizationIdentity =
+        requireCurrentFinalizationCheckpointIdentity(
+          payload,
+          planned.refreshNonce,
+          frameworkCatalog,
+        );
+    } catch (error) {
+      const publicReason =
+        "Candidate underwriting returned an invalid immutable finalization identity.";
+      await options.runs.markCandidateFailed({
+        candidateRunId,
+        publicReason,
+      });
+      options.onWarning?.(
+        `Candidate ${planned.deal.id} finalization identity was rejected; previously completed candidates remain available. Internal stage reason: ${boundedErrorDetail(error)}`,
+      );
+      const failed = terminalCandidate(claimed.candidate, "failed", now());
+      planned.candidate = failed;
+      return failed;
+    }
     const finalizationInputFingerprint = fingerprint({
       stage: "finalization",
       candidateRunId,
       batchInputFingerprint: planned.batchInputFingerprint,
+      candidateAnalysisFingerprint: payload.candidateAnalysisFingerprint,
+      evidencePackBuildInputFingerprint:
+        payload.evidencePackBuildInputFingerprint,
+      currentContractIdentity: currentFinalizationIdentity,
     });
     try {
       await options.runs.saveCheckpoint({
@@ -448,6 +486,11 @@ export function createUnderwritingOrchestrator(options: {
 
   return {
     async createBatchAndSelections(input) {
+      if (!input.forceRefresh && input.refreshNonce !== undefined) {
+        throw new Error(
+          "A refresh nonce is valid only for an explicit force refresh.",
+        );
+      }
       const policy = await options.activeFundPolicy(
         input.scanRun.workspaceId,
       );
@@ -462,7 +505,7 @@ export function createUnderwritingOrchestrator(options: {
         candidateExecutionFingerprint,
         referenceCatalog,
         evidenceFrame: input.evidenceFrame,
-        selectionPolicyVersion: SELECTION_POLICY_VERSION,
+        selectionPolicyVersion: UNDERWRITING_ADMISSION_POLICY_VERSION,
         routerVersion: CONTEXT_ROUTER_VERSION,
         beliefPolicies: {
           actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
@@ -484,6 +527,12 @@ export function createUnderwritingOrchestrator(options: {
         refreshNonce: null,
         rerunOfId: null,
       });
+      const selectedRefreshNonce = input.forceRefresh
+        ? requiredText(
+          input.refreshNonce ?? refreshNonce(),
+          "A refresh nonce",
+        )
+        : null;
       const batch = input.forceRefresh
         ? await options.runs.createOrReuseBatch({
             workspaceId: input.scanRun.workspaceId,
@@ -492,7 +541,7 @@ export function createUnderwritingOrchestrator(options: {
             fundPolicySnapshotId: policy.id,
             fundPolicyValues: policy.values,
             forceRefresh: true,
-            refreshNonce: refreshNonce(),
+            refreshNonce: selectedRefreshNonce,
             rerunOfId: ordinaryBatch.id,
           })
         : ordinaryBatch;
@@ -523,7 +572,7 @@ export function createUnderwritingOrchestrator(options: {
                 status: "selected" as const,
                 rank,
                 reason:
-                  `Admitted at priority ${rank} by ${SELECTION_POLICY_VERSION}; priority does not affect eligibility.`,
+                  `Admitted at priority ${rank} by ${UNDERWRITING_ADMISSION_POLICY_VERSION}; priority does not affect eligibility.`,
               };
         }),
       });
@@ -544,6 +593,8 @@ export function createUnderwritingOrchestrator(options: {
           deal: dealsById.get(candidate.dealId)!,
           fundPolicy: policy,
           batchInputFingerprint,
+          reportId: input.report.id,
+          refreshNonce: selectedRefreshNonce,
         });
       }
       if (options.autoProcessCandidates !== false) {
@@ -573,6 +624,7 @@ function boundedErrorDetail(error: unknown): string {
 export function createSourceGroundedCandidateExecutor(options: {
   grounding: CandidateGroundingPort;
   frameworkLenses?: FrameworkLensService;
+  frameworkCatalog?: FrameworkCatalogBinding;
   resolveFrameworkLenses?: (
     context: ResolvedUnderwritingContext,
     signal?: AbortSignal,
@@ -581,6 +633,7 @@ export function createSourceGroundedCandidateExecutor(options: {
   valuation?: ValuationEngine;
   decision?: DecisionEngine;
   execution: SourceGroundedCandidateExecutionSettings;
+  advisoryProviderTimeoutPolicy?: NamedLensProviderTimeoutPolicy;
   now?: () => Date;
 }): (
   input: CandidateExecutorInput,
@@ -593,6 +646,16 @@ export function createSourceGroundedCandidateExecutor(options: {
       "Candidate execution requires exactly one static or context-aware Framework lens service.",
     );
   }
+  if (options.frameworkLenses && !options.frameworkCatalog) {
+    throw new Error(
+      "A static Framework lens service requires an explicit immutable catalog binding.",
+    );
+  }
+  if (options.resolveFrameworkLenses && options.frameworkCatalog) {
+    throw new Error(
+      "A context-aware Framework resolver cannot also accept a static catalog binding.",
+    );
+  }
   const router = options.router ?? createContextRouter();
   const valuation = options.valuation ?? createValuationEngine({
     now: options.now,
@@ -600,6 +663,11 @@ export function createSourceGroundedCandidateExecutor(options: {
   const decision = options.decision ?? createDecisionEngine();
   const now = options.now ?? (() => new Date());
   const execution = normalizedExecution(options.execution);
+  const advisoryProviderTimeoutPolicy =
+    NamedLensProviderTimeoutPolicySchema.parse(
+      options.advisoryProviderTimeoutPolicy
+        ?? CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY,
+    );
 
   return async (input) => {
     if (input.signal.aborted) {
@@ -802,17 +870,22 @@ export function createSourceGroundedCandidateExecutor(options: {
       | undefined;
     let frameworkCatalog: FrameworkCatalogBinding | null;
     try {
-      frameworkCatalog = options.resolveFrameworkLenses
-        ? await input.stages.run({
+      frameworkCatalog = await input.stages.run({
           stage: "framework_catalog",
           inputFingerprint: fingerprint({
             stage: "framework_catalog",
             candidateId: input.candidate.id,
             context,
             execution,
+            staticCatalog: options.frameworkCatalog ?? null,
           }),
           parseOutput: parseFrameworkCatalogBinding,
           operation: async (signal) => {
+            if (options.frameworkCatalog) {
+              return validateFrameworkCatalogBinding(
+                options.frameworkCatalog,
+              );
+            }
             try {
               resolvedFrameworkSelection = validateFrameworkLensSelection(
                 await options.resolveFrameworkLenses!(context, signal),
@@ -822,8 +895,7 @@ export function createSourceGroundedCandidateExecutor(options: {
               throw classifyFrameworkCatalogError(error, signal);
             }
           },
-        })
-        : null;
+        });
     } catch (error) {
       if (error instanceof CandidateStageTimeoutError) {
         return timeoutUnavailableExecution(error.stage);
@@ -843,11 +915,12 @@ export function createSourceGroundedCandidateExecutor(options: {
           calculations: valuationArtifacts.calculations,
           execution,
           frameworkCatalog: {
-            version: frameworkCatalog?.catalogVersion ?? null,
-            fingerprint: frameworkCatalog?.catalogFingerprint ?? null,
-            corpusDigest: frameworkCatalog?.corpusDigest ?? null,
+            version: frameworkCatalog.catalogVersion,
+            fingerprint: frameworkCatalog.catalogFingerprint,
+            corpusDigest: frameworkCatalog.corpusDigest,
           },
           passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+          advisoryProviderTimeoutPolicy,
         });
       lensResult = await input.stages.run({
         stage: "framework_lenses",
@@ -866,13 +939,17 @@ export function createSourceGroundedCandidateExecutor(options: {
                 );
               assertFrameworkCatalogBinding(
                 resolvedFrameworkSelection,
-                frameworkCatalog!,
+              frameworkCatalog,
               );
               service = resolvedFrameworkSelection.service;
             } catch (error) {
               throw classifyFrameworkCatalogError(error, signal);
             }
           }
+          assertFrameworkLensTimeoutPolicy(
+            service!,
+            advisoryProviderTimeoutPolicy,
+          );
           return service!.runAll({
             candidate: input.candidate,
             pack,
@@ -914,12 +991,15 @@ export function createSourceGroundedCandidateExecutor(options: {
       ...DECISION_POLICY_V1,
       id: context.decisionPolicyId,
     };
+    const formalDecisionJudgments = selectFormalDecisionJudgments(
+      lensResult.judgments,
+    );
     const formalDecision = await input.stages.run({
       stage: "decision",
       inputFingerprint: fingerprint({
         stage: "decision",
         pack,
-        judgments: lensResult.judgments,
+        judgments: formalDecisionJudgments,
         valuation: valuationArtifacts.evaluation,
         fundPolicy: input.fundPolicy,
         context,
@@ -929,11 +1009,63 @@ export function createSourceGroundedCandidateExecutor(options: {
       operation: () => decision.decide({
         pack,
         coverage: pack.coverage,
-        judgments: lensResult.judgments,
+        judgments: formalDecisionJudgments,
         valuation: valuationArtifacts.evaluation,
         fundPolicy: input.fundPolicy,
         context,
         decisionPolicy: selectedDecisionPolicy,
+      }),
+    });
+    const namedLensAttempts = await input.stages.listNamedLensAttempts();
+    const namedLensPresentationArtifacts = await input.stages.run({
+      stage: "named_lens_presentation",
+      inputFingerprint: fingerprint({
+        stage: "named_lens_presentation",
+        reportId: input.reportId,
+        analysis: input.analysis,
+        pack,
+        grounding: snapshot,
+        calculations: valuationArtifacts.calculations,
+        calculationClaimEdges: valuationArtifacts.calculationClaimEdges,
+        decision: formalDecision,
+        judgments: lensResult.judgments,
+        taxonomyByFrameworkId: lensResult.taxonomyByFrameworkId,
+        passageResults: lensResult.passageResults,
+        advisoryFailures: lensResult.advisoryFailures ?? [],
+        attempts: namedLensAttempts,
+        authorityBindings: {
+          valuation: valuationArtifacts.evaluation,
+          fundPolicy: input.fundPolicy,
+          context,
+          decisionPolicyId: selectedDecisionPolicy.id,
+        },
+        passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+        selectionPolicyVersion: NAMED_LENS_SELECTION_POLICY_VERSION,
+        presentationSchemaVersion:
+          UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
+      }),
+      parseOutput: parseNamedLensPresentationArtifacts,
+      operation: () => buildNamedLensPresentationArtifacts({
+        workspaceId: input.candidate.workspaceId,
+        candidateRunId: input.candidate.id,
+        reportId: input.reportId,
+        analysis: input.analysis,
+        pack,
+        grounding: snapshot,
+        calculations: valuationArtifacts.calculations,
+        calculationClaimEdges: valuationArtifacts.calculationClaimEdges,
+        decision: formalDecision,
+        judgments: lensResult.judgments,
+        taxonomyByFrameworkId: lensResult.taxonomyByFrameworkId,
+        passageResults: lensResult.passageResults,
+        advisoryFailures: lensResult.advisoryFailures ?? [],
+        attempts: namedLensAttempts,
+        authorityBindings: {
+          valuation: valuationArtifacts.evaluation,
+          fundPolicy: input.fundPolicy,
+          context,
+          decisionPolicyId: selectedDecisionPolicy.id,
+        },
       }),
     });
     const missingEvidence = buildCandidateMissingEvidence({
@@ -1001,6 +1133,14 @@ export function createSourceGroundedCandidateExecutor(options: {
       presentationSchemaVersion:
         UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
       decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+      decisionTaxonomyDigest: DECISION_TAXONOMY_DIGEST,
+      criticalEvidenceProjectionFingerprint:
+        namedLensPresentationArtifacts
+          .decisionCriticalEvidenceProjection.fingerprint,
+      finalDispositionsFingerprint:
+        namedLensPresentationArtifacts.finalDispositionsFingerprint,
+      presentationFingerprint:
+        namedLensPresentationArtifacts.presentation.fingerprint,
     };
     const candidateAnalysisFingerprint = createCandidateAnalysisFingerprint({
       workspaceId: input.candidate.workspaceId,
@@ -1049,13 +1189,11 @@ export function createSourceGroundedCandidateExecutor(options: {
       decisionPolicy,
       referenceCatalogFingerprint:
         input.referenceCatalog.definitionFingerprint,
-      frameworkCatalog: frameworkCatalog
-        ? {
+      frameworkCatalog: {
           version: frameworkCatalog.catalogVersion,
           fingerprint: frameworkCatalog.catalogFingerprint,
           corpusDigest: frameworkCatalog.corpusDigest,
-        }
-        : null,
+        },
       formulaVersions,
       providerModel: execution.providerModel,
       promptVersion: execution.promptVersion,
@@ -1063,6 +1201,7 @@ export function createSourceGroundedCandidateExecutor(options: {
       settingsFingerprint: execution.settingsFingerprint,
       applicationCommit: execution.applicationCommit,
       namedLensVersions,
+      refreshNonce: input.refreshNonce,
     });
 
     return {
@@ -1080,6 +1219,19 @@ export function createSourceGroundedCandidateExecutor(options: {
       decision: formalDecision,
       narrative: narrativeArtifacts.narrative,
       actionDrafts: narrativeArtifacts.actionDrafts,
+      namedLensCatalogConsiderations:
+        namedLensPresentationArtifacts.catalogConsiderations,
+      decisionCriticalEvidenceProjection:
+        namedLensPresentationArtifacts.decisionCriticalEvidenceProjection,
+      namedLensAttemptRefs: namedLensPresentationArtifacts.attemptRefs,
+      namedLensDispositions: namedLensPresentationArtifacts.dispositions,
+      namedLensPassages: namedLensPresentationArtifacts.passages,
+      underwritingPresentationReportId:
+        namedLensPresentationArtifacts.presentationReportId,
+      namedLensPresentation: namedLensPresentationArtifacts.presentation,
+      terminalStatus: namedLensPresentationArtifacts.terminalStatus,
+      terminalReasonCodes:
+        namedLensPresentationArtifacts.terminalReasonCodes,
       versionSnapshot: {
         fundPolicyId: input.fundPolicy.id,
         dealStatus: beliefAssessment.dealStatus,
@@ -1113,14 +1265,10 @@ export function createSourceGroundedCandidateExecutor(options: {
           decisionPolicy.definitionFingerprint,
         referenceCatalogFingerprint:
           input.referenceCatalog.definitionFingerprint,
-        ...(frameworkCatalog
-          ? {
-            frameworkCatalogVersion: frameworkCatalog.catalogVersion,
-            frameworkCatalogFingerprint:
-              frameworkCatalog.catalogFingerprint,
-            frameworkCorpusDigest: frameworkCatalog.corpusDigest,
-          }
-          : {}),
+        frameworkCatalogVersion: frameworkCatalog.catalogVersion,
+        frameworkCatalogFingerprint:
+          frameworkCatalog.catalogFingerprint,
+        frameworkCorpusDigest: frameworkCatalog.corpusDigest,
         formulaVersions,
         providerModel: execution.providerModel,
         promptVersion: execution.promptVersion,
@@ -1136,10 +1284,114 @@ export function createSourceGroundedCandidateExecutor(options: {
           namedLensVersions.presentationSchemaVersion,
         decisionTaxonomyVersion:
           namedLensVersions.decisionTaxonomyVersion,
+        decisionTaxonomyDigest:
+          namedLensVersions.decisionTaxonomyDigest,
+        criticalEvidenceProjectionFingerprint:
+          namedLensVersions.criticalEvidenceProjectionFingerprint,
+        finalDispositionsFingerprint:
+          namedLensVersions.finalDispositionsFingerprint,
+        presentationFingerprint:
+          namedLensVersions.presentationFingerprint,
+        refreshNonce: input.refreshNonce,
         companyAnalysisUnknowns,
       },
     };
   };
+}
+
+function requireCurrentFinalizationCheckpointIdentity(
+  payload: CandidateFinalizationPayload,
+  expectedRefreshNonce: string | null,
+  expectedFrameworkCatalog: FrameworkCatalogBinding,
+) {
+  const versionSnapshot = payload.versionSnapshot;
+  const projection = payload.decisionCriticalEvidenceProjection;
+  const presentation = payload.namedLensPresentation;
+  const reportId = payload.underwritingPresentationReportId;
+  const terminalStatus = payload.terminalStatus;
+  const terminalReasonCodes = payload.terminalReasonCodes;
+  const currentPins = [
+    versionSnapshot.frameworkCatalogVersion,
+    versionSnapshot.frameworkCatalogFingerprint,
+    versionSnapshot.frameworkCorpusDigest,
+    versionSnapshot.namedLensSelectionPolicyVersion,
+    versionSnapshot.namedLensPassageSchemaVersion,
+    versionSnapshot.namedLensGeneratorVersion,
+    versionSnapshot.underwritingPresentationSchemaVersion,
+    versionSnapshot.decisionTaxonomyVersion,
+    versionSnapshot.decisionTaxonomyDigest,
+    versionSnapshot.criticalEvidenceProjectionFingerprint,
+    versionSnapshot.finalDispositionsFingerprint,
+    versionSnapshot.presentationFingerprint,
+    versionSnapshot.refreshNonce,
+  ];
+  if (
+    projection === undefined
+    || presentation === undefined
+    || reportId === undefined
+    || terminalStatus === undefined
+    || terminalReasonCodes === undefined
+    || currentPins.some((value) => value === undefined)
+  ) {
+    throw new Error(
+      "Current Candidate finalization cannot checkpoint without the complete Named Lens graph and immutable identity pins.",
+    );
+  }
+  if (
+    projection.fingerprint
+      !== versionSnapshot.criticalEvidenceProjectionFingerprint
+    || presentation.fingerprint !== versionSnapshot.presentationFingerprint
+    || versionSnapshot.refreshNonce !== expectedRefreshNonce
+    || versionSnapshot.frameworkCatalogVersion
+      !== expectedFrameworkCatalog.catalogVersion
+    || versionSnapshot.frameworkCatalogFingerprint
+      !== expectedFrameworkCatalog.catalogFingerprint
+    || versionSnapshot.frameworkCorpusDigest
+      !== expectedFrameworkCatalog.corpusDigest
+  ) {
+    throw new Error(
+      "Current Candidate finalization checkpoint identities do not match the persisted Named Lens graph.",
+    );
+  }
+  return {
+    reportId: requiredText(reportId, "An Underwriting presentation report ID"),
+    frameworkCatalog: expectedFrameworkCatalog,
+    versionSnapshot,
+    projectionFingerprint: projection.fingerprint,
+    finalDispositionsFingerprint:
+      versionSnapshot.finalDispositionsFingerprint,
+    presentationFingerprint: presentation.fingerprint,
+    terminalStatus,
+    terminalReasonCodes,
+  };
+}
+
+function requireCompletedFrameworkCatalogCheckpoint(
+  checkpoints: readonly CandidateCheckpoint[],
+): FrameworkCatalogBinding {
+  const matching = checkpoints.filter(({ stage }) =>
+    stage === "framework_catalog"
+  );
+  if (matching.length !== 1) {
+    throw new Error(
+      "Current Candidate finalization requires exactly one Framework catalog checkpoint.",
+    );
+  }
+  const checkpoint = matching[0]!;
+  if (
+    checkpoint.status !== "completed"
+    || checkpoint.outputPayload === null
+    || checkpoint.outputFingerprint !== fingerprint({
+      stage: "framework_catalog",
+      inputFingerprint: checkpoint.inputFingerprint,
+      result: checkpoint.outputPayload,
+    })
+  ) {
+    throw new Error(
+      "Current Candidate finalization requires a valid completed Framework catalog checkpoint.",
+    );
+  }
+  return parseFrameworkCatalogBinding(checkpoint.outputPayload);
 }
 
 function validateFrameworkLensSelection(
@@ -1181,6 +1433,50 @@ function frameworkCatalogBinding(
     catalogFingerprint: selection.catalogFingerprint,
     corpusDigest: selection.corpusDigest,
   };
+}
+
+function validateFrameworkCatalogBinding(
+  input: FrameworkCatalogBinding,
+): FrameworkCatalogBinding {
+  const catalogVersion = requiredText(
+    input.catalogVersion,
+    "A Framework catalog version",
+  );
+  const catalogFingerprint = requiredText(
+    input.catalogFingerprint,
+    "A Framework catalog fingerprint",
+  );
+  const corpusDigest = requiredText(
+    input.corpusDigest,
+    "A Framework corpus digest",
+  );
+  if (
+    !/^sha256:[0-9a-f]{64}$/.test(catalogFingerprint)
+    || !/^sha256:[0-9a-f]{64}$/.test(corpusDigest)
+  ) {
+    throw new Error(
+      "Framework catalog and corpus fingerprints must be canonical SHA-256 digests.",
+    );
+  }
+  return { catalogVersion, catalogFingerprint, corpusDigest };
+}
+
+function assertFrameworkLensTimeoutPolicy(
+  service: FrameworkLensService,
+  expected: NamedLensProviderTimeoutPolicy,
+): void {
+  const actual = NamedLensProviderTimeoutPolicySchema.parse(
+    service.advisoryProviderTimeoutPolicy
+      ?? CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY,
+  );
+  if (
+    actual.version !== expected.version
+    || actual.timeoutMs !== expected.timeoutMs
+  ) {
+    throw new Error(
+      "Framework lens service timeout policy does not match the Candidate execution identity.",
+    );
+  }
 }
 
 function assertFrameworkCatalogBinding(

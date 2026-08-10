@@ -531,7 +531,8 @@ export async function processClaimedRun(
     await updateStage("report", "completed");
     await updateStage("underwriting", "running");
     try {
-      await dependencies.underwriting.createBatchAndSelections({
+      const underwritingBatch =
+        await dependencies.underwriting.createBatchAndSelections({
         scanRun: claimedRun,
         report: storedReport,
         analyses: companyAnalyses,
@@ -545,8 +546,18 @@ export async function processClaimedRun(
           bindingFingerprint: evidenceRuntime.bindingFingerprint,
           snapshotFingerprint: evidenceRuntime.snapshotFingerprint,
         },
-      });
-      await updateStage("underwriting", "completed");
+        });
+      if (underwritingBatch.status === "completed") {
+        await updateStage("underwriting", "completed");
+      } else {
+        const warning = underwritingBatch.status === "partial"
+          ? "Underwriting completed only partially; every persisted formal result remains available, and incomplete Candidate reports retain their explicit reason codes."
+          : underwritingBatch.status === "failed"
+          ? "Underwriting failed for every admitted Candidate; the market report remains available without a false completed underwriting status."
+          : `Underwriting did not reach a terminal state (batch status: ${underwritingBatch.status}); the market report remains available.`;
+        warnings.push(warning);
+        await updateStage("underwriting", "failed", warning);
+      }
     } catch (error) {
       const warning = [
         "Underwriting was partially unavailable; the legacy market report remains available.",

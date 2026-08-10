@@ -14,6 +14,13 @@ import {
   authorizedResearchComposites,
   loadResearchFrameworkCatalog,
 } from "../../lib/underwriting/frameworks/research-loader";
+import { DECISION_TAXONOMY_DIGEST } from
+  "../../lib/underwriting/frameworks/decision-taxonomy";
+import {
+  createDecisionCriticalEvidenceProjectionFingerprint,
+  createNamedLensSemanticFingerprints,
+} from
+  "../../lib/underwriting/named-lens-presentation";
 import { SYNTHETIC_FRAMEWORK_PACK } from
   "../../seed/underwriting/framework-pack-v1";
 
@@ -218,18 +225,21 @@ export function createCurrentNamedLensFinalizationFixture():
     frameworkMetadata: metadata,
     fingerprint: "advisory-fixture-fingerprint",
   };
+  const projectionEvidenceRefs = [{
+    evidencePackItemId: "fact_1",
+    classification: "fact" as const,
+    originRefs: [{ kind: "fired_rule" as const, id: "rule_current" }],
+    reasonCodes: ["FORMAL_DECISION_RULE_INPUT"],
+    resolutionPath: ["fact_1", "rule_current"],
+  }];
   const projection = {
     id: "projection_current",
     workspaceId,
     artifactSourceCandidateRunId: candidateRunId,
-    evidenceRefs: [{
-      evidencePackItemId: "fact_1",
-      classification: "fact" as const,
-      originRefs: [{ kind: "fired_rule" as const, id: "rule_current" }],
-      reasonCodes: ["FORMAL_DECISION_RULE_INPUT"],
-      resolutionPath: ["fact_1", "rule_current"],
-    }],
-    fingerprint: sha("8"),
+    evidenceRefs: projectionEvidenceRefs,
+    fingerprint: createDecisionCriticalEvidenceProjectionFingerprint(
+      projectionEvidenceRefs,
+    ),
   };
   const passage: NamedLensPassage = {
     schemaVersion: "named-lens-passage-v1",
@@ -364,6 +374,15 @@ export function createCurrentNamedLensFinalizationFixture():
     },
     fingerprint: sha("9"),
   };
+  const { fingerprint: _presentationFingerprint, ...presentationPayload } =
+    presentation;
+  const semanticFingerprints = createNamedLensSemanticFingerprints({
+    evidenceRefs: projection.evidenceRefs,
+    dispositions: [disposition],
+    passages: [passage],
+    presentation: presentationPayload,
+  });
+  presentation.fingerprint = semanticFingerprints.presentationFingerprint;
   const scenarioInputs = (scenario: "bear" | "base" | "bull") =>
     ScenarioInputFieldSchema.options.map((field) => ({
       id: `${scenario}_${field}`,
@@ -493,6 +512,9 @@ export function createCurrentNamedLensFinalizationFixture():
       decisionPolicyId: context.decisionPolicyId,
       decisionPolicyDefinitionFingerprint: sha("5"),
       referenceCatalogFingerprint: sha("6"),
+      frameworkCatalogVersion: catalog.version,
+      frameworkCatalogFingerprint: catalog.fingerprint,
+      frameworkCorpusDigest: catalog.authorization.corpusDigest,
       formulaVersions: [],
       providerModel: "synthetic-test",
       promptVersion: "framework-lens-v1",
@@ -505,6 +527,12 @@ export function createCurrentNamedLensFinalizationFixture():
       namedLensGeneratorVersion: "named-lens-generator-v1",
       underwritingPresentationSchemaVersion: "decision-first-named-lens-v1",
       decisionTaxonomyVersion: "named-lens-decision-taxonomy-v1",
+      decisionTaxonomyDigest: DECISION_TAXONOMY_DIGEST,
+      criticalEvidenceProjectionFingerprint: projection.fingerprint,
+      finalDispositionsFingerprint:
+        semanticFingerprints.finalDispositionsFingerprint,
+      presentationFingerprint: semanticFingerprints.presentationFingerprint,
+      refreshNonce: null,
     },
     namedLensCatalogConsiderations: [catalogConsideration],
     decisionCriticalEvidenceProjection: projection,
@@ -586,48 +614,74 @@ export function withEmptyCurrentNamedLensArtifacts(
   }
   const candidateRunId = input.candidateRunId;
   const workspaceId = input.evidencePack.workspaceId;
+  const projection = {
+    id: `projection_zero_${candidateRunId}`,
+    workspaceId,
+    artifactSourceCandidateRunId: candidateRunId,
+    evidenceRefs: [],
+    fingerprint: createDecisionCriticalEvidenceProjectionFingerprint([]),
+  };
+  const presentation: NamedLensPresentation = {
+    schemaVersion: "decision-first-named-lens-v1",
+    rendererVersion: "named-lens-renderer-v1",
+    workspaceId,
+    artifactSourceCandidateRunId: candidateRunId,
+    synthesis: {
+      branch: "zero_available",
+      text: "No eligible advisory perspective was available for this formal-only fixture.",
+      judgmentIds: [],
+      evidenceItemIds: [],
+    },
+    segmentCitations: [],
+    firstScreenProjectionRefs: {
+      decisionId: input.decision.id,
+      decisionEvidenceItemIds: [],
+      selectedJudgmentIds: [],
+    },
+    fingerprint: sha("f"),
+  };
+  const { fingerprint: _presentationFingerprint, ...presentationPayload } =
+    presentation;
+  const semanticFingerprints = createNamedLensSemanticFingerprints({
+    evidenceRefs: projection.evidenceRefs,
+    dispositions: [],
+    passages: [],
+    presentation: presentationPayload,
+  });
+  presentation.fingerprint = semanticFingerprints.presentationFingerprint;
   return {
     ...structuredClone(input),
     versionSnapshot: {
       ...structuredClone(input.versionSnapshot),
+      frameworkCatalogVersion:
+        input.versionSnapshot.frameworkCatalogVersion
+        ?? catalog.version,
+      frameworkCatalogFingerprint:
+        input.versionSnapshot.frameworkCatalogFingerprint
+        ?? catalog.fingerprint,
+      frameworkCorpusDigest:
+        input.versionSnapshot.frameworkCorpusDigest
+        ?? catalog.authorization.corpusDigest,
       namedLensSelectionPolicyVersion: "named-lens-selection-v1",
       namedLensPassageSchemaVersion: "named-lens-passage-v1",
       namedLensGeneratorVersion: "named-lens-generator-v1",
       underwritingPresentationSchemaVersion:
         "decision-first-named-lens-v1",
       decisionTaxonomyVersion: "named-lens-decision-taxonomy-v1",
+      decisionTaxonomyDigest: DECISION_TAXONOMY_DIGEST,
+      criticalEvidenceProjectionFingerprint: projection.fingerprint,
+      finalDispositionsFingerprint:
+        semanticFingerprints.finalDispositionsFingerprint,
+      presentationFingerprint: semanticFingerprints.presentationFingerprint,
+      refreshNonce: input.versionSnapshot.refreshNonce ?? null,
     },
     namedLensCatalogConsiderations: [],
-    decisionCriticalEvidenceProjection: {
-      id: `projection_zero_${candidateRunId}`,
-      workspaceId,
-      artifactSourceCandidateRunId: candidateRunId,
-      evidenceRefs: [],
-      fingerprint: sha("0"),
-    },
+    decisionCriticalEvidenceProjection: projection,
     namedLensAttemptRefs: [],
     namedLensDispositions: [],
     namedLensPassages: [],
     underwritingPresentationReportId: `report_zero_${candidateRunId}`,
-    namedLensPresentation: {
-      schemaVersion: "decision-first-named-lens-v1",
-      rendererVersion: "named-lens-renderer-v1",
-      workspaceId,
-      artifactSourceCandidateRunId: candidateRunId,
-      synthesis: {
-        branch: "zero_available",
-        text: "No eligible advisory perspective was available for this formal-only fixture.",
-        judgmentIds: [],
-        evidenceItemIds: [],
-      },
-      segmentCitations: [],
-      firstScreenProjectionRefs: {
-        decisionId: input.decision.id,
-        decisionEvidenceItemIds: [],
-        selectedJudgmentIds: [],
-      },
-      fingerprint: sha("f"),
-    },
+    namedLensPresentation: presentation,
     terminalStatus: "completed",
     terminalReasonCodes: ["limited_framework_coverage"],
   };
@@ -676,7 +730,7 @@ export function withWithheldCurrentNamedLensArtifacts(
     workspaceId,
     artifactSourceCandidateRunId: candidateRunId,
     evidenceRefs: [],
-    fingerprint: sha("0"),
+    fingerprint: createDecisionCriticalEvidenceProjectionFingerprint([]),
   };
   const fingerprintFor = (index: number) =>
     `sha256:${(index + 1).toString(16).padStart(64, "0")}`;
@@ -708,7 +762,7 @@ export function withWithheldCurrentNamedLensArtifacts(
         : ["JUDGMENT_ABSTAINED"],
     };
   });
-  const catalog = classifications.map((classification, index) => ({
+  const catalogConsiderations = classifications.map((classification, index) => ({
     workspaceId,
     artifactSourceCandidateRunId: candidateRunId,
     judgmentOrCatalogCandidateId: classification.judgment.id,
@@ -758,9 +812,61 @@ export function withWithheldCurrentNamedLensArtifacts(
       left.logicalPassageId.localeCompare(right.logicalPassageId)
       || left.attemptNumber - right.attemptNumber
     );
+  const presentation: NamedLensPresentation = {
+    schemaVersion: "decision-first-named-lens-v1",
+    rendererVersion: "named-lens-renderer-v1",
+    workspaceId,
+    artifactSourceCandidateRunId: candidateRunId,
+    synthesis: {
+      branch: "zero_available",
+      text: "Advisory passages remain withheld pending the deterministic presentation stage.",
+      judgmentIds: [],
+      evidenceItemIds: [],
+    },
+    segmentCitations: [],
+    firstScreenProjectionRefs: {
+      decisionId: input.decision.id,
+      decisionEvidenceItemIds: [],
+      selectedJudgmentIds: [],
+    },
+    fingerprint: sha("e"),
+  };
+  const { fingerprint: _presentationFingerprint, ...presentationPayload } =
+    presentation;
+  const semanticFingerprints = createNamedLensSemanticFingerprints({
+    evidenceRefs: projection.evidenceRefs,
+    dispositions,
+    passages: [],
+    presentation: presentationPayload,
+  });
+  presentation.fingerprint = semanticFingerprints.presentationFingerprint;
   return {
     ...normalizedInput,
-    namedLensCatalogConsiderations: catalog,
+    versionSnapshot: {
+      ...normalizedInput.versionSnapshot,
+      frameworkCatalogVersion:
+        normalizedInput.versionSnapshot.frameworkCatalogVersion
+        ?? catalog.version,
+      frameworkCatalogFingerprint:
+        normalizedInput.versionSnapshot.frameworkCatalogFingerprint
+        ?? catalog.fingerprint,
+      frameworkCorpusDigest:
+        normalizedInput.versionSnapshot.frameworkCorpusDigest
+        ?? catalog.authorization.corpusDigest,
+      namedLensSelectionPolicyVersion: "named-lens-selection-v1",
+      namedLensPassageSchemaVersion: "named-lens-passage-v1",
+      namedLensGeneratorVersion: "named-lens-generator-v1",
+      underwritingPresentationSchemaVersion:
+        "decision-first-named-lens-v1",
+      decisionTaxonomyVersion: "named-lens-decision-taxonomy-v1",
+      decisionTaxonomyDigest: DECISION_TAXONOMY_DIGEST,
+      criticalEvidenceProjectionFingerprint: projection.fingerprint,
+      finalDispositionsFingerprint:
+        semanticFingerprints.finalDispositionsFingerprint,
+      presentationFingerprint: semanticFingerprints.presentationFingerprint,
+      refreshNonce: normalizedInput.versionSnapshot.refreshNonce ?? null,
+    },
+    namedLensCatalogConsiderations: catalogConsiderations,
     decisionCriticalEvidenceProjection: projection,
     namedLensAttemptRefs: attempts.map((attempt) => ({
       judgmentOrCatalogCandidateId: attempt.judgmentOrCatalogCandidateId,
@@ -771,25 +877,7 @@ export function withWithheldCurrentNamedLensArtifacts(
     namedLensDispositions: dispositions,
     namedLensPassages: [],
     underwritingPresentationReportId: `report_withheld_${candidateRunId}`,
-    namedLensPresentation: {
-      schemaVersion: "decision-first-named-lens-v1",
-      rendererVersion: "named-lens-renderer-v1",
-      workspaceId,
-      artifactSourceCandidateRunId: candidateRunId,
-      synthesis: {
-        branch: "zero_available",
-        text: "Advisory passages remain withheld pending the deterministic presentation stage.",
-        judgmentIds: [],
-        evidenceItemIds: [],
-      },
-      segmentCitations: [],
-      firstScreenProjectionRefs: {
-        decisionId: input.decision.id,
-        decisionEvidenceItemIds: [],
-        selectedJudgmentIds: [],
-      },
-      fingerprint: sha("e"),
-    },
+    namedLensPresentation: presentation,
     terminalStatus: "partial",
     terminalReasonCodes: ["named_lens_passage_attempts_exhausted"],
   };

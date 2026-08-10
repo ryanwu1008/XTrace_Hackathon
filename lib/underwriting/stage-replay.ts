@@ -3,6 +3,14 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 
 import {
+  DecisionCriticalEvidenceProjectionSchema,
+  NamedLensCatalogConsiderationSchema,
+  NamedLensFinalizationDispositionSchema,
+  NamedLensPassageSchema,
+  NamedLensPresentationSchema,
+  NamedLensProviderAttemptRefSchema,
+} from "../contracts/named-lens";
+import {
   CalculationSchema,
   ClaimEdgeSchema,
   EvidencePackSchema,
@@ -115,6 +123,16 @@ const FrameworkLensResultSchema = z.strictObject({
     DecisionTaxonomyBindingSchema,
   ),
   passageContract: FrameworkLensPassageContractSchema,
+  advisoryFailures: z.array(z.strictObject({
+    judgmentOrCatalogCandidateId: IdSchema,
+    frameworkCardId: IdSchema,
+    frameworkVersion: IdSchema,
+    reasonCode: z.enum([
+      "provider_transport_failure",
+      "provider_budget_exhausted",
+      "provider_timeout",
+    ]),
+  })).default([]),
 });
 const FrameworkCatalogBindingSchema = z.strictObject({
   catalogVersion: IdSchema,
@@ -124,6 +142,19 @@ const FrameworkCatalogBindingSchema = z.strictObject({
 const NarrativeArtifactsSchema = z.strictObject({
   narrative: z.string().min(1),
   actionDrafts: z.array(z.unknown()),
+});
+const NamedLensPresentationArtifactsSchema = z.strictObject({
+  catalogConsiderations: z.array(NamedLensCatalogConsiderationSchema),
+  decisionCriticalEvidenceProjection:
+    DecisionCriticalEvidenceProjectionSchema,
+  attemptRefs: z.array(NamedLensProviderAttemptRefSchema),
+  dispositions: z.array(NamedLensFinalizationDispositionSchema),
+  passages: z.array(NamedLensPassageSchema),
+  presentationReportId: IdSchema,
+  presentation: NamedLensPresentationSchema,
+  finalDispositionsFingerprint: FingerprintSchema,
+  terminalStatus: z.enum(["completed", "partial"]),
+  terminalReasonCodes: z.array(IdSchema),
 });
 
 export function parseCandidateGroundingSnapshot(
@@ -185,6 +216,10 @@ export function parseFrameworkCatalogBinding(value: unknown): {
 
 export function parseDecisionResult(value: unknown) {
   return DecisionResultSchema.parse(value);
+}
+
+export function parseNamedLensPresentationArtifacts(value: unknown) {
+  return NamedLensPresentationArtifactsSchema.parse(value);
 }
 
 export function parseNarrativeArtifacts(value: unknown) {

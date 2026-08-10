@@ -43,10 +43,10 @@ test("0021 remains contiguous before later local-only migrations while productio
   assert.equal(xtraceEntry?.tag, "0021_exact_xtrace_lineage");
   const finalizationEntry = journal.entries.find(({ idx }) => idx === 22);
   assert.equal(finalizationEntry?.tag, "0022_task9_finalization_authority");
-  assert.equal(journal.entries.at(-1)?.idx, 27);
+  assert.equal(journal.entries.at(-1)?.idx, 28);
   assert.equal(
     journal.entries.at(-1)?.tag,
-    "0027_named_lens_passages",
+    "0028_named_lens_authority_repair",
   );
   const launcher = readFileSync(fileURLToPath(new URL(
     "../../scripts/apply-production-migrations.zsh",
@@ -55,6 +55,7 @@ test("0021 remains contiguous before later local-only migrations while productio
   assert.match(launcher, /through 0019/u);
   assert.doesNotMatch(launcher, /0021_exact_xtrace_lineage/u);
   assert.doesNotMatch(launcher, /0023_pg17_market_event_validator/u);
+  assert.doesNotMatch(launcher, /0028_named_lens_authority_repair/u);
 });
 
 test(

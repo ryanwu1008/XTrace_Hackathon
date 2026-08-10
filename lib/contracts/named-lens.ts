@@ -85,11 +85,28 @@ export const DecisionCriticalEvidenceRefSchema = z.strictObject({
   reasonCodes: z.array(z.string().min(1)).min(1),
   resolutionPath: z.array(z.string().min(1)).min(1),
 }).superRefine((value, context) => {
+  if (
+    value.evidencePackItemId.trim() !== value.evidencePackItemId
+    || value.originRefs.some(({ id }) => id.trim() !== id)
+    || value.reasonCodes.some((reason) => reason.trim() !== reason)
+    || value.resolutionPath.some((part) => part.trim() !== part)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Decision-critical evidence identifiers and provenance text must be normalized and nonblank.",
+    });
+  }
   requireCanonicalUnique(
     value.originRefs,
     ({ kind, id }) => `${kind}\u0000${id}`,
     context,
     "Decision-critical origin references",
+  );
+  requireCanonicalStrings(
+    value.reasonCodes,
+    context,
+    "Decision-critical reason codes",
   );
 });
 

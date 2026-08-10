@@ -113,9 +113,7 @@ export function createDecisionEngine(): DecisionEngine {
 function parseInput(input: DecisionEngineInput): DecisionEngineInput {
   const pack = EvidencePackSchema.parse(input.pack);
   const coverage = EvidenceCoverageResultSchema.parse(input.coverage);
-  const judgments = input.judgments
-    .map((item) => FrameworkJudgmentSchema.parse(item))
-    .filter(isFormalDecisionJudgment);
+  const judgments = selectFormalDecisionJudgments(input.judgments);
   const valuation = ValuationEvaluationSchema.parse(input.valuation);
   const fundPolicy = FundPolicySnapshotSchema.parse(input.fundPolicy);
   const context = ResolvedUnderwritingContextSchema.parse(input.context);
@@ -156,12 +154,20 @@ function parseInput(input: DecisionEngineInput): DecisionEngineInput {
   };
 }
 
-function isFormalDecisionJudgment(
+export function isFormalDecisionJudgment(
   judgment: FrameworkJudgment,
 ): boolean {
   return judgment.frameworkMetadata === undefined
     && FORMAL_FRAMEWORK_VERSIONS.get(judgment.frameworkCardId)
       === judgment.frameworkVersion;
+}
+
+export function selectFormalDecisionJudgments(
+  judgments: readonly FrameworkJudgment[],
+): FrameworkJudgment[] {
+  return judgments
+    .map((item) => FrameworkJudgmentSchema.parse(item))
+    .filter(isFormalDecisionJudgment);
 }
 
 function claimEdges(

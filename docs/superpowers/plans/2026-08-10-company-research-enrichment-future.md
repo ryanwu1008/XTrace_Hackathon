@@ -69,10 +69,10 @@ Company research providers discover candidates but never create Facts directly. 
 
 ---
 
-### Task 3: PostgreSQL 0028 append-only enrichment artifacts
+### Task 3: PostgreSQL 0029 append-only enrichment artifacts
 
 **Files:**
-- Create: `drizzle/0028_company_research_enrichment.sql`
+- Create: `drizzle/0029_company_research_enrichment.sql`
 - Modify: `drizzle/meta/_journal.json`
 - Modify: `db/schema.ts`
 - Create: `db/repositories/company-research.ts`
@@ -84,7 +84,7 @@ Company research providers discover candidates but never create Facts directly. 
 - [ ] Persist workspace, report, run, Candidate, Deal, plan/provider/version/fingerprint, bounded query, timestamps, outcome/failure code, source snapshot hash, and revision binding.
 - [ ] Add owner-guarded service-role RPCs for job creation, attempt reservation/settlement, and atomic capture-to-revision binding. Direct DML stays denied.
 - [ ] Extend checkpoint stages with `company_enrichment` and `exact_xtrace_ingest` while retaining every legacy stage value.
-- [ ] Register migration index 28 without changing the production launcher safety refusal.
+- [ ] Register migration index 29 without changing the production launcher safety refusal.
 
 ---
 
@@ -165,7 +165,7 @@ Company research providers discover candidates but never create Facts directly. 
 - [ ] Prove timeouts, unsafe redirects, changed bodies, partial providers, XTrace failures, exact replay, refresh, and cross-workspace isolation.
 - [ ] Run real provider acceptance only against isolated non-production Supabase and separate Web/Worker targets on the same commit; startup rejects production and fixture identities.
 - [ ] Record source/revision/XTrace/Evidence Pack/Candidate fingerprints, screenshots, provider/cost/latency telemetry without secrets, and explicit production non-access.
-- [ ] Do not apply migration 0028 or seed/enrichment writes to production before separate review and authorization.
+- [ ] Do not apply migration 0029 or seed/enrichment writes to production before separate review and authorization.
 
 ---
 

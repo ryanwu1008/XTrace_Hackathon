@@ -311,8 +311,10 @@ test(
       ]), "API roles");
       const directory = fileURLToPath(new URL("../../drizzle/", import.meta.url));
       const migrations = readdirSync(directory)
-        .filter((name) => /^\d{4}_.+\.sql$/u.test(name))
+        .filter((name) => /^\d{4}_.+\.sql$/u.test(name)
+          && Number(name.slice(0, 4)) <= 22)
         .sort();
+      assert.equal(migrations.length, 23, "historical Task 9 coverage stops at 0022");
       for (const migration of migrations) {
         success(postgres.run("psql", [
           "--no-password", "-v", "ON_ERROR_STOP=1", "-d", database,

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { UnderwritingRunsRepository } from "../../db/repositories/underwriting-runs";
 import type { CandidateRun } from "../../lib/contracts/underwriting";
+import type { CompanyAnalysis } from "../../lib/contracts/domain";
 import {
   createMemoryNamedLensArtifactsRepository,
   type NamedLensArtifactsRepository,
@@ -19,6 +20,12 @@ import {
   parseCandidateGroundingSnapshot,
   parseNarrativeArtifacts,
 } from "../../lib/underwriting/stage-replay";
+import type { CandidateGroundingSnapshot } from
+  "../../lib/underwriting/candidate-grounding";
+import { buildNamedLensPresentationArtifacts } from
+  "../../lib/underwriting/named-lens-presentation";
+import { createCurrentNamedLensFinalizationFixture } from
+  "../helpers/current-named-lens-finalization";
 
 test("context-router replay preserves assumption and semantic availability evidence", () => {
   const snapshot = {
@@ -584,4 +591,59 @@ test("timeout checkpoint settlement wins over a late provider rejection", async 
   assert.equal(checkpoint?.providerAttempts[0]?.status, "aborted");
   assert.equal(checkpoint?.reasonCode,
     "CANDIDATE_STAGE_TIMEOUT_FRAMEWORK_LENSES");
+});
+
+test("presentation fails closed when an eligible lens has no explicit validation result", () => {
+  const { finalization } = createCurrentNamedLensFinalizationFixture();
+  assert.throws(() => buildNamedLensPresentationArtifacts({
+    workspaceId: finalization.evidencePack.workspaceId,
+    candidateRunId: finalization.candidateRunId,
+    reportId: "report_missing_validation",
+    analysis: {} as CompanyAnalysis,
+    pack: finalization.evidencePack,
+    grounding: {} as CandidateGroundingSnapshot,
+    calculations: finalization.calculations,
+    decision: finalization.decision,
+    judgments: finalization.judgments,
+    taxonomyByFrameworkId: {},
+    passageResults: [],
+    advisoryFailures: [],
+    attempts: [],
+  }), /requires one explicit validation result/);
+});
+
+test("presentation does not downgrade an unexpected projection bug to partial", () => {
+  const { finalization } = createCurrentNamedLensFinalizationFixture();
+  const advisory = finalization.judgments.find(({ frameworkMetadata }) =>
+    frameworkMetadata !== undefined
+  );
+  assert.ok(advisory);
+  const analysis = new Proxy({} as CompanyAnalysis, {
+    get(_target, property) {
+      if (property === "dealId") {
+        throw new TypeError("unexpected projection implementation bug");
+      }
+      return undefined;
+    },
+  });
+  assert.throws(() => buildNamedLensPresentationArtifacts({
+    workspaceId: finalization.evidencePack.workspaceId,
+    candidateRunId: finalization.candidateRunId,
+    reportId: "report_projection_bug",
+    analysis,
+    pack: finalization.evidencePack,
+    grounding: {} as CandidateGroundingSnapshot,
+    calculations: finalization.calculations,
+    decision: finalization.decision,
+    judgments: finalization.judgments,
+    taxonomyByFrameworkId: {},
+    passageResults: [{
+      judgmentOrCatalogCandidateId: advisory.id,
+      status: "unavailable",
+      reasonCode: "invalid_passage_schema",
+      authorizedFocus: null,
+    }],
+    advisoryFailures: [],
+    attempts: [],
+  }), /unexpected projection implementation bug/);
 });

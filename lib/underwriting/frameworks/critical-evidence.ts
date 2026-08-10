@@ -1,6 +1,7 @@
 import type { CompanyAnalysis } from "../../contracts/domain";
 import type {
   Calculation,
+  ClaimEdge,
   EvidencePack,
 } from "../../contracts/evidence";
 import {
@@ -8,9 +9,17 @@ import {
   type DecisionCriticalEvidenceRef,
   type DecisionCriticalOriginRef,
 } from "../../contracts/named-lens";
-import type { DecisionResult } from "../../contracts/underwriting";
+import type {
+  DecisionResult,
+  FrameworkJudgment,
+  FundPolicySnapshot,
+  ResolvedUnderwritingContext,
+  ValuationEvaluation,
+} from "../../contracts/underwriting";
 import { compareUtf8 } from "../../format/canonical-order";
 import type { CandidateGroundingSnapshot } from "../candidate-grounding";
+import { isFormalDecisionJudgment } from "../decision/engine";
+import { DECISION_POLICY_V1 } from "../decision/rules";
 
 interface ProjectionContribution {
   evidencePackItemId: string;
@@ -20,12 +29,29 @@ interface ProjectionContribution {
   resolutionPath: string[];
 }
 
+export interface DecisionCriticalAuthorityBindings {
+  valuation: ValuationEvaluation;
+  fundPolicy: FundPolicySnapshot;
+  context: ResolvedUnderwritingContext;
+  decisionPolicyId: string;
+}
+
+export class DecisionCriticalEvidenceResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DecisionCriticalEvidenceResolutionError";
+  }
+}
+
 export function buildDecisionCriticalEvidenceProjection(input: {
   analysis: CompanyAnalysis;
   pack: EvidencePack;
   grounding: CandidateGroundingSnapshot;
   calculations: Calculation[];
+  calculationClaimEdges?: ClaimEdge[];
   decision: DecisionResult;
+  judgments: FrameworkJudgment[];
+  authorityBindings?: DecisionCriticalAuthorityBindings;
 }): DecisionCriticalEvidenceRef[] {
   assertCandidateBoundary(input);
   const factById = new Map(input.pack.facts.map((item) => [item.id, item]));
@@ -51,6 +77,35 @@ export function buildDecisionCriticalEvidenceProjection(input: {
     input.calculations,
     ({ id }) => id,
     "Calculation",
+  );
+  const calculationClaimEdges = input.calculationClaimEdges ?? [];
+  const calculationEdgesByClaimId = new Map<string, ClaimEdge[]>();
+  const calculationEdgeKeys = new Set<string>();
+  for (const edge of calculationClaimEdges) {
+    const key = [
+      edge.claimItemId,
+      edge.dependencyType,
+      edge.dependencyItemId,
+    ].join("\u0000");
+    if (calculationEdgeKeys.has(key)) {
+      throw new DecisionCriticalEvidenceResolutionError(
+        "Calculation claim edges must be unique.",
+      );
+    }
+    calculationEdgeKeys.add(key);
+    if (!calculationsById.has(edge.claimItemId)) {
+      throw new DecisionCriticalEvidenceResolutionError(
+        `Calculation claim edge ${edge.claimItemId} does not belong to the candidate-local calculation set.`,
+      );
+    }
+    const edges = calculationEdgesByClaimId.get(edge.claimItemId) ?? [];
+    edges.push(edge);
+    calculationEdgesByClaimId.set(edge.claimItemId, edges);
+  }
+  const formalJudgmentsById = uniqueMap(
+    input.judgments.filter(isFormalDecisionJudgment),
+    ({ id }) => id,
+    "Formal FrameworkJudgment",
   );
   const contributions: ProjectionContribution[] = [];
 
@@ -239,7 +294,6 @@ export function buildDecisionCriticalEvidenceProjection(input: {
     revisionById,
     resolveRevision,
   });
-
   const resolveDecisionRef = (options: {
     itemId: string;
     origin: DecisionCriticalOriginRef;
@@ -255,26 +309,136 @@ export function buildDecisionCriticalEvidenceProjection(input: {
       });
       return;
     }
-    const calculation = calculationsById.get(options.itemId);
-    if (!calculation || calculation.status !== "completed") {
+    const exactCalculation = calculationsById.get(options.itemId);
+    if (exactCalculation) {
+      resolveCalculation(exactCalculation, options);
+      return;
+    }
+    const exactJudgment = formalJudgmentsById.get(options.itemId);
+    if (exactJudgment) {
+      resolveJudgment(exactJudgment, options);
+      return;
+    }
+    if (options.itemId.startsWith("framework_judgment:")) {
+      const judgment = formalJudgmentsById.get(options.itemId.slice(
+        "framework_judgment:".length,
+      ));
+      if (!judgment) unresolved(options.origin, options.itemId);
+      resolveJudgment(judgment, options);
+      return;
+    }
+    const typed = parseTypedDecisionRef(options.itemId);
+    if (typed) {
+      if (typed.kind === "fact") {
+        if (!factById.has(typed.id)) unresolved(options.origin, options.itemId);
+        addPackItem({
+          ...options,
+          itemId: typed.id,
+          path: [...options.path, options.itemId],
+          additionalOriginRefs: options.calculationOriginRefs,
+        });
+        return;
+      }
+      if (typed.kind === "assumption") {
+        if (!assumptionById.has(typed.id)) {
+          unresolved(options.origin, options.itemId);
+        }
+        addPackItem({
+          ...options,
+          itemId: typed.id,
+          path: [...options.path, options.itemId],
+          additionalOriginRefs: options.calculationOriginRefs,
+        });
+        return;
+      }
+      if (typed.kind === "calculation") {
+        const calculation = calculationsById.get(typed.id);
+        if (!calculation) unresolved(options.origin, options.itemId);
+        resolveCalculation(calculation, {
+          ...options,
+          path: [...options.path, options.itemId],
+        });
+        return;
+      }
+      if (isValidatedAuthorityRef({
+        typed,
+        input,
+      })) return;
       unresolved(options.origin, options.itemId);
     }
+    unresolved(options.origin, options.itemId);
+  };
+
+  const resolveJudgment = (
+    judgment: FrameworkJudgment,
+    options: Parameters<typeof resolveDecisionRef>[0],
+  ): void => {
+      const evidenceItemIds = judgment
+        ? uniqueSorted([
+            ...judgment.supportEvidenceItemIds,
+            ...judgment.counterEvidenceItemIds,
+          ])
+        : [];
+      if (evidenceItemIds.length === 0) {
+        unresolved(options.origin, options.itemId);
+      }
+      for (const evidenceItemId of evidenceItemIds) {
+        const expectedDependencyType = factById.has(evidenceItemId)
+          ? "fact"
+          : assumptionById.has(evidenceItemId)
+            ? "assumption"
+            : calculationsById.has(evidenceItemId)
+              ? "calculation"
+              : null;
+        const exactEdges = judgment.claimEdges.filter((edge) =>
+          edge.claimItemId === judgment.id
+          && edge.dependencyItemId === evidenceItemId
+          && edge.dependencyType === expectedDependencyType
+        );
+        if (expectedDependencyType === null || exactEdges.length !== 1) {
+          unresolved(options.origin, options.itemId);
+        }
+        resolveDecisionRef({
+          ...options,
+          itemId: evidenceItemId,
+          path: [...options.path, options.itemId],
+        });
+      }
+  };
+
+  const resolveCalculation = (
+    calculation: Calculation,
+    options: Parameters<typeof resolveDecisionRef>[0],
+  ): void => {
+    if (calculation.status !== "completed") {
+      unresolved(options.origin, calculation.id);
+    }
     if (options.activeCalculationIds.has(calculation.id)) {
-      throw new Error(
+      throw new DecisionCriticalEvidenceResolutionError(
         `Decision-critical Calculation lineage cycle at ${calculation.id}.`,
       );
     }
     const activeCalculationIds = new Set(options.activeCalculationIds);
     activeCalculationIds.add(calculation.id);
-    let resolvedInputs = 0;
+    let validatedDependencies = 0;
     for (const reference of calculation.inputRefs) {
-      if (
-        reference.type === "policy"
-        && !factById.has(reference.itemId)
-        && !assumptionById.has(reference.itemId)
-        && !calculationsById.has(reference.itemId)
-      ) {
+      if (reference.type === "policy") {
+        if (!isValidCalculationPolicyRef(
+          reference.itemId,
+          input.authorityBindings?.fundPolicy,
+        )) {
+          unresolved(options.origin, reference.itemId);
+        }
+        validatedDependencies += 1;
         continue;
+      }
+      const expectedType = factById.has(reference.itemId)
+        ? "fact"
+        : assumptionById.has(reference.itemId)
+          ? reference.type === "benchmark" ? "benchmark" : "assumption"
+          : null;
+      if (expectedType === null || reference.type !== expectedType) {
+        unresolved(options.origin, reference.itemId);
       }
       resolveDecisionRef({
         itemId: reference.itemId,
@@ -287,9 +451,35 @@ export function buildDecisionCriticalEvidenceProjection(input: {
           { kind: "calculation", id: calculation.id },
         ],
       });
-      resolvedInputs += 1;
+      validatedDependencies += 1;
     }
-    if (resolvedInputs === 0) unresolved(options.origin, calculation.id);
+    for (const edge of calculationEdgesByClaimId.get(calculation.id) ?? []) {
+      const expectedType = factById.has(edge.dependencyItemId)
+        ? "fact"
+        : assumptionById.has(edge.dependencyItemId)
+          ? "assumption"
+          : calculationsById.has(edge.dependencyItemId)
+            ? "calculation"
+            : null;
+      if (expectedType === null || edge.dependencyType !== expectedType) {
+        unresolved(options.origin, edge.dependencyItemId);
+      }
+      resolveDecisionRef({
+        itemId: edge.dependencyItemId,
+        origin: options.origin,
+        reasonCode: options.reasonCode,
+        path: [...options.path, calculation.id],
+        activeCalculationIds,
+        calculationOriginRefs: [
+          ...options.calculationOriginRefs,
+          { kind: "calculation", id: calculation.id },
+        ],
+      });
+      validatedDependencies += 1;
+    }
+    if (validatedDependencies === 0) {
+      unresolved(options.origin, calculation.id);
+    }
   };
 
   for (const rule of [...input.decision.firedRules].sort((left, right) =>
@@ -318,6 +508,102 @@ export function buildDecisionCriticalEvidenceProjection(input: {
   return canonicalProjection(contributions);
 }
 
+interface TypedDecisionRef {
+  kind: string;
+  id: string;
+}
+
+function parseTypedDecisionRef(value: string): TypedDecisionRef | null {
+  const separator = value.indexOf(":");
+  if (separator <= 0 || separator === value.length - 1) return null;
+  return {
+    kind: value.slice(0, separator),
+    id: value.slice(separator + 1),
+  };
+}
+
+function isValidatedAuthorityRef(input: {
+  typed: TypedDecisionRef;
+  input: {
+    pack: EvidencePack;
+    decision: DecisionResult;
+    authorityBindings?: DecisionCriticalAuthorityBindings;
+  };
+}): boolean {
+  const { typed } = input;
+  if (typed.kind === "evidence_pack") {
+    return typed.id === input.input.pack.id;
+  }
+  if (typed.kind === "field") {
+    return input.input.pack.coverage.missingFieldIds.includes(typed.id);
+  }
+  if (typed.kind === "evidence_conflict") {
+    return input.input.pack.coverage.blockingConflictIds.includes(typed.id)
+      && input.input.pack.conflicts.some(({ id }) => id === typed.id);
+  }
+  const bindings = input.input.authorityBindings;
+  if (!bindings) return false;
+  switch (typed.kind) {
+    case "valuation":
+      return typed.id === bindings.valuation.id;
+    case "blocker_code":
+      return bindings.valuation.blockerCodes.includes(typed.id);
+    case "underwriting_context":
+      return typed.id === bindings.context.id;
+    case "benchmark_ref":
+      return bindings.context.benchmarkPackId !== null
+        && typed.id === bindings.context.benchmarkPackId;
+    case "policy_ref":
+      if (!typed.id.startsWith(`${bindings.fundPolicy.id}#`)) return false;
+      return hasFundPolicyPath(
+        bindings.fundPolicy,
+        typed.id.slice(bindings.fundPolicy.id.length + 1),
+      ) || new Set([
+        "mandates",
+        DECISION_POLICY_V1.explicitHardVetoPolicyKey,
+      ]).has(typed.id.slice(bindings.fundPolicy.id.length + 1));
+    case "decision_policy":
+      return typed.id === bindings.decisionPolicyId;
+    case "decision_dimension":
+      return [
+        `company_quality=${input.input.decision.companyQuality}`,
+        `price_attractiveness=${input.input.decision.priceAttractiveness}`,
+        `fund_fit=${input.input.decision.fundFit}`,
+      ].includes(typed.id);
+    default:
+      return false;
+  }
+}
+
+function isValidCalculationPolicyRef(
+  itemId: string,
+  policy: FundPolicySnapshot | undefined,
+): boolean {
+  return policy !== undefined
+    && itemId.startsWith("policy:")
+    && hasFundPolicyPath(policy, itemId.slice("policy:".length));
+}
+
+function hasFundPolicyPath(
+  policy: FundPolicySnapshot,
+  path: string,
+): boolean {
+  const segments = path.split(".");
+  if (segments.length === 0 || segments.some((segment) => segment.length === 0)) {
+    return false;
+  }
+  let cursor: unknown = policy.values;
+  for (const segment of segments) {
+    if (
+      typeof cursor !== "object"
+      || cursor === null
+      || !Object.prototype.hasOwnProperty.call(cursor, segment)
+    ) return false;
+    cursor = (cursor as Record<string, unknown>)[segment];
+  }
+  return cursor !== undefined;
+}
+
 function resolveXTraceLineage(input: {
   input: {
     analysis: CompanyAnalysis;
@@ -337,7 +623,7 @@ function resolveXTraceLineage(input: {
     input.input.analysis.investmentMemory.memoryIds,
   );
   if (!sameStrings(uniqueSorted(lineage.memoryIds), analysisMemoryIds)) {
-    throw new Error("XTrace memory lineage cannot resolve exactly to the CompanyAnalysis memory set.");
+    throw new DecisionCriticalEvidenceResolutionError("XTrace memory lineage cannot resolve exactly to the CompanyAnalysis memory set.");
   }
   if (lineage.memoryIds.length === 0) {
     if (
@@ -345,12 +631,12 @@ function resolveXTraceLineage(input: {
       || lineage.sourceIds.length > 0
       || lineage.fixtureIds.length > 0
     ) {
-      throw new Error("XTrace lineage without a memory cannot resolve exactly.");
+      throw new DecisionCriticalEvidenceResolutionError("XTrace lineage without a memory cannot resolve exactly.");
     }
     return;
   }
   if (lineage.memoryIds.length !== 1) {
-    throw new Error(
+    throw new DecisionCriticalEvidenceResolutionError(
       "Aggregate multi-memory XTrace lineage is ambiguous and cannot resolve to exact source revisions.",
     );
   }
@@ -372,7 +658,7 @@ function resolveXTraceLineage(input: {
     expectedSourceIds,
     uniqueSorted([...lineage.sourceIds, ...fixtureSourceIds]),
   )) {
-    throw new Error("XTrace memory source identities cannot resolve exactly to source revisions.");
+    throw new DecisionCriticalEvidenceResolutionError("XTrace memory source identities cannot resolve exactly to source revisions.");
   }
   for (const revisionId of uniqueSorted(lineage.sourceRevisionIds)) {
     input.resolveRevision({
@@ -390,7 +676,7 @@ function assertCandidateBoundary(input: {
   grounding: CandidateGroundingSnapshot;
 }): void {
   if (input.analysis.dealId !== input.pack.dealId) {
-    throw new Error("Decision-critical evidence must remain candidate-local to one Deal.");
+    throw new DecisionCriticalEvidenceResolutionError("Decision-critical evidence must remain candidate-local to one Deal.");
   }
   const packRevisionIds = uniqueSorted(input.pack.sourceRevisionIds);
   const groundingRevisionIds = uniqueSorted(input.grounding.sourceRevisionIds);
@@ -404,7 +690,7 @@ function assertCandidateBoundary(input: {
       workspaceId !== input.pack.workspaceId
     )
   ) {
-    throw new Error(
+    throw new DecisionCriticalEvidenceResolutionError(
       "Decision-critical Source Revision lineage is outside the candidate-local workspace and Evidence Pack.",
     );
   }
@@ -425,7 +711,7 @@ function canonicalProjection(
       const first = items[0]!;
       const classifications = new Set(items.map(({ classification }) => classification));
       if (classifications.size !== 1) {
-        throw new Error("Decision-critical Evidence Pack classification is ambiguous.");
+        throw new DecisionCriticalEvidenceResolutionError("Decision-critical Evidence Pack classification is ambiguous.");
       }
       const originRefs = uniqueBy(
         items.flatMap(({ originRefs }) => originRefs),
@@ -447,7 +733,7 @@ function canonicalProjection(
 }
 
 function unresolved(origin: DecisionCriticalOriginRef, id: string): never {
-  throw new Error(
+  throw new DecisionCriticalEvidenceResolutionError(
     `${origin.kind} ${origin.id} origin ${id} cannot resolve to a candidate-local Evidence Pack item.`,
   );
 }
@@ -460,7 +746,11 @@ function uniqueMap<T>(
   const result = new Map<string, T>();
   for (const item of items) {
     const id = identity(item);
-    if (result.has(id)) throw new Error(`${label} IDs must be unique.`);
+    if (result.has(id)) {
+      throw new DecisionCriticalEvidenceResolutionError(
+        `${label} IDs must be unique.`,
+      );
+    }
     result.set(id, item);
   }
   return result;

@@ -11,6 +11,17 @@ fi
 
 cd "${repository_root}"
 
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  print -u2 "Refusing to start the Worker from a dirty worktree because its code would not match the persisted application commit."
+  exit 1
+fi
+
+if ! application_commit="$(git rev-parse --verify HEAD 2>/dev/null)"; then
+  print -u2 "Unable to resolve the current Git commit for Worker execution identity."
+  exit 1
+fi
+export APPLICATION_COMMIT="$application_commit"
+
 read_keychain_secret() {
   local service_name="$1"
   local secret_value

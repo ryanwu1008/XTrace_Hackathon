@@ -15,8 +15,12 @@ import {
 } from "../../db/repositories/underwriting-runs";
 import { createMemoryNamedLensArtifactsRepository } from
   "../../db/repositories/named-lens-artifacts";
+import { createMemoryEvidencePacksRepository } from
+  "../../db/repositories/evidence-packs";
 import { ScenarioInputFieldSchema } from "../../lib/contracts/underwriting";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
+import { createCanonicalFingerprint } from
+  "../../lib/underwriting/fingerprints";
 import { toCandidateUnderwritingDetail } from "../../lib/underwriting/read-model";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
 import {
@@ -26,6 +30,40 @@ import {
   "../helpers/current-named-lens-finalization";
 
 const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
+
+function frameworkCatalogCheckpointRow(
+  finalization: CandidateFinalization,
+  overrides: Record<string, unknown> = {},
+) {
+  const inputFingerprint = sha("a");
+  const outputPayload = {
+    catalogVersion: finalization.versionSnapshot.frameworkCatalogVersion,
+    catalogFingerprint:
+      finalization.versionSnapshot.frameworkCatalogFingerprint,
+    corpusDigest: finalization.versionSnapshot.frameworkCorpusDigest,
+  };
+  return {
+    candidate_run_id: finalization.candidateRunId,
+    stage: "framework_catalog",
+    status: "completed",
+    input_fingerprint: inputFingerprint,
+    output_fingerprint: createCanonicalFingerprint({
+      stage: "framework_catalog",
+      inputFingerprint,
+      result: outputPayload,
+    }),
+    output_payload: outputPayload,
+    attempt_count: 1,
+    cost_units: 0,
+    token_units: 0,
+    actual_token_units: 0,
+    provider_attempts: [],
+    reason_code: null,
+    public_reason: null,
+    saved_at: "2026-08-10T11:30:00.000Z",
+    ...overrides,
+  };
+}
 
 function deterministicOptions() {
   let sequence = 0;
@@ -585,6 +623,245 @@ test("same batch fingerprint reuses one batch and force refresh creates a linked
   assert.notEqual(refreshed.id, first.id);
   assert.equal(refreshed.rerunOfId, first.id);
   assert.equal(repository.inspect().batches.length, 2);
+});
+
+test("a correct-nonce refresh with a stale parent fingerprint and settled attempt cannot become an artifact alias", async () => {
+  const now = () => new Date("2026-08-10T12:00:00.000Z");
+  const candidateLeaseAuthority =
+    createMemoryUnderwritingCandidateLeaseAuthority({ now });
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority,
+  });
+  const artifacts = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
+  const evidencePacks = createMemoryEvidencePacksRepository();
+  const ids = [
+    "batch_parent",
+    "candidate_parent",
+    "batch_refresh",
+    "candidate_refresh",
+  ];
+  const runs = createMemoryUnderwritingRunsRepository({
+    now,
+    idGenerator: () => ids.shift()!,
+    leaseTokenGenerator: () => "lease_refresh",
+    artifacts,
+    namedLensArtifacts,
+    candidateLeaseAuthority,
+    evidencePacks,
+  });
+  const staleFingerprint = sha("a");
+  const parentBatch = await runs.createOrReuseBatch({
+    workspaceId: "workspace_refresh",
+    scanRunId: "scan_parent",
+    batchInputFingerprint: sha("b"),
+    fundPolicySnapshotId: "fund_policy_refresh",
+    forceRefresh: false,
+    refreshNonce: null,
+    rerunOfId: null,
+  });
+  await runs.saveSelections({
+    batchId: parentBatch.id,
+    selections: [{
+      dealId: "deal_refresh",
+      status: "selected",
+      rank: 1,
+      reason: "Original underwriting.",
+    }],
+  });
+  const [parentCandidate] = await runs.createSelectedCandidates({
+    batchId: parentBatch.id,
+    dealIds: ["deal_refresh"],
+  });
+  assert.equal(parentCandidate?.id, "candidate_parent");
+  candidateLeaseAuthority.saveCandidate({
+    ...parentCandidate!,
+    status: "completed",
+    candidateAnalysisFingerprint: staleFingerprint,
+    finalizedAt: "2026-08-10T11:55:00.000Z",
+  });
+  artifacts.commitPrepared({
+    candidateRunId: "candidate_parent",
+    sourceCandidateRunId: "candidate_parent",
+    workspaceId: "workspace_refresh",
+    dealId: "deal_refresh",
+    candidateAnalysisFingerprint: staleFingerprint,
+    terminalStatus: "completed",
+    terminalReasonCodes: ["limited_framework_coverage"],
+    calculations: [],
+    judgments: [],
+    disagreements: [],
+    actionDrafts: [],
+    claimEdges: [],
+  } as unknown as CandidateArtifactBundle);
+
+  const refreshBatch = await runs.createOrReuseBatch({
+    workspaceId: "workspace_refresh",
+    scanRunId: "scan_refresh",
+    batchInputFingerprint: sha("b"),
+    fundPolicySnapshotId: "fund_policy_refresh",
+    forceRefresh: true,
+    refreshNonce: "refresh_correct_1",
+    rerunOfId: parentBatch.id,
+  });
+  await runs.saveSelections({
+    batchId: refreshBatch.id,
+    selections: [{
+      dealId: "deal_refresh",
+      status: "selected",
+      rank: 1,
+      reason: "Refresh underwriting.",
+    }],
+  });
+  const [refreshCandidate] = await runs.createSelectedCandidates({
+    batchId: refreshBatch.id,
+    dealIds: ["deal_refresh"],
+  });
+  assert.equal(refreshCandidate?.id, "candidate_refresh");
+  const claimed = await runs.claimCandidate({
+    workspaceId: "workspace_refresh",
+    candidateRunId: refreshCandidate!.id,
+    workerId: "worker_refresh",
+    leaseSeconds: 120,
+  });
+  assert.ok(claimed);
+  const currentFixture = createCurrentNamedLensFinalizationFixture();
+  const fixtureAttempt = currentFixture.persistedAttempts[0]!;
+  const attempt = {
+    ...fixtureAttempt,
+    workspaceId: "workspace_refresh",
+    artifactSourceCandidateRunId: refreshCandidate!.id,
+  };
+  namedLensArtifacts.recordAttemptEvent({
+    ...attempt,
+    status: "reserved",
+    telemetry: null,
+    failureReason: null,
+  });
+  namedLensArtifacts.recordAttemptEvent(attempt);
+  const pack = {
+    id: "pack_refresh",
+    version: 1,
+    workspaceId: "workspace_refresh",
+    dealId: "deal_refresh",
+    asOfDate: "2026-08-10",
+    sourceRevisionIds: [],
+    facts: [],
+    assumptions: [],
+    conflicts: [],
+    coverage: {
+      minimumModelInputsComplete: false,
+      criticalEvidenceComplete: false,
+      missingFieldIds: ["arr"],
+      blockingConflictIds: [],
+      decisionCeiling: null,
+      underwritingStatus: "unavailable" as const,
+      reasonCodes: ["MISSING_MINIMUM_MODEL_INPUTS"],
+    },
+    createdAt: "2026-08-10T12:00:00.000Z",
+  };
+  await evidencePacks.saveExact({
+    pack,
+    inputFingerprint: sha("e"),
+    sourceRevisionSnapshots: [],
+  });
+  const catalogIdentity = {
+    catalogVersion:
+      currentFixture.finalization.versionSnapshot.frameworkCatalogVersion!,
+    catalogFingerprint:
+      currentFixture.finalization.versionSnapshot
+        .frameworkCatalogFingerprint!,
+    corpusDigest:
+      currentFixture.finalization.versionSnapshot.frameworkCorpusDigest!,
+  };
+  const catalogInputFingerprint = sha("a");
+  await runs.saveCheckpoint({
+    workerId: "worker_refresh",
+    leaseToken: claimed.leaseToken,
+    candidateRunId: refreshCandidate!.id,
+    stage: "framework_catalog",
+    status: "completed",
+    inputFingerprint: catalogInputFingerprint,
+    outputFingerprint: createCanonicalFingerprint({
+      stage: "framework_catalog",
+      inputFingerprint: catalogInputFingerprint,
+      result: catalogIdentity,
+    }),
+    outputPayload: catalogIdentity,
+    attemptCount: 1,
+    costUnits: 0,
+    tokenUnits: 0,
+    actualTokenUnits: 0,
+    providerAttempts: [],
+    reasonCode: null,
+    publicReason: null,
+    savedAt: "2026-08-10T12:00:00.000Z",
+  });
+  artifacts.prepareFinalization = () => {
+    throw new Error("canonical refresh reached non-reuse finalization");
+  };
+
+  for (const refreshNonce of [undefined, null, "refresh_wrong"] as const) {
+    await assert.rejects(runs.finalizeCandidate({
+      workerId: "worker_refresh",
+      leaseToken: claimed.leaseToken,
+      candidateRunId: refreshCandidate!.id,
+      candidateAnalysisFingerprint: staleFingerprint,
+      evidencePackBuildInputFingerprint: sha("e"),
+      evidencePack: pack,
+      versionSnapshot: refreshNonce === undefined ? {} : { refreshNonce },
+    } as unknown as CandidateFinalization), /refresh identity.*owning batch/i);
+  }
+
+  for (const [field, value] of [
+    ["frameworkCatalogVersion", "research-framework-catalog-forged"],
+    ["frameworkCatalogFingerprint", sha("c")],
+    ["frameworkCorpusDigest", sha("d")],
+  ] as const) {
+    await assert.rejects(runs.finalizeCandidate({
+      workerId: "worker_refresh",
+      leaseToken: claimed.leaseToken,
+      candidateRunId: refreshCandidate!.id,
+      candidateAnalysisFingerprint: staleFingerprint,
+      evidencePackBuildInputFingerprint: sha("e"),
+      evidencePack: pack,
+      versionSnapshot: {
+        refreshNonce: "refresh_correct_1",
+        frameworkCatalogVersion: catalogIdentity.catalogVersion,
+        frameworkCatalogFingerprint: catalogIdentity.catalogFingerprint,
+        frameworkCorpusDigest: catalogIdentity.corpusDigest,
+        [field]: value,
+      },
+    } as unknown as CandidateFinalization), /Framework catalog identity.*completed checkpoint/i);
+  }
+
+  await assert.rejects(runs.finalizeCandidate({
+    workerId: "worker_refresh",
+    leaseToken: claimed.leaseToken,
+    candidateRunId: refreshCandidate!.id,
+    candidateAnalysisFingerprint: staleFingerprint,
+    evidencePackBuildInputFingerprint: sha("e"),
+    evidencePack: pack,
+    versionSnapshot: {
+      refreshNonce: "refresh_correct_1",
+      frameworkCatalogVersion: catalogIdentity.catalogVersion,
+      frameworkCatalogFingerprint: catalogIdentity.catalogFingerprint,
+      frameworkCorpusDigest: catalogIdentity.corpusDigest,
+    },
+  } as unknown as CandidateFinalization), /canonical refresh reached/);
+
+  const persistedRefresh = runs.inspect().candidates.find(({ id }) =>
+    id === refreshCandidate!.id
+  );
+  assert.equal(persistedRefresh?.status, "running");
+  assert.equal(persistedRefresh?.artifactSourceCandidateRunId, null);
+  const settled = await namedLensArtifacts.listAttempts(
+    "workspace_refresh",
+    refreshCandidate!.id,
+  );
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0]?.artifactSourceCandidateRunId, refreshCandidate!.id);
 });
 
 test("a completed and a partial candidate leave the memory batch partial", () => {
@@ -1337,7 +1614,7 @@ test("Supabase candidate writes fail closed before RPC for a legacy finalization
   delete finalization.terminalReasonCodes;
   await assert.rejects(
     runs.finalizeCandidate(finalization),
-    /Named Lens finalization requires all artifacts/i,
+    /Current Named Lens identity fingerprints require the complete version set/i,
   );
   assert.deepEqual(
     requests.map(({ url, method }) => ({
@@ -1439,6 +1716,11 @@ test("Supabase finalization rejects forged current authority before the finalize
             createdAt: "2026-07-29T11:00:00.000Z",
           }]);
         }
+        if (String(url).includes("/candidate_checkpoints?")) {
+          return Response.json([
+            frameworkCatalogCheckpointRow(finalization),
+          ]);
+        }
         throw new Error(`Finalize RPC must not run for forged input: ${url}`);
       },
     });
@@ -1446,6 +1728,70 @@ test("Supabase finalization rejects forged current authority before the finalize
     assert.equal(requests.some((url) =>
       url.endsWith("/rpc/finalize_or_reuse_candidate_underwriting")
     ), false);
+  }
+});
+
+test("Supabase finalization rejects forged Framework catalog checkpoint fingerprints", async () => {
+  const finalization = statusSafeFinalization();
+  const candidate = {
+    id: finalization.candidateRunId,
+    batchId: "batch_target",
+    workspaceId: finalization.evidencePack.workspaceId,
+    dealId: finalization.evidencePack.dealId,
+    status: "running",
+    candidateAnalysisFingerprint: `pending:${finalization.candidateRunId}`,
+    rerunOfId: null,
+    createdAt: "2026-07-29T11:00:00.000Z",
+    finalizedAt: null,
+  };
+  const checkpointOverrides = [
+    { input_fingerprint: sha("c") },
+    { output_fingerprint: sha("d") },
+  ];
+  for (const overrides of checkpointOverrides) {
+    let finalizeRpcCalled = false;
+    const runs = createSupabaseUnderwritingRunsRepository({
+      url: "https://supabase.example",
+      serviceRoleKey: "secret",
+      fetchImpl: async (url) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname.endsWith("/candidate_runs")) {
+          return Response.json([candidate]);
+        }
+        if (parsed.pathname.endsWith("/underwriting_batches")) {
+          return Response.json([{
+            id: candidate.batchId,
+            workspaceId: candidate.workspaceId,
+            scanRunId: "scan_target",
+            status: "running",
+            batchInputFingerprint: sha("8"),
+            fundPolicySnapshotId:
+              finalization.versionSnapshot.fundPolicyId,
+            forceRefresh: false,
+            refreshNonce: null,
+            rerunOfId: null,
+            createdAt: "2026-07-29T11:00:00.000Z",
+          }]);
+        }
+        if (parsed.pathname.endsWith("/candidate_checkpoints")) {
+          return Response.json([
+            frameworkCatalogCheckpointRow(finalization, overrides),
+          ]);
+        }
+        if (parsed.pathname.endsWith(
+          "/rpc/finalize_or_reuse_candidate_underwriting",
+        )) {
+          finalizeRpcCalled = true;
+        }
+        throw new Error(`Unexpected URL ${url}`);
+      },
+    });
+
+    await assert.rejects(
+      runs.finalizeCandidate(finalization),
+      /Framework catalog identity.*completed checkpoint/i,
+    );
+    assert.equal(finalizeRpcCalled, false);
   }
 });
 
@@ -1603,6 +1949,11 @@ test("Supabase finalization rereads a partial canonical reuse instead of trustin
             created_at: "2026-08-10T11:00:00.000Z",
           }]);
         }
+        if (parsed.pathname.endsWith("/candidate_checkpoints")) {
+          return Response.json([
+            frameworkCatalogCheckpointRow(finalization),
+          ]);
+        }
         throw new Error(`Unexpected URL ${url}; ${init.method ?? "GET"}`);
       },
     });
@@ -1624,6 +1975,79 @@ test("Supabase finalization rereads a partial canonical reuse instead of trustin
       /canonical source ownership|fingerprint|inherit/i,
     );
   }
+});
+
+test("Supabase finalization preserves completed limited-framework coverage reasons", async () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const finalization = fixture.finalization;
+  let finalized = false;
+  const running = {
+    id: finalization.candidateRunId,
+    batch_id: "batch_current",
+    workspace_id: finalization.evidencePack.workspaceId,
+    deal_id: finalization.evidencePack.dealId,
+    status: "running",
+    candidate_analysis_fingerprint: "pending:candidate_current",
+    artifact_source_candidate_run_id: null,
+    unavailable_reason_codes: [],
+    rerun_of_id: null,
+    created_at: "2026-08-10T12:00:00.000Z",
+    finalized_at: null,
+  };
+  const completed = {
+    ...running,
+    status: "completed",
+    candidate_analysis_fingerprint:
+      finalization.candidateAnalysisFingerprint,
+    unavailable_reason_codes: ["limited_framework_coverage"],
+    finalized_at: "2026-08-10T12:01:00.000Z",
+  };
+  const runs = createSupabaseUnderwritingRunsRepository({
+    url: "https://supabase.example",
+    serviceRoleKey: "secret",
+    namedLensArtifacts: {
+      reserveAttempt: async () => { throw new Error("not used"); },
+      settleAttempt: async () => { throw new Error("not used"); },
+      listAttempts: async () => fixture.persistedAttempts,
+    },
+    fetchImpl: async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.endsWith(
+        "/rpc/finalize_or_reuse_candidate_underwriting",
+      )) {
+        finalized = true;
+        return Response.json({ id: finalization.candidateRunId });
+      }
+      if (parsed.pathname.endsWith("/candidate_runs")) {
+        return Response.json([finalized ? completed : running]);
+      }
+      if (parsed.pathname.endsWith("/underwriting_batches")) {
+        return Response.json([{
+          id: "batch_current",
+          workspace_id: finalization.evidencePack.workspaceId,
+          scan_run_id: "scan_current",
+          status: "running",
+          batch_input_fingerprint: sha("8"),
+          fund_policy_snapshot_id: finalization.versionSnapshot.fundPolicyId,
+          force_refresh: false,
+          refresh_nonce: null,
+          rerun_of_id: null,
+          created_at: "2026-08-10T11:00:00.000Z",
+        }]);
+      }
+      if (parsed.pathname.endsWith("/candidate_checkpoints")) {
+        return Response.json([
+          frameworkCatalogCheckpointRow(finalization),
+        ]);
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    },
+  });
+
+  const result = await runs.finalizeCandidate(finalization);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.terminalReasonCodes,
+    ["limited_framework_coverage"]);
 });
 
 test("Supabase checkpoint replay reads only the exact workspace candidate", async () => {

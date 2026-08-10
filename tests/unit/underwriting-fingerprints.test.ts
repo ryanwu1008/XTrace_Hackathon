@@ -8,6 +8,13 @@ import {
   type BatchFingerprintInput,
   type CandidateFingerprintInput,
 } from "../../lib/underwriting/fingerprints";
+import {
+  createDecisionCriticalEvidenceProjectionFingerprint,
+  createNamedLensSemanticFingerprints,
+} from
+  "../../lib/underwriting/named-lens-presentation";
+import { createCurrentNamedLensFinalizationFixture } from
+  "../helpers/current-named-lens-finalization";
 
 function canonicalAction(
   kind: string,
@@ -150,6 +157,7 @@ function batchInput(): BatchFingerprintInput {
         framework_catalog: stagePolicy(2),
         framework_lenses: stagePolicy(1),
         decision: stagePolicy(1),
+        named_lens_presentation: stagePolicy(1),
         narrative_drafts: stagePolicy(1),
       },
     },
@@ -171,7 +179,7 @@ function batchInput(): BatchFingerprintInput {
       bindingFingerprint: `sha256:${"c".repeat(64)}`,
       snapshotFingerprint: `sha256:${"d".repeat(64)}`,
     },
-    selectionPolicyVersion: "top-five-belief-revised-v1",
+    selectionPolicyVersion: "all-belief-revisions-v1",
     routerVersion: "router-v1",
     beliefPolicies: {
       actionPolicyVersion: "belief-action-policy-v1",
@@ -271,7 +279,12 @@ function candidateInput(): CandidateFingerprintInput {
       generatorVersion: "named-lens-generator-v1",
       presentationSchemaVersion: "decision-first-named-lens-v1",
       decisionTaxonomyVersion: "named-lens-decision-taxonomy-v1",
+      decisionTaxonomyDigest: `sha256:${"d".repeat(64)}`,
+      criticalEvidenceProjectionFingerprint: `sha256:${"e".repeat(64)}`,
+      finalDispositionsFingerprint: `sha256:${"f".repeat(64)}`,
+      presentationFingerprint: `sha256:${"0".repeat(64)}`,
     },
+    refreshNonce: null,
   };
 }
 
@@ -476,6 +489,25 @@ test("candidate fingerprint is canonical and binds all candidate-specific versio
         "named-lens-decision-taxonomy-v2";
     },
     (input) => {
+      input.namedLensVersions.decisionTaxonomyDigest =
+        `sha256:${"1".repeat(64)}`;
+    },
+    (input) => {
+      input.namedLensVersions.criticalEvidenceProjectionFingerprint =
+        `sha256:${"2".repeat(64)}`;
+    },
+    (input) => {
+      input.namedLensVersions.finalDispositionsFingerprint =
+        `sha256:${"3".repeat(64)}`;
+    },
+    (input) => {
+      input.namedLensVersions.presentationFingerprint =
+        `sha256:${"4".repeat(64)}`;
+    },
+    (input) => {
+      input.refreshNonce = "refresh_1";
+    },
+    (input) => {
       input.beliefState.dealStatus = "invested";
     },
     (input) => {
@@ -515,6 +547,278 @@ test("candidate fingerprint is canonical and binds all candidate-specific versio
     mutate(input);
     assert.notEqual(createCandidateAnalysisFingerprint(input), baseline);
   }
+});
+
+test("Named Lens aggregate fingerprints ignore candidate-local ownership identities", () => {
+  const finalization = createCurrentNamedLensFinalizationFixture().finalization;
+  assert.ok(finalization.decisionCriticalEvidenceProjection);
+  assert.ok(finalization.namedLensDispositions);
+  assert.ok(finalization.namedLensPassages);
+  assert.ok(finalization.namedLensPresentation);
+  const firstPassage = finalization.namedLensPassages[0]!;
+  const firstDisposition = finalization.namedLensDispositions[0]!;
+  const secondJudgmentId = `${firstPassage.judgmentId}_second`;
+  const secondPassage = {
+    ...structuredClone(firstPassage),
+    judgmentId: secondJudgmentId,
+    frameworkCardId: `${firstPassage.frameworkCardId}_second`,
+    premise: {
+      ...firstPassage.premise,
+      text: "A second distinct public framework tests pricing durability.",
+    },
+    fingerprint: `sha256:${"b".repeat(64)}`,
+  };
+  const secondDisposition = {
+    ...structuredClone(firstDisposition),
+    judgmentOrCatalogCandidateId: secondJudgmentId,
+    judgmentId: secondJudgmentId,
+    frameworkCardId: secondPassage.frameworkCardId,
+    selectedPosition: 2,
+    passageFingerprint: secondPassage.fingerprint,
+    fingerprint: `sha256:${"c".repeat(64)}`,
+  };
+  const passages = [firstPassage, secondPassage];
+  const dispositions = [firstDisposition, secondDisposition];
+  const { fingerprint: _fingerprint, ...originalPresentation } =
+    finalization.namedLensPresentation;
+  const presentation = {
+    ...originalPresentation,
+    synthesis: {
+      ...originalPresentation.synthesis,
+      branch: "bounded_alignment" as const,
+      judgmentIds: [firstPassage.judgmentId, secondJudgmentId],
+    },
+    segmentCitations: [
+      ...originalPresentation.segmentCitations,
+      {
+        ...structuredClone(originalPresentation.segmentCitations[0]!),
+        judgmentId: secondJudgmentId,
+      },
+    ],
+    firstScreenProjectionRefs: {
+      ...originalPresentation.firstScreenProjectionRefs,
+      selectedJudgmentIds: [firstPassage.judgmentId, secondJudgmentId],
+    },
+  };
+  const baseline = createNamedLensSemanticFingerprints({
+    evidenceRefs: finalization.decisionCriticalEvidenceProjection.evidenceRefs,
+    dispositions,
+    passages,
+    presentation,
+  });
+  const judgmentIds = new Map(
+    passages.map(({ judgmentId }, index) => [
+      judgmentId,
+      `local_judgment_${passages.length - index}`,
+    ]),
+  );
+  const changedPassages = passages.map((passage) => ({
+    ...passage,
+    workspaceId: "workspace_other",
+    artifactSourceCandidateRunId: "candidate_other",
+    judgmentId: judgmentIds.get(passage.judgmentId)!,
+    fingerprint: `sha256:${"d".repeat(64)}`,
+  })).reverse();
+  const changedDispositions = dispositions.map(
+    (disposition, index) => ({
+      ...disposition,
+      workspaceId: "workspace_other",
+      artifactSourceCandidateRunId: "candidate_other",
+      judgmentOrCatalogCandidateId: `catalog_candidate_${index + 1}`,
+      judgmentId: disposition.judgmentId === null
+        ? null
+        : judgmentIds.get(disposition.judgmentId)!,
+      decisionCriticalEvidenceProjectionId: "projection_other",
+      decisionCriticalEvidenceProjectionFingerprint:
+        `sha256:${"e".repeat(64)}`,
+      passageFingerprint: disposition.passageFingerprint === null
+        ? null
+        : `sha256:${"f".repeat(64)}`,
+      fingerprint: `sha256:${String(index + 1).repeat(64)}`,
+    }),
+  ).reverse();
+  const changedPresentation = {
+    ...presentation,
+    workspaceId: "workspace_other",
+    artifactSourceCandidateRunId: "candidate_other",
+    synthesis: {
+      ...presentation.synthesis,
+      judgmentIds: presentation.synthesis.judgmentIds.map((id) =>
+        judgmentIds.get(id)!
+      ),
+    },
+    segmentCitations: presentation.segmentCitations.map((citation) => ({
+      ...citation,
+      judgmentId: judgmentIds.get(citation.judgmentId)!,
+    })).reverse(),
+    firstScreenProjectionRefs: {
+      ...presentation.firstScreenProjectionRefs,
+      decisionId: "decision_other",
+      selectedJudgmentIds:
+        presentation.firstScreenProjectionRefs.selectedJudgmentIds.map(
+          (id) => judgmentIds.get(id)!,
+        ),
+    },
+  };
+  assert.deepEqual(
+    createNamedLensSemanticFingerprints({
+      evidenceRefs:
+        finalization.decisionCriticalEvidenceProjection.evidenceRefs,
+      dispositions: changedDispositions,
+      passages: changedPassages,
+      presentation: changedPresentation,
+    }),
+    baseline,
+  );
+
+  const semanticMutations = [
+    () => ({
+      evidenceRefs: finalization.decisionCriticalEvidenceProjection!
+        .evidenceRefs.map((reference, index) => index === 0
+          ? { ...reference, evidencePackItemId: "fact_semantically_changed" }
+          : reference),
+      dispositions,
+      passages,
+      presentation,
+    }),
+    () => ({
+      evidenceRefs: finalization.decisionCriticalEvidenceProjection!
+        .evidenceRefs.map((reference, index) => index === 0
+          ? {
+              ...reference,
+              originRefs: reference.originRefs.map((origin, originIndex) =>
+                originIndex === 0
+                  ? { ...origin, id: "rule_semantically_changed" }
+                  : origin
+              ),
+            }
+          : reference),
+      dispositions,
+      passages,
+      presentation,
+    }),
+    () => ({
+      evidenceRefs:
+        finalization.decisionCriticalEvidenceProjection!.evidenceRefs,
+      dispositions: dispositions.map((disposition, index) => index === 0
+        ? { ...disposition, stance: "negative" as const }
+        : disposition),
+      passages,
+      presentation,
+    }),
+    () => ({
+      evidenceRefs:
+        finalization.decisionCriticalEvidenceProjection!.evidenceRefs,
+      dispositions,
+      passages: passages.map((passage, index) => index === 0
+        ? {
+            ...passage,
+            caseApplication: {
+              ...passage.caseApplication,
+              text: "The company-specific application changed materially.",
+            },
+          }
+        : passage),
+      presentation,
+    }),
+  ];
+  for (const mutate of semanticMutations) {
+    assert.notDeepEqual(
+      createNamedLensSemanticFingerprints(mutate()),
+      baseline,
+    );
+  }
+});
+
+test("Named Lens semantic fingerprints ignore only candidate-local formal judgment IDs in projection paths", () => {
+  const finalization = createCurrentNamedLensFinalizationFixture().finalization;
+  const projection = finalization.decisionCriticalEvidenceProjection!;
+  const dispositions = finalization.namedLensDispositions!;
+  const passages = finalization.namedLensPassages!;
+  const { fingerprint: _fingerprint, ...presentation } =
+    finalization.namedLensPresentation!;
+  const formalJudgments = finalization.judgments.filter(
+    ({ frameworkMetadata }) => frameworkMetadata === undefined,
+  );
+  const firstFormal = structuredClone(formalJudgments[0]!);
+  const secondFormal = structuredClone(formalJudgments[1]!);
+  const baselineRefs = projection.evidenceRefs.map((reference, index) =>
+    index === 0
+      ? {
+        ...reference,
+        resolutionPath: [...reference.resolutionPath, firstFormal.id],
+      }
+      : reference
+  );
+  const changedFormal = {
+    ...structuredClone(firstFormal),
+    id: `${firstFormal.id}_other_candidate`,
+    claimEdges: firstFormal.claimEdges.map((edge) => ({
+      ...edge,
+      claimItemId: `${firstFormal.id}_other_candidate`,
+    })),
+  };
+  const changedRefs = baselineRefs.map((reference, index) => index === 0
+    ? {
+      ...reference,
+      resolutionPath: reference.resolutionPath.map((part) =>
+        part === firstFormal.id ? changedFormal.id : part
+      ),
+    }
+    : reference);
+  const withCriticalEvidence = (
+    values: typeof dispositions,
+    evidenceRefs: typeof baselineRefs,
+  ) => values.map((disposition) => ({
+    ...disposition,
+    criticalEvidence: evidenceRefs,
+  }));
+  const baseline = createNamedLensSemanticFingerprints({
+    evidenceRefs: baselineRefs,
+    dispositions: withCriticalEvidence(dispositions, baselineRefs),
+    passages,
+    presentation,
+    formalJudgments: [firstFormal],
+  });
+  const changedOwner = createNamedLensSemanticFingerprints({
+    evidenceRefs: changedRefs,
+    dispositions: withCriticalEvidence(dispositions, changedRefs),
+    passages,
+    presentation,
+    formalJudgments: [changedFormal],
+  });
+  assert.deepEqual(changedOwner, baseline);
+  assert.equal(
+    createDecisionCriticalEvidenceProjectionFingerprint(
+      baselineRefs,
+      [firstFormal],
+    ),
+    createDecisionCriticalEvidenceProjectionFingerprint(
+      changedRefs,
+      [changedFormal],
+    ),
+  );
+
+  const changedSemanticRefs = changedRefs.map((reference, index) =>
+    index === 0
+      ? {
+        ...reference,
+        resolutionPath: reference.resolutionPath.map((part) =>
+          part === changedFormal.id ? secondFormal.id : part
+        ),
+      }
+      : reference
+  );
+  assert.notEqual(
+    createDecisionCriticalEvidenceProjectionFingerprint(
+      baselineRefs,
+      [firstFormal],
+    ),
+    createDecisionCriticalEvidenceProjectionFingerprint(
+      changedSemanticRefs,
+      [secondFormal],
+    ),
+  );
 });
 
 test("batch and candidate fingerprints bind every effective reference definition digest", () => {

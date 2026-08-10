@@ -39,6 +39,7 @@ import {
 import {
   NAMED_LENS_PASSAGE_SCHEMA_VERSION,
   NAMED_LENS_SELECTION_POLICY_VERSION,
+  DecisionCriticalEvidenceRefSchema,
   DecisionCriticalEvidenceProjectionSchema,
   NamedLensCatalogConsiderationSchema,
   NamedLensFinalizationDispositionSchema,
@@ -55,8 +56,16 @@ import {
   type NamedLensProviderAttempt,
   type NamedLensProviderAttemptRef,
 } from "../../lib/contracts/named-lens";
-import { DECISION_TAXONOMY_VERSION } from
+import {
+  DECISION_TAXONOMY_DIGEST,
+  DECISION_TAXONOMY_VERSION,
+} from
   "../../lib/underwriting/frameworks/decision-taxonomy";
+import {
+  createDecisionCriticalEvidenceProjectionFingerprint,
+  createNamedLensSemanticFingerprints,
+} from
+  "../../lib/underwriting/named-lens-presentation";
 import {
   IntegrationTransportError,
   isRetryableTransportStatus,
@@ -153,6 +162,11 @@ export const CandidateVersionSnapshotSchema = z.strictObject({
   underwritingPresentationSchemaVersion:
     z.literal(UNDERWRITING_PRESENTATION_SCHEMA_VERSION).optional(),
   decisionTaxonomyVersion: z.literal(DECISION_TAXONOMY_VERSION).optional(),
+  decisionTaxonomyDigest: FingerprintSchema.optional(),
+  criticalEvidenceProjectionFingerprint: FingerprintSchema.optional(),
+  finalDispositionsFingerprint: FingerprintSchema.optional(),
+  presentationFingerprint: FingerprintSchema.optional(),
+  refreshNonce: z.string().min(1).nullable().optional(),
 }).superRefine((value, context) => {
   const benchmarkValues = [
     value.benchmarkPackId,
@@ -218,6 +232,33 @@ export const CandidateVersionSnapshotSchema = z.strictObject({
         "Named Lens selection, passage, generator, presentation, and taxonomy versions must be pinned together.",
     });
   }
+  const currentNamedLensIdentity = [
+    value.decisionTaxonomyDigest,
+    value.criticalEvidenceProjectionFingerprint,
+    value.finalDispositionsFingerprint,
+    value.presentationFingerprint,
+    value.refreshNonce,
+  ];
+  if (
+    currentNamedLensIdentity.some((item) => item !== undefined)
+      !== currentNamedLensIdentity.every((item) => item !== undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Current Named Lens taxonomy, projection, disposition, presentation, and refresh identity must be pinned together.",
+    });
+  }
+  if (
+    currentNamedLensIdentity.some((item) => item !== undefined)
+    && namedLensVersions.some((item) => item === undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Current Named Lens identity fingerprints require the complete version set.",
+    });
+  }
 });
 
 export type CandidateVersionSnapshot = z.infer<
@@ -225,12 +266,20 @@ export type CandidateVersionSnapshot = z.infer<
 >;
 
 export type CurrentCandidateVersionSnapshot = CandidateVersionSnapshot & {
+  frameworkCatalogVersion: string;
+  frameworkCatalogFingerprint: string;
+  frameworkCorpusDigest: string;
   namedLensSelectionPolicyVersion: typeof NAMED_LENS_SELECTION_POLICY_VERSION;
   namedLensPassageSchemaVersion: typeof NAMED_LENS_PASSAGE_SCHEMA_VERSION;
   namedLensGeneratorVersion: string;
   underwritingPresentationSchemaVersion:
     typeof UNDERWRITING_PRESENTATION_SCHEMA_VERSION;
   decisionTaxonomyVersion: typeof DECISION_TAXONOMY_VERSION;
+  decisionTaxonomyDigest: string;
+  criticalEvidenceProjectionFingerprint: string;
+  finalDispositionsFingerprint: string;
+  presentationFingerprint: string;
+  refreshNonce: string | null;
 };
 
 export interface CandidateFinalization {
@@ -994,7 +1043,7 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
         persistedVersionSnapshot.underwritingPresentationSchemaVersion,
         persistedVersionSnapshot.decisionTaxonomyVersion,
       ];
-      const currentNamedLens = namedLensVersions.every(
+      const readableNamedLens = namedLensVersions.every(
         (value) => value !== undefined,
       );
       const anyNamedLensRows = [
@@ -1009,7 +1058,7 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
         | NamedLensProviderAttempt[]
         | undefined;
       let currentNamedLensArtifacts: Partial<CandidateFinalization> = {};
-      if (currentNamedLens) {
+      if (readableNamedLens) {
         if (
           criticalProjectionRows.length !== 1
           || presentationRows.length !== 1
@@ -1036,15 +1085,9 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
         );
         const terminalStatus = parsePersistedTerminalStatus(sourceCandidate);
         const persistedReasonCodes = parseTerminalReasonCodes(sourceCandidate);
-        if (terminalStatus === "completed" && persistedReasonCodes.length > 0) {
-          throw new Error(
-            "Completed canonical candidates cannot persist partial reason codes.",
-          );
-        }
         const applicable = reconstructed.catalogConsiderations.filter(
           ({ initialDisposition }) =>
-            initialDisposition !== "context_inapplicable"
-            && initialDisposition !== "ineligible",
+            initialDisposition === "judgment_eligible",
         );
         const unavailableApplicable = applicable.filter(
           ({ judgmentOrCatalogCandidateId }) => {
@@ -1061,6 +1104,20 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           && applicable.length < 4
           && reconstructed.passages.length === applicable.length
           && unavailableApplicable.length === 0;
+        const expectedCompletedReasonCodes = completedLimited
+          ? ["limited_framework_coverage"]
+          : [];
+        if (
+          terminalStatus === "completed"
+          && !isDeepStrictEqual(
+            persistedReasonCodes,
+            expectedCompletedReasonCodes,
+          )
+        ) {
+          throw new Error(
+            "Completed canonical candidate reason codes must exactly match its derived Framework coverage.",
+          );
+        }
         currentNamedLensArtifacts = {
           namedLensCatalogConsiderations:
             reconstructed.catalogConsiderations,
@@ -1082,11 +1139,7 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           ),
           namedLensPresentation: presentation,
           terminalStatus,
-          terminalReasonCodes: terminalStatus === "partial"
-            ? persistedReasonCodes
-            : completedLimited
-            ? ["limited_framework_coverage"]
-            : [],
+          terminalReasonCodes: persistedReasonCodes,
         };
       } else if (anyNamedLensRows) {
         throw new Error(
@@ -1301,23 +1354,49 @@ export function prepareCandidateFinalization(
     versionSnapshot.underwritingPresentationSchemaVersion,
     versionSnapshot.decisionTaxonomyVersion,
   ];
-  const hasCurrentNamedLensContract = namedLensVersionValues.every(
+  const namedLensIdentityValues = [
+    versionSnapshot.decisionTaxonomyDigest,
+    versionSnapshot.criticalEvidenceProjectionFingerprint,
+    versionSnapshot.finalDispositionsFingerprint,
+    versionSnapshot.presentationFingerprint,
+    versionSnapshot.refreshNonce,
+  ];
+  const frameworkCatalogIdentityValues = [
+    versionSnapshot.frameworkCatalogVersion,
+    versionSnapshot.frameworkCatalogFingerprint,
+    versionSnapshot.frameworkCorpusDigest,
+  ];
+  const hasAllNamedLensVersions = namedLensVersionValues.every(
     (value) => value !== undefined,
   );
+  const hasCurrentNamedLensContract = hasAllNamedLensVersions
+    && frameworkCatalogIdentityValues.every((value) => value !== undefined)
+    && namedLensIdentityValues.every((value) => value !== undefined);
+  const hasLegacyNamedLensV1Contract = !isNewFinalization
+    && hasAllNamedLensVersions
+    && (
+      frameworkCatalogIdentityValues.every((value) => value === undefined)
+      || frameworkCatalogIdentityValues.every((value) => value !== undefined)
+    )
+    && namedLensIdentityValues.every((value) => value === undefined)
+    && namedLensArtifacts.every((value) => value !== undefined);
+  const hasReadableNamedLensContract = hasCurrentNamedLensContract
+    || hasLegacyNamedLensV1Contract;
   const hasLegacyNamedLensContract = namedLensVersionValues.every(
     (value) => value === undefined,
-  ) && namedLensArtifacts.every((value) => value === undefined);
+  ) && namedLensIdentityValues.every((value) => value === undefined)
+    && namedLensArtifacts.every((value) => value === undefined);
   if (
     (isNewFinalization && !hasCurrentNamedLensContract)
-    || (!hasCurrentNamedLensContract && !hasLegacyNamedLensContract)
-    || (hasCurrentNamedLensContract
+    || (!hasReadableNamedLensContract && !hasLegacyNamedLensContract)
+    || (hasReadableNamedLensContract
       && namedLensArtifacts.some((value) => value === undefined))
   ) {
     throw new Error(
-      "Current Named Lens finalization requires all artifacts and all five pinned version values.",
+      "Current Named Lens finalization requires all artifacts, versions, semantic fingerprints, and refresh identity.",
     );
   }
-  if (hasCurrentNamedLensContract) {
+  if (hasReadableNamedLensContract) {
     judgments
       .filter(({ frameworkMetadata }) => frameworkMetadata !== undefined)
       .forEach((value) => CurrentFrameworkJudgmentSchema.parse(value));
@@ -1344,6 +1423,42 @@ export function prepareCandidateFinalization(
       judgments,
       decision,
     });
+    if (hasCurrentNamedLensContract) {
+      const {
+        fingerprint: _presentationFingerprint,
+        ...presentationWithoutFingerprint
+      } = namedLensPresentation!;
+      const semanticFingerprints = createNamedLensSemanticFingerprints({
+        evidenceRefs: decisionCriticalEvidenceProjection!.evidenceRefs,
+        dispositions: namedLensDispositions!,
+        passages: namedLensPassages!,
+        presentation: presentationWithoutFingerprint,
+        formalJudgments: judgments,
+      });
+      const projectionFingerprint =
+        createDecisionCriticalEvidenceProjectionFingerprint(
+          decisionCriticalEvidenceProjection!.evidenceRefs,
+          judgments,
+        );
+      if (
+        versionSnapshot.decisionTaxonomyDigest
+          !== DECISION_TAXONOMY_DIGEST
+        || versionSnapshot.criticalEvidenceProjectionFingerprint
+          !== projectionFingerprint
+        || decisionCriticalEvidenceProjection!.fingerprint
+          !== projectionFingerprint
+        || versionSnapshot.finalDispositionsFingerprint
+          !== semanticFingerprints.finalDispositionsFingerprint
+        || versionSnapshot.presentationFingerprint
+          !== namedLensPresentation!.fingerprint
+        || versionSnapshot.presentationFingerprint
+          !== semanticFingerprints.presentationFingerprint
+      ) {
+        throw new Error(
+          "Current Named Lens version snapshot fingerprints must exactly match the finalized persistence graph.",
+        );
+      }
+    }
   }
   const v2Drafts = actionDrafts.filter((draft): draft is ActionDraftV2 =>
     "schemaVersion" in draft && draft.schemaVersion === "action-draft-v2"
@@ -1685,7 +1800,7 @@ export function prepareCandidateFinalization(
     narrative,
     actionDrafts,
     versionSnapshot,
-    ...(hasCurrentNamedLensContract
+    ...(hasReadableNamedLensContract
       ? {
         namedLensAttemptRefs: namedLensAttemptRefs!,
         namedLensCatalogConsiderations: namedLensCatalogConsiderations!,
@@ -1866,9 +1981,11 @@ export function validateNamedLensFinalization(input: {
   );
   const attemptRefIdentities = new Set(input.attemptRefs.map(attemptIdentity));
   const providerRequiredCandidates = new Set(
-    input.dispositions
-      .filter(({ disposition }) =>
-        disposition !== "context_inapplicable" && disposition !== "ineligible"
+    input.catalogConsiderations
+      .filter(({ initialDisposition }) =>
+        initialDisposition === "judgment_eligible"
+        || initialDisposition === "abstained"
+        || initialDisposition === "unavailable"
       )
       .map(({ judgmentOrCatalogCandidateId }) =>
         judgmentOrCatalogCandidateId
@@ -1892,6 +2009,14 @@ export function validateNamedLensFinalization(input: {
     || [...providerRequiredCandidates].some((candidateId) =>
       !persistedAttempts.some(({ judgmentOrCatalogCandidateId }) =>
         judgmentOrCatalogCandidateId === candidateId
+      )
+    )
+    || input.catalogConsiderations.some((consideration) =>
+      consideration.initialDisposition === "abstained"
+      && !persistedAttempts.some((attempt) =>
+        attempt.judgmentOrCatalogCandidateId
+          === consideration.judgmentOrCatalogCandidateId
+        && attempt.status === "completed"
       )
     )
     || input.dispositions.some((disposition) =>
@@ -1941,6 +2066,7 @@ export function validateNamedLensFinalization(input: {
   );
   const evidenceIds = new Set([...facts, ...assumptions]);
   for (const evidence of projection.evidenceRefs) {
+    DecisionCriticalEvidenceRefSchema.parse(evidence);
     const expectedClassification = facts.has(evidence.evidencePackItemId)
       ? "fact"
       : assumptions.has(evidence.evidencePackItemId)
@@ -1962,21 +2088,35 @@ export function validateNamedLensFinalization(input: {
     input.passages.map((passage) => [passage.fingerprint, passage]),
   );
   for (const disposition of input.dispositions) {
+    const dispositionCriticalEvidenceIds = new Set(
+      disposition.criticalEvidence.map(({ evidencePackItemId }) =>
+        evidencePackItemId
+      ),
+    );
     for (const evidence of disposition.criticalEvidence) {
       const expectedClassification = facts.has(evidence.evidencePackItemId)
         ? "fact"
         : assumptions.has(evidence.evidencePackItemId)
         ? "assumption"
         : null;
-      if (expectedClassification !== evidence.classification) {
+      const projectedEvidence = projection.evidenceRefs.find((value) =>
+        value.evidencePackItemId === evidence.evidencePackItemId
+      );
+      if (
+        expectedClassification !== evidence.classification
+        || !projectedEvidence
+        || !isDeepStrictEqual(projectedEvidence, evidence)
+      ) {
         throw new Error(
-          "Decision-critical evidence classification must resolve to the saved Evidence Pack.",
+          "Decision-critical evidence must resolve exactly to the authoritative projection and saved Evidence Pack.",
         );
       }
     }
     if (
       disposition.selectionBasisEvidenceIds.some((id) =>
-        !evidenceIds.has(id) || !projectionEvidenceIds.has(id)
+        !evidenceIds.has(id)
+        || !projectionEvidenceIds.has(id)
+        || !dispositionCriticalEvidenceIds.has(id)
       )
     ) {
       throw new Error(
@@ -1997,6 +2137,19 @@ export function validateNamedLensFinalization(input: {
     ) {
       throw new Error(
         "Named Lens disposition judgment identity must resolve exactly.",
+      );
+    }
+    if (
+      disposition.selectionBasisEvidenceIds.some((id) =>
+        !judgment
+        || ![
+          ...judgment.supportEvidenceItemIds,
+          ...judgment.counterEvidenceItemIds,
+        ].includes(id)
+      )
+    ) {
+      throw new Error(
+        "Every Named Lens selection basis must resolve to its exact saved judgment evidence partition.",
       );
     }
     if (disposition.passageFingerprint === null) continue;
@@ -2176,23 +2329,33 @@ export function validateNamedLensFinalization(input: {
   }
   const applicableConsiderations = input.catalogConsiderations.filter(
     ({ initialDisposition }) =>
-      initialDisposition !== "context_inapplicable"
-      && initialDisposition !== "ineligible",
+      initialDisposition === "judgment_eligible",
   );
-  const unavailableApplicable = applicableConsiderations.filter(
-    ({ judgmentOrCatalogCandidateId }) => {
-      const disposition = input.dispositions.find((candidate) =>
-        candidate.judgmentOrCatalogCandidateId
-          === judgmentOrCatalogCandidateId
-      );
-      return disposition?.disposition !== "selected_main"
-        && disposition?.disposition !== "appendix_only";
-    },
+  const unavailableCandidates = input.dispositions.filter(({ disposition }) =>
+    disposition === "unavailable" || disposition === "withheld"
   );
   const completedLimited = input.passages.length < 4
     && applicableConsiderations.length < 4
     && input.passages.length === applicableConsiderations.length
-    && unavailableApplicable.length === 0;
+    && unavailableCandidates.length === 0;
+  const projectionUnavailable =
+    input.decisionCriticalEvidenceProjection.evidenceRefs.length === 0
+    && isDeepStrictEqual(
+      input.terminalReasonCodes,
+      ["decision_critical_evidence_projection_unavailable"],
+    )
+    && applicableConsiderations.every((consideration) => {
+      const disposition = input.dispositions.find(
+        ({ judgmentOrCatalogCandidateId }) =>
+          judgmentOrCatalogCandidateId
+            === consideration.judgmentOrCatalogCandidateId,
+      );
+      return disposition?.disposition === "withheld"
+        && isDeepStrictEqual(
+          disposition.reasonCodes,
+          ["DECISION_CRITICAL_EVIDENCE_PROJECTION_UNAVAILABLE"],
+        );
+    });
   if (
     new Set(input.terminalReasonCodes).size
       !== input.terminalReasonCodes.length
@@ -2208,11 +2371,11 @@ export function validateNamedLensFinalization(input: {
           ["limited_framework_coverage"],
         )
         : input.terminalReasonCodes.length !== 0
-          || unavailableApplicable.length !== 0
+          || unavailableCandidates.length !== 0
           || (input.passages.length < 4
             && applicableConsiderations.length >= 4)
       : input.terminalReasonCodes.length === 0
-        || unavailableApplicable.length === 0)
+        || (unavailableCandidates.length === 0 && !projectionUnavailable))
   ) {
     throw new Error(
       "Named Lens terminal status requires canonical explicit coverage reasons.",
@@ -2416,7 +2579,8 @@ function validateCurrentFrameworkJudgments(input: {
     const exactPartition = partition.length === dependencies.size
       && new Set(partition).size === partition.length
       && partition.every((id) => dependencies.has(id));
-    const abstained = judgment.applicability !== "applicable";
+    const abstained = judgment.applicability !== "applicable"
+      || judgment.conclusion === "abstain";
     const validConclusionShape = abstained
       ? judgment.conclusion === "abstain"
         && judgment.supportEvidenceItemIds.length === 0

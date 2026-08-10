@@ -599,6 +599,9 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
     async runProviderAttempt(input) {
       return input.operation();
     },
+    async listNamedLensAttempts() {
+      return [];
+    },
     usage() {
       return {
         costUnits: 0,
@@ -615,6 +618,8 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
     deal,
     fundPolicy: fundPolicy as FundPolicySnapshot,
     batchInputFingerprint: `sha256:${"b".repeat(64)}`,
+    reportId: "report_irregular_v1",
+    refreshNonce: null,
     referenceCatalog,
     workerId: "worker_irregular_v1",
     leaseToken: "lease_irregular_v1",

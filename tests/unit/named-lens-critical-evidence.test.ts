@@ -7,7 +7,10 @@ import type {
   EvidencePack,
   Fact,
 } from "../../lib/contracts/evidence";
-import type { DecisionResult } from "../../lib/contracts/underwriting";
+import type {
+  DecisionResult,
+  FrameworkJudgment,
+} from "../../lib/contracts/underwriting";
 import type { CandidateGroundingSnapshot } from
   "../../lib/underwriting/candidate-grounding";
 import { buildDecisionCriticalEvidenceProjection } from
@@ -203,11 +206,7 @@ function fixture() {
     analysisType: "calculation",
     formulaId: "returns",
     formulaVersion: "1",
-    inputRefs: [{
-      itemId: "calculation_inner",
-      value: "8",
-      type: "assumption",
-    }],
+    inputRefs: [],
     output: "8",
     unit: "multiple",
     currency: null,
@@ -249,8 +248,174 @@ function fixture() {
     blockingEvidenceItemIds: ["fact_trigger"],
     claimEdges: [],
   } as unknown as DecisionResult;
-  return { analysis, pack, grounding, calculations, decision };
+  return {
+    analysis,
+    pack,
+    grounding,
+    calculations,
+    calculationClaimEdges: [{
+      claimItemId: "calculation_outer",
+      dependencyItemId: "calculation_inner",
+      dependencyType: "calculation" as const,
+    }],
+    decision,
+    judgments: [] as FrameworkJudgment[],
+  };
 }
+
+test("resolves formal FrameworkJudgment decision refs through their exact evidence partitions", () => {
+  const input = fixture();
+  const judgmentId = "judgment_core_1";
+  input.judgments = [{
+    id: judgmentId,
+    analysisType: "framework_judgment",
+    frameworkCardId: "framework_card_synthetic_1_v1",
+    frameworkVersion: "1",
+    applicability: "applicable",
+    conclusion: "supportive",
+    supportEvidenceItemIds: ["fact_trigger"],
+    counterEvidenceItemIds: ["fact_counter"],
+    unusedEvidenceItemIds: [
+      "assumption_exit_multiple",
+      "fact_prior",
+      "fact_recursive",
+    ],
+    strongestSupport: "The exact trigger supports the formal lens.",
+    strongestCounterargument:
+      "The exact counterevidence bounds the formal lens.",
+    unknowns: [],
+    limitations: [],
+    confidence: {
+      sourceReliability: "high",
+      evidenceStrength: "high",
+      evidenceCoverage: "medium",
+      applicability: "high",
+      judgment: "medium",
+    },
+    claimEdges: [{
+      claimItemId: judgmentId,
+      dependencyItemId: "fact_counter",
+      dependencyType: "fact",
+    }, {
+      claimItemId: judgmentId,
+      dependencyItemId: "fact_trigger",
+      dependencyType: "fact",
+    }],
+    fingerprint: "formal-judgment-fingerprint",
+  }];
+  input.decision.firedRules = [{
+    ruleId: "rule_framework_judgment",
+    inputRefs: [`framework_judgment:${judgmentId}`],
+    result: "pass",
+    appliedCeiling: null,
+    veto: false,
+  }];
+  input.decision.blockingEvidenceItemIds = [];
+
+  const projection = buildDecisionCriticalEvidenceProjection(input);
+  assert.deepEqual(
+    projection.map(({ evidencePackItemId }) => evidencePackItemId),
+    ["fact_counter", "fact_prior", "fact_trigger"],
+  );
+  for (const evidenceItemId of ["fact_counter", "fact_trigger"]) {
+    assert.ok(projection.find((item) =>
+      item.evidencePackItemId === evidenceItemId
+    )?.originRefs.some(({ kind, id }) =>
+      kind === "fired_rule" && id === "rule_framework_judgment"
+    ));
+  }
+});
+
+test("rejects an arbitrary no-metadata judgment as formal decision authority", () => {
+  const input = fixture();
+  const judgmentId = "judgment_unregistered_core";
+  input.judgments = [{
+    id: judgmentId,
+    analysisType: "framework_judgment",
+    frameworkCardId: "framework_card_unregistered",
+    frameworkVersion: "1",
+    applicability: "applicable",
+    conclusion: "supportive",
+    supportEvidenceItemIds: ["fact_trigger"],
+    counterEvidenceItemIds: [],
+    unusedEvidenceItemIds: [
+      "assumption_exit_multiple",
+      "fact_counter",
+      "fact_prior",
+      "fact_recursive",
+    ],
+    strongestSupport: "A forged unregistered card must not gain authority.",
+    strongestCounterargument: null,
+    unknowns: [],
+    limitations: [],
+    confidence: {
+      sourceReliability: "high",
+      evidenceStrength: "high",
+      evidenceCoverage: "medium",
+      applicability: "high",
+      judgment: "medium",
+    },
+    claimEdges: [{
+      claimItemId: judgmentId,
+      dependencyItemId: "fact_trigger",
+      dependencyType: "fact",
+    }],
+    fingerprint: "unregistered-judgment-fingerprint",
+  }];
+  input.decision.firedRules = [{
+    ruleId: "rule_unregistered_judgment",
+    inputRefs: [`framework_judgment:${judgmentId}`],
+    result: "pass",
+    appliedCeiling: null,
+    veto: false,
+  }];
+  input.decision.blockingEvidenceItemIds = [];
+
+  assert.throws(
+    () => buildDecisionCriticalEvidenceProjection(input),
+    /cannot resolve/i,
+  );
+});
+
+test("validates an exact Evidence Pack authority root without projecting it as evidence", () => {
+  const input = fixture();
+  input.decision.firedRules = [{
+    ruleId: "rule_pack_root",
+    inputRefs: [`evidence_pack:${input.pack.id}`, "fact_counter"],
+    result: "pass",
+    appliedCeiling: null,
+    veto: false,
+  }];
+  input.decision.blockingEvidenceItemIds = [];
+
+  const projection = buildDecisionCriticalEvidenceProjection(input);
+  assert.ok(projection.some(({ evidencePackItemId }) =>
+    evidencePackItemId === "fact_counter"
+  ));
+  assert.equal(
+    projection.some(({ evidencePackItemId }) =>
+      evidencePackItemId === `evidence_pack:${input.pack.id}`
+    ),
+    false,
+  );
+});
+
+test("fails closed for a foreign Evidence Pack authority root", () => {
+  const input = fixture();
+  input.decision.firedRules = [{
+    ruleId: "rule_foreign_pack_root",
+    inputRefs: ["evidence_pack:pack_foreign"],
+    result: "pass",
+    appliedCeiling: null,
+    veto: false,
+  }];
+  input.decision.blockingEvidenceItemIds = [];
+
+  assert.throws(
+    () => buildDecisionCriticalEvidenceProjection(input),
+    /cannot resolve|Evidence Pack/i,
+  );
+});
 
 test("projects exact MarketEvent, gate, memory, decision, and recursive Calculation lineage", () => {
   const projection = buildDecisionCriticalEvidenceProjection(fixture());
@@ -286,6 +451,39 @@ test("projects exact MarketEvent, gate, memory, decision, and recursive Calculat
   assert.ok(calculationInput?.originRefs.some(({ kind, id }) =>
     kind === "calculation" && id === "calculation_inner"
   ));
+});
+
+test("resolves a raw candidate-local Calculation ID containing colons before typed-ref parsing", () => {
+  const input = fixture();
+  const outer = input.calculations.find(({ id }) => id === "calculation_outer")!;
+  outer.id = "calculation:scope:outer";
+  input.calculationClaimEdges[0]!.claimItemId = outer.id;
+  input.decision.firedRules[0]!.inputRefs = [outer.id];
+  input.decision.blockingEvidenceItemIds = [];
+
+  const projection = buildDecisionCriticalEvidenceProjection(input);
+  assert.ok(projection.some(({ evidencePackItemId }) =>
+    evidencePackItemId === "assumption_exit_multiple"
+  ));
+  assert.ok(projection.some(({ evidencePackItemId }) =>
+    evidencePackItemId === "fact_recursive"
+  ));
+});
+
+test("rejects a mis-typed or missing Calculation claim-edge bridge", () => {
+  const input = fixture();
+  const outer = input.calculations.find(({ id }) => id === "calculation_outer")!;
+  outer.inputRefs = [{
+    itemId: "calculation_inner",
+    value: "8",
+    type: "assumption",
+  }];
+  input.calculationClaimEdges = [];
+
+  assert.throws(
+    () => buildDecisionCriticalEvidenceProjection(input),
+    /cannot resolve/i,
+  );
 });
 
 test("deduplicates repeated exact origins and is independent of typed action identity", () => {

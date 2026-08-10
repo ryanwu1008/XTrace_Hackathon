@@ -7,6 +7,8 @@ import {
 } from "../../lib/underwriting/frameworks/passage-contract";
 import { createCanonicalFingerprint } from
   "../../lib/underwriting/fingerprints";
+import { CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY } from
+  "../../lib/underwriting/frameworks/timeout-policy";
 
 const stageInput = {
   candidate: { id: "candidate_1" },
@@ -19,6 +21,8 @@ const stageInput = {
     fingerprint: `sha256:${"1".repeat(64)}`,
     corpusDigest: `sha256:${"2".repeat(64)}`,
   },
+  advisoryProviderTimeoutPolicy:
+    CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY,
 };
 
 test("framework stage input fingerprint binds every passage contract field", () => {
@@ -31,6 +35,19 @@ test("framework stage input fingerprint binds every passage contract field", () 
     ...stageInput,
     passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
   }));
+  assert.notEqual(
+    createCanonicalFingerprint({
+      stage: "framework_lenses",
+      ...stageInput,
+      advisoryProviderTimeoutPolicy: {
+        ...CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY,
+        timeoutMs:
+          CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY.timeoutMs + 1,
+      },
+      passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+    }),
+    current,
+  );
 
   for (const [field, staleValue] of [
     ["passageSchemaVersion", "named-lens-passage-stale"],

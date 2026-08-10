@@ -127,14 +127,17 @@ export const NamedLensPassageCandidateSchema = z.strictObject({
 export const ClaudeFrameworkLensOutputSchema =
   ClaudeFrameworkLensOutputBaseSchema.superRefine((output, context) => {
     validateNonApplicableFrameworkLensOutput(output, context);
+    validateAbstainingFrameworkLensOutput(output, context);
     if (
       output.applicability === "applicable"
       && (
-        output.conclusion === "abstain"
-        || output.supportEvidenceItemIds.length === 0
-        || output.counterEvidenceItemIds.length === 0
-        || output.strongestSupport === null
-        || output.strongestCounterargument === null
+        output.conclusion !== "abstain"
+        && (
+          output.supportEvidenceItemIds.length === 0
+          || output.counterEvidenceItemIds.length === 0
+          || output.strongestSupport === null
+          || output.strongestCounterargument === null
+        )
       )
     ) {
       context.addIssue({
@@ -193,6 +196,28 @@ function validateNonApplicableFrameworkLensOutput(
   }
 }
 
+function validateAbstainingFrameworkLensOutput(
+  output: z.infer<typeof ClaudeFrameworkLensOutputBaseSchema>,
+  context: z.core.$RefinementCtx,
+): void {
+  if (
+    output.conclusion === "abstain"
+    && (
+      output.supportEvidenceItemIds.length > 0
+      || output.counterEvidenceItemIds.length > 0
+      || output.strongestSupport !== null
+      || output.strongestCounterargument !== null
+      || Object.values(output.confidence).some((level) => level !== "low")
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "An abstaining framework lens cannot make evidence claims or claim confidence above low",
+    });
+  }
+}
+
 function validateAdvisoryFrameworkJudgmentOutput(
   output: z.infer<typeof ClaudeFrameworkLensOutputBaseSchema> & {
     counterevidenceBoundary: z.infer<typeof CounterevidenceBoundarySchema>;
@@ -200,11 +225,25 @@ function validateAdvisoryFrameworkJudgmentOutput(
   context: z.core.$RefinementCtx,
 ): void {
   validateNonApplicableFrameworkLensOutput(output, context);
+  validateAbstainingFrameworkLensOutput(output, context);
+  if (output.conclusion === "abstain") {
+    if (
+      output.counterevidenceBoundary.kind
+        !== "no_candidate_local_counterevidence"
+      || output.counterevidenceBoundary.evidenceRequestRefs.length === 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "An abstaining advisory lens requires an explicit candidate-local evidence request boundary.",
+      });
+    }
+    return;
+  }
   if (output.applicability !== "applicable") return;
   const groundedCounterevidence = output.counterEvidenceItemIds.length > 0;
   if (
-    output.conclusion === "abstain"
-    || output.supportEvidenceItemIds.length === 0
+    output.supportEvidenceItemIds.length === 0
     || output.strongestSupport === null
     || (
       groundedCounterevidence

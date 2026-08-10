@@ -9,6 +9,10 @@ import {
   DECISION_TAXONOMY_DIGEST,
   DECISION_TAXONOMY_VERSION,
 } from "./decision-taxonomy";
+import {
+  NamedLensProviderTimeoutPolicySchema,
+  type NamedLensProviderTimeoutPolicy,
+} from "./timeout-policy";
 
 export const FrameworkLensPassageContractSchema = z.strictObject({
   passageSchemaVersion: z.literal(NAMED_LENS_PASSAGE_SCHEMA_VERSION),
@@ -36,10 +40,15 @@ export function createFrameworkLensStageInputFingerprint(input: {
   execution: unknown;
   frameworkCatalog: unknown;
   passageContract: FrameworkLensPassageContract;
+  advisoryProviderTimeoutPolicy: NamedLensProviderTimeoutPolicy;
 }): string {
   const passageContract = FrameworkLensPassageContractSchema.parse(
     input.passageContract,
   );
+  const advisoryProviderTimeoutPolicy =
+    NamedLensProviderTimeoutPolicySchema.parse(
+      input.advisoryProviderTimeoutPolicy,
+    );
   return createCanonicalFingerprint({
     stage: "framework_lenses",
     candidate: input.candidate,
@@ -49,5 +58,6 @@ export function createFrameworkLensStageInputFingerprint(input: {
     execution: input.execution,
     frameworkCatalog: input.frameworkCatalog,
     passageContract,
+    advisoryProviderTimeoutPolicy,
   });
 }

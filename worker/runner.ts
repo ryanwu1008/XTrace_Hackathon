@@ -41,6 +41,8 @@ import {
 import {
   createSourceGroundedCandidateExecutor,
   createUnderwritingOrchestrator,
+  UNDERWRITING_ADMISSION_POLICY_VERSION,
+  UNDERWRITING_REFRESH_SEMANTICS_VERSION,
 } from "../lib/underwriting/orchestrator";
 import {
   createEvidencePackCandidateGrounding,
@@ -57,6 +59,36 @@ import {
   SYNTHETIC_FRAMEWORK_PACK,
 } from "../seed/underwriting/framework-pack-v1";
 import { DECISION_POLICY_V1 } from "../lib/underwriting/decision/rules";
+import {
+  DECISION_TAXONOMY_DIGEST,
+  DECISION_TAXONOMY_VERSION,
+} from "../lib/underwriting/frameworks/decision-taxonomy";
+import {
+  CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+} from "../lib/underwriting/frameworks/passage-contract";
+import {
+  NAMED_LENS_GENERATOR_VERSION,
+  NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+  NAMED_LENS_SELECTION_POLICY_VERSION,
+  UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
+} from "../lib/contracts/named-lens";
+import { ACTION_DRAFT_POLICY_VERSION } from
+  "../lib/contracts/underwriting";
+import { BELIEF_ACTION_POLICY_VERSION } from
+  "../lib/reports/action-policy";
+import {
+  SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+  SEMANTIC_CONTEXT_MAPPING_VERSION,
+} from "../lib/underwriting/evidence/semantic-projector";
+import { CONTEXT_ROUTER_VERSION } from "../lib/underwriting/router";
+import {
+  DECISION_CRITICAL_EVIDENCE_PROJECTION_FINGERPRINT_VERSION,
+  NAMED_LENS_FINAL_DISPOSITIONS_FINGERPRINT_VERSION,
+  NAMED_LENS_PRESENTATION_FINGERPRINT_VERSION,
+  NAMED_LENS_RENDERER_VERSION,
+} from "../lib/underwriting/named-lens-presentation";
+import { CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY } from
+  "../lib/underwriting/frameworks/timeout-policy";
 import {
   createCanonicalFingerprint,
   createReferenceCatalogSnapshot,
@@ -85,6 +117,104 @@ const WORKER_HEALTH_FILE = workerHealthFilePath();
 const POLL_INTERVAL_MS = 2_000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 let queueCursor = 0;
+
+const CURRENT_CANDIDATE_STAGE_DAG = [
+  "context_router",
+  "evidence_pack",
+  "valuation",
+  "framework_catalog",
+  "framework_lenses",
+  "decision",
+  "named_lens_presentation",
+  "narrative_drafts",
+  "finalization",
+] as const;
+
+export interface WorkerCandidateExecutionConfiguration {
+  providerModel: string;
+  promptVersion: string;
+  schemaVersion: string;
+  settingsFingerprint: string;
+  applicationCommit: string;
+}
+
+const INVALID_APPLICATION_COMMIT_IDENTITIES = new Set([
+  "development",
+  "local-development",
+  "none",
+  "null",
+  "unknown",
+  "unavailable",
+]);
+
+export function resolveWorkerApplicationCommit(
+  environment: Record<string, string | undefined> = process.env,
+): string {
+  const applicationCommit = (
+    environment.APPLICATION_COMMIT?.trim()
+    || environment.RAILWAY_GIT_COMMIT_SHA?.trim()
+  );
+  if (
+    !applicationCommit
+    || INVALID_APPLICATION_COMMIT_IDENTITIES.has(applicationCommit.toLowerCase())
+  ) {
+    throw new Error(
+      "Worker commit identity is unavailable or a shared placeholder; set APPLICATION_COMMIT explicitly before starting the Worker.",
+    );
+  }
+  return applicationCommit;
+}
+
+export function createWorkerCandidateExecutionContract(
+  input: WorkerCandidateExecutionConfiguration,
+) {
+  return {
+    kind: "source-grounded-candidate-executor-v4",
+    stageDag: CURRENT_CANDIDATE_STAGE_DAG,
+    admissionPolicyVersion: UNDERWRITING_ADMISSION_POLICY_VERSION,
+    refreshSemanticsVersion: UNDERWRITING_REFRESH_SEMANTICS_VERSION,
+    contextRouterVersion: CONTEXT_ROUTER_VERSION,
+    evidencePackBuilderVersion: "evidence_pack_builder_v2",
+    decisionPolicyVersion: DECISION_POLICY_V1.version,
+    beliefPolicies: {
+      actionPolicyVersion: BELIEF_ACTION_POLICY_VERSION,
+      draftPolicyVersion: ACTION_DRAFT_POLICY_VERSION,
+      semanticContextAssumptionPolicyVersion:
+        SEMANTIC_CONTEXT_ASSUMPTION_POLICY_VERSION,
+      semanticContextMappingVersion: SEMANTIC_CONTEXT_MAPPING_VERSION,
+    },
+    frameworkLensPassageContract:
+      CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+    namedLens: {
+      selectionPolicyVersion: NAMED_LENS_SELECTION_POLICY_VERSION,
+      passageSchemaVersion: NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+      generatorVersion: NAMED_LENS_GENERATOR_VERSION,
+      presentationSchemaVersion:
+        UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
+      rendererVersion: NAMED_LENS_RENDERER_VERSION,
+      decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+      decisionTaxonomyDigest: DECISION_TAXONOMY_DIGEST,
+      semanticFingerprintVersions: {
+        criticalEvidenceProjection:
+          DECISION_CRITICAL_EVIDENCE_PROJECTION_FINGERPRINT_VERSION,
+        finalDispositions:
+          NAMED_LENS_FINAL_DISPOSITIONS_FINGERPRINT_VERSION,
+        presentation: NAMED_LENS_PRESENTATION_FINGERPRINT_VERSION,
+      },
+      advisoryProviderTimeoutPolicy:
+        CURRENT_NAMED_LENS_PROVIDER_TIMEOUT_POLICY,
+    },
+    execution: input,
+  } as const;
+}
+
+export function createWorkerCandidateExecutionFingerprint(
+  input: WorkerCandidateExecutionConfiguration,
+): string {
+  return createCanonicalFingerprint(
+    createWorkerCandidateExecutionContract(input),
+  );
+}
 
 interface WorkerIterationDependencies {
   runNext?: () => Promise<boolean>;
@@ -223,16 +353,22 @@ export async function runNextQueuedScan(): Promise<boolean> {
         : Promise.resolve(null),
     });
     const model = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-8";
+    const frameworkExecution = {
+      providerModel: model,
+      promptVersion: "framework-lens-v1",
+      schemaVersion: "framework-judgment-v1",
+      settingsFingerprint: "balanced-underwriting-v1",
+      applicationCommit: resolveWorkerApplicationCommit(),
+    };
     const frameworkLenses = createContextAwareFrameworkLensResolver({
       client: claude,
       execution: {
         provider: "anthropic",
         model,
-        promptVersion: "framework-lens-v1",
-        schemaVersion: "framework-judgment-v1",
-        settingsFingerprint: "balanced-underwriting-v1",
-        applicationCommit:
-          process.env.RAILWAY_GIT_COMMIT_SHA ?? "local-development",
+        promptVersion: frameworkExecution.promptVersion,
+        schemaVersion: frameworkExecution.schemaVersion,
+        settingsFingerprint: frameworkExecution.settingsFingerprint,
+        applicationCommit: frameworkExecution.applicationCommit,
       },
     });
     const underwriting = createUnderwritingOrchestrator({
@@ -241,19 +377,14 @@ export async function runNextQueuedScan(): Promise<boolean> {
       activeFundPolicy: (workspaceId) =>
         references.activeFundPolicy(workspaceId),
       candidateExecutionFingerprint:
-        `source-grounded-v3:context-router-v2:semantic-context-v1:${model}:framework-lens-v1:framework-judgment-v1`,
+        createWorkerCandidateExecutionFingerprint(frameworkExecution),
       referenceCatalog,
       candidateExecutor: createSourceGroundedCandidateExecutor({
         grounding,
         resolveFrameworkLenses: (context, signal) =>
           frameworkLenses.resolve(context, signal),
         execution: {
-          providerModel: model,
-          promptVersion: "framework-lens-v1",
-          schemaVersion: "framework-judgment-v1",
-          settingsFingerprint: "balanced-underwriting-v1",
-          applicationCommit:
-            process.env.RAILWAY_GIT_COMMIT_SHA ?? "local-development",
+          ...frameworkExecution,
         },
       }),
     });

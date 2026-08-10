@@ -49,14 +49,14 @@ function rpc(name: string, payload: unknown): string {
   return `set role service_role; select public.${name}($json$${JSON.stringify(payload)}$json$::jsonb)`;
 }
 
-test("terminal 0027 preserves the local-only Deal-bound research registry without parallel XTrace", () => {
+test("terminal 0028 preserves the local-only Deal-bound research registry without parallel XTrace", () => {
   assert.equal(existsSync(migrationPath), true);
   const plan = discoverMigrationPlan({
     directory: fileURLToPath(new URL("../../drizzle/", import.meta.url)),
     journalPath,
   });
-  assert.equal(plan.terminal.index, 27);
-  assert.equal(plan.terminal.tag, "0027_named_lens_passages");
+  assert.equal(plan.terminal.index, 28);
+  assert.equal(plan.terminal.tag, "0028_named_lens_authority_repair");
   const migration = readFileSync(migrationPath, "utf8");
   assert.match(migration, /create table public\.research_candidates/u);
   assert.match(migration, /create table public\.deal_universe_snapshots_v1/u);
@@ -87,6 +87,7 @@ test("terminal 0027 preserves the local-only Deal-bound research registry withou
   )), "utf8");
   assert.match(launcher, /0018/u);
   assert.doesNotMatch(launcher, /0024_research_candidate_xtrace/u);
+  assert.doesNotMatch(launcher, /0028_named_lens_authority_repair/u);
 });
 
 test(

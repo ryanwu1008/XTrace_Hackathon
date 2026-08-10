@@ -220,7 +220,15 @@ export function buildFrameworkAbstention(input: {
     }],
     ...(input.retainAdvisoryMetadata
       && isExperimentalAdvisoryFrameworkCard(card)
-      ? { frameworkMetadata: card.experimentalAdvisory }
+      ? {
+        frameworkMetadata: card.experimentalAdvisory,
+        counterevidenceBoundary: {
+          kind: "no_candidate_local_counterevidence" as const,
+          evidenceRequestRefs: [
+            `request_counterevidence_${judgmentId}`,
+          ],
+        },
+      }
       : {}),
     fingerprint: input.fingerprint,
   });

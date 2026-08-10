@@ -181,6 +181,8 @@ production authorization list:
 25. [`drizzle/0024_research_candidate_xtrace.sql`](drizzle/0024_research_candidate_xtrace.sql)
 26. [`drizzle/0025_report_deal_universe_authority.sql`](drizzle/0025_report_deal_universe_authority.sql)
 27. [`drizzle/0026_geography_agnostic_advisory.sql`](drizzle/0026_geography_agnostic_advisory.sql)
+28. [`drizzle/0027_named_lens_passages.sql`](drizzle/0027_named_lens_passages.sql)
+29. [`drizzle/0028_named_lens_authority_repair.sql`](drizzle/0028_named_lens_authority_repair.sql)
 
 `0008` introduces workspace-composite identities, `0009` adds immutable source
 revisions, `0010`–`0012` add versioned underwriting references and artifacts,
@@ -196,7 +198,7 @@ schema dependency used by canonical fingerprints. `0019` adds immutable
 market-evidence snapshots, run evidence bindings, persisted belief assessments,
 report evidence lineage, and immutable reasoner judgments. Its production
 launcher remains fail-closed until the exact reviewed PostgreSQL 17.6 catalog
-fingerprints are generated; do not alias them to `0018`. `0020`–`0026` are
+fingerprints are generated; do not alias them to `0018`. `0020`–`0028` are
 also local-only and have no production launcher authorization. `0023`
 adds the PostgreSQL 17 compatibility checkpoint for the shared-entity
 MarketEvent and belief gates, exact reasoner-judgment fingerprints, and the
@@ -209,7 +211,11 @@ prevents rank or processing capacity from truncating current-run underwriting
 admission. `0025` makes the immutable report-bound Deal universe authoritative
 for current 30-analysis runs while preserving the legacy 23-analysis replay.
 `0026` removes geography as an advisory-framework admission shortcut without
-changing formal decision weight or production authority. The bundled corpus
+changing formal decision weight or production authority. `0027` adds the
+append-only Named Lens attempt, disposition, passage, segment, and presentation
+artifacts. `0028` repairs their current finalization authority, semantic
+fingerprint, provider-attempt, and force-refresh checks without authorizing a
+production migration. The bundled corpus
 loader retains only exact column-level immutable INSERT grants and uses
 conflict-ignore writes; canonical
 runtime-upload evidence remains writable only through controlled RPCs. Do not
@@ -241,8 +247,8 @@ production-profile gate: it must run against a disposable PostgreSQL 17.6
 server and execute exactly three profiles with zero skips—the Supabase-shaped
 superuser, non-superuser `CREATEROLE`, and repaired-ACL paths. Each enclosing
 test passes only when the launcher itself exits nonzero at unreviewed `0019`,
-leaves `0019`–`0026` absent, and preserves the reviewed `0018` boundary and
-invariants. The general migration gate applies the complete local `0000`–`0026`
+leaves `0019`–`0028` absent, and preserves the reviewed `0018` boundary and
+invariants. The general migration gate applies the complete local `0000`–`0028`
 chain. Neither gate authorizes production `0019` or later.
 
 ### Product authentication
@@ -321,7 +327,7 @@ worker heartbeat.
 ### Worker runbook
 
 1. For a local or disposable development database, apply migrations `0000`
-   through `0026` in order, then seed the corpus before starting the Worker.
+   through `0028` in order, then seed the corpus before starting the Worker.
    For production, use only its separately reviewed deployed boundary; this
    checkpoint does not authorize `0019` or later.
 2. Start the Worker and wait for the container health status to become

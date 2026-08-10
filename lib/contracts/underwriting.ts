@@ -634,6 +634,7 @@ export const CandidateCheckpointSchema = z.strictObject({
     "framework_catalog",
     "framework_lenses",
     "decision",
+    "named_lens_presentation",
     "narrative_drafts",
     "finalization",
   ]),

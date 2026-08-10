@@ -139,7 +139,12 @@ export interface CandidateFingerprintInput {
     generatorVersion: string;
     presentationSchemaVersion: string;
     decisionTaxonomyVersion: string;
+    decisionTaxonomyDigest: string;
+    criticalEvidenceProjectionFingerprint: string;
+    finalDispositionsFingerprint: string;
+    presentationFingerprint: string;
   };
+  refreshNonce: string | null;
 }
 
 export function createBatchInputFingerprint(
@@ -348,7 +353,26 @@ export function createCandidateAnalysisFingerprint(
         input.namedLensVersions.decisionTaxonomyVersion,
         "Decision taxonomy version",
       ),
+      decisionTaxonomyDigest: requiredFingerprint(
+        input.namedLensVersions.decisionTaxonomyDigest,
+        "Decision taxonomy digest",
+      ),
+      criticalEvidenceProjectionFingerprint: requiredFingerprint(
+        input.namedLensVersions.criticalEvidenceProjectionFingerprint,
+        "Decision-critical evidence projection fingerprint",
+      ),
+      finalDispositionsFingerprint: requiredFingerprint(
+        input.namedLensVersions.finalDispositionsFingerprint,
+        "Final Named Lens dispositions fingerprint",
+      ),
+      presentationFingerprint: requiredFingerprint(
+        input.namedLensVersions.presentationFingerprint,
+        "Named Lens presentation fingerprint",
+      ),
     },
+    refreshNonce: input.refreshNonce === null
+      ? null
+      : required(input.refreshNonce, "Refresh nonce"),
   });
 }
 

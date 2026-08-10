@@ -49,6 +49,13 @@ async function writeExecutable(path: string, contents: string): Promise<void> {
   await chmod(path, 0o755);
 }
 
+async function writeCleanGitFixture(directory: string): Promise<void> {
+  await writeExecutable(
+    join(directory, "git"),
+    "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then exit 0; fi\nif [ \"$1\" = \"rev-parse\" ] && [ \"$2\" = \"--verify\" ] && [ \"$3\" = \"HEAD\" ]; then printf '%s\\n' '0123456789abcdef0123456789abcdef01234567'; exit 0; fi\nexit 45\n",
+  );
+}
+
 async function runtimeDirectoryState(path: string): Promise<
   | { exists: false }
   | { exists: true; inode: number; isDirectory: boolean; modifiedAt: number; size: number }
@@ -144,13 +151,14 @@ test("keychain worker launcher starts the worker with exact public-sandbox setti
     "vsee-document-url-signing-secret": "fixture-document-signing-secret",
   } as const;
   await mkdir(fixtureDirectory, { recursive: true });
+  await writeCleanGitFixture(fixtureDirectory);
   await writeExecutable(
     join(fixtureDirectory, "security"),
     "#!/bin/sh\nprintf 'security %s\\n' \"$5\" >> \"$FAKE_TRACE\"\ncase \"$5\" in\n  vsee-supabase-url) printf '%s' 'fixture-supabase-url-secret' ;;\n  vsee-supabase-service-role-key) printf '%s' 'fixture-service-role-secret' ;;\n  vsee-anthropic-api-key) printf '%s' 'fixture-anthropic-secret' ;;\n  vsee-xtrace-api-key) printf '%s' 'fixture-xtrace-secret' ;;\n  vsee-document-url-signing-secret) printf '%s' 'fixture-document-signing-secret' ;;\n  *) exit 44 ;;\nesac\n",
   );
   await writeExecutable(
     join(fixtureDirectory, "npm"),
-    "#!/bin/sh\nprintf 'npm %s %s\\n' \"$1\" \"$2\" >> \"$FAKE_TRACE\"\n{\n  printf 'SUPABASE_URL=%s\\n' \"$SUPABASE_URL\"\n  printf 'SUPABASE_SERVICE_ROLE_KEY=%s\\n' \"$SUPABASE_SERVICE_ROLE_KEY\"\n  printf 'ANTHROPIC_API_KEY=%s\\n' \"$ANTHROPIC_API_KEY\"\n  printf 'XTRACE_API_KEY=%s\\n' \"$XTRACE_API_KEY\"\n  printf 'DOCUMENT_URL_SIGNING_SECRET=%s\\n' \"$DOCUMENT_URL_SIGNING_SECRET\"\n  printf 'VSEE_DEPLOYMENT_MODE=%s\\n' \"$VSEE_DEPLOYMENT_MODE\"\n  printf 'DEMO_WORKSPACE_ID=%s\\n' \"$DEMO_WORKSPACE_ID\"\n  printf 'SUPABASE_STORAGE_BUCKET=%s\\n' \"$SUPABASE_STORAGE_BUCKET\"\n  printf 'ANTHROPIC_MODEL=%s\\n' \"$ANTHROPIC_MODEL\"\n  printf 'XTRACE_API_BASE_URL=%s\\n' \"$XTRACE_API_BASE_URL\"\n  printf 'MARKET_USER_AGENT=%s\\n' \"$MARKET_USER_AGENT\"\n  printf 'MARKET_OFFICIAL_FEEDS_JSON=%s\\n' \"$MARKET_OFFICIAL_FEEDS_JSON\"\n  printf 'MARKET_PUBLISHER_FEEDS_JSON=%s\\n' \"$MARKET_PUBLISHER_FEEDS_JSON\"\n} > \"$FAKE_ENVIRONMENT\"\n",
+    "#!/bin/sh\nprintf 'npm %s %s\\n' \"$1\" \"$2\" >> \"$FAKE_TRACE\"\n{\n  printf 'SUPABASE_URL=%s\\n' \"$SUPABASE_URL\"\n  printf 'SUPABASE_SERVICE_ROLE_KEY=%s\\n' \"$SUPABASE_SERVICE_ROLE_KEY\"\n  printf 'ANTHROPIC_API_KEY=%s\\n' \"$ANTHROPIC_API_KEY\"\n  printf 'XTRACE_API_KEY=%s\\n' \"$XTRACE_API_KEY\"\n  printf 'DOCUMENT_URL_SIGNING_SECRET=%s\\n' \"$DOCUMENT_URL_SIGNING_SECRET\"\n  printf 'APPLICATION_COMMIT=%s\\n' \"$APPLICATION_COMMIT\"\n  printf 'VSEE_DEPLOYMENT_MODE=%s\\n' \"$VSEE_DEPLOYMENT_MODE\"\n  printf 'DEMO_WORKSPACE_ID=%s\\n' \"$DEMO_WORKSPACE_ID\"\n  printf 'SUPABASE_STORAGE_BUCKET=%s\\n' \"$SUPABASE_STORAGE_BUCKET\"\n  printf 'ANTHROPIC_MODEL=%s\\n' \"$ANTHROPIC_MODEL\"\n  printf 'XTRACE_API_BASE_URL=%s\\n' \"$XTRACE_API_BASE_URL\"\n  printf 'MARKET_USER_AGENT=%s\\n' \"$MARKET_USER_AGENT\"\n  printf 'MARKET_OFFICIAL_FEEDS_JSON=%s\\n' \"$MARKET_OFFICIAL_FEEDS_JSON\"\n  printf 'MARKET_PUBLISHER_FEEDS_JSON=%s\\n' \"$MARKET_PUBLISHER_FEEDS_JSON\"\n} > \"$FAKE_ENVIRONMENT\"\n",
   );
 
   const result = await runCommand("zsh", [launcherPath], {
@@ -193,6 +201,7 @@ test("keychain worker launcher starts the worker with exact public-sandbox setti
     ANTHROPIC_API_KEY: secrets["vsee-anthropic-api-key"],
     XTRACE_API_KEY: secrets["vsee-xtrace-api-key"],
     DOCUMENT_URL_SIGNING_SECRET: secrets["vsee-document-url-signing-secret"],
+    APPLICATION_COMMIT: "0123456789abcdef0123456789abcdef01234567",
     VSEE_DEPLOYMENT_MODE: "public_sandbox",
     DEMO_WORKSPACE_ID: "workspace_demo",
     SUPABASE_STORAGE_BUCKET: "vsee-demo-sources",
@@ -214,6 +223,7 @@ test("keychain worker launcher fails closed before npm when a required secret is
   const fixtureDirectory = join(root, "bin");
   const tracePath = join(root, "trace.log");
   await mkdir(fixtureDirectory, { recursive: true });
+  await writeCleanGitFixture(fixtureDirectory);
   await writeExecutable(
     join(fixtureDirectory, "security"),
     "#!/bin/sh\nprintf 'security %s\\n' \"$5\" >> \"$FAKE_TRACE\"\nif [ \"$5\" = \"vsee-xtrace-api-key\" ]; then exit 44; fi\nprintf '%s' 'available-secret'\n",
@@ -242,4 +252,33 @@ test("keychain worker launcher fails closed before npm when a required secret is
       "",
     ].join("\n"),
   );
+});
+
+test("keychain worker launcher rejects a dirty worktree before secrets or npm", async (t) => {
+  const { root, launcherPath } = await createWorkerRepositoryFixture(t);
+  const fixtureDirectory = join(root, "bin");
+  const tracePath = join(root, "trace.log");
+  await mkdir(fixtureDirectory, { recursive: true });
+  await writeFile(tracePath, "", "utf8");
+  await writeExecutable(
+    join(fixtureDirectory, "git"),
+    "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then printf '%s\\n' ' M worker/runner.ts'; exit 0; fi\nexit 45\n",
+  );
+  for (const command of ["security", "npm"]) {
+    await writeExecutable(
+      join(fixtureDirectory, command),
+      `#!/bin/sh\nprintf '${command} started\\n' >> \"$FAKE_TRACE\"\n`,
+    );
+  }
+
+  const result = await runCommand("zsh", [launcherPath], {
+    ...process.env,
+    PATH: `${fixtureDirectory}:${process.env.PATH ?? ""}`,
+    FAKE_TRACE: tracePath,
+    USER: "fixture-user",
+  });
+
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.output, /dirty worktree/i);
+  assert.equal(await readFile(tracePath, "utf8"), "");
 });

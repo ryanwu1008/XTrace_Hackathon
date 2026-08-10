@@ -60,6 +60,7 @@ import {
   createUnderwritingOrchestrator,
 } from "../../lib/underwriting/orchestrator";
 import {
+  type CandidateGroundingPort,
   createEvidencePackCandidateGrounding,
 } from "../../lib/underwriting/candidate-grounding";
 import {
@@ -90,6 +91,8 @@ import {
 import type {
   FrameworkLensService,
 } from "../../lib/underwriting/frameworks/service";
+import { createNamedLensProviderTimeoutPolicy } from
+  "../../lib/underwriting/frameworks/timeout-policy";
 import { withEmptyCurrentNamedLensArtifacts } from
   "../helpers/current-named-lens-finalization";
 import { withWithheldCurrentNamedLensArtifacts } from
@@ -113,6 +116,10 @@ import {
   processClaimedRun,
   projectRecommendedOpportunities,
 } from "../../worker/process-run";
+import {
+  createWorkerCandidateExecutionContract,
+  createWorkerCandidateExecutionFingerprint,
+} from "../../worker/runner";
 import { rankBeliefRevisionCandidates } from "../../lib/matching/ranking";
 import { buildInternalReportDraft } from "../../lib/reports/draft";
 import type { NormalizedMarketEvent } from "../../lib/market/types";
@@ -121,8 +128,46 @@ import {
   marketEventV2,
   normalizedSourceV2,
 } from "../helpers/source-evidence-v2";
+import { buildSampleDecisionSourceRef } from
+  "../../lib/belief-reversal/sample-decision-source";
 
 const NOW = new Date("2026-07-29T12:00:00.000Z");
+const TEST_STATIC_FRAMEWORK_CATALOG = {
+  catalogVersion: "deterministic-test-framework-catalog-v1",
+  catalogFingerprint: `sha256:${"7".repeat(64)}`,
+  corpusDigest: `sha256:${"8".repeat(64)}`,
+};
+
+type TestCandidateStageRuntime = Parameters<
+  NonNullable<
+    Parameters<typeof createUnderwritingOrchestrator>[0]["candidateExecutor"]
+  >
+>[0]["stages"];
+
+async function persistFinalizationFrameworkCatalogCheckpoint(
+  stages: TestCandidateStageRuntime,
+  payload: CandidateFinalization,
+): Promise<void> {
+  const output = {
+    catalogVersion: payload.versionSnapshot.frameworkCatalogVersion!,
+    catalogFingerprint:
+      payload.versionSnapshot.frameworkCatalogFingerprint!,
+    corpusDigest: payload.versionSnapshot.frameworkCorpusDigest!,
+  };
+  await stages.run({
+    stage: "framework_catalog",
+    inputFingerprint: createCanonicalFingerprint({
+      stage: "framework_catalog",
+      fixture: "current-finalization-authority-v1",
+      output,
+    }),
+    parseOutput(value) {
+      assert.deepEqual(value, output);
+      return value as typeof output;
+    },
+    operation: () => output,
+  });
+}
 
 function canonicalFrameworkAbstentions(
   request: Parameters<FrameworkLensService["runAll"]>[0],
@@ -162,6 +207,24 @@ function canonicalFrameworkAbstentionJudgments(
     })
   );
 }
+
+test("a static Framework service cannot skip immutable catalog authority", () => {
+  assert.throws(() => createSourceGroundedCandidateExecutor({
+    grounding: {} as CandidateGroundingPort,
+    frameworkLenses: {
+      async runAll(request) {
+        return canonicalFrameworkAbstentions(request);
+      },
+    },
+    execution: {
+      providerModel: "synthetic-test-lens",
+      promptVersion: "framework-lens-v1",
+      schemaVersion: "framework-judgment-v1",
+      settingsFingerprint: `sha256:${"b".repeat(64)}`,
+      applicationCommit: "task7-test",
+    },
+  }), /explicit immutable catalog binding/);
+});
 
 const IMAGE_INTERACTION = {
   id: "fixture_image",
@@ -472,6 +535,54 @@ function analysis(
   });
 }
 
+function projectionSafeAnalysis(
+  dealId: string,
+  score: number,
+): CompanyAnalysis {
+  const value = analysis(dealId, score);
+  const priorSourceId = value.investmentMemory.sourceIds[0]!;
+  const priorSource = buildSampleDecisionSourceRef({
+    id: priorSourceId,
+    documentId: `document_${priorSourceId}`,
+    sourceRevisionId: `revision_${priorSourceId}`,
+    contentFingerprint: createCanonicalFingerprint({ priorSourceId }),
+    occurredAt: "2026-01-01T00:00:00.000Z",
+    retrievedAt: "2026-07-29T12:00:00.000Z",
+    summary: "Prior meeting",
+    decisionReason: "The market was too early.",
+    concerns: [],
+    revisitConditions: ["Revisit after a market change."],
+  });
+  value.sources = value.sources.map((source) =>
+    source.id === priorSourceId ? priorSource : source
+  );
+  value.companyBrief.sourceLineage =
+    value.companyBrief.sourceLineage.map((source) =>
+      source.id === priorSourceId ? priorSource : source
+    );
+  value.beliefAssessment!.gateContext.sources =
+    value.beliefAssessment!.gateContext.sources.map((source) =>
+      source.id === priorSourceId ? priorSource : source
+    );
+  return CompanyAnalysisSchema.parse(value);
+}
+
+function dealForAnalysisSources(value: CompanyAnalysis): RegisteredDeal {
+  const activeSourceRevisionIds = value.sources.flatMap((source) =>
+    "adaptation" in source
+      && source.adaptation === "canonical"
+      && source.sourceRevisionId
+      ? [source.sourceRevisionId]
+      : []
+  ).sort();
+  return {
+    ...deal(value.dealId),
+    activeSourceRevisionIds,
+    activeSourceRevisionFingerprint:
+      sourceRevisionFingerprint(activeSourceRevisionIds),
+  };
+}
+
 function deal(id: string): RegisteredDeal {
   const activeSourceRevisionIds = [`revision_${id}`];
   return {
@@ -494,30 +605,49 @@ async function candidateGroundingFor(
     includeValuation?: boolean;
     now?: () => Date;
     repository?: ReturnType<typeof createMemoryEvidencePacksRepository>;
+    registeredDeal?: RegisteredDeal;
+    sourceLineage?: CompanyAnalysis["sources"];
   },
 ) {
   const sourceRegistry = createMemorySourceRegistry();
   const repository =
     options.repository ?? createMemoryEvidencePacksRepository();
-  const registeredDeal = deal(dealId);
-  await sourceRegistry.createInitialRevision({
-    id: registeredDeal.activeSourceRevisionIds[0]!,
-    workspaceId: registeredDeal.workspaceId,
-    sourceId: `source_revision_${dealId}`,
-    contentHash: `sha256:${"d".repeat(64)}`,
-    objectKey: `private/${dealId}.md`,
-    objectVersion: `object:${dealId}:v1`,
-    contentType: "text/markdown",
-    extractorId: "plain_text_v1",
-    extractorVersion: "1",
-    extractedAt: "2026-07-29T10:00:00.000Z",
-    createdAt: "2026-07-29T10:00:01.000Z",
-  });
+  const registeredDeal = options.registeredDeal ?? deal(dealId);
+  const sourceIdByRevisionId = new Map(
+    (options.sourceLineage ?? []).flatMap((source) =>
+      "adaptation" in source
+        && source.adaptation === "canonical"
+        && source.sourceRevisionId
+        ? [[source.sourceRevisionId, source.id] as const]
+        : []
+    ),
+  );
+  for (const [index, revisionId] of
+    registeredDeal.activeSourceRevisionIds.entries()) {
+    const sourceId = sourceIdByRevisionId.get(revisionId)
+      ?? `source_revision_${dealId}`;
+    await sourceRegistry.createInitialRevision({
+      id: revisionId,
+      workspaceId: registeredDeal.workspaceId,
+      sourceId,
+      contentHash: createCanonicalFingerprint({ dealId, revisionId }),
+      objectKey: `private/${dealId}/${index}.md`,
+      objectVersion: `object:${dealId}:${index}:v1`,
+      contentType: "text/markdown",
+      extractorId: "plain_text_v1",
+      extractorVersion: "1",
+      extractedAt: "2026-07-29T10:00:00.000Z",
+      createdAt: "2026-07-29T10:00:01.000Z",
+    });
+  }
+  const firstRevisionId = registeredDeal.activeSourceRevisionIds[0]!;
+  const firstSourceId = sourceIdByRevisionId.get(firstRevisionId)
+    ?? `source_revision_${dealId}`;
   const common = {
     workspaceId: registeredDeal.workspaceId,
     dealId,
-    sourceId: `source_revision_${dealId}`,
-    sourceRevisionId: registeredDeal.activeSourceRevisionIds[0]!,
+    sourceId: firstSourceId,
+    sourceRevisionId: firstRevisionId,
     provenanceOrigin: "uploaded_document" as const,
     unit: null,
     currency: null,
@@ -534,6 +664,26 @@ async function candidateGroundingFor(
   };
   if (options.includeContext) {
     await repository.putSourceEvidence([
+      ...(options.sourceLineage ?? []).flatMap((source, index) =>
+        "adaptation" in source
+          && source.adaptation === "canonical"
+          && source.sourceRevisionId
+          ? [{
+              ...common,
+              id: `fact_${dealId}_lineage_${index}`,
+              sourceId: source.id,
+              sourceRevisionId: source.sourceRevisionId,
+              field: `lineage_source_${index}`,
+              value: source.title,
+              locator: {
+                kind: "text_range" as const,
+                start: 100 + index * 10,
+                end: 109 + index * 10,
+                excerpt: source.title,
+              },
+            }]
+          : []
+      ),
       {
         ...common,
         id: `fact_${dealId}_company`,
@@ -1620,6 +1770,12 @@ test("persists the fingerprint produced by the authoritative batch input path", 
           costUnits: 0,
           tokenUnits: 0,
         },
+        named_lens_presentation: {
+          timeoutMs: 30_000,
+          maxAttempts: 1,
+          costUnits: 0,
+          tokenUnits: 0,
+        },
         narrative_drafts: {
           timeoutMs: 30_000,
           maxAttempts: 1,
@@ -1631,7 +1787,7 @@ test("persists the fingerprint produced by the authoritative batch input path", 
     candidateExecutionFingerprint,
     referenceCatalog: TEST_REFERENCE_CATALOG,
     evidenceFrame: undefined,
-    selectionPolicyVersion: "top-five-belief-revised-v1",
+    selectionPolicyVersion: "all-belief-revisions-v1",
     routerVersion: "context-router-v2",
     beliefPolicies: {
       actionPolicyVersion: "belief-action-policy-v1",
@@ -1858,6 +2014,138 @@ test("batch identity changes when an effective reference definition changes", as
   );
 });
 
+test("a current Worker contract cannot cold-resume a batch created under legacy refresh semantics", async () => {
+  let sequence = 0;
+  const runs = createMemoryUnderwritingRunsRepository({
+    now: () => NOW,
+    idGenerator: (kind) => `${kind}_${++sequence}`,
+  });
+  const configuration = {
+    providerModel: "claude-test",
+    promptVersion: "framework-lens-v1",
+    schemaVersion: "framework-judgment-v1",
+    settingsFingerprint: "balanced-underwriting-v1",
+    applicationCommit: "commit-a",
+  };
+  const currentContract = createWorkerCandidateExecutionContract(
+    configuration,
+  );
+  const legacyFingerprint = createCanonicalFingerprint({
+    ...currentContract,
+    refreshSemanticsVersion: "refresh-alias-legacy-v0",
+  });
+  const currentFingerprint = createWorkerCandidateExecutionFingerprint(
+    configuration,
+  );
+  const legacy = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    autoProcessCandidates: false,
+    candidateExecutionFingerprint: legacyFingerprint,
+  });
+  const current = createUnderwritingOrchestrator({
+    runs,
+    activeFundPolicy: async () => policy,
+    autoProcessCandidates: false,
+    candidateExecutionFingerprint: currentFingerprint,
+  });
+  const analyses = [analysis("deal_a", 0.99)];
+  const input = {
+    scanRun,
+    report: report(analyses),
+    analyses,
+    eligibleDeals: [deal("deal_a")],
+    forceRefresh: false,
+  };
+
+  const legacyBatch = await legacy.createBatchAndSelections(input);
+  const currentBatch = await current.createBatchAndSelections(input);
+
+  assert.notEqual(currentFingerprint, legacyFingerprint);
+  assert.notEqual(currentBatch.id, legacyBatch.id);
+  assert.notEqual(
+    currentBatch.batchInputFingerprint,
+    legacyBatch.batchInputFingerprint,
+  );
+  assert.equal(runs.inspect().batches.length, 2);
+  assert.equal(runs.inspect().candidates.length, 2);
+});
+
+for (const mutation of [{
+  name: "version",
+  apply(payload: CandidateFinalization) {
+    payload.versionSnapshot.frameworkCatalogVersion =
+      "research-framework-catalog-tampered";
+  },
+}, {
+  name: "fingerprint",
+  apply(payload: CandidateFinalization) {
+    payload.versionSnapshot.frameworkCatalogFingerprint =
+      `sha256:${"d".repeat(64)}`;
+  },
+}, {
+  name: "corpus digest",
+  apply(payload: CandidateFinalization) {
+    payload.versionSnapshot.frameworkCorpusDigest =
+      `sha256:${"e".repeat(64)}`;
+  },
+}]) {
+  test(`orchestrator rejects a finalization whose catalog ${mutation.name} differs from its completed checkpoint`, async () => {
+    let sequence = 0;
+    const artifacts = createMemoryUnderwritingArtifactsRepository();
+    const evidencePacks = createMemoryEvidencePacksRepository();
+    const runs = createMemoryUnderwritingRunsRepository({
+      now: () => NOW,
+      idGenerator: (kind) => `${kind}_${++sequence}`,
+      leaseTokenGenerator: () => `lease_${++sequence}`,
+      artifacts,
+      evidencePacks,
+    });
+    const orchestrator = createUnderwritingOrchestrator({
+      runs,
+      activeFundPolicy: async () => policy,
+      candidateExecutor: async ({
+        candidate,
+        workerId,
+        leaseToken,
+        stages,
+      }) => {
+        const payload = finalization({
+          candidate,
+          candidateRunId: candidate.id,
+          dealId: candidate.dealId,
+          workerId,
+          leaseToken,
+        });
+        await persistFinalizationFrameworkCatalogCheckpoint(stages, payload);
+        mutation.apply(payload);
+        await saveFinalizationBuild(evidencePacks, payload);
+        return payload;
+      },
+      now: () => NOW,
+    });
+    const analyses = [analysis("deal_a", 0.99)];
+
+    const batch = await orchestrator.createBatchAndSelections({
+      scanRun,
+      report: report(analyses),
+      analyses,
+      eligibleDeals: [deal("deal_a")],
+      forceRefresh: false,
+    });
+
+    assert.equal(batch.status, "failed");
+    assert.equal(runs.inspect().candidates[0]?.status, "failed");
+    assert.equal(
+      runs.inspect().checkpoints.some(({ stage }) =>
+        stage === "finalization"
+      ),
+      false,
+      "catalog mismatch must fail before writing an authoritative finalization checkpoint",
+    );
+  });
+}
+
 test("processing a named candidate cannot lease an older queued candidate", async () => {
   let sequence = 0;
   const evidencePacks = createMemoryEvidencePacksRepository();
@@ -1876,7 +2164,12 @@ test("processing a named candidate cannot lease an older queued candidate", asyn
     runs,
     activeFundPolicy: async () => policy,
     autoProcessCandidates: false,
-    candidateExecutor: async ({ candidate, workerId, leaseToken }) => {
+    candidateExecutor: async ({
+      candidate,
+      workerId,
+      leaseToken,
+      stages,
+    }) => {
       const payload = finalization({
         candidate,
         candidateRunId: candidate.id,
@@ -1884,6 +2177,7 @@ test("processing a named candidate cannot lease an older queued candidate", asyn
         workerId,
         leaseToken,
       });
+      await persistFinalizationFrameworkCatalogCheckpoint(stages, payload);
       await saveFinalizationBuild(evidencePacks, payload);
       return payload;
     },
@@ -1975,94 +2269,6 @@ test("a persisted partial candidate is terminal on replay and mixes with complet
   assert.equal(executorCount, 0);
 });
 
-test("byte-identical force refresh completes as an immutable artifact alias", async () => {
-  let sequence = 0;
-  const artifacts = createMemoryUnderwritingArtifactsRepository();
-  const evidencePacks = createMemoryEvidencePacksRepository();
-  const runs = createMemoryUnderwritingRunsRepository({
-    now: () => NOW,
-    idGenerator: (kind) => `${kind}_${++sequence}`,
-    leaseTokenGenerator: () => `lease_${++sequence}`,
-    artifacts,
-    evidencePacks,
-  });
-  const orchestrator = createUnderwritingOrchestrator({
-    runs,
-    activeFundPolicy: async () => policy,
-    refreshNonce: () => `refresh_${++sequence}`,
-    candidateExecutor: async ({ candidate, workerId, leaseToken }) => {
-      const payload = finalization({
-        candidate,
-        candidateRunId: candidate.id,
-        dealId: candidate.dealId,
-        workerId,
-        leaseToken,
-      });
-      await saveFinalizationBuild(evidencePacks, payload);
-      return payload;
-    },
-    now: () => NOW,
-  });
-  const analyses = [analysis("deal_a", 0.99)];
-  const input = {
-    scanRun,
-    report: report(analyses),
-    analyses,
-    eligibleDeals: [deal("deal_a")],
-  };
-
-  const original = await orchestrator.createBatchAndSelections({
-    ...input,
-    forceRefresh: false,
-  });
-  const refreshed = await orchestrator.createBatchAndSelections({
-    ...input,
-    forceRefresh: true,
-  });
-
-  const candidates = runs.inspect().candidates;
-  const originalCandidate = candidates.find(
-    ({ batchId }) => batchId === original.id,
-  );
-  const refreshedCandidate = candidates.find(
-    ({ batchId }) => batchId === refreshed.id,
-  );
-  assert.ok(originalCandidate);
-  assert.ok(refreshedCandidate);
-  assert.equal(refreshedCandidate.rerunOfId, originalCandidate.id);
-  assert.equal(refreshedCandidate.status, "completed");
-  assert.equal(
-    refreshedCandidate.candidateAnalysisFingerprint,
-    originalCandidate.candidateAnalysisFingerprint,
-  );
-  assert.equal(artifacts.inspect().bundles.length, 1);
-  const aliasBundle = await artifacts.getByCandidateRunId({
-    workspaceId: "workspace_1",
-    candidateRunId: refreshedCandidate.id,
-  });
-  const sourceBundle = await artifacts.getByCandidateRunId({
-    workspaceId: "workspace_1",
-    candidateRunId: originalCandidate.id,
-  });
-  assert.equal(aliasBundle?.candidateRunId, refreshedCandidate.id);
-  assert.equal(aliasBundle?.sourceCandidateRunId, originalCandidate.id);
-  assert.equal(sourceBundle?.candidateRunId, originalCandidate.id);
-  assert.equal(sourceBundle?.sourceCandidateRunId, originalCandidate.id);
-  assert.deepEqual(
-    {
-      ...aliasBundle!,
-      candidateRunId: "comparison_candidate",
-      sourceCandidateRunId: "comparison_source",
-    },
-    {
-      ...sourceBundle!,
-      candidateRunId: "comparison_candidate",
-      sourceCandidateRunId: "comparison_source",
-    },
-  );
-  assert.equal(refreshed.status, "completed");
-});
-
 test("a persistence failure during finalization terminates the candidate and batch", async () => {
   let sequence = 0;
   const storage = createMemoryUnderwritingRunsRepository({
@@ -2079,14 +2285,22 @@ test("a persistence failure during finalization terminates the candidate and bat
   const orchestrator = createUnderwritingOrchestrator({
     runs,
     activeFundPolicy: async () => policy,
-    candidateExecutor: async ({ candidate, workerId, leaseToken }) =>
-      finalization({
+    candidateExecutor: async ({
+      candidate,
+      workerId,
+      leaseToken,
+      stages,
+    }) => {
+      const payload = finalization({
         candidate,
         candidateRunId: candidate.id,
         dealId: candidate.dealId,
         workerId,
         leaseToken,
-      }),
+      });
+      await persistFinalizationFrameworkCatalogCheckpoint(stages, payload);
+      return payload;
+    },
     now: () => NOW,
   });
   const analyses = [analysis("deal_a", 0.99)];
@@ -2119,7 +2333,12 @@ test("a candidate failure preserves a completed predecessor and leaves the batch
   const orchestrator = createUnderwritingOrchestrator({
     runs,
     activeFundPolicy: async () => policy,
-    candidateExecutor: async ({ candidate, workerId, leaseToken }) => {
+    candidateExecutor: async ({
+      candidate,
+      workerId,
+      leaseToken,
+      stages,
+    }) => {
       if (candidate.dealId === "deal_b") {
         throw new Error("provider returned private diagnostic detail");
       }
@@ -2130,6 +2349,7 @@ test("a candidate failure preserves a completed predecessor and leaves the batch
         workerId,
         leaseToken,
       });
+      await persistFinalizationFrameworkCatalogCheckpoint(stages, payload);
       await saveFinalizationBuild(evidencePacks, payload);
       return payload;
     },
@@ -2228,6 +2448,7 @@ test("identity-only evidence requires context confirmation before resolving a fr
 
 test("missing valuation inputs continue through every stage and finalize a terminal unavailable result", async () => {
   let sequence = 0;
+  const warnings: string[] = [];
   const artifacts = createMemoryUnderwritingArtifactsRepository();
   const evidencePacks = createMemoryEvidencePacksRepository();
   const runs = createMemoryUnderwritingRunsRepository({
@@ -2246,7 +2467,8 @@ test("missing valuation inputs continue through every stage and finalize a termi
     runs,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
-    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
+    onWarning: (warning) => warnings.push(warning),
+    candidateExecutor: createSourceGroundedCandidateExecutor({
       grounding,
       resolveFrameworkLenses: async () => ({
         catalogVersion: "research-framework-catalog-v1",
@@ -2279,8 +2501,17 @@ test("missing valuation inputs continue through every stage and finalize a termi
     forceRefresh: false,
   });
 
-  assert.equal(batch.status, "completed");
-  assert.equal(runs.inspect().candidates[0]?.status, "completed");
+  assert.equal(batch.status, "partial", JSON.stringify({
+    candidates: runs.inspect().candidates,
+    failures: runs.inspect().failureReasons,
+    unavailable: runs.inspect().unavailableReasons,
+    warnings,
+  }));
+  assert.equal(runs.inspect().candidates[0]?.status, "partial");
+  assert.deepEqual(
+    runs.inspect().candidates[0]?.terminalReasonCodes,
+    ["decision_critical_evidence_projection_unavailable"],
+  );
   assert.deepEqual(runs.inspect().unavailableReasons, {});
   assert.deepEqual(
     runs.inspect().checkpoints.map(({ stage, status }) => [stage, status]),
@@ -2291,6 +2522,7 @@ test("missing valuation inputs continue through every stage and finalize a termi
       ["framework_catalog", "completed"],
       ["framework_lenses", "completed"],
       ["decision", "completed"],
+      ["named_lens_presentation", "completed"],
       ["narrative_drafts", "completed"],
       ["finalization", "completed"],
     ],
@@ -2333,6 +2565,7 @@ test("missing valuation inputs continue through every stage and finalize a termi
 
 test("runs the source-grounded candidate chain once and persists communication channels as drafts", async () => {
   let sequence = 0;
+  const warnings: string[] = [];
   let lensExecutions = 0;
   let frameworkResolutions = 0;
   let frameworkInput:
@@ -2355,7 +2588,8 @@ test("runs the source-grounded candidate chain once and persists communication c
     runs,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
-    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
+    onWarning: (warning) => warnings.push(warning),
+    candidateExecutor: createSourceGroundedCandidateExecutor({
       grounding,
       resolveFrameworkLenses: async (context) => {
         frameworkResolutions += 1;
@@ -2410,11 +2644,20 @@ test("runs the source-grounded candidate chain once and persists communication c
   const replay = await orchestrator.createBatchAndSelections(input);
 
   assert.equal(replay.id, first.id);
-  assert.equal(first.status, "completed");
-  assert.equal(replay.status, "completed");
+  assert.equal(first.status, "partial", JSON.stringify({
+    candidates: runs.inspect().candidates,
+    failures: runs.inspect().failureReasons,
+    unavailable: runs.inspect().unavailableReasons,
+    warnings,
+  }));
+  assert.equal(replay.status, "partial");
   assert.equal(frameworkResolutions, 1);
   assert.equal(lensExecutions, 1);
-  assert.equal(runs.inspect().candidates[0]?.status, "completed");
+  assert.equal(runs.inspect().candidates[0]?.status, "partial");
+  assert.deepEqual(
+    runs.inspect().candidates[0]?.terminalReasonCodes,
+    ["decision_critical_evidence_projection_unavailable"],
+  );
   assert.ok(frameworkInput);
   const frameworkCheckpointFingerprint = runs.inspect().checkpoints.find(
     ({ stage }) => stage === "framework_lenses",
@@ -2438,6 +2681,8 @@ test("runs the source-grounded candidate chain once and persists communication c
         corpusDigest: `sha256:${"8".repeat(64)}`,
       },
       passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+      advisoryProviderTimeoutPolicy:
+        createNamedLensProviderTimeoutPolicy(),
   };
   assert.equal(
     frameworkCheckpointFingerprint,
@@ -2461,6 +2706,19 @@ test("runs the source-grounded candidate chain once and persists communication c
       field,
     );
   }
+  assert.notEqual(
+    frameworkCheckpointFingerprint,
+    createCanonicalFingerprint({
+      ...frameworkStageFingerprintInput,
+      advisoryProviderTimeoutPolicy: {
+        ...frameworkStageFingerprintInput.advisoryProviderTimeoutPolicy,
+        timeoutMs:
+          frameworkStageFingerprintInput
+            .advisoryProviderTimeoutPolicy.timeoutMs + 1,
+      },
+    }),
+    "advisory provider timeout",
+  );
   assert.deepEqual(
     runs.inspect().checkpoints.map(({ stage, status }) => [stage, status]),
     [
@@ -2470,6 +2728,7 @@ test("runs the source-grounded candidate chain once and persists communication c
       ["framework_catalog", "completed"],
       ["framework_lenses", "completed"],
       ["decision", "completed"],
+      ["named_lens_presentation", "completed"],
       ["narrative_drafts", "completed"],
       ["finalization", "completed"],
     ],
@@ -2477,6 +2736,45 @@ test("runs the source-grounded candidate chain once and persists communication c
   const saved = artifacts.inspect();
   assert.equal(saved.bundles.length, 1);
   const savedBundle = saved.bundles[0]!;
+  const savedCandidate = runs.inspect().candidates[0]!;
+  const finalizationCheckpoint = runs.inspect().checkpoints.find(
+    ({ stage }) => stage === "finalization",
+  )!;
+  const finalizationOutput = finalizationCheckpoint.outputPayload as {
+    evidencePackBuildInputFingerprint: string;
+  };
+  assert.equal(
+    finalizationCheckpoint.inputFingerprint,
+    createCanonicalFingerprint({
+      stage: "finalization",
+      candidateRunId: savedCandidate.id,
+      batchInputFingerprint: first.batchInputFingerprint,
+      candidateAnalysisFingerprint:
+        savedBundle.candidateAnalysisFingerprint,
+      evidencePackBuildInputFingerprint:
+        finalizationOutput.evidencePackBuildInputFingerprint,
+      currentContractIdentity: {
+        reportId: savedBundle.underwritingPresentationReportId,
+        frameworkCatalog: {
+          catalogVersion:
+            savedBundle.versionSnapshot.frameworkCatalogVersion,
+          catalogFingerprint:
+            savedBundle.versionSnapshot.frameworkCatalogFingerprint,
+          corpusDigest:
+            savedBundle.versionSnapshot.frameworkCorpusDigest,
+        },
+        versionSnapshot: savedBundle.versionSnapshot,
+        projectionFingerprint:
+          savedBundle.decisionCriticalEvidenceProjection!.fingerprint,
+        finalDispositionsFingerprint:
+          savedBundle.versionSnapshot.finalDispositionsFingerprint,
+        presentationFingerprint:
+          savedBundle.namedLensPresentation!.fingerprint,
+        terminalStatus: savedBundle.terminalStatus,
+        terminalReasonCodes: savedBundle.terminalReasonCodes,
+      },
+    }),
+  );
   const missingEvidence = buildCandidateMissingEvidence({
     criticalFieldIds: savedBundle.evidencePack.coverage.missingFieldIds,
     structuredFields: analysisWithUnknown.companyBrief.structuredFields,
@@ -2560,6 +2858,7 @@ test("runs the source-grounded candidate chain once and persists communication c
 
 test("real authorized eight-core and twenty-advisory execution settles a truthful partial graph within budget", async () => {
   let sequence = 0;
+  const warnings: string[] = [];
   const candidateLeaseAuthority =
     createMemoryUnderwritingCandidateLeaseAuthority({ now: () => NOW });
   const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
@@ -2569,9 +2868,13 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
     namedLensArtifacts,
   });
   const evidencePacks = createMemoryEvidencePacksRepository();
+  const analysisValue = projectionSafeAnalysis("deal_a", 0.99);
+  const registeredDeal = dealForAnalysisSources(analysisValue);
   let activeProviderCalls = 0;
   let maximumProviderCalls = 0;
   let providerCalls = 0;
+  let advisoryProviderOutputs = 0;
+  let retriedAdvisoryCardId: string | undefined;
   let repairedCoreCardId: string | undefined;
   const callsByCard = new Map<string, number>();
   const client: ClaudeClient = {
@@ -2590,6 +2893,16 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
       if (!("experimentalAdvisory" in card) && !repairedCoreCardId) {
         repairedCoreCardId = card.id;
         return "{}";
+      }
+      if ("experimentalAdvisory" in card) {
+        if (!retriedAdvisoryCardId) {
+          retriedAdvisoryCardId = card.id;
+          throw new IntegrationTransportError({ retryable: true });
+        }
+        advisoryProviderOutputs += 1;
+        return JSON.stringify(advisoryProviderOutputs <= 4
+          ? frameworkPromptOutputWithPassage(request)
+          : frameworkPromptAbstentionOutput(request));
       }
       return JSON.stringify(frameworkPromptOutput(request));
     },
@@ -2617,13 +2930,16 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
   const grounding = await candidateGroundingFor("deal_a", {
     includeContext: true,
     repository: evidencePacks,
+    registeredDeal,
+    sourceLineage: analysisValue.sources,
   });
   const orchestrator = createUnderwritingOrchestrator({
     runs,
     namedLensArtifacts,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
-    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
+    onWarning: (warning) => warnings.push(warning),
+    candidateExecutor: createSourceGroundedCandidateExecutor({
       grounding,
       resolveFrameworkLenses: (context, signal) =>
         frameworkResolver.resolve(context, signal),
@@ -2635,17 +2951,18 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
         settingsFingerprint: `sha256:${"b".repeat(64)}`,
         applicationCommit: "task13-test",
       },
-    }, namedLensArtifacts),
+    }),
     now: () => NOW,
   });
-  const analyses = [analysis("deal_a", 0.99)];
-  const batch = await orchestrator.createBatchAndSelections({
+  const analyses = [analysisValue];
+  const request = {
     scanRun,
     report: report(analyses),
     analyses,
-    eligibleDeals: [deal("deal_a")],
+    eligibleDeals: [registeredDeal],
     forceRefresh: false,
-  });
+  };
+  const batch = await orchestrator.createBatchAndSelections(request);
   const frameworkCheckpoint = runs.inspect().checkpoints.find(
     ({ stage }) => stage === "framework_lenses",
   );
@@ -2655,7 +2972,7 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
     0,
   );
   const bundle = artifacts.inspect().bundles[0];
-  assert.ok(bundle);
+  assert.ok(bundle, warnings.join("\n"));
   const advisoryJudgments = bundle.judgments.filter(
     ({ frameworkMetadata }) => frameworkMetadata !== undefined,
   );
@@ -2666,13 +2983,16 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
   assert.equal(batch.status, "partial");
   assert.equal(bundle.terminalStatus, "partial");
   assert.deepEqual(bundle.terminalReasonCodes,
-    ["named_lens_passage_attempts_exhausted"]);
+    ["PROVIDER_BUDGET_EXHAUSTED"]);
+  assert.ok(
+    (bundle.decisionCriticalEvidenceProjection?.evidenceRefs.length ?? 0) > 0,
+  );
   assert.equal(bundle.namedLensCatalogConsiderations?.length, 20);
   assert.equal(bundle.namedLensDispositions?.length, 20);
-  assert.equal(bundle.namedLensAttemptRefs?.length, 19);
-  assert.equal(namedLensArtifacts.inspect().rawAttemptEvents.length, 38);
+  assert.equal(bundle.namedLensAttemptRefs?.length, 20);
+  assert.equal(namedLensArtifacts.inspect().rawAttemptEvents.length, 40);
   assert.equal(coreJudgments.length, 8);
-  assert.equal(advisoryJudgments.length, 20);
+  assert.equal(advisoryJudgments.length, 19);
   assert.equal(
     advisoryJudgments.every(
       ({ frameworkMetadata }) =>
@@ -2680,13 +3000,38 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
     ),
     true,
   );
-  assert.equal(providerCalls, 28);
+  assert.equal(providerCalls <= 28, true);
   assert.equal(maximumProviderCalls, 4);
   assert.ok(repairedCoreCardId);
+  assert.ok(retriedAdvisoryCardId);
   assert.equal(callsByCard.get(repairedCoreCardId), 2);
-  assert.equal(frameworkCheckpoint.providerAttempts.length, 28);
+  assert.equal(callsByCard.get(retriedAdvisoryCardId), 2);
+  assert.equal(frameworkCheckpoint.providerAttempts.length, 29);
   assert.equal(frameworkCheckpoint.costUnits, 28);
   assert.equal(reservedTokenUnits, 112_000);
+  const budgetDisposition = bundle.namedLensDispositions?.find(
+    ({ reasonCodes }) => reasonCodes.includes("PROVIDER_BUDGET_EXHAUSTED"),
+  );
+  assert.ok(budgetDisposition);
+  assert.equal(budgetDisposition.disposition, "unavailable");
+  assert.equal(
+    bundle.namedLensPassages?.some(({ judgmentId }) =>
+      judgmentId === budgetDisposition.judgmentId
+    ),
+    false,
+  );
+  const settledAttempts = await namedLensArtifacts.listAttempts(
+    bundle.evidencePack.workspaceId,
+    bundle.candidateRunId,
+  );
+  const budgetAttempt = settledAttempts.find(({ failureReason }) =>
+    failureReason?.code === "budget_exhausted"
+  );
+  assert.ok(budgetAttempt);
+  assert.equal(budgetAttempt.status, "aborted");
+  assert.ok(bundle.valuation);
+  assert.ok(bundle.decision);
+  assert.ok(bundle.actionDrafts.length > 0);
 });
 
 function frameworkPromptPayload(
@@ -2776,8 +3121,655 @@ function frameworkPromptOutput(request: ClaudeCompleteInput) {
   };
 }
 
-test("a clock-advanced source-grounded force refresh aliases the canonical artifacts", async () => {
+function frameworkPromptOutputWithPassage(
+  request: ClaudeCompleteInput,
+  failure?: "lineage" | "grounding" | "required_passage",
+  variant: "baseline" | "mutated" = "baseline",
+) {
+  const payload = frameworkPromptPayload(request);
+  const output = frameworkPromptOutput(request);
+  if (!("experimentalAdvisory" in payload.card)) return output;
+  if (failure === "required_passage") return output;
+  const acceptanceQuestionByPackId: Readonly<Record<string, string>> = {
+    april_dunford_obviously_awesome_2e_public_frameworks_v0_1:
+      "customer_adoption",
+    aswath_damodaran_dark_side_valuation_public_frameworks_v0_1:
+      "financing_valuation",
+    aswath_damodaran_narrative_and_numbers_public_frameworks_v0_1:
+      "operating_model",
+    bill_gurley_public_frameworks_v0_1: "unit_economics",
+  };
+  const mutatedQuestionByPackId: Readonly<Record<string, string>> = {
+    april_dunford_obviously_awesome_2e_public_frameworks_v0_1:
+      "customer_adoption",
+    aswath_damodaran_dark_side_valuation_public_frameworks_v0_1:
+      "financing_valuation",
+    aswath_damodaran_narrative_and_numbers_public_frameworks_v0_1:
+      "operating_model",
+    bill_gurley_public_frameworks_v0_1: "customer_adoption",
+  };
+  const preferredQuestion = (variant === "mutated"
+    ? mutatedQuestionByPackId
+    : acceptanceQuestionByPackId)[
+    payload.card.experimentalAdvisory.packId
+  ];
+  const binding = payload.card.experimentalAdvisory
+    .decisionTaxonomyBindings.find(({ decisionQuestionCode }) =>
+      decisionQuestionCode === preferredQuestion
+    ) ?? payload.card.experimentalAdvisory.decisionTaxonomyBindings[0]!;
+  const component = payload.card.experimentalAdvisory.components.find(
+    ({ frameworkId }) => frameworkId === binding.frameworkId,
+  );
+  if (!component) {
+    throw new Error("Expected an authorized advisory component binding.");
+  }
+  const sourceRef = component.sourceRefs[0];
+  if (!sourceRef) {
+    throw new Error("Expected an authorized advisory public source.");
+  }
+  const evidenceIds = [
+    ...payload.evidencePack.facts.map(({ id }) => id),
+    ...payload.evidencePack.assumptions.map(({ id }) => id),
+  ].toSorted((left, right) =>
+    Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+  );
+  assert.ok(evidenceIds.length >= 2);
+  const supportId = evidenceIds[0]!;
+  const counterId = evidenceIds[1]!;
+  const questionLabel = binding.decisionQuestionCode.replaceAll("_", " ");
+  const changedPosture = variant === "mutated"
+    && payload.card.experimentalAdvisory.packId
+      === "april_dunford_obviously_awesome_2e_public_frameworks_v0_1";
+  const proseLead = variant === "mutated"
+    ? "The alternate advisory wording"
+    : "The retained public premise";
+  return {
+    ...output,
+    conclusion: changedPosture ? "negative" as const : output.conclusion,
+    strongestSupport: changedPosture
+      ? "The retained evidence supports a bounded cautionary framework view."
+      : output.strongestSupport,
+    strongestCounterargument: changedPosture
+      ? "The retained counterevidence limits the cautionary framework view."
+      : output.strongestCounterargument,
+    supportEvidenceItemIds: [supportId],
+    counterEvidenceItemIds: [counterId],
+    unusedEvidenceItemIds: evidenceIds.slice(2),
+    passage: {
+      focus: {
+        componentFrameworkId: component.frameworkId,
+        componentVersion: component.version,
+        cardFieldRef: binding.cardFieldRef,
+        decisionQuestionCode: binding.decisionQuestionCode,
+        evidenceDomainCodes: [...binding.evidenceDomainCodes].sort(),
+      },
+      premise: {
+        text: `${proseLead} frames ${questionLabel} as the auditable company question.`,
+        componentFrameworkId: component.frameworkId,
+        componentVersion: component.version,
+        cardFieldRef: binding.cardFieldRef,
+        publicSourceIds: failure === "lineage"
+          ? ["foreign_public_source"]
+          : [sourceRef.sourceId],
+        claimIds: [...sourceRef.claimIds].sort(),
+        locator: sourceRef.locator,
+        attributionScope: sourceRef.attributionScope,
+      },
+      caseApplication: {
+        text: `${variant === "mutated" ? "Under the alternate presentation" : "For the saved case"}, ${questionLabel} uses retained company evidence without creating a new fact.`,
+        evidenceItemIds: failure === "grounding"
+          ? [supportId, "foreign_evidence_item"].sort()
+          : [supportId],
+      },
+      countercase: {
+        text: `The retained counterevidence ${variant === "mutated" ? "still bounds" : "limits"} the ${questionLabel} conclusion.`,
+        boundaryKind: "grounded_counterevidence" as const,
+        evidenceItemIds: [counterId],
+        evidenceRequestRefs: [],
+      },
+      unknownBoundary: {
+        text: `Independent confirmation remains the explicit ${variant === "mutated" ? "decision boundary" : "boundary"} on the ${questionLabel} reading.`,
+        judgmentUnknownRefs: [
+          "Independent confirmation remains outstanding.",
+        ],
+        judgmentLimitationRefs: [],
+        evidenceRequestRefs: [],
+      },
+      conditionalConclusion: {
+        text: changedPosture
+          ? `The ${questionLabel} framework urges caution until the retained unknown is resolved.`
+          : `The ${questionLabel} framework supports further diligence only if the retained unknown is resolved.`,
+        stance: changedPosture ? "negative" as const : "supportive" as const,
+        advisoryPosture: changedPosture
+          ? "urges_caution" as const
+          : "supports_further_diligence" as const,
+      },
+      advisoryContract: {
+        formalDecisionWeight: "0" as const,
+        noEndorsement: true,
+        namedPersonImpersonation: false,
+        hiddenChainOfThought: false,
+      },
+    },
+  };
+}
+
+function frameworkPromptAbstentionOutput(request: ClaudeCompleteInput) {
+  const payload = frameworkPromptPayload(request);
+  if (!("experimentalAdvisory" in payload.card)) {
+    throw new Error("Provider abstention fixture requires an advisory Card.");
+  }
+  const evidenceIds = [
+    ...payload.evidencePack.facts.map(({ id }) => id),
+    ...payload.evidencePack.assumptions.map(({ id }) => id),
+  ].toSorted((left, right) =>
+    Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+  );
+  return {
+    applicability: "applicable" as const,
+    conclusion: "abstain" as const,
+    supportEvidenceItemIds: [],
+    counterEvidenceItemIds: [],
+    unusedEvidenceItemIds: evidenceIds,
+    strongestSupport: null,
+    strongestCounterargument: null,
+    unknowns: [
+      "The retained evidence is insufficient for this applicable lens to take a position.",
+    ],
+    limitations: [
+      "The lens abstains without creating a formal investment decision.",
+    ],
+    confidence: {
+      sourceReliability: "low" as const,
+      evidenceStrength: "low" as const,
+      evidenceCoverage: "low" as const,
+      applicability: "low" as const,
+      judgment: "low" as const,
+    },
+    frameworkRuleRefs: [payload.card.id],
+    counterevidenceBoundary: {
+      kind: "no_candidate_local_counterevidence" as const,
+      evidenceRequestRefs: ["request_provider_abstention_counterevidence"],
+    },
+  };
+}
+
+async function runProductionNamedLensAcceptanceCase(input: {
+  applicableLensCount: number;
+  failure?:
+    | "provider"
+    | "timeout"
+    | "lineage"
+    | "grounding"
+    | "required_passage";
+  providerAbstains?: boolean;
+  providerAbstentionConfidence?: "low" | "medium";
+  advisoryVariant?: "baseline" | "mutated";
+}) {
   let sequence = 0;
+  let advisoryApplicabilityChecks = 0;
+  let advisoryProviderCalls = 0;
+  const candidateLeaseAuthority =
+    createMemoryUnderwritingCandidateLeaseAuthority({ now: () => NOW });
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority,
+  });
+  const artifacts = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
+  const evidencePacks = createMemoryEvidencePacksRepository();
+  const runs = createMemoryUnderwritingRunsRepository({
+    now: () => NOW,
+    idGenerator: (kind) => `${kind}_${++sequence}`,
+    leaseTokenGenerator: () => `lease_${++sequence}`,
+    artifacts,
+    namedLensArtifacts,
+    candidateLeaseAuthority,
+    evidencePacks,
+  });
+  const analysisValue = projectionSafeAnalysis("deal_a", 0.99);
+  const registeredDeal = dealForAnalysisSources(analysisValue);
+  const grounding = await candidateGroundingFor("deal_a", {
+    includeContext: true,
+    repository: evidencePacks,
+    registeredDeal,
+    sourceLineage: analysisValue.sources,
+  });
+  const client: ClaudeClient = {
+    async complete(request) {
+      const card = frameworkPromptCard(request);
+      if (!("experimentalAdvisory" in card)) {
+        return JSON.stringify(frameworkPromptOutput(request));
+      }
+      advisoryProviderCalls += 1;
+      if (advisoryProviderCalls === 1 && input.providerAbstains) {
+        const abstention = frameworkPromptAbstentionOutput(request);
+        return JSON.stringify({
+          ...abstention,
+          confidence: {
+            ...abstention.confidence,
+            judgment: input.providerAbstentionConfidence ?? "low",
+          },
+        });
+      }
+      if (advisoryProviderCalls === 1 && input.failure === "provider") {
+        throw new IntegrationTransportError({ retryable: false });
+      }
+      if (advisoryProviderCalls === 1 && input.failure === "timeout") {
+        return await new Promise<string>((resolve) => {
+          setTimeout(
+            () => resolve(JSON.stringify(frameworkPromptOutputWithPassage(
+              request,
+            ))),
+            100,
+          );
+        });
+      }
+      const passageFailure = advisoryProviderCalls === 1
+        && input.failure !== "provider"
+        && input.failure !== "timeout"
+        ? input.failure
+        : undefined;
+      return JSON.stringify(
+        frameworkPromptOutputWithPassage(
+          request,
+          passageFailure,
+          input.advisoryVariant,
+        ),
+      );
+    },
+  };
+  const advisoryProviderTimeoutMs = input.failure === "timeout"
+    ? 5
+    : 20_000;
+  const frameworkResolver = createContextAwareFrameworkLensResolver({
+    client,
+    execution: {
+      provider: "anthropic",
+      model: "synthetic-test-lens",
+      promptVersion: "framework-lens-v1",
+      schemaVersion: "framework-judgment-v1",
+      settingsFingerprint: `sha256:${"b".repeat(64)}`,
+      applicationCommit: "task7-production-acceptance",
+    },
+    advisoryProviderTimeoutMs,
+    isApplicable(card) {
+      if (!("experimentalAdvisory" in card)) return true;
+      const applicable =
+        advisoryApplicabilityChecks < input.applicableLensCount;
+      advisoryApplicabilityChecks += 1;
+      return applicable;
+    },
+  });
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    namedLensArtifacts,
+    activeFundPolicy: async () => policy,
+    referenceCatalog: TEST_REFERENCE_CATALOG,
+    candidateExecutor: createSourceGroundedCandidateExecutor({
+      grounding,
+      resolveFrameworkLenses: (context, signal) =>
+        frameworkResolver.resolve(context, signal),
+      now: () => NOW,
+      execution: {
+        providerModel: "synthetic-test-lens",
+        promptVersion: "framework-lens-v1",
+        schemaVersion: "framework-judgment-v1",
+        settingsFingerprint: `sha256:${"b".repeat(64)}`,
+        applicationCommit: "task7-production-acceptance",
+      },
+      advisoryProviderTimeoutPolicy:
+        createNamedLensProviderTimeoutPolicy(advisoryProviderTimeoutMs),
+    }),
+    now: () => NOW,
+  });
+  const analyses = [analysisValue];
+  const request = {
+    scanRun,
+    report: report(analyses),
+    analyses,
+    eligibleDeals: [registeredDeal],
+    forceRefresh: false,
+  };
+  const batch = await orchestrator.createBatchAndSelections(request);
+  const bundle = artifacts.inspect().bundles[0];
+  assert.ok(bundle, JSON.stringify({
+    candidates: runs.inspect().candidates,
+    checkpoints: runs.inspect().checkpoints,
+    failureReasons: runs.inspect().failureReasons,
+    unavailableReasons: runs.inspect().unavailableReasons,
+  }));
+  return {
+    batch,
+    bundle,
+    runs,
+    namedLensArtifacts,
+    advisoryProviderCalls: () => advisoryProviderCalls,
+    replay: () => orchestrator.createBatchAndSelections(request),
+  };
+}
+
+for (const applicableLensCount of [0, 1, 2, 3, 4]) {
+  test(`production executor completes ${applicableLensCount} valid Named Lenses with truthful coverage`, async () => {
+    const result = await runProductionNamedLensAcceptanceCase({
+      applicableLensCount,
+    });
+    assert.equal(
+      result.batch.status,
+      "completed",
+      JSON.stringify(result.bundle.terminalReasonCodes),
+    );
+    assert.equal(
+      result.bundle.terminalStatus,
+      "completed",
+      String(applicableLensCount),
+    );
+    assert.equal(
+      result.bundle.namedLensPassages?.length,
+      applicableLensCount,
+      String(applicableLensCount),
+    );
+    assert.equal(
+      result.bundle.namedLensDispositions?.filter(({ disposition }) =>
+        disposition === "selected_main"
+      ).length,
+      applicableLensCount,
+      JSON.stringify(result.bundle.namedLensDispositions?.map((item) => ({
+        frameworkCardId: item.frameworkCardId,
+        disposition: item.disposition,
+        reasonCodes: item.reasonCodes,
+        decisionQuestionCode: item.decisionQuestionCode,
+        selectionBasisEvidenceIds: item.selectionBasisEvidenceIds,
+        advisoryPosture: item.advisoryPosture,
+      }))),
+    );
+    assert.equal(
+      (result.bundle.terminalReasonCodes ?? []).includes(
+        "limited_framework_coverage",
+      ),
+      applicableLensCount < 4,
+      String(applicableLensCount),
+    );
+    assert.equal(
+      result.bundle.judgments.filter(({ frameworkMetadata }) =>
+        frameworkMetadata === undefined
+      ).length,
+      8,
+      String(applicableLensCount),
+    );
+    assert.equal(
+      result.bundle.namedLensCatalogConsiderations?.length,
+      20,
+      String(applicableLensCount),
+    );
+    assert.ok(
+      (result.bundle.decisionCriticalEvidenceProjection?.evidenceRefs.length
+        ?? 0) > 0,
+      `candidate-level critical evidence must persist for ${applicableLensCount} applicable lenses`,
+    );
+  });
+}
+
+test("production executor persists a provider-executed applicable abstention as completed limited coverage", async () => {
+  const result = await runProductionNamedLensAcceptanceCase({
+    applicableLensCount: 1,
+    providerAbstains: true,
+  });
+  assert.equal(result.batch.status, "completed");
+  assert.equal(result.bundle.terminalStatus, "completed");
+  assert.deepEqual(
+    result.bundle.terminalReasonCodes,
+    ["limited_framework_coverage"],
+  );
+  assert.equal(result.bundle.namedLensPassages?.length, 0);
+  assert.equal(
+    result.bundle.namedLensDispositions?.filter(({ disposition }) =>
+      disposition === "abstained"
+    ).length,
+    1,
+  );
+  assert.ok(
+    (result.bundle.decisionCriticalEvidenceProjection?.evidenceRefs.length
+      ?? 0) > 0,
+  );
+  const candidate = result.runs.inspect().candidates[0]!;
+  const attempts = await result.namedLensArtifacts.listAttempts(
+    candidate.workspaceId,
+    candidate.id,
+  );
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0]?.status, "completed");
+  assert.equal(attempts[0]?.failureReason, null);
+});
+
+test("production executor degrades a non-low-confidence provider abstention without losing formal artifacts", async () => {
+  const result = await runProductionNamedLensAcceptanceCase({
+    applicableLensCount: 1,
+    providerAbstains: true,
+    providerAbstentionConfidence: "medium",
+  });
+
+  assert.equal(result.batch.status, "partial");
+  assert.equal(result.bundle.terminalStatus, "partial");
+  assert.deepEqual(result.bundle.terminalReasonCodes, ["UNAVAILABLE"]);
+  const candidate = result.runs.inspect().candidates[0]!;
+  assert.equal(candidate.status, "partial");
+  const providerJudgment = result.bundle.judgments.find(
+    ({ applicability, frameworkMetadata }) =>
+      frameworkMetadata !== undefined && applicability === "unavailable",
+  );
+  assert.ok(providerJudgment);
+  assert.deepEqual(
+    {
+      applicability: providerJudgment.applicability,
+      conclusion: providerJudgment.conclusion,
+      confidence: providerJudgment.confidence,
+    },
+    {
+      applicability: "unavailable",
+      conclusion: "abstain",
+      confidence: {
+        sourceReliability: "low",
+        evidenceStrength: "low",
+        evidenceCoverage: "low",
+        applicability: "low",
+        judgment: "low",
+      },
+    },
+  );
+  assert.equal(result.bundle.namedLensPassages?.length, 0);
+  assert.equal(result.bundle.scenarioModel.scenarios.length, 3);
+  assert.ok(result.bundle.valuation);
+  assert.equal(
+    result.bundle.judgments.filter(({ frameworkMetadata }) =>
+      frameworkMetadata === undefined
+    ).length,
+    8,
+  );
+  assert.ok(result.bundle.decision);
+  assert.ok(result.bundle.actionDrafts.length > 0);
+  assert.ok(result.bundle.narrative.length > 0);
+
+  const callsBeforeReplay = result.advisoryProviderCalls();
+  const attemptsBeforeReplay = await result.namedLensArtifacts.listAttempts(
+    candidate.workspaceId,
+    candidate.id,
+  );
+  const replayedBatch = await result.replay();
+  assert.equal(replayedBatch.id, result.batch.id);
+  assert.equal(result.advisoryProviderCalls(), callsBeforeReplay);
+  assert.deepEqual(
+    await result.namedLensArtifacts.listAttempts(
+      candidate.workspaceId,
+      candidate.id,
+    ),
+    attemptsBeforeReplay,
+  );
+});
+
+test("advisory prose, priority, and posture cannot change formal decision artifacts", async () => {
+  const baseline = await runProductionNamedLensAcceptanceCase({
+    applicableLensCount: 4,
+    advisoryVariant: "baseline",
+  });
+  const mutated = await runProductionNamedLensAcceptanceCase({
+    applicableLensCount: 4,
+    advisoryVariant: "mutated",
+  });
+  assert.deepEqual(mutated.bundle.valuation, baseline.bundle.valuation);
+  assert.deepEqual(mutated.bundle.decision, baseline.bundle.decision);
+  assert.deepEqual(
+    mutated.bundle.versionSnapshot.canonicalActions,
+    baseline.bundle.versionSnapshot.canonicalActions,
+  );
+  assert.deepEqual(
+    mutated.bundle.actionDrafts.map((draft) =>
+      "actions" in draft ? draft.actions : null
+    ),
+    baseline.bundle.actionDrafts.map((draft) =>
+      "actions" in draft ? draft.actions : null
+    ),
+  );
+  for (const stage of ["valuation", "decision"] as const) {
+    const baselineCheckpoint = baseline.runs.inspect().checkpoints.find(
+      (checkpoint) => checkpoint.stage === stage,
+    );
+    const mutatedCheckpoint = mutated.runs.inspect().checkpoints.find(
+      (checkpoint) => checkpoint.stage === stage,
+    );
+    assert.ok(baselineCheckpoint);
+    assert.ok(mutatedCheckpoint);
+    assert.equal(
+      mutatedCheckpoint.inputFingerprint,
+      baselineCheckpoint.inputFingerprint,
+      stage,
+    );
+    assert.equal(
+      mutatedCheckpoint.outputFingerprint,
+      baselineCheckpoint.outputFingerprint,
+      stage,
+    );
+  }
+  const selectedOrder = (bundle: typeof baseline.bundle) =>
+    bundle.namedLensDispositions
+      ?.filter(({ disposition }) => disposition === "selected_main")
+      .toSorted((left, right) =>
+        left.selectedPosition! - right.selectedPosition!
+      )
+      .map(({ frameworkCardId }) => frameworkCardId);
+  assert.notDeepEqual(
+    selectedOrder(mutated.bundle),
+    selectedOrder(baseline.bundle),
+  );
+  assert.notEqual(
+    mutated.bundle.namedLensPresentation?.fingerprint,
+    baseline.bundle.namedLensPresentation?.fingerprint,
+  );
+  assert.notEqual(
+    mutated.bundle.versionSnapshot.finalDispositionsFingerprint,
+    baseline.bundle.versionSnapshot.finalDispositionsFingerprint,
+  );
+});
+
+for (const failure of [
+  "provider",
+  "timeout",
+  "lineage",
+  "grounding",
+  "required_passage",
+] as const) {
+  test(`production executor isolates ${failure} lens failure and preserves formal artifacts`, async () => {
+    const result = await runProductionNamedLensAcceptanceCase({
+      applicableLensCount: 1,
+      failure,
+    });
+    assert.equal(result.batch.status, "partial", failure);
+    assert.equal(result.bundle.terminalStatus, "partial", failure);
+    const expectedReason = {
+      provider: "PROVIDER_TRANSPORT_FAILURE",
+      timeout: "PROVIDER_TIMEOUT",
+      lineage: "FOREIGN_PASSAGE_SOURCE",
+      grounding: "FOREIGN_PASSAGE_EVIDENCE",
+      required_passage: "FOREIGN_PASSAGE_FOCUS",
+    }[failure];
+    assert.deepEqual(
+      result.bundle.terminalReasonCodes,
+      [expectedReason],
+      failure,
+    );
+    assert.ok(
+      (result.bundle.decisionCriticalEvidenceProjection?.evidenceRefs.length
+        ?? 0) > 0,
+      failure,
+    );
+    assert.equal(result.bundle.scenarioModel.scenarios.length, 3, failure);
+    assert.equal(
+      result.bundle.scenarioModel.scenarios.every(
+        ({ inputs }) => inputs.length === 17,
+      ),
+      true,
+      failure,
+    );
+    assert.ok(result.bundle.valuation, failure);
+    assert.equal(
+      result.bundle.judgments.filter(({ frameworkMetadata }) =>
+        frameworkMetadata === undefined
+      ).length,
+      8,
+      failure,
+    );
+    assert.ok(result.bundle.decision, failure);
+    assert.ok(result.bundle.actionDrafts.length > 0, failure);
+    assert.ok(result.bundle.narrative.length > 0, failure);
+    assert.equal(
+      result.runs.inspect().candidates[0]?.status,
+      "partial",
+      failure,
+    );
+    const settledAttempts = await result.namedLensArtifacts.listAttempts(
+      result.runs.inspect().candidates[0]!.workspaceId,
+      result.runs.inspect().candidates[0]!.id,
+    );
+    assert.equal(settledAttempts.length >= 1, true, failure);
+    assert.equal(
+      settledAttempts.every(({ artifactSourceCandidateRunId }) =>
+        artifactSourceCandidateRunId
+          === result.runs.inspect().candidates[0]!.id
+      ),
+      true,
+      failure,
+    );
+    if (failure === "timeout") {
+      const timedOutAttempt = settledAttempts.find(
+        ({ failureReason }) => failureReason?.code === "timeout",
+      );
+      assert.equal(timedOutAttempt?.status, "aborted");
+      assert.match(timedOutAttempt?.failureReason?.detail ?? "", /bounded.*timeout/i);
+      assert.equal(
+        result.runs.inspect().checkpoints.find(
+          ({ stage }) => stage === "framework_lenses",
+        )?.status,
+        "completed",
+      );
+      const callsBeforeReplay = result.advisoryProviderCalls();
+      const replayedBatch = await result.replay();
+      assert.equal(replayedBatch.id, result.batch.id);
+      assert.equal(result.advisoryProviderCalls(), callsBeforeReplay);
+      assert.equal(
+        (await result.namedLensArtifacts.listAttempts(
+          result.runs.inspect().candidates[0]!.workspaceId,
+          result.runs.inspect().candidates[0]!.id,
+        )).length,
+        settledAttempts.length,
+      );
+    }
+  });
+}
+
+test("a force refresh nonce creates one new canonical artifact and deterministically reuses it on retry", async () => {
+  let sequence = 0;
+  const warnings: string[] = [];
+  let lensExecutions = 0;
   let groundingNow = new Date("2026-07-29T12:00:00.000Z");
   const artifacts = createMemoryUnderwritingArtifactsRepository();
   const evidencePacks = createMemoryEvidencePacksRepository();
@@ -2796,11 +3788,14 @@ test("a clock-advanced source-grounded force refresh aliases the canonical artif
     runs,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
+    onWarning: (warning) => warnings.push(warning),
     refreshNonce: () => `refresh_${++sequence}`,
-    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
+    candidateExecutor: createSourceGroundedCandidateExecutor({
       grounding,
+      frameworkCatalog: TEST_STATIC_FRAMEWORK_CATALOG,
       frameworkLenses: {
         async runAll(request) {
+          lensExecutions += 1;
           return canonicalFrameworkAbstentions(request);
         },
       },
@@ -2831,6 +3826,12 @@ test("a clock-advanced source-grounded force refresh aliases the canonical artif
   const refreshed = await orchestrator.createBatchAndSelections({
     ...input,
     forceRefresh: true,
+    refreshNonce: "refresh_retry_1",
+  });
+  const refreshedRetry = await orchestrator.createBatchAndSelections({
+    ...input,
+    forceRefresh: true,
+    refreshNonce: "refresh_retry_1",
   });
 
   const candidates = runs.inspect().candidates;
@@ -2842,12 +3843,171 @@ test("a clock-advanced source-grounded force refresh aliases the canonical artif
   );
   assert.ok(originalCandidate);
   assert.ok(refreshedCandidate);
-  assert.equal(refreshedCandidate.status, "completed");
-  assert.equal(
+  assert.equal(refreshedRetry.id, refreshed.id);
+  assert.equal(refreshedCandidate.status, "partial", JSON.stringify({
+    candidates,
+    failures: runs.inspect().failureReasons,
+    unavailable: runs.inspect().unavailableReasons,
+    warnings,
+  }));
+  assert.notEqual(
     refreshedCandidate.candidateAnalysisFingerprint,
     originalCandidate.candidateAnalysisFingerprint,
   );
-  assert.equal(artifacts.inspect().bundles.length, 1);
+  assert.equal(lensExecutions, 2);
+  assert.equal(artifacts.inspect().bundles.length, 2);
+  const refreshedBundle = await artifacts.getByCandidateRunId({
+    workspaceId: refreshedCandidate.workspaceId,
+    candidateRunId: refreshedCandidate.id,
+  });
+  assert.equal(
+    refreshedBundle?.sourceCandidateRunId,
+    refreshedCandidate.id,
+  );
+  assert.equal(
+    refreshedBundle?.versionSnapshot.refreshNonce,
+    "refresh_retry_1",
+  );
+  assert.deepEqual(
+    refreshedBundle?.terminalReasonCodes,
+    ["decision_critical_evidence_projection_unavailable"],
+  );
+});
+
+test("a refresh rejects a stale executor nonce before aliasing attempt-owning work", async () => {
+  let sequence = 0;
+  const candidateLeaseAuthority =
+    createMemoryUnderwritingCandidateLeaseAuthority({ now: () => NOW });
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority,
+  });
+  const artifacts = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
+  const evidencePacks = createMemoryEvidencePacksRepository();
+  const runs = createMemoryUnderwritingRunsRepository({
+    now: () => NOW,
+    idGenerator: (kind) => `${kind}_${++sequence}`,
+    leaseTokenGenerator: () => `lease_${++sequence}`,
+    artifacts,
+    namedLensArtifacts,
+    candidateLeaseAuthority,
+    evidencePacks,
+  });
+  const orchestrator = createUnderwritingOrchestrator({
+    runs,
+    namedLensArtifacts,
+    activeFundPolicy: async () => policy,
+    referenceCatalog: TEST_REFERENCE_CATALOG,
+    candidateExecutor: async (request) => {
+      if (request.refreshNonce !== null) {
+        const judgmentId = `judgment_${request.candidate.id}`;
+        const frameworkInputFingerprint = createCanonicalFingerprint({
+          stage: "framework_lenses",
+          candidateRunId: request.candidate.id,
+        });
+        await request.stages.run({
+          stage: "framework_lenses",
+          inputFingerprint: frameworkInputFingerprint,
+          parseOutput: (value) => value as { attempted: true },
+          operation: async () => {
+            await request.stages.runProviderAttempt({
+              stage: "framework_lenses",
+              inputFingerprint: frameworkInputFingerprint,
+              attemptFingerprint: createCanonicalFingerprint({
+                attempt: request.candidate.id,
+              }),
+              costUnits: 1,
+              tokenUnits: 4_000,
+              namedLensAttempt: {
+                judgmentOrCatalogCandidateId: judgmentId,
+                logicalPassageId:
+                  `${judgmentId}@named-lens-passage-v1@named-lens-generator-v1`,
+                attemptNumber: 1,
+              },
+              operation: async () => ({
+                text: "{}",
+                stopReason: "end_turn",
+                usage: {
+                  inputTokens: 10,
+                  outputTokens: 2,
+                  cacheCreationInputTokens: 0,
+                  cacheReadInputTokens: 0,
+                },
+              }),
+            });
+            return { attempted: true as const };
+          },
+        });
+      }
+      const result = finalization({
+        candidate: request.candidate,
+        candidateRunId: request.candidate.id,
+        dealId: request.deal.id,
+        workerId: request.workerId,
+        leaseToken: request.leaseToken,
+      });
+      await persistFinalizationFrameworkCatalogCheckpoint(
+        request.stages,
+        result,
+      );
+      // Deliberately emulate a stale/custom executor that ignores the refresh
+      // nonce and returns the ordinary-run identity after doing provider work.
+      result.versionSnapshot.refreshNonce = null;
+      await saveFinalizationBuild(evidencePacks, result);
+      return result;
+    },
+    now: () => NOW,
+  });
+  const analyses = [analysis("deal_a", 0.99)];
+  const input = {
+    scanRun,
+    report: report(analyses),
+    analyses,
+    eligibleDeals: [deal("deal_a")],
+  };
+
+  const original = await orchestrator.createBatchAndSelections({
+    ...input,
+    forceRefresh: false,
+  });
+  const refreshed = await orchestrator.createBatchAndSelections({
+    ...input,
+    forceRefresh: true,
+    refreshNonce: "refresh_stale_executor_1",
+  });
+  const candidates = runs.inspect().candidates;
+  const originalCandidate = candidates.find(
+    ({ batchId }) => batchId === original.id,
+  );
+  const refreshedCandidate = candidates.find(
+    ({ batchId }) => batchId === refreshed.id,
+  );
+  assert.ok(originalCandidate);
+  assert.ok(refreshedCandidate);
+  assert.equal(originalCandidate.status, "completed");
+  assert.equal(refreshedCandidate.status, "failed");
+  assert.equal(refreshedCandidate.artifactSourceCandidateRunId, null);
+  assert.equal(await artifacts.getByCandidateRunId({
+    workspaceId: refreshedCandidate.workspaceId,
+    candidateRunId: refreshedCandidate.id,
+  }), null);
+  const refreshAttempts = await namedLensArtifacts.listAttempts(
+    refreshedCandidate.workspaceId,
+    refreshedCandidate.id,
+  );
+  assert.equal(refreshAttempts.length, 1);
+  assert.equal(
+    refreshAttempts[0]?.artifactSourceCandidateRunId,
+    refreshedCandidate.id,
+  );
+  assert.equal(
+    (await namedLensArtifacts.listAttempts(
+      originalCandidate.workspaceId,
+      originalCandidate.id,
+    )).length,
+    0,
+  );
 });
 
 test("exhausted provider capacity is a visible truncation without starting the provider call", async () => {
@@ -2872,6 +4032,7 @@ test("exhausted provider capacity is a visible truncation without starting the p
     onWarning: (warning) => warnings.push(warning),
     candidateExecutor: createSourceGroundedCandidateExecutor({
       grounding,
+      frameworkCatalog: TEST_STATIC_FRAMEWORK_CATALOG,
       frameworkLenses: {
         async runAll(request) {
           assert.ok(request.providerAttempt);
@@ -2936,6 +4097,7 @@ test("exhausted provider capacity is a visible truncation without starting the p
       ["context_router", "completed"],
       ["evidence_pack", "completed"],
       ["valuation", "completed"],
+      ["framework_catalog", "completed"],
       ["framework_lenses", "failed"],
     ],
   );
@@ -2968,6 +4130,7 @@ test("settled provider overage blocks the next physical request before dispatch"
     candidateTokenUnits: 8_000,
     candidateExecutor: createSourceGroundedCandidateExecutor({
       grounding,
+      frameworkCatalog: TEST_STATIC_FRAMEWORK_CATALOG,
       frameworkLenses: {
         async runAll(request) {
           assert.ok(request.providerAttempt);
@@ -3333,6 +4496,7 @@ test("a reclaimed lease replays completed stages and restores provider usage wit
       workerId,
       leaseToken,
     });
+    await persistFinalizationFrameworkCatalogCheckpoint(stages, payload);
     await saveFinalizationBuild(evidencePacks, payload);
     return payload;
   };
@@ -3513,6 +4677,7 @@ test("framework timeout is visible unavailability and never generic failure or n
     },
     candidateExecutor: createSourceGroundedCandidateExecutor({
       grounding,
+      frameworkCatalog: TEST_STATIC_FRAMEWORK_CATALOG,
       frameworkLenses: {
         async runAll(request) {
           providerSignal = request.signal;
@@ -3942,6 +5107,73 @@ test("processes a confirmed uploaded Deal from the authoritative registry before
     underwritingInput?.analyses[0]?.dealId,
     "deal_uploaded",
   );
+});
+
+test("Worker parent run never reports completed over a partial or failed underwriting batch", async () => {
+  for (const underwritingStatus of ["partial", "failed"] as const) {
+    const { registry } = await uploadedDealRegistry();
+    const dataClient = createMemoryDataClient({ now: () => NOW });
+    const runs = createRunsRepository(dataClient);
+    await runs.create({
+      workspaceId: "workspace_1",
+      mode: "structured",
+      windowDays: 14,
+    });
+    const claimed = await runs.claimNext("worker_1");
+    assert.ok(claimed);
+    const result = await processClaimedRun(claimed, {
+      runs,
+      intelligence: createMemoryIntelligenceRepository({
+        now: () => NOW,
+        dealRegistry: registry,
+      }),
+      dealRegistry: registry,
+      importGate: { async assertReady() {} },
+      market: {
+        async scanMarketWindow() {
+          return {
+            status: "completed" as const,
+            window: {
+              from: "2026-07-15T12:00:00.000Z",
+              to: NOW.toISOString(),
+              days: 14 as const,
+            },
+            providers: [],
+            events: [],
+          };
+        },
+      },
+      reasoner: { async reason() { return []; } },
+      underwriting: {
+        async createBatchAndSelections() {
+          return {
+            id: `batch_${underwritingStatus}`,
+            workspaceId: "workspace_1",
+            scanRunId: claimed.id,
+            status: underwritingStatus,
+            batchInputFingerprint: `sha256:${"d".repeat(64)}`,
+            fundPolicySnapshotId: policy.id,
+            rerunOfId: null,
+            createdAt: NOW.toISOString(),
+          };
+        },
+        async processCandidate() {
+          throw new Error("The process-run seam owns automatic processing.");
+        },
+      },
+      now: () => NOW,
+    });
+
+    assert.equal(result.run.status, "partial", underwritingStatus);
+    assert.ok(
+      result.run.warnings.some((warning) =>
+        underwritingStatus === "partial"
+          ? /underwriting completed only partially/i.test(warning)
+          : /underwriting failed for every admitted candidate/i.test(warning)
+      ),
+      underwritingStatus,
+    );
+  }
 });
 
 test("structured mode matches an image-only Deal into the ranked opportunity report", async () => {

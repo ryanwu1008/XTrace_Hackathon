@@ -6,6 +6,11 @@ import type {
   ClaudeClient,
   MeasuredClaudeCompletion,
 } from "../../claude/client";
+import { IntegrationTransportError } from "../../api/errors";
+import {
+  CandidateBudgetExhaustedError,
+  CandidateProviderAttemptTimeoutError,
+} from "../candidate-stage-runtime";
 import {
   CalculationSchema,
   EvidencePackSchema,
@@ -63,6 +68,10 @@ import {
   groundNamedLensPassage,
   type NamedLensPassageValidationResult,
 } from "./passage-grounding";
+import {
+  createNamedLensProviderTimeoutPolicy,
+  type NamedLensProviderTimeoutPolicy,
+} from "./timeout-policy";
 
 export interface FrameworkLensExecutionSettings {
   provider: string;
@@ -141,6 +150,25 @@ type FrameworkLensRunRecord = Pick<
   | "passageValidationResult"
 >;
 
+export interface FrameworkLensAdvisoryFailure {
+  judgmentOrCatalogCandidateId: string;
+  frameworkCardId: string;
+  frameworkVersion: string;
+  reasonCode:
+    | "provider_transport_failure"
+    | "provider_budget_exhausted"
+    | "provider_timeout";
+}
+
+type FrameworkLensRunOutcome =
+  | (FrameworkLensRunRecord & { advisoryFailure: null })
+  | {
+    judgment: null;
+    passageCandidate: null;
+    passageValidationResult: null;
+    advisoryFailure: FrameworkLensAdvisoryFailure;
+  };
+
 export interface FrameworkLensCache {
   find(fingerprint: string): Promise<FrameworkLensCacheRecord | null>;
   save(record: FrameworkLensCacheRecord): Promise<void>;
@@ -194,6 +222,7 @@ const FrameworkLensCacheRecordSchema = z.strictObject({
 });
 
 export interface FrameworkLensService {
+  readonly advisoryProviderTimeoutPolicy?: NamedLensProviderTimeoutPolicy;
   runAll(input: {
     candidate: CandidateRun;
     pack: EvidencePack;
@@ -208,6 +237,7 @@ export interface FrameworkLensService {
     passageResults: NamedLensPassageValidationResult[];
     taxonomyByFrameworkId: Readonly<Record<string, DecisionTaxonomyBinding>>;
     passageContract: FrameworkLensPassageContract;
+    advisoryFailures?: FrameworkLensAdvisoryFailure[];
   }>;
 }
 
@@ -390,6 +420,7 @@ export function createFrameworkLensService(options: {
   cards?: readonly FrameworkCard[];
   advisoryCatalog?: ResearchFrameworkCatalog;
   concurrency?: number;
+  advisoryProviderTimeoutMs?: number;
   cache?: FrameworkLensCache;
   isApplicable?: (
     card: FrameworkCard,
@@ -413,12 +444,16 @@ export function createFrameworkLensService(options: {
   const concurrency = validateConcurrency(options.concurrency ?? 4);
   const cache = options.cache ?? createMemoryFrameworkLensCache();
   const execution = validateExecutionSettings(options.execution);
+  const advisoryProviderTimeoutPolicy = createNamedLensProviderTimeoutPolicy(
+    options.advisoryProviderTimeoutMs,
+  );
   const inFlightRecords = new Map<
     string,
     Promise<FrameworkLensCacheRecord>
   >();
 
   return {
+    advisoryProviderTimeoutPolicy,
     async runAll(rawInput) {
       throwIfAborted(rawInput.signal);
       const candidate = CandidateRunSchema.parse(rawInput.candidate);
@@ -450,7 +485,7 @@ export function createFrameworkLensService(options: {
       const lensRecords = await stableConcurrentMap(
         cards,
         concurrency,
-        async (card): Promise<FrameworkLensRunRecord> => {
+        async (card): Promise<FrameworkLensRunOutcome> => {
           throwIfAborted(rawInput.signal);
           const scopedCalculations = isValuationFrameworkCard(card)
             ? calculations
@@ -491,6 +526,7 @@ export function createFrameworkLensService(options: {
             calculations: scopedCalculations,
             execution,
             authorization,
+            advisoryProviderTimeoutPolicy,
           });
           if (experimentalAdvisory && !authorizedAdvisory) {
             return {
@@ -506,6 +542,7 @@ export function createFrameworkLensService(options: {
               }),
               passageCandidate: null,
               passageValidationResult: null,
+              advisoryFailure: null,
             };
           }
           const binding = createCacheBinding({
@@ -515,10 +552,12 @@ export function createFrameworkLensService(options: {
             card,
             authorization,
           });
-          const record = await coalesceFrameworkLensRecord({
-            records: inFlightRecords,
-            fingerprint,
-            execute: async () => {
+          let record: FrameworkLensCacheRecord;
+          try {
+            record = await coalesceFrameworkLensRecord({
+              records: inFlightRecords,
+              fingerprint,
+              execute: async () => {
               const replayed = await cache.find(fingerprint);
               if (replayed) {
                 return validateCacheReplay({
@@ -591,16 +630,22 @@ export function createFrameworkLensService(options: {
                     retainAdvisoryMetadata: true,
                   });
                 } else {
-                  const result = await runClaudeFrameworkLens({
-                    client: options.client,
-                    candidate,
-                    pack,
-                    context,
-                    calculations: scopedCalculations,
-                    card,
-                    fingerprint,
-                    signal: rawInput.signal,
+                  const result = await runAuthorizedAdvisoryWithTimeout({
+                    timeoutPolicy: advisoryProviderTimeoutPolicy,
+                    outerSignal: rawInput.signal,
                     providerAttempt: rawInput.providerAttempt,
+                    operation: (signal, providerAttempt) =>
+                      runClaudeFrameworkLens({
+                        client: options.client,
+                        candidate,
+                        pack,
+                        context,
+                        calculations: scopedCalculations,
+                        card,
+                        fingerprint,
+                        signal,
+                        providerAttempt,
+                      }),
                   });
                   judgment = result.judgment;
                   passageCandidate = result.passageCandidate;
@@ -678,19 +723,58 @@ export function createFrameworkLensService(options: {
               );
               if (replayVerifiable) await cache.save(freshRecord);
               return freshRecord;
-            },
-          });
+              },
+            });
+          } catch (error) {
+            throwIfAborted(rawInput.signal);
+            const advisoryFailureReason =
+              error instanceof CandidateBudgetExhaustedError
+                ? "provider_budget_exhausted" as const
+                : error instanceof CandidateProviderAttemptTimeoutError
+                ? "provider_timeout" as const
+                : error instanceof IntegrationTransportError
+                ? "provider_transport_failure" as const
+                : null;
+            if (
+              authorizedAdvisory
+              && experimentalAdvisory
+              && advisoryFailureReason !== null
+            ) {
+              return {
+                judgment: null,
+                passageCandidate: null,
+                passageValidationResult: null,
+                advisoryFailure: {
+                  judgmentOrCatalogCandidateId: createFrameworkJudgmentId(
+                    candidate.id,
+                    card.id,
+                    fingerprint,
+                  ),
+                  frameworkCardId: card.id,
+                  frameworkVersion: card.version,
+                  reasonCode: advisoryFailureReason,
+                },
+              };
+            }
+            throw error;
+          }
           return {
             judgment: structuredClone(record.judgment),
             passageCandidate: structuredClone(record.passageCandidate),
             passageValidationResult: structuredClone(
               record.passageValidationResult,
             ),
+            advisoryFailure: null,
           };
         },
       );
-      const judgments = lensRecords.map(({ judgment }) => judgment);
-      const passageCandidates = lensRecords.flatMap((record) =>
+      const completedLensRecords = lensRecords.filter(
+        (record): record is FrameworkLensRunRecord & {
+          advisoryFailure: null;
+        } => record.advisoryFailure === null,
+      );
+      const judgments = completedLensRecords.map(({ judgment }) => judgment);
+      const passageCandidates = completedLensRecords.flatMap((record) =>
         record.passageCandidate
           ? [{
             judgmentOrCatalogCandidateId: record.judgment.id,
@@ -699,11 +783,11 @@ export function createFrameworkLensService(options: {
           }]
           : []
       );
-      const passageResults = lensRecords.flatMap((record) =>
+      const passageResults = completedLensRecords.flatMap((record) =>
         record.passageValidationResult ? [record.passageValidationResult] : []
       );
       const taxonomyByFrameworkId = buildPassageTaxonomyBindingRecord(
-        lensRecords,
+        completedLensRecords,
       );
       return {
         judgments,
@@ -712,9 +796,86 @@ export function createFrameworkLensService(options: {
         passageResults,
         taxonomyByFrameworkId,
         passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+        advisoryFailures: lensRecords.flatMap(({ advisoryFailure }) =>
+          advisoryFailure ? [advisoryFailure] : []
+        ),
       };
     },
   };
+}
+
+async function runAuthorizedAdvisoryWithTimeout<T>(input: {
+  timeoutPolicy: NamedLensProviderTimeoutPolicy;
+  outerSignal?: AbortSignal;
+  providerAttempt?: FrameworkProviderAttemptExecutor;
+  operation(
+    signal: AbortSignal,
+    providerAttempt: FrameworkProviderAttemptExecutor,
+  ): Promise<T>;
+}): Promise<T> {
+  throwIfAborted(input.outerSignal);
+  const controller = new AbortController();
+  const relayOuterAbort = () => {
+    controller.abort(input.outerSignal?.reason);
+  };
+  input.outerSignal?.addEventListener("abort", relayOuterAbort, { once: true });
+  const timeout = setTimeout(() => {
+    controller.abort(
+      new CandidateProviderAttemptTimeoutError(input.timeoutPolicy.timeoutMs),
+    );
+  }, input.timeoutPolicy.timeoutMs);
+  timeout.unref?.();
+  const providerAttempt: FrameworkProviderAttemptExecutor = {
+    execute(request) {
+      const boundedOperation = () => raceOperationWithAbort(
+        request.operation,
+        controller.signal,
+      );
+      return input.providerAttempt
+        ? input.providerAttempt.execute({
+            ...request,
+            operation: boundedOperation,
+          })
+        : boundedOperation();
+    },
+  };
+  try {
+    return await input.operation(controller.signal, providerAttempt);
+  } finally {
+    clearTimeout(timeout);
+    input.outerSignal?.removeEventListener("abort", relayOuterAbort);
+  }
+}
+
+function raceOperationWithAbort<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(
+      signal.reason instanceof Error
+        ? signal.reason
+        : new Error("Named Lens provider execution was aborted."),
+    ));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void Promise.resolve()
+      .then(() => {
+        throwIfAborted(signal);
+        return operation();
+      })
+      .then(
+        (value) => finish(() => resolve(value)),
+        (error: unknown) => finish(() => reject(error)),
+      );
+  });
 }
 
 function coalesceFrameworkLensRecord(input: {
@@ -1035,7 +1196,8 @@ function validateCacheReplay(input: {
   expectedEdges.sort((left, right) =>
     compareUtf8(left.dependencyItemId, right.dependencyItemId)
   );
-  const abstained = record.judgment.applicability !== "applicable";
+  const abstained = record.judgment.applicability !== "applicable"
+    || record.judgment.conclusion === "abstain";
   const advisoryNoCounter = input.authorizedAdvisory
     && "counterevidenceBoundary" in record.judgment
     && record.judgment.counterevidenceBoundary.kind
@@ -1084,6 +1246,7 @@ function createFrameworkLensFingerprint(input: {
   calculations: Calculation[];
   execution: FrameworkLensExecutionSettings;
   authorization: FrameworkLensAuthorization;
+  advisoryProviderTimeoutPolicy: NamedLensProviderTimeoutPolicy;
 }): string {
   const canonical = canonicalJson({
     kind: "framework-lens-execution-v2",
@@ -1098,6 +1261,8 @@ function createFrameworkLensFingerprint(input: {
     calculations: input.calculations,
     authorization: input.authorization,
     passageContract: passageContractFor(input.card),
+    advisoryProviderTimeoutPolicy:
+      input.advisoryProviderTimeoutPolicy,
     provider: input.execution.provider,
     model: input.execution.model,
     promptVersion: input.execution.promptVersion,

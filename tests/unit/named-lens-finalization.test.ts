@@ -45,6 +45,10 @@ import {
   authorizedResearchComposites,
   loadResearchFrameworkCatalog,
 } from "../../lib/underwriting/frameworks/research-loader";
+import { createCanonicalFingerprint } from
+  "../../lib/underwriting/fingerprints";
+import { createNamedLensSemanticFingerprints } from
+  "../../lib/underwriting/named-lens-presentation";
 
 const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
 
@@ -210,7 +214,7 @@ function currentArtifacts(count = 4) {
       classification: "fact",
       originRefs: [{ kind: "fired_rule", id: `rule_${index + 1}` }],
       reasonCodes: ["FORMAL_DECISION_RULE_INPUT"],
-      resolutionPath: [`rule_${index + 1}`, `fact_${index + 1}`],
+      resolutionPath: [`fact_${index + 1}`, `rule_${index + 1}`],
     }],
     selectionPolicyVersion: "named-lens-selection-v1",
     passageFingerprint: passage.fingerprint,
@@ -415,6 +419,20 @@ test("rejects equal-sized catalog substitution of advisory identity or version",
 
 test("resolves critical, passage, and disposition refs to the saved pack and judgment", () => {
   const valid = currentArtifacts();
+  const duplicateReason = structuredClone(valid);
+  duplicateReason.decisionCriticalEvidenceProjection.evidenceRefs[0]!
+    .reasonCodes = [
+      "FORMAL_DECISION_RULE_INPUT",
+      "FORMAL_DECISION_RULE_INPUT",
+    ];
+  duplicateReason.dispositions[0]!.criticalEvidence[0]!.reasonCodes = [
+    "FORMAL_DECISION_RULE_INPUT",
+    "FORMAL_DECISION_RULE_INPUT",
+  ];
+  assert.throws(
+    () => validateNamedLensFinalization(duplicateReason),
+    /reason codes|unique|sorted/i,
+  );
   assert.throws(() => validateNamedLensFinalization({
     ...valid,
     dispositions: [{
@@ -683,6 +701,93 @@ test("memory row counts include global attempt events once and exclude aliases",
   assert.equal(counts.underwritingPresentations, 2);
 });
 
+test("current finalization requires every identity pin and recomputes the persisted Named Lens graph", () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const prepare = (finalization: typeof fixture.finalization) => {
+    const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+      candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+    });
+    for (const event of fixture.rawAttemptEvents) {
+      namedLensArtifacts.recordAttemptEvent(event);
+    }
+    return createMemoryUnderwritingArtifactsRepository({
+      namedLensArtifacts,
+    }).prepareFinalization({
+      candidate: {
+        id: finalization.candidateRunId,
+        workspaceId: finalization.evidencePack.workspaceId,
+        dealId: finalization.evidencePack.dealId,
+        fundPolicySnapshotId: finalization.versionSnapshot.fundPolicyId,
+      },
+      finalization,
+    });
+  };
+  assert.doesNotThrow(() => prepare(fixture.finalization));
+  for (const field of [
+    "frameworkCatalogVersion",
+    "frameworkCatalogFingerprint",
+    "frameworkCorpusDigest",
+    "decisionTaxonomyDigest",
+    "criticalEvidenceProjectionFingerprint",
+    "finalDispositionsFingerprint",
+    "presentationFingerprint",
+    "refreshNonce",
+  ] as const) {
+    const missing = structuredClone(fixture.finalization);
+    delete (missing.versionSnapshot as unknown as Record<string, unknown>)[
+      field
+    ];
+    assert.throws(
+      () => prepare(missing),
+      /identity|fingerprint|refresh|current named lens/i,
+      field,
+    );
+  }
+  const mutations: Array<{
+    name: string;
+    mutate: (value: typeof fixture.finalization) => void;
+  }> = [{
+    name: "taxonomy digest",
+    mutate: (value) => {
+      value.versionSnapshot.decisionTaxonomyDigest = sha("f");
+    },
+  }, {
+    name: "projection snapshot",
+    mutate: (value) => {
+      value.versionSnapshot.criticalEvidenceProjectionFingerprint = sha("f");
+    },
+  }, {
+    name: "projection row",
+    mutate: (value) => {
+      value.decisionCriticalEvidenceProjection!.fingerprint = sha("f");
+    },
+  }, {
+    name: "disposition aggregate",
+    mutate: (value) => {
+      value.versionSnapshot.finalDispositionsFingerprint = sha("f");
+    },
+  }, {
+    name: "presentation snapshot",
+    mutate: (value) => {
+      value.versionSnapshot.presentationFingerprint = sha("f");
+    },
+  }, {
+    name: "presentation row",
+    mutate: (value) => {
+      value.namedLensPresentation!.fingerprint = sha("f");
+    },
+  }];
+  for (const { name, mutate } of mutations) {
+    const changed = structuredClone(fixture.finalization);
+    mutate(changed);
+    assert.throws(
+      () => prepare(changed),
+      /fingerprint|taxonomy|persistence graph/i,
+      name,
+    );
+  }
+});
+
 function namedLensOnlyPartialWithFormalPlaceholders() {
   const fixture = createCurrentNamedLensFinalizationFixture();
   const finalization = structuredClone(fixture.finalization);
@@ -766,6 +871,18 @@ function namedLensOnlyPartialWithFormalPlaceholders() {
   finalization.terminalReasonCodes = [
     "named_lens_passage_attempts_exhausted",
   ];
+  const {
+    fingerprint: _presentationFingerprint,
+    ...presentationWithoutFingerprint
+  } = finalization.namedLensPresentation!;
+  finalization.versionSnapshot.finalDispositionsFingerprint =
+    createNamedLensSemanticFingerprints({
+      evidenceRefs:
+        finalization.decisionCriticalEvidenceProjection!.evidenceRefs,
+      dispositions: finalization.namedLensDispositions!,
+      passages: finalization.namedLensPassages!,
+      presentation: presentationWithoutFingerprint,
+    }).finalDispositionsFingerprint;
   return {
     finalization,
     persistedAttempts: [...fixture.persistedAttempts, failedAttempt],
@@ -834,6 +951,37 @@ test("Named Lens-only partial finalization rejects unavailable formal placeholde
           fundPolicySnapshotId: fixture.finalization.versionSnapshot.fundPolicyId,
           rerunOfId: null,
           createdAt: "2026-08-10T11:00:00.000Z",
+        }]);
+      }
+      if (parsed.pathname.endsWith("/candidate_checkpoints")) {
+        const inputFingerprint = sha("a");
+        const outputPayload = {
+          catalogVersion:
+            fixture.finalization.versionSnapshot.frameworkCatalogVersion,
+          catalogFingerprint:
+            fixture.finalization.versionSnapshot.frameworkCatalogFingerprint,
+          corpusDigest:
+            fixture.finalization.versionSnapshot.frameworkCorpusDigest,
+        };
+        return Response.json([{
+          candidate_run_id: candidate.id,
+          stage: "framework_catalog",
+          status: "completed",
+          input_fingerprint: inputFingerprint,
+          output_fingerprint: createCanonicalFingerprint({
+            stage: "framework_catalog",
+            inputFingerprint,
+            result: outputPayload,
+          }),
+          output_payload: outputPayload,
+          attempt_count: 1,
+          cost_units: 0,
+          token_units: 0,
+          actual_token_units: 0,
+          provider_attempts: [],
+          reason_code: null,
+          public_reason: null,
+          saved_at: "2026-08-10T11:30:00.000Z",
         }]);
       }
       if (parsed.pathname.endsWith(
@@ -965,7 +1113,7 @@ function currentReadFetch(
       workspace_id: current.evidencePack.workspaceId,
       deal_id: current.evidencePack.dealId,
       status: "completed",
-      unavailable_reason_codes: [],
+      unavailable_reason_codes: ["limited_framework_coverage"],
       candidate_analysis_fingerprint: current.candidateAnalysisFingerprint,
       artifact_source_candidate_run_id: null,
       rerun_of_id: null,
@@ -1029,7 +1177,7 @@ test("Supabase current bundle reads every Named Lens row authority before recons
           workspace_id: current.evidencePack.workspaceId,
           deal_id: current.evidencePack.dealId,
           status: "completed",
-          unavailable_reason_codes: [],
+          unavailable_reason_codes: ["limited_framework_coverage"],
           candidate_analysis_fingerprint:
             current.candidateAnalysisFingerprint,
           artifact_source_candidate_run_id: null,
@@ -1179,6 +1327,64 @@ test("Supabase current bundle reads fail closed on missing or foreign Named Lens
     foreignPresentation.getByCandidateRunId(input),
     /candidate-local|presentation|artifact/i,
   );
+});
+
+test("Supabase completed-limited alias reads preserve the exact canonical reason", async () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const current = fixture.finalization;
+  const canonicalId = current.candidateRunId;
+  const aliasId = "candidate_completed_limited_alias";
+  const canonicalFetch = currentReadFetch(fixture);
+  const repository = createSupabaseUnderwritingArtifactsRepository({
+    url: "https://supabase.example",
+    serviceRoleKey: "secret",
+    fetchImpl: async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.endsWith("/candidate_runs")) {
+        const id = parsed.searchParams.get("id");
+        if (id === `eq.${aliasId}`) {
+          return Response.json([{
+            id: aliasId,
+            batch_id: "batch_alias",
+            workspace_id: current.evidencePack.workspaceId,
+            deal_id: current.evidencePack.dealId,
+            status: "completed",
+            unavailable_reason_codes: ["limited_framework_coverage"],
+            candidate_analysis_fingerprint:
+              current.candidateAnalysisFingerprint,
+            artifact_source_candidate_run_id: canonicalId,
+            rerun_of_id: canonicalId,
+          }]);
+        }
+        if (id === `eq.${canonicalId}`) {
+          return Response.json([{
+            id: canonicalId,
+            batch_id: "batch_current",
+            workspace_id: current.evidencePack.workspaceId,
+            deal_id: current.evidencePack.dealId,
+            status: "completed",
+            unavailable_reason_codes: ["limited_framework_coverage"],
+            candidate_analysis_fingerprint:
+              current.candidateAnalysisFingerprint,
+            artifact_source_candidate_run_id: null,
+            rerun_of_id: null,
+          }]);
+        }
+      }
+      return canonicalFetch(url);
+    },
+  });
+
+  const bundle = await repository.getByCandidateRunId({
+    workspaceId: current.evidencePack.workspaceId,
+    candidateRunId: aliasId,
+  });
+
+  assert.equal(bundle?.candidateRunId, aliasId);
+  assert.equal(bundle?.sourceCandidateRunId, canonicalId);
+  assert.equal(bundle?.terminalStatus, "completed");
+  assert.deepEqual(bundle?.terminalReasonCodes,
+    ["limited_framework_coverage"]);
 });
 
 test("Supabase alias reads validate the canonical source before loading its owning batch", async () => {
@@ -1453,6 +1659,34 @@ test("a partial finalization preserves typed coverage reasons and enters canonic
     terminalStatus: "partial",
     terminalReasonCodes: ["named_lens_passage_attempts_exhausted"],
   } as unknown as CandidateArtifactBundle;
+  const catalogIdentity = {
+    catalogVersion: "framework-catalog-test-v1",
+    catalogFingerprint: sha("c"),
+    corpusDigest: sha("d"),
+  };
+  const catalogInputFingerprint = sha("a");
+  await runs.saveCheckpoint({
+    workerId: "worker_1",
+    leaseToken: claimed!.leaseToken,
+    candidateRunId: candidate!.id,
+    stage: "framework_catalog",
+    status: "completed",
+    inputFingerprint: catalogInputFingerprint,
+    outputFingerprint: createCanonicalFingerprint({
+      stage: "framework_catalog",
+      inputFingerprint: catalogInputFingerprint,
+      result: catalogIdentity,
+    }),
+    outputPayload: catalogIdentity,
+    attemptCount: 1,
+    costUnits: 0,
+    tokenUnits: 0,
+    actualTokenUnits: 0,
+    providerAttempts: [],
+    reasonCode: null,
+    publicReason: null,
+    savedAt: "2026-08-10T12:00:00.000Z",
+  });
   artifacts.prepareFinalization = () => partialBundle;
   const result = await runs.finalizeCandidate({
     workerId: "worker_1",
@@ -1461,6 +1695,11 @@ test("a partial finalization preserves typed coverage reasons and enters canonic
     candidateAnalysisFingerprint: sha("a"),
     evidencePackBuildInputFingerprint: sha("e"),
     evidencePack,
+    versionSnapshot: {
+      frameworkCatalogVersion: catalogIdentity.catalogVersion,
+      frameworkCatalogFingerprint: catalogIdentity.catalogFingerprint,
+      frameworkCorpusDigest: catalogIdentity.corpusDigest,
+    },
   } as unknown as CandidateFinalization);
 
   assert.equal(result.status, "partial");

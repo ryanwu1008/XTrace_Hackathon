@@ -17,6 +17,8 @@ import {
   IntegrationTransportError,
   isRetryableTransportStatus,
 } from "../../lib/api/errors";
+import { createCanonicalFingerprint } from
+  "../../lib/underwriting/fingerprints";
 import {
   createMemoryUnderwritingArtifactsRepository,
   prepareCandidateFinalization,
@@ -678,10 +680,25 @@ export function createMemoryUnderwritingRunsRepository(
         input.candidateAnalysisFingerprint,
         "A candidate analysis fingerprint",
       );
-      const reusable = await artifacts.findReusable({
-        workspaceId: candidate.workspaceId,
-        candidateAnalysisFingerprint,
-      });
+      const owningBatch = batchById(candidate.batchId);
+      const persistedRefreshNonce = owningBatch.refreshNonce;
+      const finalizationRefreshNonce = input.versionSnapshot?.refreshNonce;
+      if (
+        owningBatch.forceRefresh
+          ? finalizationRefreshNonce !== persistedRefreshNonce
+          : finalizationRefreshNonce !== undefined
+            && finalizationRefreshNonce !== null
+      ) {
+        throw new Error(
+          "Candidate finalization refresh identity does not match its owning batch.",
+        );
+      }
+      const reusable = owningBatch.forceRefresh
+        ? null
+        : await artifacts.findReusable({
+          workspaceId: candidate.workspaceId,
+          candidateAnalysisFingerprint,
+        });
       if (reusable) {
         if (
           candidate.rerunOfId !== reusable.candidateRunId
@@ -730,13 +747,20 @@ export function createMemoryUnderwritingRunsRepository(
           "Non-reuse finalization requires the exact immutable Evidence Pack build.",
         );
       }
+      assertFrameworkCatalogCheckpointAuthority(
+        input,
+        checkpoints.get(checkpointIdentity(
+          candidate.id,
+          "framework_catalog",
+        )),
+      );
       const prepared = artifacts.prepareFinalization({
         candidate: {
           ...candidate,
           fundPolicySnapshotId:
-            batchById(candidate.batchId).value.fundPolicySnapshotId,
+            owningBatch.value.fundPolicySnapshotId,
           fundPolicyValues:
-            batchById(candidate.batchId).fundPolicyValues ?? undefined,
+            owningBatch.fundPolicyValues ?? undefined,
         },
         finalization: input,
       });
@@ -879,13 +903,69 @@ export function createSupabaseUnderwritingRunsRepository(options: {
         "Finalization requires exactly one persisted owning batch identity.",
       );
     }
-    const batch = parseBatch(batchRows[0]);
+    const persistedBatchRow = batchRows[0] as Record<string, unknown>;
+    const batch = parseBatch(persistedBatchRow);
     if (
       batch.id !== candidate.batchId
       || batch.workspaceId !== candidate.workspaceId
     ) {
       throw new Error(
         "The persisted candidate and underwriting batch identity do not align.",
+      );
+    }
+    const batchForceRefresh =
+      persistedBatchRow.forceRefresh
+      ?? persistedBatchRow.force_refresh
+      ?? false;
+    const batchRefreshNonce =
+      persistedBatchRow.refreshNonce
+      ?? persistedBatchRow.refresh_nonce
+      ?? null;
+    const finalizationRefreshNonce = input.versionSnapshot?.refreshNonce;
+    if (
+      batchForceRefresh === true
+        ? typeof batchRefreshNonce !== "string"
+          || batchRefreshNonce.trim() === ""
+          || finalizationRefreshNonce !== batchRefreshNonce
+        : finalizationRefreshNonce !== undefined
+          && finalizationRefreshNonce !== null
+    ) {
+      throw new Error(
+        "Candidate finalization refresh identity does not match its persisted owning batch.",
+      );
+    }
+    assertCurrentNamedLensIdentityCompleteness(input);
+    const frameworkCatalogIdentity = frameworkCatalogIdentityForFinalization(
+      input,
+    );
+    const checkpointQuery = new URLSearchParams({
+      workspace_id: `eq.${candidate.workspaceId}`,
+      candidate_run_id: `eq.${candidate.id}`,
+      stage: "eq.framework_catalog",
+      status: "eq.completed",
+      limit: "2",
+    });
+    const checkpointRows = await read(
+      `/candidate_checkpoints?${checkpointQuery}`,
+    );
+    if (!Array.isArray(checkpointRows) || checkpointRows.length !== 1) {
+      throw new Error(
+        "Finalization requires one completed Framework catalog checkpoint.",
+      );
+    }
+    const frameworkCatalogCheckpoint = parseCheckpoint(checkpointRows[0]);
+    if (
+      !isDeepStrictEqual(
+        frameworkCatalogCheckpoint.outputPayload,
+        frameworkCatalogIdentity,
+      )
+      || frameworkCatalogCheckpoint.outputFingerprint
+        !== frameworkCatalogCheckpointFingerprint(
+          frameworkCatalogCheckpoint,
+        )
+    ) {
+      throw new Error(
+        "Candidate finalization Framework catalog identity does not match its completed checkpoint.",
       );
     }
     let fundPolicyValues: FundPolicySnapshot["values"] | undefined;
@@ -1207,9 +1287,7 @@ export function createSupabaseUnderwritingRunsRepository(options: {
       const expectedStatus = input.terminalStatus === "partial"
         ? "partial"
         : "completed";
-      const expectedReasons = expectedStatus === "partial"
-        ? input.terminalReasonCodes ?? []
-        : [];
+      const expectedReasons = input.terminalReasonCodes ?? [];
       if (
         finalized.status !== expectedStatus
         || !isDeepStrictEqual(
@@ -1301,6 +1379,105 @@ function parseCheckpoint(value: unknown): CandidateCheckpoint {
     reasonCode: row.reasonCode ?? row.reason_code ?? null,
     publicReason: row.publicReason ?? row.public_reason ?? null,
     savedAt: row.savedAt ?? row.saved_at,
+  });
+}
+
+function frameworkCatalogIdentityForFinalization(
+  input: CandidateFinalization,
+): {
+  catalogVersion: string;
+  catalogFingerprint: string;
+  corpusDigest: string;
+} {
+  const catalogVersion = input.versionSnapshot?.frameworkCatalogVersion;
+  const catalogFingerprint =
+    input.versionSnapshot?.frameworkCatalogFingerprint;
+  const corpusDigest = input.versionSnapshot?.frameworkCorpusDigest;
+  if (
+    typeof catalogVersion !== "string"
+    || typeof catalogFingerprint !== "string"
+    || typeof corpusDigest !== "string"
+  ) {
+    throw new Error(
+      "Current finalization requires the complete Framework catalog identity.",
+    );
+  }
+  return {
+    catalogVersion: requiredText(
+      catalogVersion,
+      "A current Framework catalog version",
+    ),
+    catalogFingerprint: requiredFingerprint(
+      catalogFingerprint,
+      "A current Framework catalog fingerprint",
+    ),
+    corpusDigest: requiredFingerprint(
+      corpusDigest,
+      "A current Framework corpus digest",
+    ),
+  };
+}
+
+function assertCurrentNamedLensIdentityCompleteness(
+  input: CandidateFinalization,
+): void {
+  const snapshot = input.versionSnapshot ?? {};
+  const currentIdentity = [
+    snapshot.decisionTaxonomyDigest,
+    snapshot.criticalEvidenceProjectionFingerprint,
+    snapshot.finalDispositionsFingerprint,
+    snapshot.presentationFingerprint,
+    snapshot.refreshNonce,
+  ];
+  const versions = [
+    snapshot.namedLensSelectionPolicyVersion,
+    snapshot.namedLensPassageSchemaVersion,
+    snapshot.namedLensGeneratorVersion,
+    snapshot.underwritingPresentationSchemaVersion,
+    snapshot.decisionTaxonomyVersion,
+  ];
+  if (
+    currentIdentity.some((value) => value !== undefined)
+    && versions.some((value) => value === undefined)
+  ) {
+    throw new Error(
+      "Current Named Lens identity fingerprints require the complete version set.",
+    );
+  }
+}
+
+function assertFrameworkCatalogCheckpointAuthority(
+  input: CandidateFinalization,
+  checkpoint: CandidateCheckpoint | undefined,
+): void {
+  const expected = frameworkCatalogIdentityForFinalization(input);
+  if (
+    !checkpoint
+    || checkpoint.stage !== "framework_catalog"
+    || checkpoint.status !== "completed"
+    || !isDeepStrictEqual(checkpoint.outputPayload, expected)
+    || checkpoint.outputFingerprint
+      !== frameworkCatalogCheckpointFingerprint(checkpoint)
+  ) {
+    throw new Error(
+      "Candidate finalization Framework catalog identity does not match its completed checkpoint.",
+    );
+  }
+}
+
+function frameworkCatalogCheckpointFingerprint(
+  checkpoint: Pick<
+    CandidateCheckpoint,
+    "inputFingerprint" | "outputPayload"
+  >,
+): string {
+  return createCanonicalFingerprint({
+    stage: "framework_catalog",
+    inputFingerprint: requiredFingerprint(
+      checkpoint.inputFingerprint,
+      "A Framework catalog checkpoint input fingerprint",
+    ),
+    result: checkpoint.outputPayload,
   });
 }
 

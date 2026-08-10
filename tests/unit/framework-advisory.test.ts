@@ -15,6 +15,7 @@ import type {
   CandidateRun,
   ResolvedUnderwritingContext,
 } from "../../lib/contracts/underwriting";
+import { IntegrationTransportError } from "../../lib/api/errors";
 import {
   NAMED_LENS_GENERATOR_VERSION,
   NAMED_LENS_PASSAGE_SCHEMA_VERSION,
@@ -679,6 +680,145 @@ test("stops advisory failures after one attempt and records unavailable abstenti
       /one permitted advisory attempt/i,
     );
   }
+});
+
+test("degrades an applicable provider abstention with non-low confidence to unavailable", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const targetPack = "peter_thiel_public_frameworks_v0_1";
+  let targetCalls = 0;
+  const service = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    client: {
+      async complete(request) {
+        const card = promptCard(request);
+        if (card.experimentalAdvisory.packId !== targetPack) {
+          return JSON.stringify(advisoryOutput(card));
+        }
+        targetCalls += 1;
+        const abstention = notApplicableAdvisoryOutput(card);
+        return JSON.stringify({
+          ...abstention,
+          applicability: "applicable",
+          confidence: {
+            sourceReliability: "low",
+            evidenceStrength: "low",
+            evidenceCoverage: "low",
+            applicability: "low",
+            judgment: "medium",
+          },
+        });
+      },
+    },
+  });
+
+  const result = await service.runAll(runInput());
+  const judgment = result.judgments.find(
+    ({ frameworkMetadata }) => frameworkMetadata?.packId === targetPack,
+  );
+
+  assert.equal(targetCalls, 1);
+  assert.ok(judgment);
+  assert.deepEqual(
+    {
+      applicability: judgment.applicability,
+      conclusion: judgment.conclusion,
+      support: judgment.supportEvidenceItemIds,
+      counter: judgment.counterEvidenceItemIds,
+      confidence: judgment.confidence,
+    },
+    {
+      applicability: "unavailable",
+      conclusion: "abstain",
+      support: [],
+      counter: [],
+      confidence: {
+        sourceReliability: "low",
+        evidenceStrength: "low",
+        evidenceCoverage: "low",
+        applicability: "low",
+        judgment: "low",
+      },
+    },
+  );
+  assert.match(
+    judgment.limitations.join(" "),
+    /one permitted advisory attempt/i,
+  );
+});
+
+test("isolates one advisory provider transport failure without discarding the other lenses", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const failedPack = "peter_thiel_public_frameworks_v0_1";
+  const service = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    client: {
+      async complete(request) {
+        const card = promptCard(request);
+        if (card.experimentalAdvisory.packId === failedPack) {
+          throw new IntegrationTransportError({ retryable: false });
+        }
+        return JSON.stringify(advisoryOutput(card));
+      },
+    },
+  });
+
+  const result = await service.runAll(runInput());
+
+  assert.equal(result.advisoryFailures?.length, 1);
+  assert.equal(
+    result.advisoryFailures?.[0]?.reasonCode,
+    "provider_transport_failure",
+  );
+  assert.equal(result.judgments.length, 19);
+  assert.equal(result.passageResults.length, 18);
+  assert.equal(
+    result.judgments.some(({ frameworkMetadata }) =>
+      frameworkMetadata?.packId === failedPack
+    ),
+    false,
+  );
+});
+
+test("isolates one advisory provider timeout without discarding the other lenses", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const timedOutPack = "peter_thiel_public_frameworks_v0_1";
+  const service = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    advisoryProviderTimeoutMs: 5,
+    client: {
+      async complete(request) {
+        const card = promptCard(request);
+        if (card.experimentalAdvisory.packId === timedOutPack) {
+          return await new Promise<string>((_, reject) => {
+            setTimeout(
+              () => reject(new IntegrationTransportError({ retryable: false })),
+              100,
+            );
+          });
+        }
+        return JSON.stringify(advisoryOutput(card));
+      },
+    },
+  });
+
+  const result = await service.runAll(runInput());
+
+  assert.equal(result.advisoryFailures?.length, 1);
+  assert.equal(result.advisoryFailures?.[0]?.reasonCode, "provider_timeout");
+  assert.equal(result.judgments.length, 19);
+  assert.equal(result.passageResults.length, 18);
+  assert.equal(
+    result.judgments.some(({ frameworkMetadata }) =>
+      frameworkMetadata?.packId === timedOutPack
+    ),
+    false,
+  );
 });
 
 test("keeps a grounded advisory judgment when only its one-call passage has foreign evidence", async () => {
@@ -1426,6 +1566,13 @@ function notApplicableAdvisoryOutput(
     unusedEvidenceItemIds: [fact.id, assumption.id].sort(),
     strongestSupport: null,
     strongestCounterargument: null,
+    confidence: {
+      sourceReliability: "low" as const,
+      evidenceStrength: "low" as const,
+      evidenceCoverage: "low" as const,
+      applicability: "low" as const,
+      judgment: "low" as const,
+    },
     counterevidenceBoundary: {
       kind: "no_candidate_local_counterevidence" as const,
       evidenceRequestRefs: ["request_if_lens_becomes_applicable"],

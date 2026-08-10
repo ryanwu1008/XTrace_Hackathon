@@ -279,13 +279,23 @@ export function finalizeNamedLensPlacement(input: {
     "passage validation result",
   );
   for (const candidateId of results.keys()) {
-    if (!candidates.has(candidateId) || !priorityByCandidateId.has(candidateId)) {
+    const candidate = candidates.get(candidateId);
+    const result = results.get(candidateId)!;
+    if (
+      !candidate
+      || candidate.initialDisposition !== "judgment_eligible"
+      || (result.status === "validated"
+        && !priorityByCandidateId.has(candidateId))
+    ) {
       throw new Error(`Passage validation result ${candidateId} is foreign to the eligible catalog.`);
     }
   }
-  for (const candidateId of priorityByCandidateId.keys()) {
-    if (!results.has(candidateId)) {
-      throw new Error(`Every eligible Named Lens candidate requires a passage validation result: ${candidateId}.`);
+  for (const candidate of candidates.values()) {
+    if (
+      candidate.initialDisposition === "judgment_eligible"
+      && !results.has(candidate.judgmentOrCatalogCandidateId)
+    ) {
+      throw new Error(`Every eligible Named Lens candidate requires a passage validation result: ${candidate.judgmentOrCatalogCandidateId}.`);
     }
   }
 
@@ -295,6 +305,22 @@ export function finalizeNamedLensPlacement(input: {
     proseFingerprint: string;
   }> = [];
   const selected: FinalizedCandidate[] = [];
+  for (const [candidateId, result] of results) {
+    if (priorityByCandidateId.has(candidateId)) continue;
+    if (result.status === "validated") {
+      throw new Error(
+        `Validated passage ${candidateId} requires one exact provisional priority.`,
+      );
+    }
+    finalized.set(candidateId, {
+      candidate: candidates.get(candidateId)!,
+      priority: null,
+      disposition: result.status,
+      reasonCodes: [result.reasonCode.toUpperCase()],
+      passage: null,
+      selectedPosition: null,
+    });
+  }
   for (const priority of priorities) {
     const candidate = [...candidates.values()].find(({ judgmentId }) =>
       judgmentId === priority.judgmentId

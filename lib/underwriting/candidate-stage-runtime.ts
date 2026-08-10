@@ -16,6 +16,7 @@ import type {
   NamedLensArtifactsRepository,
   NamedLensProviderAttemptReservation,
 } from "../../db/repositories/named-lens-artifacts";
+import type { NamedLensProviderAttempt } from "../contracts/named-lens";
 import { createCanonicalFingerprint } from "./fingerprints";
 
 export type CandidateExecutionStage = Exclude<
@@ -57,6 +58,7 @@ export interface CandidateStageRuntime {
     };
     operation(): Promise<MeasuredClaudeCompletion>;
   }): Promise<MeasuredClaudeCompletion>;
+  listNamedLensAttempts(): Promise<NamedLensProviderAttempt[]>;
   usage(): {
     costUnits: number;
     tokenUnits: number;
@@ -83,6 +85,19 @@ export class CandidateStageTimeoutError extends Error {
     super(`Candidate stage ${stage} exceeded its bounded timeout.`);
     this.name = "CandidateStageTimeoutError";
     this.stage = stage;
+  }
+}
+
+export class CandidateProviderAttemptTimeoutError extends Error {
+  readonly stage = "framework_lenses" as const;
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(
+      `Named Lens provider execution exceeded its bounded ${timeoutMs}ms timeout.`,
+    );
+    this.name = "CandidateProviderAttemptTimeoutError";
+    this.timeoutMs = timeoutMs;
   }
 }
 
@@ -135,6 +150,7 @@ export function createCandidateStagePolicies(input: {
     framework_catalog: retryable(0, 0),
     framework_lenses: { ...deterministic },
     decision: { ...deterministic },
+    named_lens_presentation: { ...deterministic },
     narrative_drafts: { ...deterministic },
   };
   return Object.fromEntries(
@@ -316,6 +332,15 @@ export async function createCandidateStageRuntime(input: {
 
   return {
     usage,
+    async listNamedLensAttempts(): Promise<NamedLensProviderAttempt[]> {
+      await initialize();
+      return input.namedLensArtifacts
+        ? input.namedLensArtifacts.listAttempts(
+          input.candidate.workspaceId,
+          input.candidate.id,
+        )
+        : [];
+    },
     async run<T>(request: {
       stage: CandidateExecutionStage;
       inputFingerprint: string;
@@ -557,6 +582,40 @@ export async function createCandidateStageRuntime(input: {
             > input.budget.maxTokenUnits
         ) {
           const details = failure(request.stage, "budget");
+          if (namedLensIdentity) {
+            await input.namedLensArtifacts!.reserveAttempt(namedLensIdentity);
+            await input.namedLensArtifacts!.settleAttempt({
+              ...namedLensIdentity,
+              status: "aborted",
+              telemetry: null,
+              failureReason: {
+                code: "budget_exhausted",
+                detail:
+                  "The candidate provider budget was exhausted before this Named Lens provider call.",
+                retryable: false,
+              },
+            });
+            await save({
+              ...stageState,
+              providerAttempts: [
+                ...stageState.providerAttempts,
+                {
+                  attemptFingerprint: request.attemptFingerprint,
+                  status: "aborted",
+                  reservedCostUnits: 0,
+                  reservedTokenUnits: 0,
+                  actualCostUnits: 0,
+                  actualTokenUnits: 0,
+                  usageKnown: false,
+                },
+              ],
+              savedAt: input.now().toISOString(),
+            });
+            input.onWarning?.(
+              `Candidate ${input.candidate.dealId}: ${details.publicReason}`,
+            );
+            throw new CandidateBudgetExhaustedError(request.stage);
+          }
           await save({
             ...stageState,
             status: "failed",
@@ -637,7 +696,8 @@ export async function createCandidateStageRuntime(input: {
           namedLensIdentity
           && activeNamedLensAttempts.has(request.attemptFingerprint)
         ) {
-          const aborted = error instanceof CandidateStageTimeoutError;
+          const aborted = error instanceof CandidateStageTimeoutError
+            || error instanceof CandidateProviderAttemptTimeoutError;
           await input.namedLensArtifacts!.settleAttempt({
             ...namedLensIdentity,
             status: aborted ? "aborted" : "failed",
@@ -662,19 +722,23 @@ export async function createCandidateStageRuntime(input: {
             request.stage,
             request.inputFingerprint,
           );
-          const timedOut = error instanceof CandidateStageTimeoutError;
-          const details = timedOut
+          const stageTimedOut = error instanceof CandidateStageTimeoutError;
+          const providerAttemptTimedOut =
+            error instanceof CandidateProviderAttemptTimeoutError;
+          const details = stageTimedOut
             ? failure(request.stage, "timeout")
             : null;
           const settled = updateProviderAttempt({
             checkpoint: {
               ...current,
-              status: timedOut ? "failed" : current.status,
+              status: stageTimedOut ? "failed" : current.status,
               reasonCode: details?.reasonCode ?? current.reasonCode,
               publicReason: details?.publicReason ?? current.publicReason,
             },
             attemptFingerprint: request.attemptFingerprint,
-            status: timedOut ? "aborted" : "failed",
+            status: stageTimedOut || providerAttemptTimedOut
+              ? "aborted"
+              : "failed",
             actualCostUnits: usageKnown ? requestedCostUnits : 0,
             actualTokenUnits,
             usageKnown,

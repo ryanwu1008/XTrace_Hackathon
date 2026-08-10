@@ -28,6 +28,8 @@ import {
   actionsForDealStatusAndDirection,
 } from "../../lib/reports/action-policy";
 import { CONTEXT_ROUTER_VERSION } from "../../lib/underwriting/router";
+import { createCanonicalFingerprint } from
+  "../../lib/underwriting/fingerprints";
 import { createValuationEngine } from "../../lib/underwriting/valuation/service";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
 import { withEmptyCurrentNamedLensArtifacts } from
@@ -148,6 +150,43 @@ async function twoClaimedCandidates(options: {
     leaseSeconds: 60,
   });
   assert.ok(first);
+  const checkpointPreview = finalization({
+    candidateRunId: first.candidate.id,
+    dealId: first.candidate.dealId,
+    workerId: "worker_1",
+    leaseToken: first.leaseToken,
+  });
+  const catalogResult = {
+    catalogVersion:
+      checkpointPreview.versionSnapshot.frameworkCatalogVersion!,
+    catalogFingerprint:
+      checkpointPreview.versionSnapshot.frameworkCatalogFingerprint!,
+    corpusDigest:
+      checkpointPreview.versionSnapshot.frameworkCorpusDigest!,
+  };
+  const checkpointInputFingerprint = `sha256:${"c".repeat(64)}`;
+  await runs.saveCheckpoint({
+    workerId: "worker_1",
+    leaseToken: first.leaseToken,
+    candidateRunId: first.candidate.id,
+    stage: "framework_catalog",
+    status: "completed",
+    inputFingerprint: checkpointInputFingerprint,
+    outputFingerprint: createCanonicalFingerprint({
+      stage: "framework_catalog",
+      inputFingerprint: checkpointInputFingerprint,
+      result: catalogResult,
+    }),
+    outputPayload: catalogResult,
+    attemptCount: 1,
+    costUnits: 0,
+    tokenUnits: 0,
+    actualTokenUnits: 0,
+    providerAttempts: [],
+    reasonCode: null,
+    publicReason: null,
+    savedAt: "2026-07-29T11:59:00.000Z",
+  });
   return { artifacts, evidencePacks, runs, batch, first };
 }
 
@@ -1036,6 +1075,35 @@ test("finalization persists the real valuation artifact graph without losing Tas
   const payload = realValuationFinalization({
     workerId: "worker_real",
     leaseToken: claimed.leaseToken,
+  });
+  const catalogResult = {
+    catalogVersion: payload.versionSnapshot.frameworkCatalogVersion!,
+    catalogFingerprint:
+      payload.versionSnapshot.frameworkCatalogFingerprint!,
+    corpusDigest: payload.versionSnapshot.frameworkCorpusDigest!,
+  };
+  const checkpointInputFingerprint = `sha256:${"c".repeat(64)}`;
+  await runs.saveCheckpoint({
+    workerId: "worker_real",
+    leaseToken: claimed.leaseToken,
+    candidateRunId: claimed.candidate.id,
+    stage: "framework_catalog",
+    status: "completed",
+    inputFingerprint: checkpointInputFingerprint,
+    outputFingerprint: createCanonicalFingerprint({
+      stage: "framework_catalog",
+      inputFingerprint: checkpointInputFingerprint,
+      result: catalogResult,
+    }),
+    outputPayload: catalogResult,
+    attemptCount: 1,
+    costUnits: 0,
+    tokenUnits: 0,
+    actualTokenUnits: 0,
+    providerAttempts: [],
+    reasonCode: null,
+    publicReason: null,
+    savedAt: "2026-07-29T11:59:00.000Z",
   });
 
   await saveFinalizationBuild(evidencePacks, payload);
