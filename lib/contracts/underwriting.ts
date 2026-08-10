@@ -266,7 +266,7 @@ export const FrameworkAdvisoryMetadataSchema = z.strictObject({
   }
 });
 
-export const FrameworkJudgmentSchema = z.strictObject({
+const FrameworkJudgmentShape = {
   id: IdSchema,
   analysisType: z.literal("framework_judgment"),
   frameworkCardId: IdSchema,
@@ -284,7 +284,20 @@ export const FrameworkJudgmentSchema = z.strictObject({
   claimEdges: z.array(ClaimEdgeSchema),
   frameworkMetadata: FrameworkAdvisoryMetadataSchema.optional(),
   fingerprint: z.string().min(1),
-}).superRefine((judgment, context) => {
+} as const;
+
+export const CounterevidenceBoundarySchema = z.strictObject({
+  kind: z.enum([
+    "grounded_counterevidence",
+    "no_candidate_local_counterevidence",
+  ]),
+  evidenceRequestRefs: z.array(IdSchema),
+});
+
+function validateFrameworkJudgmentClaimEdges(
+  judgment: { id: string; claimEdges: z.infer<typeof ClaimEdgeSchema>[] },
+  context: z.core.$RefinementCtx,
+): void {
   if (
     judgment.claimEdges.some((edge) => edge.claimItemId !== judgment.id)
   ) {
@@ -293,7 +306,43 @@ export const FrameworkJudgmentSchema = z.strictObject({
       message: "Framework claim edges must belong to the saved judgment",
     });
   }
+}
+
+/** Persisted compatibility branch for judgments finalized before Named Lens v1. */
+export const LegacyFrameworkJudgmentSchema = z.strictObject(
+  FrameworkJudgmentShape,
+).superRefine(validateFrameworkJudgmentClaimEdges);
+
+/** Fail-closed contract for every current advisory judgment. */
+export const CurrentFrameworkJudgmentSchema = z.strictObject({
+  ...FrameworkJudgmentShape,
+  counterevidenceBoundary: CounterevidenceBoundarySchema,
+}).superRefine((judgment, context) => {
+  validateFrameworkJudgmentClaimEdges(judgment, context);
+  const grounded = judgment.counterevidenceBoundary.kind
+    === "grounded_counterevidence";
+  if (
+    (grounded && judgment.counterEvidenceItemIds.length === 0)
+    || (!grounded && (
+      judgment.counterEvidenceItemIds.length !== 0
+      || judgment.counterevidenceBoundary.evidenceRequestRefs.length === 0
+    ))
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Current advisory judgments require grounded counterevidence or a persisted evidence request.",
+    });
+  }
 });
+
+/** Explicit current-or-legacy dispatch for immutable persisted reads. */
+export const FrameworkJudgmentReadSchema = z.union([
+  CurrentFrameworkJudgmentSchema,
+  LegacyFrameworkJudgmentSchema,
+]);
+
+export const FrameworkJudgmentSchema = FrameworkJudgmentReadSchema;
 
 export const FrameworkDisagreementSchema = z.strictObject({
   id: IdSchema,
@@ -881,6 +930,15 @@ export type ResolvedUnderwritingContext = z.infer<
 export type FrameworkConfidence = z.infer<typeof FrameworkConfidenceSchema>;
 export type FrameworkAdvisoryMetadata = z.infer<
   typeof FrameworkAdvisoryMetadataSchema
+>;
+export type CounterevidenceBoundary = z.infer<
+  typeof CounterevidenceBoundarySchema
+>;
+export type LegacyFrameworkJudgment = z.infer<
+  typeof LegacyFrameworkJudgmentSchema
+>;
+export type CurrentFrameworkJudgment = z.infer<
+  typeof CurrentFrameworkJudgmentSchema
 >;
 export type FrameworkJudgment = z.infer<typeof FrameworkJudgmentSchema>;
 export type FrameworkDisagreement = z.infer<

@@ -16,6 +16,7 @@ import {
 } from "../../lib/contracts/evidence";
 import {
   ActionDraftSchema,
+  CurrentFrameworkJudgmentSchema,
   DecisionResultSchema,
   FundPolicySnapshotSchema,
   FrameworkDisagreementSchema,
@@ -34,6 +35,21 @@ import {
   type ScenarioModel,
   type ValuationEvaluation,
 } from "../../lib/contracts/underwriting";
+import {
+  NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+  NAMED_LENS_SELECTION_POLICY_VERSION,
+  NamedLensDispositionSchema,
+  NamedLensPassageSchema,
+  NamedLensPresentationSchema,
+  NamedLensProviderAttemptRefSchema,
+  UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
+  type NamedLensDisposition,
+  type NamedLensPassage,
+  type NamedLensPresentation,
+  type NamedLensProviderAttemptRef,
+} from "../../lib/contracts/named-lens";
+import { DECISION_TAXONOMY_VERSION } from
+  "../../lib/underwriting/frameworks/decision-taxonomy";
 import {
   IntegrationTransportError,
   isRetryableTransportStatus,
@@ -115,6 +131,14 @@ export const CandidateVersionSnapshotSchema = z.strictObject({
   settingsFingerprint: z.string().min(1),
   applicationCommit: z.string().min(1),
   companyAnalysisUnknowns: z.array(CompanyAnalysisUnknownRefSchema).optional(),
+  namedLensSelectionPolicyVersion:
+    z.literal(NAMED_LENS_SELECTION_POLICY_VERSION).optional(),
+  namedLensPassageSchemaVersion:
+    z.literal(NAMED_LENS_PASSAGE_SCHEMA_VERSION).optional(),
+  namedLensGeneratorVersion: z.string().min(1).optional(),
+  underwritingPresentationSchemaVersion:
+    z.literal(UNDERWRITING_PRESENTATION_SCHEMA_VERSION).optional(),
+  decisionTaxonomyVersion: z.literal(DECISION_TAXONOMY_VERSION).optional(),
 }).superRefine((value, context) => {
   const benchmarkValues = [
     value.benchmarkPackId,
@@ -163,11 +187,37 @@ export const CandidateVersionSnapshotSchema = z.strictObject({
         "Company Analysis unknown references must be unique and UTF-8 sorted.",
     });
   }
+  const namedLensVersions = [
+    value.namedLensSelectionPolicyVersion,
+    value.namedLensPassageSchemaVersion,
+    value.namedLensGeneratorVersion,
+    value.underwritingPresentationSchemaVersion,
+    value.decisionTaxonomyVersion,
+  ];
+  if (
+    namedLensVersions.some((item) => item === undefined)
+      !== namedLensVersions.every((item) => item === undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Named Lens selection, passage, generator, presentation, and taxonomy versions must be pinned together.",
+    });
+  }
 });
 
 export type CandidateVersionSnapshot = z.infer<
   typeof CandidateVersionSnapshotSchema
 >;
+
+export type CurrentCandidateVersionSnapshot = CandidateVersionSnapshot & {
+  namedLensSelectionPolicyVersion: typeof NAMED_LENS_SELECTION_POLICY_VERSION;
+  namedLensPassageSchemaVersion: typeof NAMED_LENS_PASSAGE_SCHEMA_VERSION;
+  namedLensGeneratorVersion: string;
+  underwritingPresentationSchemaVersion:
+    typeof UNDERWRITING_PRESENTATION_SCHEMA_VERSION;
+  decisionTaxonomyVersion: typeof DECISION_TAXONOMY_VERSION;
+};
 
 export interface CandidateFinalization {
   workerId: string;
@@ -187,6 +237,22 @@ export interface CandidateFinalization {
   narrative: string;
   actionDrafts: ActionDraft[];
   versionSnapshot: CandidateVersionSnapshot;
+  namedLensAttemptRefs?: NamedLensProviderAttemptRef[];
+  namedLensDispositions?: NamedLensDisposition[];
+  namedLensPassages?: NamedLensPassage[];
+  namedLensPresentation?: NamedLensPresentation;
+  terminalStatus?: "completed" | "partial";
+  terminalReasonCodes?: string[];
+}
+
+export interface CurrentCandidateFinalization extends CandidateFinalization {
+  versionSnapshot: CurrentCandidateVersionSnapshot;
+  namedLensAttemptRefs: NamedLensProviderAttemptRef[];
+  namedLensDispositions: NamedLensDisposition[];
+  namedLensPassages: NamedLensPassage[];
+  namedLensPresentation: NamedLensPresentation;
+  terminalStatus: "completed" | "partial";
+  terminalReasonCodes: string[];
 }
 
 export interface CandidateArtifactBundle
@@ -201,6 +267,17 @@ export interface CandidateArtifactBundle
   workspaceId: string;
   dealId: string;
   claimEdges: ClaimEdge[];
+}
+
+export interface CurrentCandidateArtifactBundle
+  extends CandidateArtifactBundle {
+  versionSnapshot: CurrentCandidateVersionSnapshot;
+  namedLensAttemptRefs: NamedLensProviderAttemptRef[];
+  namedLensDispositions: NamedLensDisposition[];
+  namedLensPassages: NamedLensPassage[];
+  namedLensPresentation: NamedLensPresentation;
+  terminalStatus: "completed" | "partial";
+  terminalReasonCodes: string[];
 }
 
 export interface ReusableCandidateArtifacts {
@@ -832,6 +909,7 @@ export function prepareCandidateFinalization(
   const candidateRunId = requiredText(input.candidateRunId, "A candidate run");
   const workspaceId = requiredText(candidate.workspaceId, "A workspace");
   const dealId = requiredText(candidate.dealId, "A Deal");
+  const isNewFinalization = options.mode !== "persisted_read";
   if (candidate.id !== candidateRunId) {
     throw new Error("Finalization candidate identity does not match.");
   }
@@ -852,7 +930,6 @@ export function prepareCandidateFinalization(
   );
   const valuation = ValuationEvaluationSchema.parse(input.valuation);
   const decision = DecisionResultSchema.parse(input.decision);
-  const isNewFinalization = options.mode !== "persisted_read";
   const actionDrafts = input.actionDrafts.map((value) =>
     isNewFinalization
       ? ActionDraftSchema.parse(value)
@@ -861,6 +938,67 @@ export function prepareCandidateFinalization(
   const versionSnapshot = CandidateVersionSnapshotSchema.parse(
     input.versionSnapshot,
   );
+  const namedLensAttemptRefs = input.namedLensAttemptRefs?.map((value) =>
+    NamedLensProviderAttemptRefSchema.parse(value)
+  );
+  const namedLensDispositions = input.namedLensDispositions?.map((value) =>
+    NamedLensDispositionSchema.parse(value)
+  );
+  const namedLensPassages = input.namedLensPassages?.map((value) =>
+    NamedLensPassageSchema.parse(value)
+  );
+  const namedLensPresentation = input.namedLensPresentation === undefined
+    ? undefined
+    : NamedLensPresentationSchema.parse(input.namedLensPresentation);
+  const terminalStatus = input.terminalStatus;
+  const terminalReasonCodes = input.terminalReasonCodes;
+  const namedLensArtifacts = [
+    namedLensAttemptRefs,
+    namedLensDispositions,
+    namedLensPassages,
+    namedLensPresentation,
+    terminalStatus,
+    terminalReasonCodes,
+  ];
+  const namedLensVersionValues = [
+    versionSnapshot.namedLensSelectionPolicyVersion,
+    versionSnapshot.namedLensPassageSchemaVersion,
+    versionSnapshot.namedLensGeneratorVersion,
+    versionSnapshot.underwritingPresentationSchemaVersion,
+    versionSnapshot.decisionTaxonomyVersion,
+  ];
+  const hasCurrentNamedLensContract = namedLensVersionValues.every(
+    (value) => value !== undefined,
+  );
+  const hasLegacyNamedLensContract = namedLensVersionValues.every(
+    (value) => value === undefined,
+  ) && namedLensArtifacts.every((value) => value === undefined);
+  if (
+    (isNewFinalization && !hasCurrentNamedLensContract)
+    || (!hasCurrentNamedLensContract && !hasLegacyNamedLensContract)
+    || (hasCurrentNamedLensContract
+      && namedLensArtifacts.some((value) => value === undefined))
+  ) {
+    throw new Error(
+      "Current Named Lens finalization requires all artifacts and all five pinned version values.",
+    );
+  }
+  if (hasCurrentNamedLensContract) {
+    judgments
+      .filter(({ frameworkMetadata }) => frameworkMetadata !== undefined)
+      .forEach((value) => CurrentFrameworkJudgmentSchema.parse(value));
+    validateNamedLensFinalization({
+      workspaceId,
+      candidateRunId,
+      attemptRefs: namedLensAttemptRefs!,
+      dispositions: namedLensDispositions!,
+      passages: namedLensPassages!,
+      presentation: namedLensPresentation!,
+      terminalStatus: terminalStatus!,
+      terminalReasonCodes: terminalReasonCodes!,
+      generatorVersion: versionSnapshot.namedLensGeneratorVersion!,
+    });
+  }
   const v2Drafts = actionDrafts.filter((draft): draft is ActionDraftV2 =>
     "schemaVersion" in draft && draft.schemaVersion === "action-draft-v2"
   );
@@ -1198,8 +1336,107 @@ export function prepareCandidateFinalization(
     narrative,
     actionDrafts,
     versionSnapshot,
+    ...(hasCurrentNamedLensContract
+      ? {
+        namedLensAttemptRefs: namedLensAttemptRefs!,
+        namedLensDispositions: namedLensDispositions!,
+        namedLensPassages: namedLensPassages!,
+        namedLensPresentation: namedLensPresentation!,
+        terminalStatus: terminalStatus!,
+        terminalReasonCodes: terminalReasonCodes!,
+      }
+      : {}),
     claimEdges,
   };
+}
+
+function validateNamedLensFinalization(input: {
+  workspaceId: string;
+  candidateRunId: string;
+  attemptRefs: NamedLensProviderAttemptRef[];
+  dispositions: NamedLensDisposition[];
+  passages: NamedLensPassage[];
+  presentation: NamedLensPresentation;
+  terminalStatus: "completed" | "partial";
+  terminalReasonCodes: string[];
+  generatorVersion: string;
+}): void {
+  assertUnique(
+    input.attemptRefs.map(({ logicalPassageId, attemptNumber }) =>
+      `${logicalPassageId}\u0000${attemptNumber}`
+    ),
+    "Named Lens provider attempt reference",
+  );
+  assertUnique(
+    input.dispositions.map(({ judgmentOrCatalogCandidateId }) =>
+      judgmentOrCatalogCandidateId
+    ),
+    "Named Lens disposition",
+  );
+  assertUnique(
+    input.passages.map(({ judgmentId }) => judgmentId),
+    "Named Lens passage",
+  );
+  assertUnique(
+    input.passages.map(({ fingerprint }) => fingerprint),
+    "Named Lens passage fingerprint",
+  );
+  const orderedPositions = input.dispositions
+    .flatMap(({ selectedPosition }) =>
+      selectedPosition === null ? [] : [selectedPosition]
+    )
+    .sort((left, right) => left - right);
+  if (
+    orderedPositions.some((position, index) => position !== index + 1)
+  ) {
+    throw new Error(
+      "Selected Named Lens positions must be unique and contiguous from one.",
+    );
+  }
+  const passageFingerprints = new Set(
+    input.passages.map(({ fingerprint }) => fingerprint),
+  );
+  const dispositionPassageFingerprints = input.dispositions.flatMap(
+    ({ passageFingerprint }) =>
+      passageFingerprint === null ? [] : [passageFingerprint],
+  );
+  if (
+    dispositionPassageFingerprints.length !== passageFingerprints.size
+    || dispositionPassageFingerprints.some((fingerprint) =>
+      !passageFingerprints.has(fingerprint)
+    )
+    || input.passages.some((passage) =>
+      passage.workspaceId !== input.workspaceId
+      || passage.artifactSourceCandidateRunId !== input.candidateRunId
+      || passage.generatorVersion !== input.generatorVersion
+    )
+    || input.dispositions.some((disposition) =>
+      disposition.workspaceId !== input.workspaceId
+      || disposition.artifactSourceCandidateRunId !== input.candidateRunId
+    )
+    || input.presentation.workspaceId !== input.workspaceId
+    || input.presentation.artifactSourceCandidateRunId !== input.candidateRunId
+  ) {
+    throw new Error(
+      "Current Named Lens artifacts must form one complete candidate-local presentation.",
+    );
+  }
+  if (
+    new Set(input.terminalReasonCodes).size
+      !== input.terminalReasonCodes.length
+    || input.terminalReasonCodes.some((reasonCode, index) =>
+      !reasonCode
+      || (index > 0
+        && compareUtf8(input.terminalReasonCodes[index - 1]!, reasonCode) >= 0)
+    )
+    || (input.terminalStatus === "completed"
+      ? input.terminalReasonCodes.length !== 0
+      : input.terminalReasonCodes.length === 0)
+  ) {
+    throw new Error(
+      "Named Lens terminal status requires canonical explicit coverage reasons.",
+    );
+  }
 }
 
 function statusSafeMissingEvidenceMatches(
