@@ -224,7 +224,7 @@ export function buildDecisionCriticalEvidenceProjection(input: {
 
   for (const sourceId of uniqueSorted([
     ...input.analysis.investmentMemory.sourceIds,
-    ...input.analysis.investmentMemory.fixtureIds.map((id) => `source_${id}`),
+    ...input.analysis.investmentMemory.fixtureIds,
   ])) {
     resolveSource({
       sourceId,

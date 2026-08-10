@@ -379,22 +379,29 @@ export function finalizeNamedLensPlacement(input: {
 
 export function buildNamedLensSynthesis(input: {
   passages: NamedLensPassage[];
+  dispositions: NamedLensDisposition[];
 }): NamedLensPresentation["synthesis"] {
   const passages = input.passages.map((passage) =>
     NamedLensPassageSchema.parse(passage)
   );
-  if (new Set(passages.map(({ judgmentId }) => judgmentId)).size !== passages.length) {
-    throw new Error("Named Lens synthesis passages must have unique judgment IDs.");
-  }
-  const ordered = [...passages].sort((left, right) =>
-    compareUtf8(left.judgmentId, right.judgmentId)
+  const dispositions = input.dispositions.map((disposition) =>
+    NamedLensDispositionSchema.parse(disposition)
   );
+  const ordered = selectedSynthesisPassages({ passages, dispositions });
+  for (const passage of passages) {
+    const exactWordCount = passageSegmentWordCount(passage);
+    if (passage.wordCount !== exactWordCount) {
+      throw new Error(
+        `Named Lens persisted passage word count must exactly equal its five segments: ${passage.judgmentId}.`,
+      );
+    }
+  }
   const evidenceItemIds = uniqueSorted(
     ordered.flatMap(({ selectionBasisEvidenceIds }) =>
       selectionBasisEvidenceIds
     ),
   );
-  const judgmentIds = ordered.map(({ judgmentId }) => judgmentId);
+  const judgmentIds = uniqueSorted(ordered.map(({ judgmentId }) => judgmentId));
   let branch: NamedLensPresentation["synthesis"]["branch"];
   let text: string;
   if (ordered.length === 0) {
@@ -435,14 +442,113 @@ export function buildNamedLensSynthesis(input: {
     }
   }
   const totalWords = ordered.reduce((total, passage) =>
-    total + passage.wordCount, 0
-  ) + wordCount(text);
+    total + passageSegmentWordCount(passage), 0
+  ) + englishWordCount(text);
   if (totalWords > 1_600) {
     throw new Error(
       `Named Lens selected passages and synthesis exceed the 1,600-word budget (${totalWords}).`,
     );
   }
   return { branch, text, judgmentIds, evidenceItemIds };
+}
+
+function selectedSynthesisPassages(input: {
+  passages: readonly NamedLensPassage[];
+  dispositions: readonly NamedLensDisposition[];
+}): NamedLensPassage[] {
+  const passageByJudgmentId = uniqueMap(
+    input.passages,
+    ({ judgmentId }) => judgmentId,
+    "synthesis passage membership",
+  );
+  const dispositionByCandidateId = uniqueMap(
+    input.dispositions,
+    ({ judgmentOrCatalogCandidateId }) => judgmentOrCatalogCandidateId,
+    "synthesis disposition membership",
+  );
+  const publishable = [...dispositionByCandidateId.values()].filter(
+    ({ disposition }) =>
+      disposition === "selected_main" || disposition === "appendix_only",
+  );
+  const dispositionByJudgmentId = new Map<string, NamedLensDisposition>();
+  for (const disposition of publishable) {
+    if (
+      disposition.judgmentId === null
+      || dispositionByJudgmentId.has(disposition.judgmentId)
+    ) {
+      throw new Error(
+        "Named Lens synthesis disposition-passage membership has a duplicate or missing judgment identity.",
+      );
+    }
+    dispositionByJudgmentId.set(disposition.judgmentId, disposition);
+  }
+  for (const passage of input.passages) {
+    const disposition = dispositionByJudgmentId.get(passage.judgmentId);
+    if (!disposition) {
+      throw new Error(
+        `Named Lens synthesis has an extra passage outside publishable disposition membership: ${passage.judgmentId}.`,
+      );
+    }
+    if (!passageMatchesDisposition(passage, disposition)) {
+      throw new Error(
+        `Named Lens synthesis disposition-passage membership mismatch: ${passage.judgmentId}.`,
+      );
+    }
+  }
+  for (const [judgmentId] of dispositionByJudgmentId) {
+    if (!passageByJudgmentId.has(judgmentId)) {
+      throw new Error(
+        `Named Lens synthesis is missing a publishable disposition passage: ${judgmentId}.`,
+      );
+    }
+  }
+  const selected = publishable
+    .filter(({ disposition }) => disposition === "selected_main")
+    .sort((left, right) =>
+      left.selectedPosition! - right.selectedPosition!
+      || compareUtf8(left.judgmentId!, right.judgmentId!)
+    );
+  if (selected.some((disposition, index) =>
+    disposition.selectedPosition !== index + 1
+  )) {
+    throw new Error(
+      "Named Lens synthesis selected_main membership positions must be unique and contiguous.",
+    );
+  }
+  return selected.map((disposition) =>
+    passageByJudgmentId.get(disposition.judgmentId!)!
+  );
+}
+
+function passageMatchesDisposition(
+  passage: NamedLensPassage,
+  disposition: NamedLensDisposition,
+): boolean {
+  return disposition.workspaceId === passage.workspaceId
+    && disposition.artifactSourceCandidateRunId
+      === passage.artifactSourceCandidateRunId
+    && disposition.judgmentId === passage.judgmentId
+    && disposition.frameworkCardId === passage.frameworkCardId
+    && disposition.frameworkVersion === passage.frameworkVersion
+    && disposition.decisionQuestionCode === passage.decisionQuestionCode
+    && disposition.stance === passage.conditionalConclusion.stance
+    && disposition.advisoryPosture
+      === passage.conditionalConclusion.advisoryPosture
+    && sameStrings(
+      disposition.selectionBasisEvidenceIds,
+      passage.selectionBasisEvidenceIds,
+    )
+    && disposition.passageFingerprint === passage.fingerprint;
+}
+
+function passageSegmentWordCount(passage: NamedLensPassage): number {
+  return [
+    passage.premise.text,
+    passage.caseApplication.text,
+    passage.countercase.text,
+    passage.unknownBoundary.text,
+    passage.conditionalConclusion.text,
+  ].reduce((total, text) => total + englishWordCount(text), 0);
 }
 
 interface FinalizedCandidate {
@@ -794,7 +900,8 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function wordCount(value: string): number {
+/** English words are non-empty tokens separated by Unicode whitespace. */
+function englishWordCount(value: string): number {
   return value.trim().split(/\s+/u).filter(Boolean).length;
 }
 

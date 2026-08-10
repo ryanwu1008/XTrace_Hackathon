@@ -354,3 +354,55 @@ test("projects saved prior-memory source IDs even without a belief-assessment ga
     kind === "prior_record" && id === "source_prior"
   ));
 });
+
+test("resolves canonical Sample fixture source IDs without adding a source prefix", () => {
+  const input = fixture();
+  const fixtureFact = fact("fact_fixture", "revision_fixture");
+  input.pack.facts.push(fixtureFact);
+  input.pack.sourceRevisionIds.push("revision_fixture");
+  input.grounding.sourceRevisionIds.push("revision_fixture");
+  input.grounding.sourceRevisionSnapshots.push({
+    id: "revision_fixture",
+    workspaceId: "workspace_1",
+    sourceId: "source_fixture_1",
+    revision: 1,
+    contentHash: "hash:revision_fixture",
+    objectKey: "revision_fixture",
+    objectVersion: "1",
+    contentType: "text/plain",
+    extractorId: "plain_text_v1",
+    extractorVersion: "1",
+    extractedAt: at,
+    supersedesRevisionId: null,
+    createdAt: at,
+  });
+  (input.analysis.investmentMemory.sourceIds as string[]).push(
+    "source_fixture_1",
+  );
+  (input.analysis.investmentMemory.fixtureIds as string[]).push(
+    "source_fixture_1",
+  );
+
+  const projected = buildDecisionCriticalEvidenceProjection(input).find(
+    ({ evidencePackItemId }) => evidencePackItemId === "fact_fixture",
+  );
+  assert.ok(projected?.originRefs.some(({ kind, id }) =>
+    kind === "prior_record" && id === "source_fixture_1"
+  ));
+  assert.equal(
+    projected?.resolutionPath.includes("source_source_fixture_1"),
+    false,
+  );
+});
+
+test("rejects malformed and double-prefixed persisted fixture source IDs", () => {
+  for (const malformedId of ["fixture_1", "source_source_fixture_1"]) {
+    const input = fixture();
+    (input.analysis.investmentMemory.fixtureIds as string[]).push(malformedId);
+    assert.throws(
+      () => buildDecisionCriticalEvidenceProjection(input),
+      /cannot resolve to a candidate-local Evidence Pack item/i,
+      malformedId,
+    );
+  }
+});

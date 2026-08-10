@@ -4,6 +4,7 @@ import test from "node:test";
 import type { FrameworkJudgment } from "../../lib/contracts/underwriting";
 import type {
   DecisionCriticalEvidenceRef,
+  NamedLensDisposition,
   NamedLensPassage,
 } from "../../lib/contracts/named-lens";
 import type {
@@ -195,9 +196,101 @@ function passage(
       hiddenChainOfThought: false,
     },
     selectionBasisEvidenceIds: basis,
-    wordCount: input.wordCount ?? 35,
+    wordCount: input.wordCount ?? englishWords(text) * 5,
     generatorVersion: "named-lens-generator-v1",
     fingerprint: sha(input.fingerprintDigit ?? "a"),
+  };
+}
+
+function synthesisDispositions(
+  passages: readonly NamedLensPassage[],
+  selectedJudgmentIds: readonly string[] = passages.map(({ judgmentId }) =>
+    judgmentId
+  ),
+  reasonByJudgmentId: ReadonlyMap<string, string> = new Map(),
+): NamedLensDisposition[] {
+  const selectedPositionById = new Map(
+    selectedJudgmentIds.map((judgmentId, index) => [judgmentId, index + 1]),
+  );
+  return passages.map((item) => {
+    const selectedPosition = selectedPositionById.get(item.judgmentId) ?? null;
+    const criticalEvidence = item.selectionBasisEvidenceIds.map((id) =>
+      critical(id)
+    );
+    return {
+      workspaceId: item.workspaceId,
+      artifactSourceCandidateRunId: item.artifactSourceCandidateRunId,
+      judgmentOrCatalogCandidateId: item.judgmentId,
+      judgmentId: item.judgmentId,
+      frameworkCardId: item.frameworkCardId,
+      frameworkVersion: item.frameworkVersion,
+      disposition: selectedPosition === null ? "appendix_only" : "selected_main",
+      selectedPosition,
+      priorityTier: item.selectionBasisEvidenceIds.length > 0
+        ? "changed_belief"
+        : "context_only",
+      reasonCodes: [reasonByJudgmentId.get(item.judgmentId) ?? (
+        selectedPosition === null ? "APPENDIX_ONLY" : "CHANGED_BELIEF_EVIDENCE"
+      )],
+      decisionQuestionCode: item.decisionQuestionCode,
+      stance: item.conditionalConclusion.stance,
+      advisoryPosture: item.conditionalConclusion.advisoryPosture,
+      selectionBasisEvidenceIds: item.selectionBasisEvidenceIds,
+      criticalEvidence,
+      selectionPolicyVersion: "named-lens-selection-v1",
+      passageFingerprint: item.fingerprint,
+      fingerprint: sha("e"),
+    };
+  });
+}
+
+function synthesisInput(
+  passages: NamedLensPassage[],
+  selectedJudgmentIds?: readonly string[],
+  reasonByJudgmentId?: ReadonlyMap<string, string>,
+) {
+  return {
+    passages,
+    dispositions: synthesisDispositions(
+      passages,
+      selectedJudgmentIds,
+      reasonByJudgmentId,
+    ),
+  };
+}
+
+function englishWords(text: string): number {
+  return text.trim().split(/\s+/u).filter(Boolean).length;
+}
+
+function words(prefix: string, count: number): string {
+  return Array.from({ length: count }, (_, index) => `${prefix}${index}`).join(" ");
+}
+
+function passageWithSegmentCounts(
+  base: NamedLensPassage,
+  counts: readonly [number, number, number, number, number],
+): NamedLensPassage {
+  return {
+    ...base,
+    premise: { ...base.premise, text: words("premise", counts[0]) },
+    caseApplication: {
+      ...base.caseApplication,
+      text: words("application", counts[1]),
+    },
+    countercase: {
+      ...base.countercase,
+      text: words("countercase", counts[2]),
+    },
+    unknownBoundary: {
+      ...base.unknownBoundary,
+      text: words("unknown", counts[3]),
+    },
+    conditionalConclusion: {
+      ...base.conditionalConclusion,
+      text: words("conclusion", counts[4]),
+    },
+    wordCount: counts.reduce((total, count) => total + count, 0),
   };
 }
 
@@ -473,54 +566,175 @@ test("builds exactly the five deterministic synthesis branches", () => {
   const passages = base.provisionalPriority.map((priority, index) =>
     passage(priority, { fingerprintDigit: String(index + 1) })
   );
-  assert.equal(buildNamedLensSynthesis({ passages: [] }).branch, "zero_available");
-  assert.equal(buildNamedLensSynthesis({ passages: passages.slice(0, 1) }).branch, "single_perspective");
-  assert.equal(buildNamedLensSynthesis({
-    passages: passages.slice(0, 2).map((item) => ({
+  assert.equal(buildNamedLensSynthesis(synthesisInput([])).branch, "zero_available");
+  assert.equal(buildNamedLensSynthesis(synthesisInput(passages.slice(0, 1))).branch, "single_perspective");
+  const aligned: NamedLensPassage[] = passages.slice(0, 2).map((item) => ({
       ...item,
-      decisionQuestionCode: "market_structure",
+      decisionQuestionCode: "market_structure" as const,
       conditionalConclusion: { ...item.conditionalConclusion, stance: "supportive" as const },
-    })),
-  }).branch, "bounded_alignment");
-  assert.equal(buildNamedLensSynthesis({
-    passages: [{
+    }));
+  assert.equal(
+    buildNamedLensSynthesis(synthesisInput(aligned)).branch,
+    "bounded_alignment",
+  );
+  const differentEmphasis: NamedLensPassage[] = [{
       ...passages[0]!,
-      decisionQuestionCode: "market_structure",
-      conditionalConclusion: { ...passages[0]!.conditionalConclusion, stance: "supportive" },
+      decisionQuestionCode: "market_structure" as const,
+      conditionalConclusion: { ...passages[0]!.conditionalConclusion, stance: "supportive" as const },
     }, {
       ...passages[1]!,
-      decisionQuestionCode: "customer_adoption",
-      conditionalConclusion: { ...passages[1]!.conditionalConclusion, stance: "negative" },
-    }],
-  }).branch, "different_emphasis");
-  assert.equal(buildNamedLensSynthesis({
-    passages: [{
+      decisionQuestionCode: "customer_adoption" as const,
+      conditionalConclusion: { ...passages[1]!.conditionalConclusion, stance: "negative" as const },
+    }];
+  assert.equal(
+    buildNamedLensSynthesis(synthesisInput(differentEmphasis)).branch,
+    "different_emphasis",
+  );
+  const disagreement: NamedLensPassage[] = [{
       ...passages[0]!,
-      decisionQuestionCode: "customer_adoption",
-      conditionalConclusion: { ...passages[0]!.conditionalConclusion, stance: "supportive" },
+      decisionQuestionCode: "customer_adoption" as const,
+      conditionalConclusion: { ...passages[0]!.conditionalConclusion, stance: "supportive" as const },
     }, {
       ...passages[1]!,
-      decisionQuestionCode: "customer_adoption",
-      conditionalConclusion: { ...passages[1]!.conditionalConclusion, stance: "negative" },
-    }],
-  }).branch, "principal_disagreement");
+      decisionQuestionCode: "customer_adoption" as const,
+      conditionalConclusion: { ...passages[1]!.conditionalConclusion, stance: "negative" as const },
+    }];
+  assert.equal(
+    buildNamedLensSynthesis(synthesisInput(disagreement)).branch,
+    "principal_disagreement",
+  );
 });
 
 test("enforces the 1,600-word selected-passage plus synthesis budget", () => {
   const input = scenario(6);
-  const persistedLongConclusion = Array.from(
-    { length: 55 },
-    (_, index) => `persisted${index}`,
-  ).join(" ");
-  const passages = input.provisionalPriority.map((priority, index) =>
-    passage(priority, {
-      text: persistedLongConclusion,
-      wordCount: 260,
-      fingerprintDigit: String(index + 1),
-    })
+  const passages = input.provisionalPriority.map((priority, index) => {
+    const base = passage(priority, { fingerprintDigit: String(index + 1) });
+    return passageWithSegmentCounts(
+      {
+        ...base,
+        conditionalConclusion: {
+          ...base.conditionalConclusion,
+          stance: "supportive",
+        },
+      },
+      index < 2 ? [60, 60, 60, 60, 20] : [65, 65, 64, 65, 1],
+    );
+  });
+  assert.throws(
+    () => buildNamedLensSynthesis(synthesisInput(passages)),
+    /1,600|1600|word budget/i,
+  );
+});
+
+test("derives synthesis only from selected_main and ignores matched Appendix disagreement, evidence, and budget", () => {
+  const input = scenario(3);
+  const selected = passage(input.provisionalPriority[0]!, {
+    fingerprintDigit: "1",
+  });
+  const appendixNegative = passage(input.provisionalPriority[1]!, {
+    basis: input.provisionalPriority[1]!.selectionBasisEvidenceIds,
+    question: selected.decisionQuestionCode,
+    fingerprintDigit: "2",
+  });
+  const cappedAppendix = passageWithSegmentCounts(
+    passage(input.provisionalPriority[2]!, { fingerprintDigit: "3" }),
+    [65, 65, 64, 65, 1],
+  );
+  const passages = [selected, appendixNegative, cappedAppendix];
+  const synthesis = buildNamedLensSynthesis(synthesisInput(
+    passages,
+    [selected.judgmentId],
+    new Map([
+      [appendixNegative.judgmentId, "DUPLICATE_DECISION_RATIONALE"],
+      [cappedAppendix.judgmentId, "MAIN_PLACEMENT_CAP_OR_DIVERSITY_RULE"],
+    ]),
+  ));
+
+  assert.equal(synthesis.branch, "single_perspective");
+  assert.deepEqual(synthesis.judgmentIds, [selected.judgmentId]);
+  assert.deepEqual(synthesis.evidenceItemIds, selected.selectionBasisEvidenceIds);
+});
+
+test("rejects missing, extra, duplicate, and mismatched disposition-passage membership", () => {
+  const input = scenario(2);
+  const first = passage(input.provisionalPriority[0]!, { fingerprintDigit: "1" });
+  const second = passage(input.provisionalPriority[1]!, { fingerprintDigit: "2" });
+  const selectedDisposition = synthesisDispositions([first])[0]!;
+
+  assert.throws(
+    () => buildNamedLensSynthesis({
+      passages: [],
+      dispositions: [selectedDisposition],
+    }),
+    /missing|membership/i,
   );
   assert.throws(
-    () => buildNamedLensSynthesis({ passages }),
-    /1,600|1600|word budget/i,
+    () => buildNamedLensSynthesis({ passages: [first], dispositions: [] }),
+    /extra|membership/i,
+  );
+  assert.throws(
+    () => buildNamedLensSynthesis({
+      passages: [first, first],
+      dispositions: [selectedDisposition],
+    }),
+    /duplicate|membership/i,
+  );
+  assert.throws(
+    () => buildNamedLensSynthesis({
+      passages: [first, second],
+      dispositions: [
+        selectedDisposition,
+        {
+          ...synthesisDispositions([second], [])[0]!,
+          passageFingerprint: sha("9"),
+        },
+      ],
+    }),
+    /mismatch|membership|fingerprint/i,
+  );
+});
+
+test("rejects understated and overstated persisted passage word counts", () => {
+  const input = scenario(1);
+  const exact = passageWithSegmentCounts(
+    passage(input.provisionalPriority[0]!, { fingerprintDigit: "1" }),
+    [50, 50, 50, 50, 50],
+  );
+  for (const wordCount of [1, 251]) {
+    const malformed = { ...exact, wordCount };
+    assert.throws(
+      () => buildNamedLensSynthesis(synthesisInput([malformed])),
+      /persisted passage word count|exact word count/i,
+    );
+  }
+});
+
+test("accepts the exact 1,600-word selected-passage and synthesis boundary", () => {
+  const input = scenario(6);
+  const passages = input.provisionalPriority.map((priority, index) => {
+    const base = passage(priority, { fingerprintDigit: String(index + 1) });
+    const supportive = {
+      ...base,
+      conditionalConclusion: {
+        ...base.conditionalConclusion,
+        stance: "supportive" as const,
+      },
+    };
+    return passageWithSegmentCounts(
+      supportive,
+      index === 0
+        ? [62, 62, 61, 61, 14]
+        : index === 1
+        ? [62, 62, 61, 60, 15]
+        : [65, 65, 64, 65, 1],
+    );
+  });
+
+  const synthesis = buildNamedLensSynthesis(synthesisInput(passages));
+  assert.equal(synthesis.branch, "bounded_alignment");
+  assert.equal(
+    passages.reduce((total, item) => total + item.wordCount, 0)
+      + englishWords(synthesis.text),
+    1_600,
   );
 });
