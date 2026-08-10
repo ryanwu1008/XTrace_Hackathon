@@ -22,6 +22,8 @@
 - Production data, production migrations, the existing `vsee-vc` Worker, and production Supabase secrets are out of scope.
 - Real-provider acceptance requires an isolated non-production Supabase, separate Web/Worker targets on the same commit, and startup refusal for production identifiers.
 - The deterministic E2E observer is a fixture and cannot be used as evidence of real-provider prose quality.
+- Active company-wide public-source enrichment is deliberately deferred and is not a dependency of this article-first release. This release builds from the immutable source revisions already bound to each Deal; the follow-on plan is `docs/superpowers/plans/2026-08-10-company-research-enrichment-future.md`.
+- Demo prose may use only persisted Facts and permanently labeled, explicit Assumptions from the approved synthetic fixture. Completeness never permits an assumption, model inference, URL, or provider summary to masquerade as a sourced Fact.
 
 ---
 
