@@ -50,6 +50,10 @@ function sha(digit: string): string {
   return `sha256:${digit.repeat(64)}`;
 }
 
+function indexedSha(index: number): string {
+  return `sha256:${index.toString(16).padStart(64, "0")}`;
+}
+
 function sqlJson(value: unknown): string {
   return `$json$${JSON.stringify(value)}$json$::jsonb`;
 }
@@ -293,6 +297,18 @@ function basePayload(candidateRunId = "candidate_named_lens") {
     frameworkMetadata: {
       formalDecisionWeight: "0",
       componentCardIds: [`research_component_${suffix}`],
+      components: [{
+        frameworkId: `research_component_${suffix}`,
+        version: "1",
+        decisionQuestions: ["Is customer demand durable?"],
+        sourceRefs: [{
+          sourceId: `public_source_${suffix}`,
+          claimIds: [`claim_${suffix}`],
+          locator: { kind: "web_section", value: `Section ${suffix}` },
+          attributionScope: "institution_doctrine",
+        }],
+      }],
+      sources: [{ sourceId: `public_source_${suffix}` }],
     },
     fingerprint: `advisory-${suffix}`,
   }));
@@ -839,6 +855,36 @@ test(
         "and not tgisinternal",
         "and pg_catalog.pg_get_triggerdef(oid) like '%reject_immutable_underwriting_artifact%'",
       ].join(" ")), "6");
+      assert.equal(psql(postgres, database, [
+        "select count(*) from pg_catalog.pg_trigger",
+        "where tgrelid = any(array[",
+        "'public.decision_critical_evidence_projections'::regclass,",
+        "'public.named_lens_passage_attempt_events'::regclass,",
+        "'public.named_lens_dispositions'::regclass,",
+        "'public.named_lens_passages'::regclass,",
+        "'public.named_lens_passage_segments'::regclass,",
+        "'public.underwriting_presentations'::regclass])",
+        "and not tgisinternal",
+        "and pg_catalog.pg_get_triggerdef(oid) like '%assert_named_lens_candidate_owner_0027%'",
+      ].join(" ")), "6");
+      assert.equal(psql(postgres, database, [
+        "select count(*) from pg_catalog.pg_constraint constraint_record",
+        "where constraint_record.contype='f'",
+        "and constraint_record.confrelid='public.candidate_runs'::regclass",
+        "and constraint_record.conrelid = any(array[",
+        "'public.decision_critical_evidence_projections'::regclass,",
+        "'public.named_lens_passage_attempt_events'::regclass,",
+        "'public.named_lens_dispositions'::regclass,",
+        "'public.named_lens_passages'::regclass,",
+        "'public.named_lens_passage_segments'::regclass,",
+        "'public.underwriting_presentations'::regclass])",
+        "and (select array_agg(attribute.attname::text order by key.ordinality)",
+        "from unnest(constraint_record.conkey) with ordinality key(attnum,ordinality)",
+        "join pg_catalog.pg_attribute attribute",
+        "on attribute.attrelid=constraint_record.conrelid",
+        "and attribute.attnum=key.attnum)",
+        "= array['workspace_id','candidate_run_id','deal_id']",
+      ].join(" ")), "6");
       for (const role of ["anon", "authenticated", "service_role"]) {
         assert.equal(psql(postgres, database, [
           "select count(*) from pg_catalog.pg_class",
@@ -850,8 +896,16 @@ test(
           "'named_lens_passage_segments','underwriting_presentations'])",
           `and (has_table_privilege('${role}',oid,'insert')`,
           `or has_table_privilege('${role}',oid,'update')`,
-          `or has_table_privilege('${role}',oid,'delete'))`,
+          `or has_table_privilege('${role}',oid,'delete')`,
+          `or has_table_privilege('${role}',oid,'truncate'))`,
         ].join(" ")), "0");
+        rejected(
+          postgres,
+          database,
+          `set role ${role}; truncate public.named_lens_passages`,
+          /permission denied/iu,
+          `${role} direct artifact truncate`,
+        );
       }
       assert.equal(psql(postgres, database, [
         "select count(*) from pg_catalog.pg_class",
@@ -871,6 +925,430 @@ test(
         "and not has_function_privilege('anon',oid,'execute')",
         "and not has_function_privilege('authenticated',oid,'execute')",
       ].join(" ")), "2");
+      rejected(
+        postgres,
+        database,
+        [
+          "set role vsee_underwriting_owner",
+          [
+            "insert into public.decision_critical_evidence_projections(workspace_id,candidate_run_id,deal_id,projection_id,payload_fingerprint,payload)",
+            `values ('workspace_foreign','candidate_foreign','deal_foreign','projection_foreign','${sha("0")}','{}'::jsonb)`,
+          ].join(" "),
+        ].join("; "),
+        /running canonical Candidate owner/iu,
+        "candidate-owner trigger",
+      );
+    } finally {
+      postgres.run("dropdb", ["--if-exists", database]);
+    }
+  },
+);
+
+test(
+  "0027 enforces append-only provider attempt lifecycle before finalization",
+  { skip: postgres17SkipReason },
+  () => {
+    assert.equal(postgres.state, "verified");
+    if (postgres.state !== "verified") return;
+    const database = makeDisposableDatabaseName("named_lens_attempt_lifecycle");
+    success(postgres.run("createdb", [database]), "database creation");
+    try {
+      runMigrations(postgres, database);
+      fixtureSetup(postgres, database);
+      const payload = currentPayload();
+      const attempt = attemptPayloads(payload)[0]!;
+      const terminal = {
+        ...attempt,
+        status: "completed",
+        telemetry: {
+          inputTokens: 1,
+          outputTokens: 1,
+          costUsd: "0",
+          latencyMs: 1,
+        },
+        failureReason: null,
+      };
+      rejected(
+        postgres,
+        database,
+        `set role service_role; select public.settle_named_lens_passage_attempt(${sqlJson(terminal)})`,
+        /exact reserved attempt|reserve/iu,
+        "settle before reserve",
+      );
+      rejected(
+        postgres,
+        database,
+        `set role service_role; select public.reserve_named_lens_passage_attempt(${sqlJson({ ...attempt, attemptNumber: 2 })})`,
+        /monotonic/iu,
+        "non-monotonic reserve",
+      );
+      psql(
+        postgres,
+        database,
+        `set role service_role; select public.reserve_named_lens_passage_attempt(${sqlJson(attempt)})`,
+        "valid reserve",
+      );
+      rejected(
+        postgres,
+        database,
+        `set role service_role; select public.settle_named_lens_passage_attempt(${sqlJson({ ...terminal, attemptFingerprint: sha("0") })})`,
+        /exact reserved attempt fingerprint/iu,
+        "settlement fingerprint mismatch",
+      );
+      psql(
+        postgres,
+        database,
+        `set role service_role; select public.settle_named_lens_passage_attempt(${sqlJson(terminal)})`,
+        "valid settlement",
+      );
+      rejected(
+        postgres,
+        database,
+        `set role service_role; select public.settle_named_lens_passage_attempt(${sqlJson(terminal)})`,
+        /already settled/iu,
+        "duplicate terminal settlement",
+      );
+      rejected(
+        postgres,
+        database,
+        `set role service_role; select public.reserve_named_lens_passage_attempt(${sqlJson(attempt)})`,
+        /monotonic/iu,
+        "duplicate reserve identity",
+      );
+    } finally {
+      postgres.run("dropdb", ["--if-exists", database]);
+    }
+  },
+);
+
+test(
+  "0027 rejects reviewer trust-boundary exploits before any artifact insert",
+  { skip: postgres17SkipReason },
+  () => {
+    assert.equal(postgres.state, "verified");
+    if (postgres.state !== "verified") return;
+    const database = makeDisposableDatabaseName("named_lens_review_round1");
+    success(postgres.run("createdb", [database]), "database creation");
+    try {
+      runMigrations(postgres, database);
+      fixtureSetup(postgres, database);
+      const attacks: Array<{
+        name: string;
+        prepare: (
+          payload: ReturnType<typeof currentPayload>,
+          context: VerifiedLoopbackPostgresContext,
+          database: string,
+        ) => void;
+        error: RegExp;
+      }> = [
+        {
+          name: "four applicable judgments forged into two-catalog limited coverage",
+          prepare: (payload, context, targetDatabase) => {
+            for (const index of [2, 3]) {
+              payload.namedLensCatalogConsiderations[index]!
+                .initialDisposition = "context_inapplicable";
+              Object.assign(payload.namedLensDispositions[index]!, {
+                disposition: "context_inapplicable",
+                selectedPosition: null,
+                priorityTier: null,
+                passageFingerprint: null,
+              });
+            }
+            payload.namedLensAttemptRefs = payload.namedLensAttemptRefs.slice(0, 2);
+            payload.namedLensPassages = payload.namedLensPassages.slice(0, 2);
+            payload.namedLensPresentation.synthesis.judgmentIds =
+              payload.namedLensPresentation.synthesis.judgmentIds.slice(0, 2);
+            payload.namedLensPresentation.segmentCitations =
+              payload.namedLensPresentation.segmentCitations.slice(0, 2);
+            payload.namedLensPresentation.firstScreenProjectionRefs
+              .selectedJudgmentIds = payload.namedLensPresentation
+                .firstScreenProjectionRefs.selectedJudgmentIds.slice(0, 2);
+            (payload as any).terminalReasonCodes = [
+              "limited_framework_coverage",
+            ];
+            reserveAndSettleAttempts(context, targetDatabase, payload);
+          },
+          error: /catalog|applicab|judgment|limited coverage/iu,
+        },
+        {
+          name: "fabricated premise without saved Card and public-source grounding",
+          prepare: (payload, context, targetDatabase) => {
+            payload.namedLensPassages[0]!.premise = {
+              text: "Fabricated premise with no saved public authority.",
+            } as never;
+            reserveAndSettleAttempts(context, targetDatabase, payload);
+          },
+          error: /premise|ground|component|source|claim/iu,
+        },
+        {
+          name: "JSON-null current version and omitted candidate-local identity",
+          prepare: (payload, context, targetDatabase) => {
+            (payload.versionSnapshot as Record<string, unknown>)
+              .namedLensGeneratorVersion = null;
+            delete (payload.namedLensPassages[0] as Record<string, unknown>)
+              .workspaceId;
+            reserveAndSettleAttempts(context, targetDatabase, payload);
+          },
+          error: /version|current|candidate-local|identity|workspace/iu,
+        },
+        {
+          name: "settled attempt outside the authorized catalog and disposition set",
+          prepare: (payload, context, targetDatabase) => {
+            reserveAndSettleAttempts(context, targetDatabase, payload);
+            const foreign = {
+              workerId: payload.workerId,
+              leaseToken: payload.leaseToken,
+              workspaceId: "workspace_named_lens",
+              artifactSourceCandidateRunId: payload.candidateRunId,
+              judgmentOrCatalogCandidateId: "foreign_catalog_candidate",
+              logicalPassageId: "foreign_catalog_candidate@named-lens-passage-v1@named-lens-generator-v1",
+              attemptNumber: 1,
+              attemptFingerprint: sha("0"),
+            };
+            psql(
+              context,
+              targetDatabase,
+              `set role service_role; select public.reserve_named_lens_passage_attempt(${sqlJson(foreign)})`,
+              "reserve foreign Named Lens passage attempt",
+            );
+            psql(
+              context,
+              targetDatabase,
+              `set role service_role; select public.settle_named_lens_passage_attempt(${sqlJson({
+                ...foreign,
+                status: "completed",
+                telemetry: {
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  costUsd: "0",
+                  latencyMs: 1,
+                },
+                failureReason: null,
+              })})`,
+              "settle foreign Named Lens passage attempt",
+            );
+            payload.namedLensAttemptRefs.push({
+              judgmentOrCatalogCandidateId:
+                foreign.judgmentOrCatalogCandidateId,
+              logicalPassageId: foreign.logicalPassageId,
+              attemptNumber: 1,
+              attemptFingerprint: foreign.attemptFingerprint,
+            });
+          },
+          error: /attempt|catalog|disposition|authorized/iu,
+        },
+      ];
+
+      const groundedAttacks: Array<{
+        name: string;
+        mutate: (payload: ReturnType<typeof currentPayload>) => void;
+        error: RegExp;
+      }> = [
+        {
+          name: "foreign case-application evidence",
+          mutate: (payload) => {
+            payload.namedLensPassages[0]!.caseApplication.evidenceItemIds = [
+              "foreign_fact",
+            ];
+          },
+          error: /case|support|evidence|ground/iu,
+        },
+        {
+          name: "foreign countercase evidence partition",
+          mutate: (payload) => {
+            payload.namedLensPassages[0]!.countercase.evidenceItemIds = [
+              "fact_support",
+            ];
+          },
+          error: /counter|partition|evidence|ground/iu,
+        },
+        {
+          name: "foreign saved-judgment unknown",
+          mutate: (payload) => {
+            payload.namedLensPassages[0]!.unknownBoundary
+              .judgmentUnknownRefs = ["Foreign unknown"];
+          },
+          error: /unknown|limitation|judgment|ground/iu,
+        },
+        {
+          name: "passage conclusion contradicts saved judgment",
+          mutate: (payload) => {
+            payload.namedLensPassages[0]!.conditionalConclusion.stance =
+              "negative";
+          },
+          error: /conclusion|stance|judgment|ground/iu,
+        },
+        {
+          name: "selection basis lies outside the authoritative projection",
+          mutate: (payload) => {
+            payload.namedLensPassages[0]!.selectionBasisEvidenceIds = [
+              "fact_counter",
+            ];
+            payload.namedLensDispositions[0]!.selectionBasisEvidenceIds = [
+              "fact_counter",
+            ];
+          },
+          error: /projection|selection basis|critical evidence/iu,
+        },
+        {
+          name: "foreign first-screen selected judgment",
+          mutate: (payload) => {
+            payload.namedLensPresentation.firstScreenProjectionRefs
+              .selectedJudgmentIds[0] = "judgment_foreign";
+          },
+          error: /presentation|selected|judgment|position/iu,
+        },
+        {
+          name: "foreign synthesis evidence",
+          mutate: (payload) => {
+            payload.namedLensPresentation.synthesis.evidenceItemIds = [
+              "fact_counter",
+            ];
+          },
+          error: /presentation|synthesis|evidence|selection/iu,
+        },
+        {
+          name: "foreign segment citation evidence",
+          mutate: (payload) => {
+            payload.namedLensPresentation.segmentCitations[0]!
+              .evidenceItemIds = ["fact_counter"];
+          },
+          error: /citation|segment|case|evidence/iu,
+        },
+        {
+          name: "fabricated premise public claim",
+          mutate: (payload) => {
+            payload.namedLensPassages[0]!.premise.claimIds = [
+              "claim_foreign",
+            ];
+          },
+          error: /premise|claim|source|component/iu,
+        },
+      ];
+      for (const attack of groundedAttacks) {
+        attacks.push({
+          name: attack.name,
+          prepare: (payload, context, targetDatabase) => {
+            attack.mutate(payload);
+            reserveAndSettleAttempts(context, targetDatabase, payload);
+          },
+          error: attack.error,
+        });
+      }
+
+      const versionKeys = [
+        "namedLensSelectionPolicyVersion",
+        "namedLensPassageSchemaVersion",
+        "namedLensGeneratorVersion",
+        "underwritingPresentationSchemaVersion",
+        "decisionTaxonomyVersion",
+      ] as const;
+      for (const versionKey of versionKeys) {
+        for (const invalid of ["missing", "null", "wrong_type"] as const) {
+          attacks.push({
+            name: `${versionKey} ${invalid}`,
+            prepare: (payload, context, targetDatabase) => {
+              const snapshot = payload.versionSnapshot as Record<
+                string,
+                unknown
+              >;
+              if (invalid === "missing") delete snapshot[versionKey];
+              else snapshot[versionKey] = invalid === "null" ? null : 27;
+              reserveAndSettleAttempts(context, targetDatabase, payload);
+            },
+            error: /version|current Named Lens.*contract|all or none/iu,
+          });
+        }
+      }
+
+      const localIdentityObjects: Array<{
+        name: string;
+        resolve: (
+          payload: ReturnType<typeof currentPayload>,
+        ) => Record<string, unknown>;
+      }> = [
+        {
+          name: "projection",
+          resolve: (payload) => payload.decisionCriticalEvidenceProjection,
+        },
+        {
+          name: "catalog",
+          resolve: (payload) => payload.namedLensCatalogConsiderations[0]!,
+        },
+        {
+          name: "disposition",
+          resolve: (payload) => payload.namedLensDispositions[0]!,
+        },
+        {
+          name: "passage",
+          resolve: (payload) => payload.namedLensPassages[0]!,
+        },
+        {
+          name: "presentation",
+          resolve: (payload) => payload.namedLensPresentation,
+        },
+      ];
+      for (const identityObject of localIdentityObjects) {
+        for (const identityKey of [
+          "workspaceId",
+          "artifactSourceCandidateRunId",
+        ] as const) {
+          for (const invalid of ["missing", "null", "wrong"] as const) {
+            attacks.push({
+              name:
+                `${identityObject.name} ${identityKey} ${invalid}`,
+              prepare: (payload, context, targetDatabase) => {
+                const target = identityObject.resolve(payload);
+                if (invalid === "missing") delete target[identityKey];
+                else if (invalid === "null") target[identityKey] = null;
+                else target[identityKey] = `${identityKey}_foreign`;
+                reserveAndSettleAttempts(context, targetDatabase, payload);
+              },
+              error: /candidate-local|identity|workspace|Candidate/iu,
+            });
+          }
+        }
+      }
+
+      const failures: string[] = [];
+      attacks.forEach((attack, index) => {
+        const candidateRunId = `candidate_review_${index + 1}`;
+        insertCandidate(postgres, database, {
+          batchId: `batch_review_${index + 1}`,
+          candidateRunId,
+          workerId: `worker_review_${index + 1}`,
+          leaseToken: `lease_review_${index + 1}`,
+          batchFingerprint: indexedSha(index + 100),
+        });
+        const payload = forCandidate(currentPayload(), {
+          candidateRunId,
+          workerId: `worker_review_${index + 1}`,
+          leaseToken: `lease_review_${index + 1}`,
+          fingerprint: indexedSha(index + 200),
+        });
+        attack.prepare(payload, postgres, database);
+        const result = postgres.run("psql", [
+          "--no-password", "-v", "ON_ERROR_STOP=1", "-d", database,
+          "-c", [
+            "begin",
+            "set role service_role",
+            `select public.finalize_or_reuse_candidate_underwriting(${sqlJson(payload)})`,
+            "rollback",
+          ].join("; "),
+        ]);
+        if (result.status === 0 || !attack.error.test(result.stderr)) {
+          failures.push(`${attack.name}: ${result.status === 0 ? "accepted" : result.stderr}`);
+        }
+      });
+      assert.deepEqual(failures, []);
+      assert.equal(psql(postgres, database, [
+        "select",
+        "(select count(*) from public.decision_critical_evidence_projections) +",
+        "(select count(*) from public.named_lens_dispositions) +",
+        "(select count(*) from public.named_lens_passages) +",
+        "(select count(*) from public.named_lens_passage_segments) +",
+        "(select count(*) from public.underwriting_presentations)",
+      ].join(" ")), "0");
     } finally {
       postgres.run("dropdb", ["--if-exists", database]);
     }
@@ -1033,6 +1511,23 @@ test(
         `set role service_role; select public.reserve_named_lens_passage_attempt(${sqlJson(attemptPayloads(valid)[0])})`,
         /running.*lease|attempt.*terminal|candidate.*running/iu,
         "late provider attempt",
+      );
+      rejected(
+        postgres,
+        database,
+        `set role service_role; select public.settle_named_lens_passage_attempt(${sqlJson({
+          ...attemptPayloads(valid)[0],
+          status: "completed",
+          telemetry: {
+            inputTokens: 100,
+            outputTokens: 50,
+            costUsd: "0.01",
+            latencyMs: 100,
+          },
+          failureReason: null,
+        })})`,
+        /running.*lease|attempt.*terminal|candidate.*running/iu,
+        "late provider settlement",
       );
       rejected(
         postgres,
