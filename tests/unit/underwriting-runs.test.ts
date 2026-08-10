@@ -8,10 +8,13 @@ import {
   type CandidateFinalization,
 } from "../../db/repositories/underwriting-artifacts";
 import {
+  createMemoryUnderwritingCandidateLeaseAuthority,
   createMemoryUnderwritingRunsRepository,
   createSupabaseUnderwritingRunsRepository,
   statusForCandidateBatch,
 } from "../../db/repositories/underwriting-runs";
+import { createMemoryNamedLensArtifactsRepository } from
+  "../../db/repositories/named-lens-artifacts";
 import { ScenarioInputFieldSchema } from "../../lib/contracts/underwriting";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import { toCandidateUnderwritingDetail } from "../../lib/underwriting/read-model";
@@ -21,6 +24,8 @@ import {
   withEmptyCurrentNamedLensArtifacts,
 } from
   "../helpers/current-named-lens-finalization";
+
+const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
 
 function deterministicOptions() {
   let sequence = 0;
@@ -782,6 +787,216 @@ test("claim returns a lease capability and checkpoints reject a foreign token", 
     leaseToken: claimed.leaseToken,
   });
   assert.deepEqual(repository.inspect().checkpoints, [checkpoint]);
+});
+
+async function createNamedLensLeaseFixture() {
+  let currentTime = new Date("2026-07-29T12:00:00.000Z");
+  let leaseSequence = 0;
+  const now = () => currentTime;
+  const candidateLeaseAuthority =
+    createMemoryUnderwritingCandidateLeaseAuthority({ now });
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority,
+  });
+  const repository = createMemoryUnderwritingRunsRepository({
+    now,
+    idGenerator: (kind) => `${kind}_named_lens`,
+    leaseTokenGenerator: () => `lease_${++leaseSequence}`,
+    candidateLeaseAuthority,
+    namedLensArtifacts,
+  });
+  const batch = await repository.createOrReuseBatch({
+    workspaceId: "workspace_named_lens",
+    scanRunId: "scan_named_lens",
+    batchInputFingerprint: sha("a"),
+    fundPolicySnapshotId: "fund_policy_named_lens",
+    forceRefresh: false,
+    refreshNonce: null,
+    rerunOfId: null,
+  });
+  await repository.saveSelections({
+    batchId: batch.id,
+    selections: [{
+      dealId: "deal_named_lens",
+      status: "selected",
+      rank: 1,
+      reason: "Named Lens lease authority fixture.",
+    }],
+  });
+  const [candidate] = await repository.createSelectedCandidates({
+    batchId: batch.id,
+    dealIds: ["deal_named_lens"],
+  });
+  assert.ok(candidate);
+  const claimed = await repository.claimCandidate({
+    workspaceId: candidate.workspaceId,
+    candidateRunId: candidate.id,
+    workerId: "worker_1",
+    leaseSeconds: 60,
+  });
+  assert.ok(claimed);
+  return {
+    candidateLeaseAuthority,
+    namedLensArtifacts,
+    repository,
+    candidate: claimed.candidate,
+    claimed,
+    setNow(value: string) {
+      currentTime = new Date(value);
+    },
+  };
+}
+
+function namedLensReservation(input: {
+  candidateRunId: string;
+  leaseToken: string;
+}) {
+  return {
+    workspaceId: "workspace_named_lens",
+    artifactSourceCandidateRunId: input.candidateRunId,
+    judgmentOrCatalogCandidateId: "judgment_named_lens",
+    logicalPassageId:
+      "judgment_named_lens@named-lens-passage-v1@named-lens-generator-v1",
+    attemptNumber: 1,
+    attemptFingerprint: sha("b"),
+    workerId: "worker_1",
+    leaseToken: input.leaseToken,
+  };
+}
+
+test("memory Named Lens reserve rejects nonexistent and mismatched Candidate lease authority", async () => {
+  const fixture = await createNamedLensLeaseFixture();
+  const valid = namedLensReservation({
+    candidateRunId: fixture.candidate.id,
+    leaseToken: fixture.claimed.leaseToken,
+  });
+  const invalidReservations = [
+    { ...valid, artifactSourceCandidateRunId: "candidate_missing" },
+    { ...valid, workspaceId: "workspace_foreign" },
+    { ...valid, workerId: "worker_foreign" },
+    { ...valid, leaseToken: "lease_foreign" },
+  ];
+
+  for (const reservation of invalidReservations) {
+    await assert.rejects(
+      fixture.namedLensArtifacts.reserveAttempt(reservation),
+      /running canonical candidate lease/i,
+    );
+  }
+  assert.equal(
+    fixture.namedLensArtifacts.inspect().rawAttemptEvents.length,
+    0,
+  );
+});
+
+test("memory Named Lens settlement rejects an expired lease after another worker reclaims it", async () => {
+  const fixture = await createNamedLensLeaseFixture();
+  const reserved = namedLensReservation({
+    candidateRunId: fixture.candidate.id,
+    leaseToken: fixture.claimed.leaseToken,
+  });
+  await fixture.namedLensArtifacts.reserveAttempt(reserved);
+  fixture.setNow("2026-07-29T12:01:01.000Z");
+  const reclaimed = await fixture.repository.claimCandidate({
+    workspaceId: fixture.candidate.workspaceId,
+    candidateRunId: fixture.candidate.id,
+    workerId: "worker_2",
+    leaseSeconds: 60,
+  });
+  assert.ok(reclaimed);
+  assert.notEqual(reclaimed.leaseToken, fixture.claimed.leaseToken);
+
+  await assert.rejects(fixture.namedLensArtifacts.settleAttempt({
+    ...reserved,
+    status: "aborted",
+    telemetry: null,
+    failureReason: {
+      code: "provider_error",
+      detail: "The original worker lost its lease.",
+      retryable: true,
+    },
+  }), /running canonical candidate lease/i);
+  assert.equal(
+    fixture.namedLensArtifacts.inspect().rawAttemptEvents.length,
+    1,
+  );
+});
+
+test("memory Named Lens writes reject noncanonical and terminal candidates", async () => {
+  const noncanonical = await createNamedLensLeaseFixture();
+  noncanonical.candidateLeaseAuthority.saveCandidate({
+    ...noncanonical.candidate,
+    artifactSourceCandidateRunId: "candidate_source",
+  });
+  await assert.rejects(
+    noncanonical.namedLensArtifacts.reserveAttempt(namedLensReservation({
+      candidateRunId: noncanonical.candidate.id,
+      leaseToken: noncanonical.claimed.leaseToken,
+    })),
+    /running canonical candidate lease/i,
+  );
+
+  const terminal = await createNamedLensLeaseFixture();
+  await terminal.repository.markCandidateFailed({
+    candidateRunId: terminal.candidate.id,
+    publicReason: "Terminal authority fixture.",
+  });
+  await assert.rejects(
+    terminal.namedLensArtifacts.reserveAttempt(namedLensReservation({
+      candidateRunId: terminal.candidate.id,
+      leaseToken: terminal.claimed.leaseToken,
+    })),
+    /running canonical candidate lease/i,
+  );
+});
+
+test("memory underwriting composition rejects split Named Lens ledgers", () => {
+  const firstAuthority = createMemoryUnderwritingCandidateLeaseAuthority();
+  const firstNamedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: firstAuthority,
+  });
+  const underwritingArtifacts = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts: firstNamedLensArtifacts,
+  });
+  const secondAuthority = createMemoryUnderwritingCandidateLeaseAuthority();
+  const secondNamedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: secondAuthority,
+  });
+
+  assert.throws(() => createMemoryUnderwritingRunsRepository({
+    candidateLeaseAuthority: secondAuthority,
+    namedLensArtifacts: secondNamedLensArtifacts,
+    artifacts: underwritingArtifacts,
+  }), /same|shared|named lens|artifact/i);
+});
+
+test("memory underwriting composition reuses the artifact repository Named Lens ledger", () => {
+  const candidateLeaseAuthority =
+    createMemoryUnderwritingCandidateLeaseAuthority();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority,
+  });
+  const artifacts = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
+
+  const repository = createMemoryUnderwritingRunsRepository({
+    candidateLeaseAuthority,
+    artifacts,
+  });
+
+  assert.equal(repository.namedLensArtifacts, namedLensArtifacts);
+  assert.equal(artifacts.namedLensArtifacts, namedLensArtifacts);
+});
+
+test("memory Candidate lease authority rejects an invalid expiry", () => {
+  const authority = createMemoryUnderwritingCandidateLeaseAuthority();
+
+  assert.throws(() => authority.saveLease("candidate_invalid_expiry", {
+    workerId: "worker_1",
+    token: "lease_1",
+    expiresAt: "not-a-timestamp",
+  }), /expiry|timestamp|date/i);
 });
 
 test("completed checkpoints are readable by exact workspace and candidate", async () => {

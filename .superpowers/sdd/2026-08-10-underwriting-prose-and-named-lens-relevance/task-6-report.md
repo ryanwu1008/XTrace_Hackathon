@@ -105,6 +105,40 @@ npm run lint: exit 0, zero warnings
 git diff --check: exit 0
 ```
 
+## Independent review round 3
+
+The follow-up review found two additional fail-closed composition edges and
+one missing same-size authority-substitution regression. All three were
+reproduced RED and fixed before commit:
+
+1. An explicitly supplied memory artifact repository could own a different
+   Named Lens ledger from the one supplied to underwriting runs. Memory
+   artifacts and runs now expose the selected repository identity, adopt the
+   artifact-owned repository when it is the only supplied instance, and reject
+   every split-ledger composition.
+2. A malformed lease expiry parsed to `NaN`, which made the old `<= now`
+   comparison fail open. The shared authority now requires a canonical ISO
+   timestamp when saving a lease and rechecks a finite parsed expiry whenever
+   the lease authorizes a write.
+3. Equal-sized advisory catalogs can no longer substitute a different
+   framework identity or version without a direct negative regression proving
+   finalization rejects the mismatch.
+
+The Candidate/lease store was moved into an instance-scoped repository module
+so default artifacts-only memory compositions can share the same full
+authority without a circular dependency or singleton.
+
+Fresh final verification:
+
+```text
+Task 6 eight-file cohort:
+tests 133; pass 124; fail 0; skipped 9
+
+npm run typecheck: exit 0
+npm run lint: exit 0, zero warnings
+git diff --check: exit 0
+```
+
 The five PostgreSQL-backed skips in the static 0027 file and nine historical
 integration skips in the nominal cohort require explicit database opt-in;
 Task 5 already recorded fresh PostgreSQL 17.6 focused and broad GREEN gates.
@@ -164,3 +198,45 @@ deleted when SQL aliases it. Task 7 must perform canonical reuse before
 provider execution through its Candidate-ID-independent fingerprint and nonce
 normalization. Task 6 deliberately preserves the immutable audit instead of
 silently deleting it.
+
+## Independent review round 2
+
+The locked Task 6 review found two additional memory/Supabase parity gaps;
+both were reproduced RED before implementation and fixed without changing
+0027, any other migration, or Task 7 runtime behavior.
+
+1. Current memory finalization could omit an applicable advisory judgment from
+   the submitted catalog and relabel the result as limited coverage. The
+   TypeScript boundary now mirrors 0027's authoritative set predicate and
+   requires exact one-to-one judgment ID, catalog-candidate ID, framework Card
+   ID, and framework version coverage. The three-catalog positive fixture now
+   truly contains only three applicable advisory judgments; a four-judgment,
+   three-catalog graph is rejected.
+2. Memory attempt reserve/settle accepted any non-empty worker and lease token.
+   Both writes now consult one explicitly injected, instance-scoped Candidate
+   lease authority shared with memory underwriting runs. It verifies exact
+   workspace and Candidate identity, running status, canonical ownership,
+   worker, token, and non-expired lease before recording an event. The worker
+   fallback constructs one authority, one Named Lens repository, and one
+   artifact repository; low-level ledger tests use an explicit test-only
+   authority, never a permissive production default.
+
+Fresh post-fix verification:
+
+```text
+Task 6 eight-file cohort:
+tests 129; pass 120; fail 0; skipped 9
+
+Focused authoritative-catalog tests:
+tests 2; pass 2; fail 0; skipped 0
+
+Focused shared-authority and worker-composition tests:
+tests 4; pass 4; fail 0; skipped 0
+
+Real eight-core/twenty-advisory plus unknown-usage integration:
+tests 2; pass 2; fail 0; skipped 0
+
+npm run typecheck: exit 0
+npm run lint: exit 0, zero warnings
+git diff --check: exit 0
+```

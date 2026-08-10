@@ -29,6 +29,7 @@ import { createMemoryNamedLensArtifactsRepository } from
 import type { NamedLensArtifactsRepository } from
   "../../db/repositories/named-lens-artifacts";
 import {
+  createMemoryUnderwritingCandidateLeaseAuthority,
   createMemoryUnderwritingRunsRepository,
   type CandidateFinalization,
 } from "../../db/repositories/underwriting-runs";
@@ -2559,7 +2560,11 @@ test("runs the source-grounded candidate chain once and persists communication c
 
 test("real authorized eight-core and twenty-advisory execution settles a truthful partial graph within budget", async () => {
   let sequence = 0;
-  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const candidateLeaseAuthority =
+    createMemoryUnderwritingCandidateLeaseAuthority({ now: () => NOW });
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority,
+  });
   const artifacts = createMemoryUnderwritingArtifactsRepository({
     namedLensArtifacts,
   });
@@ -2605,6 +2610,8 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
     idGenerator: (kind) => `${kind}_${++sequence}`,
     leaseTokenGenerator: () => `lease_${++sequence}`,
     artifacts,
+    namedLensArtifacts,
+    candidateLeaseAuthority,
     evidencePacks,
   });
   const grounding = await candidateGroundingFor("deal_a", {
@@ -3041,11 +3048,17 @@ test("settled provider overage blocks the next physical request before dispatch"
 
 test("unknown provider usage conservatively retains the full reservation", async () => {
   let sequence = 0;
-  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const candidateLeaseAuthority =
+    createMemoryUnderwritingCandidateLeaseAuthority({ now: () => NOW });
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority,
+  });
   const runs = createMemoryUnderwritingRunsRepository({
     now: () => NOW,
     idGenerator: (kind) => `${kind}_${++sequence}`,
     leaseTokenGenerator: () => `lease_${++sequence}`,
+    namedLensArtifacts,
+    candidateLeaseAuthority,
   });
   const orchestrator = createUnderwritingOrchestrator({
     runs,

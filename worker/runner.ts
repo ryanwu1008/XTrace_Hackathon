@@ -7,6 +7,7 @@ import { getDealRegistry } from "../db/repositories/deal-registry";
 import { getEvidencePacksRepository } from "../db/repositories/evidence-packs";
 import { getSourceRegistry } from "../db/repositories/source-registry";
 import {
+  createMemoryUnderwritingCandidateLeaseAuthority,
   createMemoryUnderwritingRunsRepository,
   createSupabaseUnderwritingRunsRepository,
 } from "../db/repositories/underwriting-runs";
@@ -344,7 +345,11 @@ export function createWorkerUnderwritingPersistence(input: {
       }),
     };
   }
-  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const candidateLeaseAuthority =
+    createMemoryUnderwritingCandidateLeaseAuthority();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority,
+  });
   const underwritingArtifacts = createMemoryUnderwritingArtifactsRepository({
     namedLensArtifacts,
   });
@@ -355,6 +360,7 @@ export function createWorkerUnderwritingPersistence(input: {
       evidencePacks: input.evidencePacks,
       artifacts: underwritingArtifacts,
       namedLensArtifacts,
+      candidateLeaseAuthority,
     }),
   };
 }

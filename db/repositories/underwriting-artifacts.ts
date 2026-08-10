@@ -87,6 +87,8 @@ import {
   createMemoryNamedLensArtifactsRepository,
   type MemoryNamedLensArtifactsRepository,
 } from "./named-lens-artifacts";
+import { createMemoryUnderwritingCandidateLeaseAuthority } from
+  "./underwriting-candidate-lease-authority";
 
 const IdSchema = z.string().min(1).refine(
   (value) => value.trim() === value,
@@ -365,6 +367,7 @@ export interface NamedLensProviderAttemptState {
 
 export interface MemoryUnderwritingArtifactsRepository
   extends UnderwritingArtifactsRepository, NamedLensProviderAttemptState {
+  readonly namedLensArtifacts: MemoryNamedLensArtifactsRepository;
   prepareFinalization(input: {
     candidate: {
       id: string;
@@ -393,6 +396,7 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
   now?: () => Date;
   namedLensArtifacts?: MemoryNamedLensArtifactsRepository;
 } = {}): MemoryUnderwritingArtifactsRepository {
+  const now = options.now ?? (() => new Date());
   const bundles = new Map<string, CandidateArtifactBundle>();
   const reusable = new Map<string, ReusableCandidateArtifacts>();
   const aliases = new Map<string, {
@@ -401,10 +405,13 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
     terminalReasonCodes: string[];
   }>();
   const namedLensArtifacts = options.namedLensArtifacts
-    ?? createMemoryNamedLensArtifactsRepository();
-  const now = options.now ?? (() => new Date());
+    ?? createMemoryNamedLensArtifactsRepository({
+      candidateLeaseAuthority:
+        createMemoryUnderwritingCandidateLeaseAuthority({ now }),
+    });
 
   return {
+    namedLensArtifacts,
     async findReusable(input) {
       const workspaceId = requiredText(input.workspaceId, "A workspace");
       const candidateAnalysisFingerprint = requiredText(
@@ -1767,6 +1774,45 @@ export function validateNamedLensFinalization(input: {
   ) {
     throw new Error(
       "Named Lens finalization accepts at most six selected passages.",
+    );
+  }
+  const authoritativeJudgments = input.judgments.filter((judgment) =>
+    judgment.analysisType === "framework_judgment"
+    && judgment.applicability === "applicable"
+    && (
+      judgment.conclusion === "supportive"
+      || judgment.conclusion === "mixed"
+      || judgment.conclusion === "negative"
+    )
+    && typeof judgment.frameworkMetadata === "object"
+    && judgment.frameworkMetadata !== null
+    && !Array.isArray(judgment.frameworkMetadata)
+  );
+  const judgmentEligibleConsiderations = input.catalogConsiderations.filter(
+    ({ initialDisposition }) => initialDisposition === "judgment_eligible",
+  );
+  const matchesAuthoritativeJudgment = (
+    consideration: NamedLensCatalogConsideration,
+    judgment: FrameworkJudgment,
+  ) => consideration.judgmentId === judgment.id
+    && consideration.judgmentOrCatalogCandidateId === judgment.id
+    && consideration.frameworkCardId === judgment.frameworkCardId
+    && consideration.frameworkVersion === judgment.frameworkVersion;
+  if (
+    authoritativeJudgments.length !== judgmentEligibleConsiderations.length
+    || authoritativeJudgments.some((judgment) =>
+      !judgmentEligibleConsiderations.some((consideration) =>
+        matchesAuthoritativeJudgment(consideration, judgment)
+      )
+    )
+    || judgmentEligibleConsiderations.some((consideration) =>
+      authoritativeJudgments.filter((judgment) =>
+        matchesAuthoritativeJudgment(consideration, judgment)
+      ).length !== 1
+    )
+  ) {
+    throw new Error(
+      "Every authoritative applicable advisory judgment requires exactly one matching judgment-eligible Named Lens catalog consideration.",
     );
   }
   const considerationIds = new Set(

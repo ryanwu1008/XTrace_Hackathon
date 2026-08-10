@@ -7,6 +7,8 @@ import {
   createMemoryNamedLensArtifactsRepository,
   type NamedLensArtifactsRepository,
 } from "../../db/repositories/named-lens-artifacts";
+import { createTestNamedLensCandidateLeaseAuthority } from
+  "../helpers/named-lens-attempt-authority";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import {
   createCandidateStagePolicies,
@@ -224,7 +226,9 @@ test("Named Lens provider I/O starts only after durable and checkpoint reservati
       }
     },
   } as unknown as UnderwritingRunsRepository;
-  const storage = createMemoryNamedLensArtifactsRepository();
+  const storage = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   const namedLensArtifacts: NamedLensArtifactsRepository = {
     async reserveAttempt(input) {
       order.push("durable-reserve");
@@ -311,7 +315,9 @@ test("Named Lens provider I/O starts only after durable and checkpoint reservati
 
 test("checkpoint reservation failure aborts the durable attempt before provider I/O", async () => {
   const order: string[] = [];
-  const storage = createMemoryNamedLensArtifactsRepository();
+  const storage = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   const namedLensArtifacts: NamedLensArtifactsRepository = {
     async reserveAttempt(input) {
       order.push("durable-reserve");
@@ -423,7 +429,9 @@ test("timeout settlement wins and a late provider resolution cannot complete the
       checkpoint = structuredClone(value);
     },
   } as unknown as UnderwritingRunsRepository;
-  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   const candidate = {
     id: "candidate_named_lens_timeout",
     batchId: "batch_named_lens",
@@ -512,7 +520,9 @@ test("timeout checkpoint settlement wins over a late provider rejection", async 
       checkpoint = structuredClone(value);
     },
   } as unknown as UnderwritingRunsRepository;
-  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   const candidate = {
     id: "candidate_named_lens_late_rejection",
     batchId: "batch_named_lens",

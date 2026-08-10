@@ -24,6 +24,8 @@ import { createMemoryEvidencePacksRepository } from
   "../../db/repositories/evidence-packs";
 import { createCurrentNamedLensFinalizationFixture } from
   "../helpers/current-named-lens-finalization";
+import { createTestNamedLensCandidateLeaseAuthority } from
+  "../helpers/named-lens-attempt-authority";
 import type { EvidencePack } from "../../lib/contracts/evidence";
 import type {
   DecisionResult,
@@ -90,7 +92,7 @@ function currentArtifacts(count = 4) {
     })),
     assumptions: [],
   } as unknown as EvidencePack;
-  const judgments = Array.from({ length: 4 }, (_, index) => {
+  const judgments = Array.from({ length: count }, (_, index) => {
     const ordinal = index + 1;
     return {
       id: rankedJudgmentIds[index]!,
@@ -388,6 +390,29 @@ test("requires explicit limited coverage for fewer applicable catalogs", () => {
   }), /coverage|reason/i);
 });
 
+test("rejects an applicable advisory judgment omitted from the authorized catalog", () => {
+  const onlyThree = currentArtifacts(3);
+  const fourthJudgment = currentArtifacts(4).judgments[3]!;
+
+  assert.throws(() => validateNamedLensFinalization({
+    ...onlyThree,
+    judgments: [...onlyThree.judgments, fourthJudgment],
+    terminalReasonCodes: ["limited_framework_coverage"],
+  }), /authoritative|catalog|judgment|coverage/i);
+});
+
+test("rejects equal-sized catalog substitution of advisory identity or version", () => {
+  const valid = currentArtifacts();
+
+  assert.throws(() => validateNamedLensFinalization({
+    ...valid,
+    catalogConsiderations: [{
+      ...valid.catalogConsiderations[0]!,
+      frameworkVersion: "framework-version-substitution",
+    }, ...valid.catalogConsiderations.slice(1)],
+  }), /authoritative|catalog|judgment|version/i);
+});
+
 test("resolves critical, passage, and disposition refs to the saved pack and judgment", () => {
   const valid = currentArtifacts();
   assert.throws(() => validateNamedLensFinalization({
@@ -573,7 +598,9 @@ test("resolves unknown and conclusion citations only to their saved segment fiel
 
 test("persists two immutable attempt events and collapses them to one settled logical attempt", async () => {
   const current = currentArtifacts();
-  const repository = createMemoryNamedLensArtifactsRepository();
+  const repository = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   const reserved = {
     workspaceId: current.persistedAttempts[0]!.workspaceId,
     artifactSourceCandidateRunId:
@@ -614,7 +641,9 @@ test("persists two immutable attempt events and collapses them to one settled lo
 
 test("memory row counts include global attempt events once and exclude aliases", () => {
   const fixture = createCurrentNamedLensFinalizationFixture();
-  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   for (const event of fixture.rawAttemptEvents) {
     namedLensArtifacts.recordAttemptEvent(event);
   }
@@ -750,7 +779,9 @@ function namedLensOnlyPartialWithFormalPlaceholders() {
 
 test("Named Lens-only partial finalization rejects unavailable formal placeholders before any commit or RPC", async () => {
   const fixture = namedLensOnlyPartialWithFormalPlaceholders();
-  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   for (const event of fixture.rawAttemptEvents) {
     namedLensArtifacts.recordAttemptEvent(event);
   }
@@ -843,7 +874,9 @@ test("critical-incomplete full US partial finalization cannot erase an available
       }],
     }),
   );
-  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   for (const event of fixture.rawAttemptEvents) {
     namedLensArtifacts.recordAttemptEvent(event);
   }
@@ -1258,7 +1291,9 @@ test("bundle reconstruction derives catalog from dispositions and passage bodies
 
 test("attempt settlement fails closed for orphans and ignores every terminal event after abort", async () => {
   const current = currentArtifacts().persistedAttempts[0]!;
-  const repository = createMemoryNamedLensArtifactsRepository();
+  const repository = createMemoryNamedLensArtifactsRepository({
+    candidateLeaseAuthority: createTestNamedLensCandidateLeaseAuthority(),
+  });
   const identity = {
     workspaceId: current.workspaceId,
     artifactSourceCandidateRunId: current.artifactSourceCandidateRunId,

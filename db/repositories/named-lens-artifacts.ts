@@ -31,6 +31,15 @@ export interface NamedLensProviderAttemptSettlement extends AttemptIdentity {
   failureReason: NamedLensProviderAttempt["failureReason"];
 }
 
+export interface NamedLensCandidateLeaseAuthority {
+  assertActiveCanonicalCandidateLease(input: {
+    workspaceId: string;
+    candidateRunId: string;
+    workerId: string;
+    leaseToken: string;
+  }): void;
+}
+
 export interface NamedLensArtifactsRepository {
   reserveAttempt(
     input: NamedLensProviderAttemptReservation,
@@ -46,6 +55,7 @@ export interface NamedLensArtifactsRepository {
 
 export interface MemoryNamedLensArtifactsRepository
   extends NamedLensArtifactsRepository {
+  readonly candidateLeaseAuthority: NamedLensCandidateLeaseAuthority;
   recordAttemptEvent(attempt: NamedLensProviderAttempt): void;
   listAttemptsSync(
     workspaceId: string,
@@ -54,9 +64,23 @@ export interface MemoryNamedLensArtifactsRepository
   inspect(): { rawAttemptEvents: NamedLensProviderAttempt[] };
 }
 
-export function createMemoryNamedLensArtifactsRepository():
-  MemoryNamedLensArtifactsRepository {
+export function createMemoryNamedLensArtifactsRepository(options: {
+  candidateLeaseAuthority: NamedLensCandidateLeaseAuthority;
+}): MemoryNamedLensArtifactsRepository {
   const rawEvents: NamedLensProviderAttempt[] = [];
+
+  const assertAttemptAuthority = (input: {
+    workspaceId: string;
+    artifactSourceCandidateRunId: string;
+    workerId: string;
+    leaseToken: string;
+  }): void => options.candidateLeaseAuthority
+    .assertActiveCanonicalCandidateLease({
+      workspaceId: input.workspaceId,
+      candidateRunId: input.artifactSourceCandidateRunId,
+      workerId: input.workerId,
+      leaseToken: input.leaseToken,
+    });
 
   const recordAttemptEvent = (value: NamedLensProviderAttempt): void => {
     const attempt = NamedLensProviderAttemptSchema.parse(value);
@@ -105,6 +129,7 @@ export function createMemoryNamedLensArtifactsRepository():
     async reserveAttempt(input) {
       requiredText(input.workerId, "A worker");
       requiredText(input.leaseToken, "A lease token");
+      assertAttemptAuthority(input);
       const reserved = NamedLensProviderAttemptSchema.parse({
         ...attemptIdentity(input),
         status: "reserved",
@@ -118,6 +143,7 @@ export function createMemoryNamedLensArtifactsRepository():
     async settleAttempt(input) {
       requiredText(input.workerId, "A worker");
       requiredText(input.leaseToken, "A lease token");
+      assertAttemptAuthority(input);
       const settled = NamedLensProviderAttemptSchema.parse({
         ...attemptIdentity(input),
         status: input.status,
@@ -134,6 +160,7 @@ export function createMemoryNamedLensArtifactsRepository():
 
     recordAttemptEvent,
     listAttemptsSync,
+    candidateLeaseAuthority: options.candidateLeaseAuthority,
 
     inspect() {
       return { rawAttemptEvents: structuredClone(rawEvents) };

@@ -28,10 +28,23 @@ import {
   createMemoryEvidencePacksRepository,
   type EvidencePacksRepository,
 } from "./evidence-packs";
-import type { MemoryNamedLensArtifactsRepository } from
-  "./named-lens-artifacts";
-import type { NamedLensArtifactsRepository } from
-  "./named-lens-artifacts";
+import {
+  createMemoryNamedLensArtifactsRepository,
+  type MemoryNamedLensArtifactsRepository,
+  type NamedLensArtifactsRepository,
+} from "./named-lens-artifacts";
+import {
+  createMemoryUnderwritingCandidateLeaseAuthority,
+  isMemoryUnderwritingCandidateLeaseAuthority,
+  type MemoryCandidateLease,
+  type MemoryUnderwritingCandidateLeaseAuthority,
+} from "./underwriting-candidate-lease-authority";
+
+export {
+  createMemoryUnderwritingCandidateLeaseAuthority,
+  type MemoryCandidateLease,
+  type MemoryUnderwritingCandidateLeaseAuthority,
+} from "./underwriting-candidate-lease-authority";
 
 export type { CandidateFinalization } from "./underwriting-artifacts";
 
@@ -120,14 +133,9 @@ interface StoredBatch {
   refreshNonce: string | null;
 }
 
-interface CandidateLease {
-  workerId: string;
-  token: string;
-  expiresAt: string;
-}
-
 export interface MemoryUnderwritingRunsRepository
   extends UnderwritingRunsRepository {
+  readonly namedLensArtifacts: MemoryNamedLensArtifactsRepository;
   inspect(): {
     batches: UnderwritingBatch[];
     selections: UnderwritingSelection[];
@@ -144,6 +152,7 @@ export interface MemoryUnderwritingRunsOptions {
   leaseTokenGenerator?: () => string;
   artifacts?: MemoryUnderwritingArtifactsRepository;
   namedLensArtifacts?: MemoryNamedLensArtifactsRepository;
+  candidateLeaseAuthority?: MemoryUnderwritingCandidateLeaseAuthority;
   evidencePacks?: EvidencePacksRepository;
 }
 
@@ -154,17 +163,46 @@ export function createMemoryUnderwritingRunsRepository(
   const idGenerator = options.idGenerator
     ?? ((kind) => `${kind}_${randomUUID()}`);
   const leaseTokenGenerator = options.leaseTokenGenerator ?? randomUUID;
+  const artifactsNamedLens = options.artifacts?.namedLensArtifacts;
+  if (
+    artifactsNamedLens
+    && options.namedLensArtifacts
+    && artifactsNamedLens !== options.namedLensArtifacts
+  ) {
+    throw new Error(
+      "Memory underwriting runs and artifacts must share the same Named Lens repository.",
+    );
+  }
+  const suppliedNamedLens = options.namedLensArtifacts ?? artifactsNamedLens;
+  const inferredAuthority = suppliedNamedLens
+    && isMemoryUnderwritingCandidateLeaseAuthority(
+      suppliedNamedLens.candidateLeaseAuthority,
+    )
+    ? suppliedNamedLens.candidateLeaseAuthority
+    : null;
+  const candidateLeaseAuthority = options.candidateLeaseAuthority
+    ?? inferredAuthority
+    ?? createMemoryUnderwritingCandidateLeaseAuthority({ now });
+  if (
+    suppliedNamedLens
+    && suppliedNamedLens.candidateLeaseAuthority
+      !== candidateLeaseAuthority
+  ) {
+    throw new Error(
+      "Memory underwriting runs and Named Lens artifacts must share one explicit Candidate lease authority.",
+    );
+  }
+  const namedLensArtifacts = suppliedNamedLens
+    ?? createMemoryNamedLensArtifactsRepository({ candidateLeaseAuthority });
   const artifacts = options.artifacts
     ?? createMemoryUnderwritingArtifactsRepository({
-      namedLensArtifacts: options.namedLensArtifacts,
+      namedLensArtifacts,
     });
   const evidencePacks = options.evidencePacks
     ?? createMemoryEvidencePacksRepository();
   const batches = new Map<string, StoredBatch>();
   const selections = new Map<string, UnderwritingSelection>();
-  const candidates = new Map<string, CandidateRun>();
   const checkpoints = new Map<string, CandidateCheckpoint>();
-  const leases = new Map<string, CandidateLease>();
   const unavailableReasons = new Map<string, string[]>();
   const failureReasons = new Map<string, string>();
 
@@ -175,7 +213,9 @@ export function createMemoryUnderwritingRunsRepository(
   }
 
   function candidateById(id: string): CandidateRun {
-    const value = candidates.get(requiredText(id, "A candidate run"));
+    const value = candidateLeaseAuthority.getCandidate(
+      requiredText(id, "A candidate run"),
+    );
     if (!value) throw new Error("The candidate run does not exist.");
     return value;
   }
@@ -188,7 +228,7 @@ export function createMemoryUnderwritingRunsRepository(
   }
 
   function candidatesForBatch(batchId: string): CandidateRun[] {
-    return [...candidates.values()].filter(
+    return candidateLeaseAuthority.listCandidates().filter(
       (candidate) => candidate.batchId === batchId,
     );
   }
@@ -218,15 +258,21 @@ export function createMemoryUnderwritingRunsRepository(
     });
   }
 
-  function activeLease(candidateRunId: string): CandidateLease {
-    const lease = leases.get(candidateRunId);
-    if (!lease || Date.parse(lease.expiresAt) <= now().getTime()) {
+  function activeLease(candidateRunId: string): MemoryCandidateLease {
+    const lease = candidateLeaseAuthority.getLease(candidateRunId);
+    const expiryMs = lease ? Date.parse(lease.expiresAt) : Number.NaN;
+    if (
+      !lease
+      || !Number.isFinite(expiryMs)
+      || expiryMs <= now().getTime()
+    ) {
       throw new Error("The candidate lease is absent or expired.");
     }
     return lease;
   }
 
   return {
+    namedLensArtifacts,
     async getBatchByScanRunId(input) {
       const workspaceId = requiredText(input.workspaceId, "A workspace");
       const scanRunId = requiredText(input.scanRunId, "A scan run");
@@ -391,7 +437,7 @@ export function createMemoryUnderwritingRunsRepository(
             createdAt: now().toISOString(),
             finalizedAt: null,
           });
-          candidates.set(candidate.id, candidate);
+          candidateLeaseAuthority.saveCandidate(candidate);
         }
         result.push(structuredClone(candidate));
       }
@@ -408,13 +454,15 @@ export function createMemoryUnderwritingRunsRepository(
         throw new Error("Lease seconds must be a positive integer.");
       }
       const timestamp = now().getTime();
-      const candidate = [...candidates.values()]
+      const candidate = candidateLeaseAuthority.listCandidates()
         .filter((value) =>
           value.status === "queued"
           || (
             value.status === "running"
-            && (!leases.get(value.id)
-              || Date.parse(leases.get(value.id)!.expiresAt) <= timestamp)
+            && (!candidateLeaseAuthority.getLease(value.id)
+              || Date.parse(
+                candidateLeaseAuthority.getLease(value.id)!.expiresAt,
+              ) <= timestamp)
           )
         )
         .sort((left, right) =>
@@ -434,8 +482,8 @@ export function createMemoryUnderwritingRunsRepository(
         ...candidate,
         status: "running",
       });
-      candidates.set(candidate.id, running);
-      leases.set(candidate.id, {
+      candidateLeaseAuthority.saveCandidate(running);
+      candidateLeaseAuthority.saveLease(candidate.id, {
         workerId,
         token: leaseToken,
         expiresAt: leaseExpiresAt,
@@ -462,7 +510,7 @@ export function createMemoryUnderwritingRunsRepository(
         throw new Error("Lease seconds must be a positive integer.");
       }
       const timestamp = now().getTime();
-      const candidate = candidates.get(candidateRunId);
+      const candidate = candidateLeaseAuthority.getCandidate(candidateRunId);
       if (
         !candidate
         || candidate.workspaceId !== workspaceId
@@ -471,8 +519,10 @@ export function createMemoryUnderwritingRunsRepository(
           && !(
             candidate.status === "running"
             && (
-              !leases.get(candidate.id)
-              || Date.parse(leases.get(candidate.id)!.expiresAt) <= timestamp
+              !candidateLeaseAuthority.getLease(candidate.id)
+              || Date.parse(
+                candidateLeaseAuthority.getLease(candidate.id)!.expiresAt,
+              ) <= timestamp
             )
           )
         )
@@ -490,8 +540,8 @@ export function createMemoryUnderwritingRunsRepository(
         ...candidate,
         status: "running",
       });
-      candidates.set(candidate.id, running);
-      leases.set(candidate.id, {
+      candidateLeaseAuthority.saveCandidate(running);
+      candidateLeaseAuthority.saveLease(candidate.id, {
         workerId,
         token: leaseToken,
         expiresAt: leaseExpiresAt,
@@ -552,7 +602,7 @@ export function createMemoryUnderwritingRunsRepository(
         input.candidateRunId,
         "A candidate run",
       );
-      const candidate = candidates.get(candidateRunId);
+      const candidate = candidateLeaseAuthority.getCandidate(candidateRunId);
       if (
         !candidate
         || candidate.workspaceId
@@ -585,12 +635,12 @@ export function createMemoryUnderwritingRunsRepository(
         throw new Error("Unavailable candidates require reason codes.");
       }
       unavailableReasons.set(candidate.id, reasonCodes);
-      candidates.set(candidate.id, CandidateRunSchema.parse({
+      candidateLeaseAuthority.saveCandidate(CandidateRunSchema.parse({
         ...candidate,
         status: "unavailable",
         finalizedAt: now().toISOString(),
       }));
-      leases.delete(candidate.id);
+      candidateLeaseAuthority.deleteLease(candidate.id);
       recomputeBatch(candidate.batchId);
     },
 
@@ -601,12 +651,12 @@ export function createMemoryUnderwritingRunsRepository(
         candidate.id,
         requiredText(input.publicReason, "A public failure reason"),
       );
-      candidates.set(candidate.id, CandidateRunSchema.parse({
+      candidateLeaseAuthority.saveCandidate(CandidateRunSchema.parse({
         ...candidate,
         status: "failed",
         finalizedAt: now().toISOString(),
       }));
-      leases.delete(candidate.id);
+      candidateLeaseAuthority.deleteLease(candidate.id);
       recomputeBatch(candidate.batchId);
     },
 
@@ -656,8 +706,8 @@ export function createMemoryUnderwritingRunsRepository(
           dealId: candidate.dealId,
           candidateAnalysisFingerprint,
         });
-        candidates.set(candidate.id, completed);
-        leases.delete(candidate.id);
+        candidateLeaseAuthority.saveCandidate(completed);
+        candidateLeaseAuthority.deleteLease(candidate.id);
         recomputeBatch(candidate.batchId);
         return structuredClone(completed);
       }
@@ -701,8 +751,8 @@ export function createMemoryUnderwritingRunsRepository(
       });
 
       artifacts.commitPrepared(prepared);
-      candidates.set(candidate.id, completed);
-      leases.delete(candidate.id);
+      candidateLeaseAuthority.saveCandidate(completed);
+      candidateLeaseAuthority.deleteLease(candidate.id);
       recomputeBatch(candidate.batchId);
       return structuredClone(completed);
     },
@@ -715,9 +765,7 @@ export function createMemoryUnderwritingRunsRepository(
         selections: [...selections.values()].map((value) =>
           structuredClone(value)
         ),
-        candidates: [...candidates.values()].map((value) =>
-          structuredClone(value)
-        ),
+        candidates: candidateLeaseAuthority.listCandidates(),
         checkpoints: [...checkpoints.values()].map((value) =>
           structuredClone(value)
         ),
