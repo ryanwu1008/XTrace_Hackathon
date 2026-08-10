@@ -143,6 +143,7 @@ const withheld = {
 const attempt = {
   workspaceId: "workspace_1",
   artifactSourceCandidateRunId: "candidate_1",
+  judgmentOrCatalogCandidateId: "judgment_1",
   logicalPassageId: "judgment_1@named-lens-passage-v1@named-lens-generator-v1",
   attemptNumber: 1,
   attemptFingerprint: sha("6"),
@@ -196,6 +197,16 @@ test("round-trips strict selected, appendix, attempt, and presentation artifacts
     appendixPassage,
   );
   assert.deepEqual(NamedLensProviderAttemptSchema.parse(attempt), attempt);
+  assert.throws(() => NamedLensProviderAttemptSchema.parse({
+    ...attempt,
+    status: "failed",
+    telemetry: null,
+    failureReason: {
+      code: "provider_error",
+      detail: "Provider failed.",
+      retryable: false,
+    },
+  }));
   assert.deepEqual(
     NamedLensPresentationSchema.parse(presentation),
     presentation,
@@ -207,6 +218,14 @@ test("round-trips strict selected, appendix, attempt, and presentation artifacts
 });
 
 test("only selected main dispositions carry a position or publishable passage", () => {
+  assert.throws(() => NamedLensDispositionSchema.parse({
+    ...selected,
+    priorityTier: null,
+  }));
+  assert.throws(() => NamedLensDispositionSchema.parse({
+    ...selected,
+    selectionBasisEvidenceIds: [],
+  }));
   assert.throws(() => NamedLensDispositionSchema.parse({
     ...withheld,
     selectedPosition: 1,

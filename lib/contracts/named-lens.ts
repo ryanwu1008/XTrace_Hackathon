@@ -14,6 +14,8 @@ export const NAMED_LENS_SELECTION_POLICY_VERSION =
   "named-lens-selection-v1" as const;
 export const UNDERWRITING_PRESENTATION_SCHEMA_VERSION =
   "decision-first-named-lens-v1" as const;
+export const NAMED_LENS_GENERATOR_VERSION =
+  "named-lens-generator-v1" as const;
 
 export const Sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
@@ -279,6 +281,19 @@ export const NamedLensDispositionSchema = NamedLensDispositionBaseSchema
           "Only selected_main dispositions may carry a position from one through six.",
       });
     }
+    if (
+      value.disposition === "selected_main"
+      && (
+        value.priorityTier === null
+        || value.selectionBasisEvidenceIds.length === 0
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Selected Named Lens dispositions require a priority tier and grounded selection basis.",
+      });
+    }
     const publishable = value.disposition === "selected_main"
       || value.disposition === "appendix_only";
     if (publishable !== (value.passageFingerprint !== null)) {
@@ -343,6 +358,7 @@ export const NamedLensProviderTelemetrySchema = z.strictObject({
 export const NamedLensProviderAttemptSchema = z.strictObject({
   workspaceId: z.string().min(1),
   artifactSourceCandidateRunId: z.string().min(1),
+  judgmentOrCatalogCandidateId: z.string().min(1),
   logicalPassageId: z.string().min(1),
   attemptNumber: z.number().int().positive(),
   attemptFingerprint: Sha256Schema,
@@ -355,7 +371,7 @@ export const NamedLensProviderAttemptSchema = z.strictObject({
       ? value.telemetry !== null || value.failureReason !== null
       : value.status === "completed"
       ? value.telemetry === null || value.failureReason !== null
-      : value.failureReason === null
+      : value.telemetry === null || value.failureReason === null
   ) {
     context.addIssue({
       code: "custom",
@@ -366,6 +382,7 @@ export const NamedLensProviderAttemptSchema = z.strictObject({
 });
 
 export const NamedLensProviderAttemptRefSchema = z.strictObject({
+  judgmentOrCatalogCandidateId: z.string().min(1),
   logicalPassageId: z.string().min(1),
   attemptNumber: z.number().int().positive(),
   attemptFingerprint: Sha256Schema,

@@ -15,6 +15,12 @@ import type { CompanyAnalysis } from "../contracts/domain";
 import { compareUtf8 } from "../format/canonical-order";
 import { rankBeliefRevisionCandidates } from "../matching/ranking";
 import type { EvidencePack } from "../contracts/evidence";
+import {
+  NAMED_LENS_GENERATOR_VERSION,
+  NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+  NAMED_LENS_SELECTION_POLICY_VERSION,
+  UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
+} from "../contracts/named-lens";
 import type {
   CandidateRun,
   FundPolicySnapshot,
@@ -45,6 +51,8 @@ import {
 import { createValuationEngine } from "./valuation/service";
 import type { ValuationEngine } from "./valuation/contracts";
 import type { FrameworkLensService } from "./frameworks/service";
+import { DECISION_TAXONOMY_VERSION } from
+  "./frameworks/decision-taxonomy";
 import { IntegrationTransportError } from "../api/errors";
 import {
   createDecisionEngine,
@@ -970,6 +978,14 @@ export function createSourceGroundedCandidateExecutor(options: {
         ),
       ),
     ].sort(compareUtf8);
+    const namedLensVersions = {
+      selectionPolicyVersion: NAMED_LENS_SELECTION_POLICY_VERSION,
+      passageSchemaVersion: NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+      generatorVersion: NAMED_LENS_GENERATOR_VERSION,
+      presentationSchemaVersion:
+        UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
+      decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+    };
     const candidateAnalysisFingerprint = createCandidateAnalysisFingerprint({
       workspaceId: input.candidate.workspaceId,
       batchInputFingerprint: input.batchInputFingerprint,
@@ -1030,6 +1046,7 @@ export function createSourceGroundedCandidateExecutor(options: {
       schemaVersion: execution.schemaVersion,
       settingsFingerprint: execution.settingsFingerprint,
       applicationCommit: execution.applicationCommit,
+      namedLensVersions,
     });
 
     return {
@@ -1094,6 +1111,15 @@ export function createSourceGroundedCandidateExecutor(options: {
         schemaVersion: execution.schemaVersion,
         settingsFingerprint: execution.settingsFingerprint,
         applicationCommit: execution.applicationCommit,
+        namedLensSelectionPolicyVersion:
+          namedLensVersions.selectionPolicyVersion,
+        namedLensPassageSchemaVersion:
+          namedLensVersions.passageSchemaVersion,
+        namedLensGeneratorVersion: namedLensVersions.generatorVersion,
+        underwritingPresentationSchemaVersion:
+          namedLensVersions.presentationSchemaVersion,
+        decisionTaxonomyVersion:
+          namedLensVersions.decisionTaxonomyVersion,
         companyAnalysisUnknowns,
       },
     };

@@ -133,6 +133,13 @@ export interface CandidateFingerprintInput {
   schemaVersion: string;
   settingsFingerprint: string;
   applicationCommit: string;
+  namedLensVersions: {
+    selectionPolicyVersion: string;
+    passageSchemaVersion: string;
+    generatorVersion: string;
+    presentationSchemaVersion: string;
+    decisionTaxonomyVersion: string;
+  };
 }
 
 export function createBatchInputFingerprint(
@@ -220,7 +227,7 @@ export function createCandidateAnalysisFingerprint(
   input: CandidateFingerprintInput,
 ): string {
   return fingerprint({
-    kind: "candidate-analysis-input-v1",
+    kind: "candidate-analysis-input-v2",
     workspaceId: required(input.workspaceId, "workspaceId"),
     batchInputFingerprint: required(
       input.batchInputFingerprint,
@@ -320,6 +327,28 @@ export function createCandidateAnalysisFingerprint(
       input.applicationCommit,
       "Application commit",
     ),
+    namedLensVersions: {
+      selectionPolicyVersion: required(
+        input.namedLensVersions.selectionPolicyVersion,
+        "Named Lens selection policy version",
+      ),
+      passageSchemaVersion: required(
+        input.namedLensVersions.passageSchemaVersion,
+        "Named Lens passage schema version",
+      ),
+      generatorVersion: required(
+        input.namedLensVersions.generatorVersion,
+        "Named Lens generator version",
+      ),
+      presentationSchemaVersion: required(
+        input.namedLensVersions.presentationSchemaVersion,
+        "Underwriting presentation schema version",
+      ),
+      decisionTaxonomyVersion: required(
+        input.namedLensVersions.decisionTaxonomyVersion,
+        "Decision taxonomy version",
+      ),
+    },
   });
 }
 

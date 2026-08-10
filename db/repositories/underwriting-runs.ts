@@ -20,6 +20,7 @@ import {
 import {
   createMemoryUnderwritingArtifactsRepository,
   prepareCandidateFinalization,
+  type CandidateArtifactBundle,
   type CandidateFinalization,
   type MemoryUnderwritingArtifactsRepository,
 } from "./underwriting-artifacts";
@@ -679,7 +680,7 @@ export function createMemoryUnderwritingRunsRepository(
       });
       const completed = CandidateRunSchema.parse({
         ...candidate,
-        status: "completed",
+        status: candidateRunStatusForFinalization(prepared),
         candidateAnalysisFingerprint:
           prepared.candidateAnalysisFingerprint,
         finalizedAt: now().toISOString(),
@@ -716,6 +717,12 @@ export function createMemoryUnderwritingRunsRepository(
       };
     },
   };
+}
+
+export function candidateRunStatusForFinalization(
+  artifacts: Pick<CandidateArtifactBundle, "terminalStatus">,
+): "completed" | "partial" {
+  return artifacts.terminalStatus === "partial" ? "partial" : "completed";
 }
 
 export function createSupabaseUnderwritingRunsRepository(options: {
@@ -1052,10 +1059,19 @@ export function createSupabaseUnderwritingRunsRepository(options: {
 
     async finalizeCandidate(input) {
       await validatePersistedFinalizationAuthority(input);
-      return parseCandidate(await request(
+      const finalized = parseCandidate(await request(
         "/rpc/finalize_or_reuse_candidate_underwriting",
         { p_payload: input },
       ));
+      const expectedStatus = input.terminalStatus === "partial"
+        ? "partial"
+        : "completed";
+      if (finalized.status !== expectedStatus) {
+        throw new Error(
+          "Persisted Candidate status does not match the immutable finalization terminal status.",
+        );
+      }
+      return finalized;
     },
   };
 }

@@ -265,6 +265,13 @@ function candidateInput(): CandidateFingerprintInput {
     schemaVersion: "underwriting-schema-v1",
     settingsFingerprint: `sha256:${"a".repeat(64)}`,
     applicationCommit: "0002f6b",
+    namedLensVersions: {
+      selectionPolicyVersion: "named-lens-selection-v1",
+      passageSchemaVersion: "named-lens-passage-v1",
+      generatorVersion: "named-lens-generator-v1",
+      presentationSchemaVersion: "decision-first-named-lens-v1",
+      decisionTaxonomyVersion: "named-lens-decision-taxonomy-v1",
+    },
   };
 }
 
@@ -448,6 +455,25 @@ test("candidate fingerprint is canonical and binds all candidate-specific versio
     },
     (input) => {
       input.applicationCommit = "different";
+    },
+    (input) => {
+      input.namedLensVersions.selectionPolicyVersion =
+        "named-lens-selection-v2";
+    },
+    (input) => {
+      input.namedLensVersions.passageSchemaVersion =
+        "named-lens-passage-v2";
+    },
+    (input) => {
+      input.namedLensVersions.generatorVersion = "named-lens-generator-v2";
+    },
+    (input) => {
+      input.namedLensVersions.presentationSchemaVersion =
+        "decision-first-named-lens-v2";
+    },
+    (input) => {
+      input.namedLensVersions.decisionTaxonomyVersion =
+        "named-lens-decision-taxonomy-v2";
     },
     (input) => {
       input.beliefState.dealStatus = "invested";

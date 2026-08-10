@@ -1026,7 +1026,7 @@ test("Supabase adapters use controlled RPC writes and workspace-scoped artifact 
   );
 });
 
-test("Supabase candidate writes use the exact target claim and alias-aware finalization RPCs", async () => {
+test("Supabase candidate writes fail closed before RPC for a legacy finalization payload", async () => {
   const requests: Array<{ url: string; method: string; body: unknown }> = [];
   const candidate = {
     id: "candidate_target",
@@ -1097,8 +1097,10 @@ test("Supabase candidate writes use the exact target claim and alias-aware final
   });
   assert.equal(claimed?.candidate.id, "candidate_target");
   const finalization = statusSafeFinalization();
-  const completed = await runs.finalizeCandidate(finalization);
-  assert.equal(completed.status, "completed");
+  await assert.rejects(
+    runs.finalizeCandidate(finalization),
+    /Named Lens finalization requires all artifacts/i,
+  );
   assert.deepEqual(
     requests.map(({ url, method }) => ({
       pathname: new URL(url).pathname,
@@ -1112,14 +1114,14 @@ test("Supabase candidate writes use the exact target claim and alias-aware final
       },
       { pathname: "/rest/v1/candidate_runs", method: "GET" },
       { pathname: "/rest/v1/underwriting_batches", method: "GET" },
-      {
-        pathname:
-          "/rest/v1/rpc/finalize_or_reuse_candidate_underwriting",
-        method: "POST",
-      },
     ],
   );
-  assert.deepEqual(requests[3]?.body, { p_payload: finalization });
+  assert.equal(
+    requests.some(({ url }) =>
+      url.endsWith("/rpc/finalize_or_reuse_candidate_underwriting")
+    ),
+    false,
+  );
 });
 
 test("Supabase finalization rejects forged current authority before the finalize RPC", async () => {
