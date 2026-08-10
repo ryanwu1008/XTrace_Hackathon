@@ -524,7 +524,7 @@ function finalizedBundle(input: {
         dependencyType: "framework_judgment",
       },
     ],
-  } as CandidateArtifactBundle;
+  } as unknown as CandidateArtifactBundle;
   bundle.narrative = buildUnderwritingNarrative({
     facts: bundle.evidencePack.facts,
     assumptions: bundle.evidencePack.assumptions,

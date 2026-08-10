@@ -679,6 +679,61 @@ test("fails closed when cached advisory metadata does not exactly match the auth
     replay.runAll(runInput()),
     /cache record.*authorized|cache record.*metadata|cache.*mismatch/i,
   );
+
+  const changedCode = structuredClone(valid);
+  const binding = changedCode.judgment.frameworkMetadata!
+    .decisionTaxonomyBindings[0]!;
+  binding.decisionQuestionCode = binding.decisionQuestionCode === "market_structure"
+    ? "operating_model"
+    : "market_structure";
+  const staleTaxonomyCache: FrameworkLensCache = {
+    async find(fingerprint) {
+      return fingerprint === valid.fingerprint ? changedCode : null;
+    },
+    async save() {},
+  };
+  const staleTaxonomyReplay = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    cache: staleTaxonomyCache,
+    execution,
+    client: {
+      async complete(request) {
+        return JSON.stringify(advisoryOutput(promptCard(request)));
+      },
+    },
+  });
+
+  await assert.rejects(
+    staleTaxonomyReplay.runAll(runInput()),
+    /cache record.*authorized|cache record.*metadata|cache.*mismatch/i,
+  );
+
+  const oldDigest = structuredClone(valid);
+  oldDigest.judgment.frameworkMetadata!.decisionTaxonomyDigest =
+    `sha256:${"0".repeat(64)}`;
+  const oldDigestCache: FrameworkLensCache = {
+    async find(fingerprint) {
+      return fingerprint === valid.fingerprint ? oldDigest : null;
+    },
+    async save() {},
+  };
+  const oldDigestReplay = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    cache: oldDigestCache,
+    execution,
+    client: {
+      async complete(request) {
+        return JSON.stringify(advisoryOutput(promptCard(request)));
+      },
+    },
+  });
+
+  await assert.rejects(
+    oldDigestReplay.runAll(runInput()),
+    /cache record.*authorized|cache record.*metadata|cache.*mismatch/i,
+  );
 });
 
 function runInput() {

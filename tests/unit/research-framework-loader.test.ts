@@ -3,6 +3,7 @@ import {
   cp,
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   rm,
   writeFile,
@@ -20,6 +21,12 @@ import {
   isAuthorizedResearchComposite,
   loadResearchFrameworkCatalog,
 } from "../../lib/underwriting/frameworks/research-loader";
+import {
+  DECISION_TAXONOMY_VERSION,
+  DecisionQuestionCodeSchema,
+  EvidenceDomainCodeSchema,
+  resolveDecisionTaxonomy,
+} from "../../lib/underwriting/frameworks/decision-taxonomy";
 
 const researchRoot = fileURLToPath(
   new URL("../../research/framework-authoring", import.meta.url),
@@ -63,6 +70,57 @@ const pendingReviewIds = [
   "VCFI-10",
 ] as const;
 
+test("exposes the closed V1 decision-question and evidence-domain taxonomies", () => {
+  assert.deepEqual(DecisionQuestionCodeSchema.options, [
+    "market_structure", "product_differentiation", "customer_adoption",
+    "founder_team_execution", "operating_model", "unit_economics",
+    "financing_valuation", "governance", "security", "portfolio_risk",
+  ]);
+  assert.deepEqual(EvidenceDomainCodeSchema.options, [
+    "market", "product", "customer", "distribution", "team", "operations",
+    "financial_performance", "unit_economics", "financing_terms", "valuation",
+    "governance", "security", "regulatory", "portfolio_risk",
+  ]);
+  assert.throws(() => DecisionQuestionCodeSchema.parse("famous_investor_view"));
+});
+
+test("binds each audited Card decision question to one exact taxonomy row", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const cards = await loadAllAuthoringCards();
+  const expected = cards.flatMap((card) =>
+    card.decisionQuestions.map((questionText: string, index: number) => ({
+      frameworkId: card.frameworkId as string,
+      cardFieldRef: `decisionQuestions[${index}]`,
+      questionText,
+    }))
+  ).toSorted((left, right) =>
+    compareUtf8(
+      `${left.frameworkId}\u0000${left.cardFieldRef}`,
+      `${right.frameworkId}\u0000${right.cardFieldRef}`,
+    )
+  );
+  const actual = expected.map(({ frameworkId, cardFieldRef }) =>
+    resolveDecisionTaxonomy(frameworkId, cardFieldRef)
+  );
+
+  assert.equal(catalog.decisionTaxonomyVersion, DECISION_TAXONOMY_VERSION);
+  assert.match(catalog.decisionTaxonomyDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(
+    actual.map(({ frameworkId, cardFieldRef, questionText }) => ({
+      frameworkId,
+      cardFieldRef,
+      questionText,
+    })),
+    expected,
+  );
+  assert.equal(
+    new Set(actual.map(({ frameworkId, cardFieldRef }) =>
+      `${frameworkId}\u0000${cardFieldRef}`
+    )).size,
+    expected.length,
+  );
+});
+
 test("loads the audited corpus into twenty immutable pack composites and excludes all pending-review cards", async () => {
   const catalog = await loadResearchFrameworkCatalog({
     context,
@@ -81,7 +139,7 @@ test("loads the audited corpus into twenty immutable pack composites and exclude
   assert.deepEqual(catalog.authorization, {
     mode: "canonical_audited",
     corpusDigest:
-      "sha256:5144000c0f34c5c352f9bc886460cd561a52b45da31049f00d7fbf6115e3a8bb",
+      "sha256:a02b583381f386d824fdf7d92cb38960b80c9434d08492642198f72989cf40e8",
   });
   assert.equal(catalog.composites.length, 20);
   assert.equal(new Set(catalog.composites.map(({ id }) => id)).size, 20);
@@ -286,6 +344,107 @@ test("custom research roots are validation-only and can never authorize executio
   );
 });
 
+test("rejects missing, extra, stale, or unsorted taxonomy bindings before catalog resolution", async (t) => {
+  const missing = await copyPeterThielFixture(t);
+  const missingPath = join(missing, "decision-question-taxonomy.v1.json");
+  const missingTaxonomy = await readJson(missingPath);
+  missingTaxonomy.bindings = (missingTaxonomy.bindings as unknown[]).slice(1);
+  await writeJson(missingPath, missingTaxonomy);
+  await assert.rejects(
+    loadResearchFrameworkCatalog({
+      context,
+      researchRoot: missing,
+      authorizationMode: "validation_only",
+    }),
+    /requires exactly one decision taxonomy binding/i,
+  );
+
+  const extra = await copyPeterThielFixture(t);
+  const extraPath = join(extra, "decision-question-taxonomy.v1.json");
+  const extraTaxonomy = await readJson(extraPath);
+  const extraBindings = extraTaxonomy.bindings as Array<Record<string, unknown>>;
+  extraBindings.push({
+    ...extraBindings[0],
+    cardFieldRef: "decisionQuestions[99]",
+  });
+  extraBindings.sort((left, right) => compareUtf8(
+    `${left.frameworkId}\u0000${left.cardFieldRef}`,
+    `${right.frameworkId}\u0000${right.cardFieldRef}`,
+  ));
+  await writeJson(extraPath, extraTaxonomy);
+  await assert.rejects(
+    loadResearchFrameworkCatalog({
+      context,
+      researchRoot: extra,
+      authorizationMode: "validation_only",
+    }),
+    /unknown Framework Card or field/i,
+  );
+
+  const stale = await copyPeterThielFixture(t);
+  const stalePath = join(stale, "decision-question-taxonomy.v1.json");
+  const staleTaxonomy = await readJson(stalePath);
+  (staleTaxonomy.bindings as Array<Record<string, unknown>>)[0]!
+    .questionText = "Stale question text";
+  await writeJson(stalePath, staleTaxonomy);
+  await assert.rejects(
+    loadResearchFrameworkCatalog({
+      context,
+      researchRoot: stale,
+      authorizationMode: "validation_only",
+    }),
+    /question text must exactly match/i,
+  );
+
+  const unsorted = await copyPeterThielFixture(t);
+  const unsortedPath = join(unsorted, "decision-question-taxonomy.v1.json");
+  const unsortedTaxonomy = await readJson(unsortedPath);
+  const unsortedBindings = unsortedTaxonomy.bindings as unknown[];
+  [unsortedBindings[0], unsortedBindings[1]] = [
+    unsortedBindings[1],
+    unsortedBindings[0],
+  ];
+  await writeJson(unsortedPath, unsortedTaxonomy);
+  await assert.rejects(
+    loadResearchFrameworkCatalog({
+      context,
+      researchRoot: unsorted,
+      authorizationMode: "validation_only",
+    }),
+    /UTF-8 sorted/i,
+  );
+});
+
+test("rejects client-supplied taxonomy bindings rather than accepting a catalog-order fallback", async () => {
+  await assert.rejects(
+    loadResearchFrameworkCatalog({
+      context,
+      decisionTaxonomyBindings: [],
+    } as unknown as Parameters<typeof loadResearchFrameworkCatalog>[0]),
+    /does not accept client-supplied authorization or taxonomy fields/i,
+  );
+});
+
+test("rejects a taxonomy document whose bindings belong to a different Card component", async (t) => {
+  const fixture = await copyPeterThielFixture(t);
+  const cardPath = join(
+    fixture,
+    "authors/peter-thiel/cards/pt-01-contrarian-truth.card.json",
+  );
+  const card = await readJson(cardPath);
+  card.frameworkId = "PT-99";
+  await writeJson(cardPath, card);
+
+  await assert.rejects(
+    loadResearchFrameworkCatalog({
+      context,
+      researchRoot: fixture,
+      authorizationMode: "validation_only",
+    }),
+    /unknown Framework Card or field/i,
+  );
+});
+
 test("rejects unknown manifest fields from the authoring JSON contract", async (t) => {
   const fixture = await copyPeterThielFixture(t);
   const manifestPath = join(
@@ -394,7 +553,37 @@ async function copyPeterThielFixture(
     destination,
     { recursive: true },
   );
+  const taxonomy = await readJson(
+    join(researchRoot, "decision-question-taxonomy.v1.json"),
+  );
+  const bindings = taxonomy.bindings as Array<Record<string, unknown>>;
+  await writeJson(join(fixture, "decision-question-taxonomy.v1.json"), {
+    schemaVersion: taxonomy.schemaVersion,
+    bindings: bindings.filter(({ frameworkId }) =>
+      typeof frameworkId === "string" && frameworkId.startsWith("PT-")
+    ),
+  });
   return fixture;
+}
+
+async function loadAllAuthoringCards(): Promise<Array<{
+  frameworkId: string;
+  decisionQuestions: string[];
+}>> {
+  const authorsRoot = join(researchRoot, "authors");
+  const cards: Array<{ frameworkId: string; decisionQuestions: string[] }> = [];
+  for (const author of await readdir(authorsRoot)) {
+    const cardsRoot = join(authorsRoot, author, "cards");
+    for (const cardFile of await readdir(cardsRoot)) {
+      if (cardFile.endsWith(".card.json")) {
+        cards.push(await readJson(join(cardsRoot, cardFile)) as unknown as {
+          frameworkId: string;
+          decisionQuestions: string[];
+        });
+      }
+    }
+  }
+  return cards;
 }
 
 async function readJson(path: string): Promise<Record<string, unknown>> {

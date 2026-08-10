@@ -20,6 +20,7 @@ import {
   type ResearchFrameworkContext,
 } from "../../contracts/underwriting";
 import {
+  DecisionQuestionTaxonomyAuthoringSchema,
   FrameworkCardAuthoringSchema,
   FrameworkPackAuthoringSchema,
   ResearchSourceCatalogSchema,
@@ -27,6 +28,12 @@ import {
   type FrameworkPackAuthoring,
   type ResearchSourceCatalog,
 } from "./research-schemas";
+import {
+  DECISION_TAXONOMY_VERSION,
+  decisionTaxonomyDigest,
+  validateDecisionTaxonomyForCards,
+  type DecisionTaxonomyBinding,
+} from "./decision-taxonomy";
 import {
   ExperimentalAdvisoryFrameworkCardSchema,
   type ExperimentalAdvisoryFrameworkCard,
@@ -42,6 +49,9 @@ export interface ResearchFrameworkCatalog {
   readonly version: typeof RESEARCH_FRAMEWORK_CATALOG_VERSION;
   readonly context: ResearchContext;
   readonly composites: readonly ExperimentalAdvisoryFrameworkCard[];
+  readonly decisionTaxonomyVersion: typeof DECISION_TAXONOMY_VERSION;
+  readonly decisionTaxonomyDigest: string;
+  readonly decisionTaxonomyBindings: readonly DecisionTaxonomyBinding[];
   readonly stats: Readonly<{
     packCount: number;
     cardCount: number;
@@ -78,7 +88,7 @@ interface LoadedPack {
 
 const MAX_RESEARCH_PACKS = 20;
 export const RESEARCH_FRAMEWORK_CATALOG_VERSION =
-  "research-framework-catalog-v1";
+  "research-framework-catalog-v2";
 const CANONICAL_RESEARCH_ROOT = fileURLToPath(
   new URL("../../../research/framework-authoring", import.meta.url),
 );
@@ -90,7 +100,7 @@ const EXPECTED_CANONICAL_STATS = {
   excludedCardCount: 19,
 } as const;
 const EXPECTED_CANONICAL_CORPUS_DIGEST =
-  "sha256:5144000c0f34c5c352f9bc886460cd561a52b45da31049f00d7fbf6115e3a8bb";
+  "sha256:a02b583381f386d824fdf7d92cb38960b80c9434d08492642198f72989cf40e8";
 const NO_ENDORSEMENT_NOTICE =
   "This experimental product synthesis is not an endorsement by any named person or organization.";
 const NO_PRIVATE_REASONING_NOTICE =
@@ -102,6 +112,7 @@ const ALLOWED_AUTHOR_SUPPORT_FILES = new Set([
   "review-notes.md",
   "source-inventory.md",
 ]);
+const DECISION_TAXONOMY_FILE = "decision-question-taxonomy.v1.json";
 
 const authorizedCatalogs = new WeakMap<
   ResearchFrameworkCatalog,
@@ -111,6 +122,17 @@ const authorizedCatalogs = new WeakMap<
 export async function loadResearchFrameworkCatalog(
   input: ResearchFrameworkCatalogInput,
 ): Promise<ResearchFrameworkCatalog> {
+  const allowedInputKeys = new Set([
+    "context",
+    "signal",
+    "researchRoot",
+    "authorizationMode",
+  ]);
+  if (Object.keys(input).some((key) => !allowedInputKeys.has(key))) {
+    throw new Error(
+      "Research Framework catalog resolution does not accept client-supplied authorization or taxonomy fields.",
+    );
+  }
   throwIfAborted(input.signal);
   const parsedContext = ResearchFrameworkContextSchema.parse(input.context);
   const context: ResearchContext = {
@@ -137,6 +159,21 @@ export async function loadResearchFrameworkCatalog(
   }
   const canonicalRoot = await realpath(researchRoot);
   throwIfAborted(input.signal);
+  const decisionTaxonomyPath = join(canonicalRoot, DECISION_TAXONOMY_FILE);
+  await assertRealFile(
+    decisionTaxonomyPath,
+    canonicalRoot,
+    "Decision taxonomy",
+  );
+  const decisionTaxonomy = await readParsedJson(
+    decisionTaxonomyPath,
+    DecisionQuestionTaxonomyAuthoringSchema,
+    "Decision taxonomy",
+    input.signal,
+  );
+  const resolvedDecisionTaxonomyDigest = decisionTaxonomyDigest(
+    decisionTaxonomy,
+  );
   const authorsRoot = join(canonicalRoot, "authors");
   await assertRealDirectory(authorsRoot, canonicalRoot, "Authors root");
   throwIfAborted(input.signal);
@@ -171,9 +208,18 @@ export async function loadResearchFrameworkCatalog(
     compareUtf8(left.manifest.packId, right.manifest.packId)
   );
   validateGlobalIdentities(loadedPacks);
+  const decisionTaxonomyBindings = validateDecisionTaxonomyForCards(
+    loadedPacks.flatMap(({ cards }) => cards),
+    decisionTaxonomy,
+  );
 
   const composites = loadedPacks.map((pack) =>
-    buildComposite(pack, context)
+    buildComposite(
+      pack,
+      context,
+      decisionTaxonomyBindings,
+      resolvedDecisionTaxonomyDigest,
+    )
   );
   const cardCount = loadedPacks.reduce(
     (count, pack) => count + pack.cards.length,
@@ -197,6 +243,10 @@ export async function loadResearchFrameworkCatalog(
   const corpusDigest = sha256({
     kind: "audited-research-corpus-v1",
     packs: loadedPacks,
+    decisionTaxonomy: {
+      version: DECISION_TAXONOMY_VERSION,
+      digest: resolvedDecisionTaxonomyDigest,
+    },
   });
   if (
     !validationOnly
@@ -219,6 +269,9 @@ export async function loadResearchFrameworkCatalog(
     kind: RESEARCH_FRAMEWORK_CATALOG_VERSION,
     context,
     composites,
+    decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+    decisionTaxonomyDigest: resolvedDecisionTaxonomyDigest,
+    decisionTaxonomyBindings,
     stats,
     authorization,
   });
@@ -226,6 +279,9 @@ export async function loadResearchFrameworkCatalog(
     version: RESEARCH_FRAMEWORK_CATALOG_VERSION,
     context,
     composites,
+    decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+    decisionTaxonomyDigest: resolvedDecisionTaxonomyDigest,
+    decisionTaxonomyBindings,
     stats,
     authorization,
     fingerprint,
@@ -387,12 +443,17 @@ async function loadAuthorPack(
 function buildComposite(
   pack: LoadedPack,
   context: ResearchContext,
+  decisionTaxonomyBindings: readonly DecisionTaxonomyBinding[],
+  decisionTaxonomyDigest: string,
 ): ExperimentalAdvisoryFrameworkCard {
   const components = pack.cards
     .filter(isAdvisoryEligible)
     .filter((card) => isContextApplicable(card, context))
     .sort((left, right) => compareUtf8(left.frameworkId, right.frameworkId));
   const componentCardIds = components.map(({ frameworkId }) => frameworkId);
+  const componentDecisionTaxonomyBindings = decisionTaxonomyBindings.filter(
+    (binding) => componentCardIds.includes(binding.frameworkId),
+  );
   const referencedSourceIds = new Set(
     components.flatMap((card) =>
       card.sourceRefs.map(({ sourceId }) => sourceId)
@@ -413,6 +474,9 @@ function buildComposite(
     researchCutoff: pack.sourceCatalog.researchCutoff,
     context,
     components,
+    decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+    decisionTaxonomyDigest,
+    decisionTaxonomyBindings: componentDecisionTaxonomyBindings,
     sources,
     notices,
   });
@@ -466,6 +530,9 @@ function buildComposite(
       applicable: components.length > 0,
       componentCardIds,
       components,
+      decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+      decisionTaxonomyDigest,
+      decisionTaxonomyBindings: componentDecisionTaxonomyBindings,
       sources,
       notices,
       formalDecisionWeight: "0",

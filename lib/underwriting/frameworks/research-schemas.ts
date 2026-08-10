@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+import {
+  DecisionTaxonomyDocumentSchema,
+} from "./decision-taxonomy";
+
 const NonEmptyStringSchema = z.string().min(1);
 const NonEmptyStringsSchema = z.array(NonEmptyStringSchema).min(1);
 const UniqueStringsSchema = z.array(z.string()).superRefine(
@@ -12,6 +16,9 @@ const UniqueStringsSchema = z.array(z.string()).superRefine(
     }
   },
 );
+
+export const DecisionQuestionTaxonomyAuthoringSchema =
+  DecisionTaxonomyDocumentSchema;
 
 export const ResearchSourceLocatorSchema = z.strictObject({
   kind: z.enum([

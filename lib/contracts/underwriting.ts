@@ -12,6 +12,10 @@ import {
   ResearchSourceRecordSchema,
 } from "../underwriting/frameworks/research-schemas";
 import {
+  DECISION_TAXONOMY_VERSION,
+  DecisionTaxonomyBindingSchema,
+} from "../underwriting/frameworks/decision-taxonomy";
+import {
   actionsForDealStatusAndDirection,
   beliefActionListsEqual,
 } from "../reports/action-policy";
@@ -167,6 +171,9 @@ export const FrameworkAdvisoryMetadataSchema = z.strictObject({
   applicable: z.boolean(),
   componentCardIds: z.array(IdSchema),
   components: z.array(FrameworkCardAuthoringSchema),
+  decisionTaxonomyVersion: z.literal(DECISION_TAXONOMY_VERSION),
+  decisionTaxonomyDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  decisionTaxonomyBindings: z.array(DecisionTaxonomyBindingSchema),
   sources: z.array(ResearchSourceRecordSchema),
   notices: z.strictObject({
     noEndorsement: z.string().min(1),
@@ -198,6 +205,36 @@ export const FrameworkAdvisoryMetadataSchema = z.strictObject({
       code: "custom",
       message:
         "Advisory applicability must match whether components were selected",
+    });
+  }
+  const expectedDecisionTaxonomyBindings = metadata.components.flatMap(
+    ({ frameworkId, decisionQuestions }) =>
+      decisionQuestions.map((questionText, index) => ({
+        frameworkId,
+        cardFieldRef: `decisionQuestions[${index}]`,
+        questionText,
+      })),
+  ).sort((left, right) =>
+    `${left.frameworkId}\u0000${left.cardFieldRef}`.localeCompare(
+      `${right.frameworkId}\u0000${right.cardFieldRef}`,
+      "en",
+    )
+  );
+  if (
+    metadata.decisionTaxonomyBindings.length
+      !== expectedDecisionTaxonomyBindings.length
+    || metadata.decisionTaxonomyBindings.some((binding, index) => {
+      const expected = expectedDecisionTaxonomyBindings[index];
+      return !expected
+        || binding.frameworkId !== expected.frameworkId
+        || binding.cardFieldRef !== expected.cardFieldRef
+        || binding.questionText !== expected.questionText;
+    })
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Advisory decision taxonomy bindings must exactly cover selected component decision questions",
     });
   }
   const sourceIds = metadata.sources.map(({ sourceId }) => sourceId);
