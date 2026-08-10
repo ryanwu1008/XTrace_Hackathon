@@ -202,6 +202,9 @@ test("runs published synthetic lenses independently and scopes saved calculation
   const result = await service.runAll(input());
 
   assert.equal(result.judgments.length, 2);
+  assert.deepEqual(result.passageCandidates, []);
+  assert.deepEqual(result.passageResults, []);
+  assert.deepEqual(result.taxonomyByFrameworkId, {});
   assert.equal(calls.length, 2);
   for (const call of calls) {
     assert.match(call.system, /no browsing or tool access/i);
@@ -379,8 +382,19 @@ test("replays the same fingerprint without a Claude call and caches metadata wit
   });
   assert.deepEqual(
     Object.keys(records[0] ?? {}).sort(),
-    ["binding", "fingerprint", "judgment", "providerMetadata"],
+    [
+      "binding",
+      "fingerprint",
+      "judgment",
+      "passageCandidate",
+      "passageContract",
+      "passageValidationResult",
+      "providerMetadata",
+    ],
   );
+  assert.equal(records[0]?.passageContract, null);
+  assert.equal(records[0]?.passageCandidate, null);
+  assert.equal(records[0]?.passageValidationResult, null);
   assert.deepEqual(records[0]?.binding, {
     candidateId: candidate.id,
     candidateAnalysisFingerprint:

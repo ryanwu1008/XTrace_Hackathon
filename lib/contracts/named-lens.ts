@@ -35,6 +35,21 @@ export const AdvisoryPostureSchema = z.enum([
   "withholds_view",
 ]);
 
+export const NamedLensPassageFocusSchema = z.strictObject({
+  componentFrameworkId: z.string().min(1),
+  componentVersion: z.string().min(1),
+  cardFieldRef: z.string().regex(/^decisionQuestions\[[0-9]+\]$/),
+  questionText: z.string().min(1).optional(),
+  decisionQuestionCode: DecisionQuestionCodeSchema,
+  evidenceDomainCodes: z.array(EvidenceDomainCodeSchema).min(1),
+}).superRefine((value, context) => {
+  requireCanonicalStrings(
+    value.evidenceDomainCodes,
+    context,
+    "Named Lens focus evidence-domain codes",
+  );
+});
+
 export const NamedLensPriorityTierSchema = z.enum([
   "principal_disagreement",
   "changed_belief",
@@ -214,6 +229,36 @@ export const NamedLensAdvisoryContractSchema = z.strictObject({
   noEndorsement: z.literal(true),
   namedPersonImpersonation: z.literal(false),
   hiddenChainOfThought: z.literal(false),
+});
+
+export const GroundedNamedLensPassageCandidateSchema = z.strictObject({
+  schemaVersion: z.literal(NAMED_LENS_PASSAGE_SCHEMA_VERSION),
+  workspaceId: z.string().min(1),
+  artifactSourceCandidateRunId: z.string().min(1),
+  judgmentId: z.string().min(1),
+  frameworkCardId: z.string().min(1),
+  frameworkVersion: z.string().min(1),
+  focus: NamedLensPassageFocusSchema.required({ questionText: true }),
+  premise: FrameworkPremiseSegmentSchema,
+  caseApplication: CompanyEvidenceSegmentSchema,
+  countercase: CountercaseSegmentSchema,
+  unknownBoundary: UnknownBoundarySegmentSchema,
+  conditionalConclusion: ConditionalConclusionSegmentSchema,
+  advisoryContract: NamedLensAdvisoryContractSchema,
+  wordCount: z.number().int().min(1).max(260),
+  generatorVersion: z.string().min(1),
+  groundingFingerprint: Sha256Schema,
+}).superRefine((value, context) => {
+  if (
+    value.focus.componentFrameworkId !== value.premise.componentFrameworkId
+    || value.focus.componentVersion !== value.premise.componentVersion
+    || value.focus.cardFieldRef !== value.premise.cardFieldRef
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Grounded Named Lens focus must exactly match its premise Card binding.",
+    });
+  }
 });
 
 export const NamedLensPassageSchema = z.strictObject({
@@ -574,6 +619,12 @@ export type ConditionalConclusionSegment = z.infer<
 >;
 export type NamedLensAdvisoryContract = z.infer<
   typeof NamedLensAdvisoryContractSchema
+>;
+export type NamedLensPassageFocus = z.infer<
+  typeof NamedLensPassageFocusSchema
+>;
+export type GroundedNamedLensPassageCandidate = z.infer<
+  typeof GroundedNamedLensPassageCandidateSchema
 >;
 export type NamedLensPassage = z.infer<typeof NamedLensPassageSchema>;
 export type NamedLensDisposition = z.infer<typeof NamedLensDispositionSchema>;

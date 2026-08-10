@@ -20,6 +20,15 @@ import type {
   GroundedEvidencePack,
 } from "./candidate-grounding";
 import type { ValuationArtifactSet } from "./valuation/contracts";
+import {
+  DecisionTaxonomyBindingSchema,
+} from "./frameworks/decision-taxonomy";
+import {
+  NamedLensPassageCandidateSchema,
+} from "./frameworks/schemas";
+import {
+  NamedLensPassageValidationResultSchema,
+} from "./frameworks/passage-grounding";
 
 const IdSchema = z.string().min(1).refine(
   (value) => value.trim() === value,
@@ -89,6 +98,16 @@ const ValuationArtifactSetSchema = z.strictObject({
 const FrameworkLensResultSchema = z.strictObject({
   judgments: z.array(FrameworkJudgmentSchema),
   disagreements: z.array(FrameworkDisagreementSchema),
+  passageCandidates: z.array(z.strictObject({
+    judgmentOrCatalogCandidateId: IdSchema,
+    frameworkCardId: IdSchema,
+    candidate: NamedLensPassageCandidateSchema,
+  })),
+  passageResults: z.array(NamedLensPassageValidationResultSchema),
+  taxonomyByFrameworkId: z.record(
+    IdSchema,
+    DecisionTaxonomyBindingSchema,
+  ),
 });
 const FrameworkCatalogBindingSchema = z.strictObject({
   catalogVersion: IdSchema,
@@ -122,10 +141,7 @@ export function parseValuationArtifactSet(
 
 export function parseFrameworkLensResult(
   value: unknown,
-): {
-  judgments: z.infer<typeof FrameworkJudgmentSchema>[];
-  disagreements: z.infer<typeof FrameworkDisagreementSchema>[];
-} {
+): z.infer<typeof FrameworkLensResultSchema> {
   return FrameworkLensResultSchema.parse(value);
 }
 

@@ -307,6 +307,10 @@ test("persists complete loader-owned advisory metadata beside a grounded real pa
         "This opinion is experimental and cannot alter the formal decision.",
       ],
       frameworkRuleRefs: [card.id],
+      counterevidenceBoundary: {
+        kind: "grounded_counterevidence",
+        evidenceRequestRefs: [],
+      },
     },
   });
 

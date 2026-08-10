@@ -118,6 +118,9 @@ function canonicalFrameworkAbstentions(
   return {
     judgments: canonicalFrameworkAbstentionJudgments(request),
     disagreements: [],
+    passageCandidates: [],
+    passageResults: [],
+    taxonomyByFrameworkId: {},
   };
 }
 
@@ -2782,7 +2785,13 @@ test("exhausted provider capacity is a visible truncation without starting the p
               };
             },
           });
-          return { judgments: [], disagreements: [] };
+          return {
+            judgments: [],
+            disagreements: [],
+            passageCandidates: [],
+            passageResults: [],
+            taxonomyByFrameworkId: {},
+          };
         },
       },
       now: () => NOW,
@@ -2888,7 +2897,13 @@ test("settled provider overage blocks the next physical request before dispatch"
               };
             },
           });
-          return { judgments: [], disagreements: [] };
+          return {
+            judgments: [],
+            disagreements: [],
+            passageCandidates: [],
+            passageResults: [],
+            taxonomyByFrameworkId: {},
+          };
         },
       },
       now: () => NOW,
@@ -3522,7 +3537,13 @@ test("framework catalog resolution is aborted by the bounded framework stage tim
               corpusDigest: `sha256:${"8".repeat(64)}`,
               service: {
                 async runAll() {
-                  return { judgments: [], disagreements: [] };
+                  return {
+                    judgments: [],
+                    disagreements: [],
+                    passageCandidates: [],
+                    passageResults: [],
+                    taxonomyByFrameworkId: {},
+                  };
                 },
               },
             });

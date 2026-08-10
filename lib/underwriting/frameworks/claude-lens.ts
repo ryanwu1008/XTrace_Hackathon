@@ -16,15 +16,26 @@ import type {
   ResolvedUnderwritingContext,
 } from "../../contracts/underwriting";
 import {
+  NAMED_LENS_GENERATOR_VERSION,
+} from "../../contracts/named-lens";
+import {
   buildFrameworkAbstention,
   groundFrameworkLensOutput,
   isValuationFrameworkCard,
 } from "./grounding";
 import {
+  ClaudeAdvisoryFrameworkJudgmentOutputSchema,
+  ClaudeAdvisoryFrameworkLensOutputSchema,
   ClaudeFrameworkLensOutputSchema,
+  NamedLensPassageCandidateSchema,
   isExperimentalAdvisoryFrameworkCard,
+  type NamedLensPassageCandidate,
   type FrameworkCard,
 } from "./schemas";
+import {
+  groundNamedLensPassage,
+  type NamedLensPassageValidationResult,
+} from "./passage-grounding";
 import { createCanonicalFingerprint } from "../fingerprints";
 import type {
   FrameworkProviderAttemptExecutor,
@@ -48,10 +59,16 @@ const ADVISORY_SYSTEM_PROMPT = [
   "Do not claim or reconstruct private reasoning or hidden chain of thought.",
   "It has formal decision weight zero.",
   "Evaluate every retained component as one composite lens and preserve material support, counterevidence, unknowns, limitations, and source qualifications.",
+  "Write VSee's third-person application of the supplied public framework; never imitate or speak as a named person.",
+  "Return a bounded advisoryPosture only; do not output a formal decision, decision ceiling, veto, or typed action.",
+  "Bind every passage segment to exact supplied Card fields, public-source refs, and judgment evidence partitions.",
+  "Paraphrase public material; do not invent or output a quotation.",
 ].join(" ");
 
 export interface ClaudeFrameworkLensResult {
   judgment: FrameworkJudgment;
+  passageCandidate: NamedLensPassageCandidate | null;
+  passageValidationResult: NamedLensPassageValidationResult | null;
   attempts: number;
   repaired: boolean;
 }
@@ -71,7 +88,7 @@ export async function runClaudeFrameworkLens(input: {
   const advisory = isExperimentalAdvisoryFrameworkCard(input.card);
   const prompt = JSON.stringify({
     task: advisory
-      ? "Evaluate this complete research pack as one independent composite advisory lens. Partition every Evidence Pack Fact and Assumption ID into support, counter, or unused. Produce a complete bounded opinion with strongest support, strongest counterevidence, unknowns, limitations, and confidence. Cite only the exact composite Card ID in frameworkRuleRefs."
+      ? "Evaluate this complete research pack as one independent composite advisory lens. In this one response, return the grounded judgment fields plus one complete five-segment passage candidate. Partition every Evidence Pack Fact and Assumption ID into support, counter, or unused. Select exactly one supplied component decision-question focus, including its exact component ID/version, Card field, decision-question code, and evidence-domain codes. Bind passage evidence only to the judgment partitions. Do not return selection-basis metadata or a relevance score. Cite only the exact composite Card ID in frameworkRuleRefs."
       : "Evaluate this card independently. Partition every allowed input ID into support, counter, or unused. Cite the exact card ID in frameworkRuleRefs.",
     card: input.card,
     evidencePack: input.pack,
@@ -154,9 +171,48 @@ export async function runClaudeFrameworkLens(input: {
     }
     previousResponse = completion.text;
     try {
-      const output = ClaudeFrameworkLensOutputSchema.parse(
-        parseClaudeJson(previousResponse),
-      );
+      const rawOutput = parseClaudeJson(previousResponse);
+      if (advisory) {
+        if (!isExperimentalAdvisoryFrameworkCard(input.card)) {
+          throw new Error("Advisory execution requires an advisory Card.");
+        }
+        const advisoryCard = input.card;
+        const rawRecord = strictRecord(rawOutput);
+        const { passage: rawPassage, ...rawJudgment } = rawRecord;
+        const output = ClaudeAdvisoryFrameworkJudgmentOutputSchema.parse(
+          rawJudgment,
+        );
+        const judgment = groundFrameworkLensOutput({
+          candidate: input.candidate,
+          pack: input.pack,
+          card: advisoryCard,
+          calculations: input.calculations,
+          fingerprint: input.fingerprint,
+          output,
+        });
+        const strictOutput = ClaudeAdvisoryFrameworkLensOutputSchema.safeParse(
+          rawOutput,
+        );
+        const candidatePassage = strictOutput.success
+          ? strictOutput.data.passage
+          : NamedLensPassageCandidateSchema.safeParse(rawPassage).data ?? null;
+        const passageValidationResult = groundNamedLensPassage({
+          candidate: input.candidate,
+          pack: input.pack,
+          card: advisoryCard,
+          judgment,
+          candidatePassage: rawPassage,
+          generatorVersion: NAMED_LENS_GENERATOR_VERSION,
+        });
+        return {
+          judgment,
+          passageCandidate: candidatePassage,
+          passageValidationResult,
+          attempts: attempt,
+          repaired: false,
+        };
+      }
+      const output = ClaudeFrameworkLensOutputSchema.parse(rawOutput);
       return {
         judgment: groundFrameworkLensOutput({
           candidate: input.candidate,
@@ -166,6 +222,8 @@ export async function runClaudeFrameworkLens(input: {
           fingerprint: input.fingerprint,
           output,
         }),
+        passageCandidate: null,
+        passageValidationResult: null,
         attempts: attempt,
         repaired: attempt === 2,
       };
@@ -187,9 +245,22 @@ export async function runClaudeFrameworkLens(input: {
         : "Framework lens output unavailable after one repair attempt.",
       retainAdvisoryMetadata: advisory,
     }),
+    passageCandidate: null,
+    passageValidationResult: null,
     attempts: maximumAttempts,
     repaired: !advisory,
   };
+}
+
+function strictRecord(value: unknown): Record<string, unknown> {
+  if (
+    typeof value !== "object"
+    || value === null
+    || Array.isArray(value)
+  ) {
+    throw new Error("Framework lens output must be one JSON object.");
+  }
+  return value as Record<string, unknown>;
 }
 
 async function executeProviderAttempt(input: {

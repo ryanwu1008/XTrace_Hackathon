@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 
 import {
   DecisionCriticalEvidenceRefSchema,
+  GroundedNamedLensPassageCandidateSchema,
   NAMED_LENS_SELECTION_POLICY_VERSION,
   NamedLensDispositionSchema,
   NamedLensPassageSchema,
   type DecisionCriticalEvidenceRef,
+  type GroundedNamedLensPassageCandidate,
   type NamedLensDisposition,
   type NamedLensPassage,
   type NamedLensPresentation,
@@ -17,12 +19,22 @@ import type {
   DecisionTaxonomyBinding,
   EvidenceDomainCode,
 } from "./decision-taxonomy";
+import {
+  NamedLensPassageValidationResultSchema,
+  type NamedLensPassageValidationResult,
+} from "./passage-grounding";
+
+export type { NamedLensPassageValidationResult } from "./passage-grounding";
 
 export interface NamedLensProvisionalPriority {
   judgmentId: string;
   frameworkCardId: string;
   frameworkVersion: string;
   packId: string;
+  componentFrameworkId: string;
+  componentVersion: string;
+  cardFieldRef: string;
+  questionText: string;
   decisionQuestionCode: DecisionQuestionCode;
   evidenceDomainCodes: EvidenceDomainCode[];
   stance: "supportive" | "mixed" | "negative";
@@ -54,18 +66,6 @@ export interface NamedLensCatalogCandidate {
     | "unavailable";
   reasonCodes: string[];
 }
-
-export type NamedLensPassageValidationResult =
-  | {
-      judgmentOrCatalogCandidateId: string;
-      status: "validated";
-      passage: NamedLensPassage;
-    }
-  | {
-      judgmentOrCatalogCandidateId: string;
-      status: "withheld" | "unavailable";
-      reasonCode: string;
-    };
 
 interface PriorityWorkingRecord extends Omit<
   NamedLensProvisionalPriority,
@@ -106,7 +106,9 @@ const DECISION_OR_VALUATION_ORIGINS = new Set([
 export function prioritizeNamedLensJudgments(input: {
   judgments: FrameworkJudgment[];
   criticalEvidence: DecisionCriticalEvidenceRef[];
-  taxonomyByFrameworkId: ReadonlyMap<string, DecisionTaxonomyBinding>;
+  taxonomyByFrameworkId:
+    | ReadonlyMap<string, DecisionTaxonomyBinding>
+    | Readonly<Record<string, DecisionTaxonomyBinding>>;
 }): NamedLensProvisionalPriority[] {
   const criticalEvidence = canonicalCriticalEvidence(input.criticalEvidence);
   const criticalById = new Map(
@@ -122,8 +124,14 @@ export function prioritizeNamedLensJudgments(input: {
     ) {
       continue;
     }
-    const binding = input.taxonomyByFrameworkId.get(judgment.frameworkCardId);
-    if (!binding || !isExactAuthorizedJudgmentBinding(judgment, binding)) {
+    const binding = taxonomyBindingFor(
+      input.taxonomyByFrameworkId,
+      judgment.frameworkCardId,
+    );
+    const authorizedBinding = binding
+      ? exactAuthorizedJudgmentBinding(judgment, binding)
+      : null;
+    if (!binding || !authorizedBinding) {
       continue;
     }
     assertGroundedJudgment(judgment);
@@ -157,6 +165,10 @@ export function prioritizeNamedLensJudgments(input: {
       frameworkCardId: judgment.frameworkCardId,
       frameworkVersion: judgment.frameworkVersion,
       packId: judgment.frameworkMetadata?.packId ?? judgment.frameworkCardId,
+      componentFrameworkId: binding.frameworkId,
+      componentVersion: authorizedBinding.componentVersion,
+      cardFieldRef: binding.cardFieldRef,
+      questionText: binding.questionText,
       decisionQuestionCode: binding.decisionQuestionCode,
       evidenceDomainCodes: uniqueSorted(
         binding.evidenceDomainCodes,
@@ -197,6 +209,10 @@ export function prioritizeNamedLensJudgments(input: {
     frameworkCardId: record.frameworkCardId,
     frameworkVersion: record.frameworkVersion,
     packId: record.packId,
+    componentFrameworkId: record.componentFrameworkId,
+    componentVersion: record.componentVersion,
+    cardFieldRef: record.cardFieldRef,
+    questionText: record.questionText,
     decisionQuestionCode: record.decisionQuestionCode,
     evidenceDomainCodes: record.evidenceDomainCodes,
     stance: record.stance,
@@ -256,7 +272,9 @@ export function finalizeNamedLensPlacement(input: {
     priorityByCandidateId.set(candidate.judgmentOrCatalogCandidateId, priority);
   }
   const results = uniqueMap(
-    input.passageResults,
+    input.passageResults.map((result) =>
+      NamedLensPassageValidationResultSchema.parse(result)
+    ),
     ({ judgmentOrCatalogCandidateId }) => judgmentOrCatalogCandidateId,
     "passage validation result",
   );
@@ -295,7 +313,7 @@ export function finalizeNamedLensPlacement(input: {
       continue;
     }
     const validatedPassage = validatePassageForPriority({
-      passage: result.passage,
+      groundedCandidate: result.groundedCandidate,
       candidate,
       priority,
       criticalIds,
@@ -597,45 +615,79 @@ function buildDisposition(
 }
 
 function validatePassageForPriority(input: {
-  passage: NamedLensPassage;
+  groundedCandidate: GroundedNamedLensPassageCandidate;
   candidate: NamedLensCatalogCandidate;
   priority: NamedLensProvisionalPriority;
   criticalIds: ReadonlySet<string>;
 }): NamedLensPassage {
-  const passage = NamedLensPassageSchema.parse(input.passage);
+  const grounded = GroundedNamedLensPassageCandidateSchema.parse(
+    input.groundedCandidate,
+  );
   if (
-    passage.workspaceId !== input.candidate.workspaceId
-    || passage.artifactSourceCandidateRunId
+    grounded.workspaceId !== input.candidate.workspaceId
+    || grounded.artifactSourceCandidateRunId
       !== input.candidate.artifactSourceCandidateRunId
-    || passage.judgmentId !== input.priority.judgmentId
-    || passage.judgmentId !== input.candidate.judgmentId
-    || passage.frameworkCardId !== input.priority.frameworkCardId
-    || passage.frameworkCardId !== input.candidate.frameworkCardId
-    || passage.frameworkVersion !== input.priority.frameworkVersion
-    || passage.frameworkVersion !== input.candidate.frameworkVersion
-    || passage.decisionQuestionCode !== input.priority.decisionQuestionCode
+    || grounded.judgmentId !== input.priority.judgmentId
+    || grounded.judgmentId !== input.candidate.judgmentId
+    || grounded.frameworkCardId !== input.priority.frameworkCardId
+    || grounded.frameworkCardId !== input.candidate.frameworkCardId
+    || grounded.frameworkVersion !== input.priority.frameworkVersion
+    || grounded.frameworkVersion !== input.candidate.frameworkVersion
+    || grounded.focus.componentFrameworkId
+      !== input.priority.componentFrameworkId
+    || grounded.focus.componentVersion !== input.priority.componentVersion
+    || grounded.focus.cardFieldRef !== input.priority.cardFieldRef
+    || grounded.focus.questionText !== input.priority.questionText
+    || grounded.focus.decisionQuestionCode
+      !== input.priority.decisionQuestionCode
     || !sameStrings(
-      passage.evidenceDomainCodes,
+      grounded.focus.evidenceDomainCodes,
       input.priority.evidenceDomainCodes,
     )
-    || passage.conditionalConclusion.stance !== input.priority.stance
+    || grounded.conditionalConclusion.stance !== input.priority.stance
   ) {
     throw new Error("Validated Named Lens passage identity or taxonomy is foreign to its provisional judgment.");
   }
+  const representedEvidenceIds = new Set([
+    ...grounded.caseApplication.evidenceItemIds,
+    ...grounded.countercase.evidenceItemIds,
+  ]);
   if (
-    !sameStrings(
-      passage.selectionBasisEvidenceIds,
-      input.priority.selectionBasisEvidenceIds,
-    )
-    || passage.selectionBasisEvidenceIds.some((id) =>
-      !input.criticalIds.has(id)
+    input.priority.selectionBasisEvidenceIds.some((id) =>
+      !input.criticalIds.has(id) || !representedEvidenceIds.has(id)
     )
   ) {
     throw new Error(
-      "Validated passage contains a foreign candidate-local decision-critical selection-basis ID.",
+      "Deterministic selection-basis evidence must be candidate-local, decision-critical, and represented by the grounded passage boundary.",
     );
   }
-  return passage;
+  const persisted = {
+    schemaVersion: grounded.schemaVersion,
+    workspaceId: grounded.workspaceId,
+    artifactSourceCandidateRunId: grounded.artifactSourceCandidateRunId,
+    judgmentId: grounded.judgmentId,
+    frameworkCardId: grounded.frameworkCardId,
+    frameworkVersion: grounded.frameworkVersion,
+    decisionQuestionCode: grounded.focus.decisionQuestionCode,
+    evidenceDomainCodes: grounded.focus.evidenceDomainCodes,
+    premise: grounded.premise,
+    caseApplication: grounded.caseApplication,
+    countercase: grounded.countercase,
+    unknownBoundary: grounded.unknownBoundary,
+    conditionalConclusion: grounded.conditionalConclusion,
+    advisoryContract: grounded.advisoryContract,
+    selectionBasisEvidenceIds: input.priority.selectionBasisEvidenceIds,
+    wordCount: grounded.wordCount,
+    generatorVersion: grounded.generatorVersion,
+  };
+  return NamedLensPassageSchema.parse({
+    ...persisted,
+    fingerprint: sha256({
+      kind: "named-lens-passage-materialization-v1",
+      groundedCandidateFingerprint: grounded.groundingFingerprint,
+      ...persisted,
+    }),
+  });
 }
 
 function assertGroundedJudgment(judgment: FrameworkJudgment): void {
@@ -658,12 +710,12 @@ function assertGroundedJudgment(judgment: FrameworkJudgment): void {
   }
 }
 
-function isExactAuthorizedJudgmentBinding(
+function exactAuthorizedJudgmentBinding(
   judgment: FrameworkJudgment,
   binding: DecisionTaxonomyBinding,
-): boolean {
+): { componentVersion: string } | null {
   const metadata = judgment.frameworkMetadata;
-  if (!metadata || binding.evidenceDomainCodes.length === 0) return false;
+  if (!metadata || binding.evidenceDomainCodes.length === 0) return null;
   const matchingBindings = metadata.decisionTaxonomyBindings.filter(
     (authorized) =>
       authorized.frameworkId === binding.frameworkId
@@ -685,13 +737,14 @@ function isExactAuthorizedJudgmentBinding(
     binding.cardFieldRef,
   );
   const questionIndex = fieldMatch ? Number(fieldMatch[1]) : -1;
-  return matchingBindings.length === 1
+  const exact = matchingBindings.length === 1
     && matchingComponentIds.length === 1
     && matchingComponents.length === 1
     && Number.isSafeInteger(questionIndex)
     && questionIndex >= 0
     && matchingComponents[0]!.decisionQuestions[questionIndex]
       === binding.questionText;
+  return exact ? { componentVersion: matchingComponents[0]!.version } : null;
 }
 
 function selectPrincipalPair(
@@ -931,4 +984,16 @@ function uniqueMap<T>(
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length
     && left.every((value, index) => value === right[index]);
+}
+
+function taxonomyBindingFor(
+  bindings:
+    | ReadonlyMap<string, DecisionTaxonomyBinding>
+    | Readonly<Record<string, DecisionTaxonomyBinding>>,
+  frameworkCardId: string,
+): DecisionTaxonomyBinding | undefined {
+  if (bindings instanceof Map) return bindings.get(frameworkCardId);
+  return (bindings as Readonly<Record<string, DecisionTaxonomyBinding>>)[
+    frameworkCardId
+  ];
 }

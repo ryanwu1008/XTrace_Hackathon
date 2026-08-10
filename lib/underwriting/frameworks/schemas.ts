@@ -5,8 +5,15 @@ import {
 } from "../../contracts/underwriting";
 
 export {
+  ClaudeAdvisoryFrameworkJudgmentOutputSchema,
+  ClaudeAdvisoryFrameworkLensOutputSchema,
+  ClaudeFrameworkLensOutputBaseSchema,
   ClaudeFrameworkLensOutputSchema,
+  NamedLensPassageCandidateSchema,
+  type ClaudeAdvisoryFrameworkJudgmentOutput,
+  type ClaudeAdvisoryFrameworkLensOutput,
   type ClaudeFrameworkLensOutput,
+  type NamedLensPassageCandidate,
 } from "../../claude/schemas";
 
 const IdSchema = z.string().min(1).refine(

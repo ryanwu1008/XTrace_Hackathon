@@ -24,6 +24,10 @@ import {
   type ResearchFrameworkContext,
   type ResolvedUnderwritingContext,
 } from "../../contracts/underwriting";
+import {
+  NAMED_LENS_GENERATOR_VERSION,
+  NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+} from "../../contracts/named-lens";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../../seed/underwriting/framework-pack-v1";
 import { runClaudeFrameworkLens } from "./claude-lens";
 import { buildFrameworkDisagreements } from "./disagreements";
@@ -42,9 +46,20 @@ import {
 } from "./research-loader";
 import {
   FrameworkCardSchema,
+  NamedLensPassageCandidateSchema,
   isExperimentalAdvisoryFrameworkCard,
+  type NamedLensPassageCandidate,
   type FrameworkCard,
 } from "./schemas";
+import {
+  DECISION_TAXONOMY_VERSION,
+  type DecisionTaxonomyBinding,
+} from "./decision-taxonomy";
+import {
+  NamedLensPassageValidationResultSchema,
+  groundNamedLensPassage,
+  type NamedLensPassageValidationResult,
+} from "./passage-grounding";
 
 export interface FrameworkLensExecutionSettings {
   provider: string;
@@ -78,6 +93,19 @@ export interface FrameworkLensCacheBinding {
   compositeAuthorizationDigest: string | null;
 }
 
+export interface FrameworkLensPassageContract {
+  passageSchemaVersion: typeof NAMED_LENS_PASSAGE_SCHEMA_VERSION;
+  generatorVersion: typeof NAMED_LENS_GENERATOR_VERSION;
+  decisionTaxonomyVersion: typeof DECISION_TAXONOMY_VERSION;
+  decisionTaxonomyDigest: string;
+}
+
+export interface FrameworkLensPassageCandidateRecord {
+  judgmentOrCatalogCandidateId: string;
+  frameworkCardId: string;
+  candidate: NamedLensPassageCandidate;
+}
+
 type FrameworkLensAuthorization =
   | {
     mode: "ordinary_framework_card";
@@ -101,9 +129,19 @@ type FrameworkLensAuthorization =
 export interface FrameworkLensCacheRecord {
   fingerprint: string;
   judgment: FrameworkJudgment;
+  passageContract: FrameworkLensPassageContract | null;
+  passageCandidate: NamedLensPassageCandidate | null;
+  passageValidationResult: NamedLensPassageValidationResult | null;
   providerMetadata: FrameworkLensProviderMetadata;
   binding: FrameworkLensCacheBinding;
 }
+
+type FrameworkLensRunRecord = Pick<
+  FrameworkLensCacheRecord,
+  | "judgment"
+  | "passageCandidate"
+  | "passageValidationResult"
+>;
 
 export interface FrameworkLensCache {
   find(fingerprint: string): Promise<FrameworkLensCacheRecord | null>;
@@ -147,9 +185,19 @@ const FrameworkLensCacheBindingSchema = z.strictObject({
   compositeAuthorizationDigest: z.string().min(1).nullable(),
 });
 
+const FrameworkLensPassageContractSchema = z.strictObject({
+  passageSchemaVersion: z.literal(NAMED_LENS_PASSAGE_SCHEMA_VERSION),
+  generatorVersion: z.literal(NAMED_LENS_GENERATOR_VERSION),
+  decisionTaxonomyVersion: z.literal(DECISION_TAXONOMY_VERSION),
+  decisionTaxonomyDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
+
 const FrameworkLensCacheRecordSchema = z.strictObject({
   fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   judgment: FrameworkJudgmentSchema,
+  passageContract: FrameworkLensPassageContractSchema.nullable(),
+  passageCandidate: NamedLensPassageCandidateSchema.nullable(),
+  passageValidationResult: NamedLensPassageValidationResultSchema.nullable(),
   providerMetadata: FrameworkLensProviderMetadataSchema,
   binding: FrameworkLensCacheBindingSchema,
 });
@@ -165,6 +213,9 @@ export interface FrameworkLensService {
   }): Promise<{
     judgments: FrameworkJudgment[];
     disagreements: FrameworkDisagreement[];
+    passageCandidates: FrameworkLensPassageCandidateRecord[];
+    passageResults: NamedLensPassageValidationResult[];
+    taxonomyByFrameworkId: Readonly<Record<string, DecisionTaxonomyBinding>>;
   }>;
 }
 
@@ -399,10 +450,10 @@ export function createFrameworkLensService(options: {
         );
       }
 
-      const judgments = await stableConcurrentMap(
+      const lensRecords = await stableConcurrentMap(
         cards,
         concurrency,
-        async (card): Promise<FrameworkJudgment> => {
+        async (card): Promise<FrameworkLensRunRecord> => {
           throwIfAborted(rawInput.signal);
           const scopedCalculations = isValuationFrameworkCard(card)
             ? calculations
@@ -445,16 +496,20 @@ export function createFrameworkLensService(options: {
             authorization,
           });
           if (experimentalAdvisory && !authorizedAdvisory) {
-            return buildFrameworkAbstention({
-              candidate,
-              pack,
-              card,
-              calculations: scopedCalculations,
-              fingerprint,
-              applicability: "unavailable",
-              reason:
-                "Experimental advisory Card is not authorized by the exact loader catalog object.",
-            });
+            return {
+              judgment: buildFrameworkAbstention({
+                candidate,
+                pack,
+                card,
+                calculations: scopedCalculations,
+                fingerprint,
+                applicability: "unavailable",
+                reason:
+                  "Experimental advisory Card is not authorized by the exact loader catalog object.",
+              }),
+              passageCandidate: null,
+              passageValidationResult: null,
+            };
           }
           const binding = createCacheBinding({
             candidate,
@@ -483,6 +538,10 @@ export function createFrameworkLensService(options: {
               }
 
               let judgment: FrameworkJudgment;
+              let passageCandidate: NamedLensPassageCandidate | null = null;
+              let passageValidationResult:
+                | NamedLensPassageValidationResult
+                | null = null;
               let attempts = 0;
               let repaired = false;
               if (
@@ -547,6 +606,8 @@ export function createFrameworkLensService(options: {
                     providerAttempt: rawInput.providerAttempt,
                   });
                   judgment = result.judgment;
+                  passageCandidate = result.passageCandidate;
+                  passageValidationResult = result.passageValidationResult;
                   attempts = result.attempts;
                   repaired = result.repaired;
                 }
@@ -595,12 +656,17 @@ export function createFrameworkLensService(options: {
                   providerAttempt: rawInput.providerAttempt,
                 });
                 judgment = result.judgment;
+                passageCandidate = result.passageCandidate;
+                passageValidationResult = result.passageValidationResult;
                 attempts = result.attempts;
                 repaired = result.repaired;
               }
               const freshRecord = FrameworkLensCacheRecordSchema.parse({
                 fingerprint,
                 judgment,
+                passageContract: passageContractFor(card),
+                passageCandidate,
+                passageValidationResult,
                 binding,
                 providerMetadata: {
                   ...execution,
@@ -612,12 +678,37 @@ export function createFrameworkLensService(options: {
               return freshRecord;
             },
           });
-          return structuredClone(record.judgment);
+          return {
+            judgment: structuredClone(record.judgment),
+            passageCandidate: structuredClone(record.passageCandidate),
+            passageValidationResult: structuredClone(
+              record.passageValidationResult,
+            ),
+          };
         },
+      );
+      const judgments = lensRecords.map(({ judgment }) => judgment);
+      const passageCandidates = lensRecords.flatMap((record) =>
+        record.passageCandidate
+          ? [{
+            judgmentOrCatalogCandidateId: record.judgment.id,
+            frameworkCardId: record.judgment.frameworkCardId,
+            candidate: record.passageCandidate,
+          }]
+          : []
+      );
+      const passageResults = lensRecords.flatMap((record) =>
+        record.passageValidationResult ? [record.passageValidationResult] : []
+      );
+      const taxonomyByFrameworkId = buildPassageTaxonomyBindingRecord(
+        lensRecords,
       );
       return {
         judgments,
         disagreements: buildFrameworkDisagreements({ judgments, cards }),
+        passageCandidates,
+        passageResults,
+        taxonomyByFrameworkId,
       };
     },
   };
@@ -640,6 +731,58 @@ function coalesceFrameworkLensRecord(input: {
   };
   void pending.then(cleanup, cleanup);
   return pending;
+}
+
+function buildPassageTaxonomyBindingRecord(
+  records: readonly FrameworkLensRunRecord[],
+): Readonly<Record<string, DecisionTaxonomyBinding>> {
+  const result: Record<string, DecisionTaxonomyBinding> = {};
+  for (const record of records) {
+    const focus = record.passageValidationResult?.authorizedFocus;
+    if (!focus) continue;
+    const metadata = record.judgment.frameworkMetadata;
+    const componentMatches = metadata?.components.filter(
+      ({ frameworkId, version }) =>
+        frameworkId === focus.binding.frameworkId
+        && version === focus.componentVersion,
+    ).length === 1;
+    const bindingMatches = metadata?.decisionTaxonomyBindings.filter(
+      (binding) => sameTaxonomyBinding(binding, focus.binding),
+    ).length === 1;
+    if (
+      focus.compositeFrameworkCardId !== record.judgment.frameworkCardId
+      || !componentMatches
+      || !bindingMatches
+    ) {
+      throw new Error(
+        "Named Lens taxonomy binding is foreign to its grounded composite passage.",
+      );
+    }
+    const existing = result[record.judgment.frameworkCardId];
+    if (existing && !isDeepStrictEqual(existing, focus.binding)) {
+      throw new Error(
+        "A composite Named Lens judgment cannot expose multiple taxonomy bindings.",
+      );
+    }
+    result[record.judgment.frameworkCardId] = structuredClone(focus.binding);
+  }
+  return result;
+}
+
+function sameTaxonomyBinding(
+  left: DecisionTaxonomyBinding,
+  right: DecisionTaxonomyBinding,
+): boolean {
+  return left.frameworkId === right.frameworkId
+    && left.cardFieldRef === right.cardFieldRef
+    && left.questionText === right.questionText
+    && left.decisionQuestionCode === right.decisionQuestionCode
+    && left.evidenceDomainCodes.length === right.evidenceDomainCodes.length
+    && new Set(left.evidenceDomainCodes).size === left.evidenceDomainCodes.length
+    && new Set(right.evidenceDomainCodes).size === right.evidenceDomainCodes.length
+    && left.evidenceDomainCodes.every((value) =>
+      right.evidenceDomainCodes.includes(value)
+    );
 }
 
 async function stableConcurrentMap<T, R>(
@@ -721,6 +864,18 @@ function createCacheBinding(input: {
   });
 }
 
+function passageContractFor(
+  card: FrameworkCard,
+): FrameworkLensPassageContract | null {
+  if (!isExperimentalAdvisoryFrameworkCard(card)) return null;
+  return FrameworkLensPassageContractSchema.parse({
+    passageSchemaVersion: NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+    generatorVersion: NAMED_LENS_GENERATOR_VERSION,
+    decisionTaxonomyVersion: card.experimentalAdvisory.decisionTaxonomyVersion,
+    decisionTaxonomyDigest: card.experimentalAdvisory.decisionTaxonomyDigest,
+  });
+}
+
 function validateCacheReplay(input: {
   rawRecord: unknown;
   fingerprint: string;
@@ -746,6 +901,7 @@ function validateCacheReplay(input: {
     input.card.id,
     input.fingerprint,
   );
+  const expectedPassageContract = passageContractFor(input.card);
   if (
     record.fingerprint !== input.fingerprint
     || record.judgment.fingerprint !== input.fingerprint
@@ -754,6 +910,10 @@ function validateCacheReplay(input: {
     || record.judgment.id !== expectedJudgmentId
     || record.judgment.frameworkCardId !== input.card.id
     || record.judgment.frameworkVersion !== input.card.version
+    || !isDeepStrictEqual(
+      record.passageContract,
+      expectedPassageContract,
+    )
   ) {
     throw new Error(
       "Framework lens cache record does not match the authorized execution request.",
@@ -769,13 +929,49 @@ function validateCacheReplay(input: {
       )
       || repaired
       || attempts > 1
+      || record.passageContract === null
     ) {
       throw new Error(
         "Framework lens cache record does not match the authorized advisory metadata.",
       );
     }
+    const applicable = record.judgment.applicability === "applicable";
+    if (
+      applicable !== (record.passageValidationResult !== null)
+      || (
+        record.passageValidationResult?.status === "validated"
+        && record.passageCandidate === null
+      )
+      || (
+        record.passageValidationResult !== null
+        && record.passageValidationResult.judgmentOrCatalogCandidateId
+          !== record.judgment.id
+      )
+    ) {
+      throw new Error(
+        "Framework lens cache record contains a mismatched advisory passage contract.",
+      );
+    }
+    if (record.passageCandidate) {
+      const replayedValidation = groundNamedLensPassage({
+        candidate: input.candidate,
+        pack: input.pack,
+        card: input.card,
+        judgment: record.judgment,
+        candidatePassage: record.passageCandidate,
+        generatorVersion: NAMED_LENS_GENERATOR_VERSION,
+      });
+      if (!isDeepStrictEqual(replayedValidation, record.passageValidationResult)) {
+        throw new Error(
+          "Framework lens cache record passage is not grounded in its authorized judgment.",
+        );
+      }
+    }
   } else if (
     record.judgment.frameworkMetadata !== undefined
+    || record.passageContract !== null
+    || record.passageCandidate !== null
+    || record.passageValidationResult !== null
     || repaired !== (attempts === 2)
   ) {
     throw new Error(
@@ -829,6 +1025,11 @@ function validateCacheReplay(input: {
     compareUtf8(left.dependencyItemId, right.dependencyItemId)
   );
   const abstained = record.judgment.applicability !== "applicable";
+  const advisoryNoCounter = input.authorizedAdvisory
+    && "counterevidenceBoundary" in record.judgment
+    && record.judgment.counterevidenceBoundary.kind
+      === "no_candidate_local_counterevidence"
+    && record.judgment.counterevidenceBoundary.evidenceRequestRefs.length > 0;
   const validConclusionShape = abstained
     ? record.judgment.conclusion === "abstain"
       && record.judgment.supportEvidenceItemIds.length === 0
@@ -837,9 +1038,13 @@ function validateCacheReplay(input: {
       && record.judgment.strongestCounterargument === null
     : record.judgment.conclusion !== "abstain"
       && record.judgment.supportEvidenceItemIds.length > 0
-      && record.judgment.counterEvidenceItemIds.length > 0
       && record.judgment.strongestSupport !== null
-      && record.judgment.strongestCounterargument !== null;
+      && (
+        record.judgment.counterEvidenceItemIds.length > 0
+          ? record.judgment.strongestCounterargument !== null
+          : advisoryNoCounter
+            && record.judgment.strongestCounterargument === null
+      );
   if (
     !exactPartition
     || !sortedEvidenceLists
@@ -870,7 +1075,7 @@ function createFrameworkLensFingerprint(input: {
   authorization: FrameworkLensAuthorization;
 }): string {
   const canonical = canonicalJson({
-    kind: "framework-lens-execution-v1",
+    kind: "framework-lens-execution-v2",
     candidate: {
       id: input.candidate.id,
       candidateAnalysisFingerprint:
@@ -881,6 +1086,7 @@ function createFrameworkLensFingerprint(input: {
     context: input.context,
     calculations: input.calculations,
     authorization: input.authorization,
+    passageContract: passageContractFor(input.card),
     provider: input.execution.provider,
     model: input.execution.model,
     promptVersion: input.execution.promptVersion,

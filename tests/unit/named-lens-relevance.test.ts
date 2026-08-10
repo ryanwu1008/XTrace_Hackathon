@@ -4,6 +4,7 @@ import test from "node:test";
 import type { FrameworkJudgment } from "../../lib/contracts/underwriting";
 import type {
   DecisionCriticalEvidenceRef,
+  GroundedNamedLensPassageCandidate,
   NamedLensDisposition,
   NamedLensPassage,
 } from "../../lib/contracts/named-lens";
@@ -121,6 +122,7 @@ function taxonomy(
       componentCardIds: [componentFrameworkId],
       components: [{
         frameworkId: componentFrameworkId,
+        version: "1.0.0",
         decisionQuestions: [binding.questionText],
       }],
       decisionTaxonomyBindings: [binding],
@@ -154,9 +156,9 @@ function passage(
     evidenceDomainCodes: input.domains ?? priority.evidenceDomainCodes,
     premise: {
       text,
-      componentFrameworkId: priority.frameworkCardId,
-      componentVersion: priority.frameworkVersion,
-      cardFieldRef: "decisionQuestions[0]",
+      componentFrameworkId: priority.componentFrameworkId,
+      componentVersion: priority.componentVersion,
+      cardFieldRef: priority.cardFieldRef,
       publicSourceIds: [`public_${priority.judgmentId}`],
       claimIds: [`claim_${priority.judgmentId}`],
       locator: { kind: "web_section", value: "https://example.com/framework#premise" },
@@ -314,11 +316,53 @@ function validated(
   passageFor = (priority: NamedLensProvisionalPriority, index: number) =>
     passage(priority, { fingerprintDigit: String((index % 9) + 1) }),
 ): NamedLensPassageValidationResult[] {
-  return priorities.map((priority, index) => ({
-    judgmentOrCatalogCandidateId: priority.judgmentId,
-    status: "validated",
-    passage: passageFor(priority, index),
-  }));
+  return priorities.map((priority, index) => {
+    const finalPassage = passageFor(priority, index);
+    const selectionNeutral = {
+      schemaVersion: finalPassage.schemaVersion,
+      workspaceId: finalPassage.workspaceId,
+      artifactSourceCandidateRunId:
+        finalPassage.artifactSourceCandidateRunId,
+      judgmentId: finalPassage.judgmentId,
+      frameworkCardId: finalPassage.frameworkCardId,
+      frameworkVersion: finalPassage.frameworkVersion,
+      premise: finalPassage.premise,
+      caseApplication: finalPassage.caseApplication,
+      countercase: finalPassage.countercase,
+      unknownBoundary: finalPassage.unknownBoundary,
+      conditionalConclusion: finalPassage.conditionalConclusion,
+      advisoryContract: finalPassage.advisoryContract,
+      wordCount: finalPassage.wordCount,
+      generatorVersion: finalPassage.generatorVersion,
+    };
+    return {
+      judgmentOrCatalogCandidateId: priority.judgmentId,
+      status: "validated",
+      authorizedFocus: {
+        compositeFrameworkCardId: priority.frameworkCardId,
+        componentVersion: priority.componentVersion,
+        binding: {
+          frameworkId: priority.componentFrameworkId,
+          cardFieldRef: priority.cardFieldRef,
+          questionText: priority.questionText,
+          decisionQuestionCode: priority.decisionQuestionCode,
+          evidenceDomainCodes: priority.evidenceDomainCodes,
+        },
+      },
+      groundedCandidate: {
+        ...selectionNeutral,
+        focus: {
+          componentFrameworkId: priority.componentFrameworkId,
+          componentVersion: priority.componentVersion,
+          cardFieldRef: priority.cardFieldRef,
+          questionText: priority.questionText,
+          decisionQuestionCode: priority.decisionQuestionCode,
+          evidenceDomainCodes: priority.evidenceDomainCodes,
+        },
+        groundingFingerprint: sha(String(((index + 4) % 9) + 1)),
+      } satisfies GroundedNamedLensPassageCandidate,
+    };
+  });
 }
 
 function scenario(count: number) {
@@ -507,16 +551,54 @@ test("eliminates literal normalized prose clones even when their typed signature
   ));
 });
 
-test("rejects foreign selection-basis IDs instead of silently trimming them", () => {
-  const input = scenario(4);
-  input.passageResults = validated(input.provisionalPriority, (priority, index) =>
-    passage(priority, index === 0
-      ? { basis: ["fact_foreign", ...priority.selectionBasisEvidenceIds] }
-      : {})
+test("injects only deterministic critical selection basis after grounding", () => {
+  const judgments = [judgment({
+    id: "judgment_basis",
+    evidenceIds: ["fact_critical", "fact_context"],
+  })];
+  const criticalEvidence = [critical("fact_critical")];
+  const priorities = prioritizeNamedLensJudgments({
+    judgments,
+    criticalEvidence,
+    taxonomyByFrameworkId: taxonomy(judgments),
+  });
+  const results = validated(priorities);
+  assert.equal(results[0]?.status, "validated");
+  if (results[0]?.status !== "validated") return;
+  results[0].groundedCandidate.caseApplication.evidenceItemIds = [
+    "fact_context",
+    "fact_critical",
+  ].sort();
+
+  const finalized = finalizeNamedLensPlacement({
+    catalogCandidates: catalog(priorities),
+    provisionalPriority: priorities,
+    passageResults: results,
+    criticalEvidence,
+  });
+  assert.deepEqual(finalized.passages[0]?.caseApplication.evidenceItemIds, [
+    "fact_context",
+    "fact_critical",
+  ].sort());
+  assert.deepEqual(
+    finalized.passages[0]?.selectionBasisEvidenceIds,
+    ["fact_critical"],
   );
+
+  const modelAuthored = structuredClone(results);
+  if (modelAuthored[0]?.status === "validated") {
+    Object.assign(modelAuthored[0].groundedCandidate, {
+      selectionBasisEvidenceIds: ["fact_context"],
+    });
+  }
   assert.throws(
-    () => finalizeNamedLensPlacement(input),
-    /candidate-local decision-critical|foreign/i,
+    () => finalizeNamedLensPlacement({
+      catalogCandidates: catalog(priorities),
+      provisionalPriority: priorities,
+      passageResults: modelAuthored,
+      criticalEvidence,
+    }),
+    /unrecognized|selection basis|strict/i,
   );
 });
 
@@ -529,12 +611,11 @@ test("withholds a failed high-priority passage and deterministically backfills l
           judgmentOrCatalogCandidateId: priority.judgmentId,
           status: "withheld" as const,
           reasonCode: "foreign_passage_evidence",
+          authorizedFocus: null,
         }
-      : {
-          judgmentOrCatalogCandidateId: priority.judgmentId,
-          status: "validated" as const,
-          passage: passage(priority, { fingerprintDigit: String(index) }),
-        }
+      : validated([priority], () =>
+        passage(priority, { fingerprintDigit: String(index) })
+      )[0]!
   );
   const final = finalizeNamedLensPlacement(input);
 

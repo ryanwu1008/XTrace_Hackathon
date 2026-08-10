@@ -16,6 +16,13 @@ import type {
   ResolvedUnderwritingContext,
 } from "../../lib/contracts/underwriting";
 import {
+  NAMED_LENS_GENERATOR_VERSION,
+  NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+} from "../../lib/contracts/named-lens";
+import {
+  DECISION_TAXONOMY_VERSION,
+} from "../../lib/underwriting/frameworks/decision-taxonomy";
+import {
   authorizedResearchComposites,
   loadResearchFrameworkCatalog,
 } from "../../lib/underwriting/frameworks/research-loader";
@@ -29,6 +36,7 @@ import type {
   ExperimentalAdvisoryFrameworkCard,
   FrameworkCard,
 } from "../../lib/underwriting/frameworks/schemas";
+import { parseFrameworkLensResult } from "../../lib/underwriting/stage-replay";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
 
 const fact: Fact = {
@@ -203,6 +211,19 @@ test("executes each applicable real pack once through a stable four-worker pool 
   );
 
   assert.equal(result.judgments.length, 20);
+  assert.equal(result.passageCandidates.length, applicable.length);
+  assert.equal(result.passageResults.length, applicable.length);
+  assert.deepEqual(
+    parseFrameworkLensResult(JSON.parse(JSON.stringify(result))),
+    result,
+  );
+  assert.equal(
+    Object.keys(result.taxonomyByFrameworkId).length,
+    applicable.length,
+    JSON.stringify(
+      result.passageResults.filter(({ status }) => status !== "validated"),
+    ),
+  );
   assert.equal(requests.length, applicable.length);
   assert.equal(requests.length, 19);
   assert.equal(maximumActive, 4);
@@ -239,6 +260,10 @@ test("executes each applicable real pack once through a stable four-worker pool 
     assert.match(request.system, /not an endorsement/i);
     assert.match(request.system, /private reasoning|chain of thought/i);
     assert.match(request.system, /formal decision weight zero/i);
+    assert.match(request.system, /third-person application/i);
+    assert.match(request.system, /bounded advisoryPosture/i);
+    assert.match(request.system, /exact supplied Card fields/i);
+    assert.match(request.system, /do not invent or output a quotation/i);
     assert.equal("tools" in request, false);
     const payload = promptPayload(request);
     assert.equal(payload.card.executionMode, "experimental_advisory");
@@ -375,7 +400,15 @@ test("replays advisory fingerprints without calls and never stores prompts or ra
   for (const record of cache.inspect()) {
     assert.deepEqual(
       Object.keys(record).sort(),
-      ["binding", "fingerprint", "judgment", "providerMetadata"],
+      [
+        "binding",
+        "fingerprint",
+        "judgment",
+        "passageCandidate",
+        "passageContract",
+        "passageValidationResult",
+        "providerMetadata",
+      ],
     );
     assert.equal(
       record.binding.authorizationMode,
@@ -393,6 +426,20 @@ test("replays advisory fingerprints without calls and never stores prompts or ra
     assert.equal("system" in record, false);
     assert.equal("messages" in record, false);
     assert.equal("rawResponse" in record, false);
+    assert.deepEqual(record.passageContract, {
+      passageSchemaVersion: NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+      generatorVersion: NAMED_LENS_GENERATOR_VERSION,
+      decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+      decisionTaxonomyDigest:
+        record.judgment.frameworkMetadata?.decisionTaxonomyDigest,
+    });
+    if (record.judgment.applicability === "applicable") {
+      assert.ok(record.passageCandidate);
+      assert.equal(record.passageValidationResult?.status, "validated");
+    } else {
+      assert.equal(record.passageCandidate, null);
+      assert.equal(record.passageValidationResult, null);
+    }
   }
 });
 
@@ -435,10 +482,14 @@ test("runs the exact core pack first and appends no more than twenty advisory pa
       async complete(request) {
         calls += 1;
         const card = promptAnyCard(request);
-        return JSON.stringify({
-          ...advisoryOutputShape(),
-          frameworkRuleRefs: [card.id],
-        });
+        return JSON.stringify(
+          "executionMode" in card
+            ? advisoryOutput(card)
+            : {
+              ...advisoryOutputShape(),
+              frameworkRuleRefs: [card.id],
+            },
+        );
       },
     },
   });
@@ -508,6 +559,53 @@ test("stops advisory failures after one attempt and records unavailable abstenti
       /one permitted advisory attempt/i,
     );
   }
+});
+
+test("keeps a grounded advisory judgment when only its one-call passage has foreign evidence", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const targetPack = "peter_thiel_public_frameworks_v0_1";
+  const service = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    client: {
+      async complete(request) {
+        const card = promptCard(request);
+        const output = advisoryOutput(card);
+        if (card.experimentalAdvisory.packId === targetPack) {
+          output.passage.caseApplication.evidenceItemIds = [
+            fact.id,
+            "foreign_fact",
+          ].sort();
+        }
+        return JSON.stringify(output);
+      },
+    },
+  });
+
+  const result = await service.runAll(runInput());
+  const judgment = result.judgments.find(
+    ({ frameworkMetadata }) => frameworkMetadata?.packId === targetPack,
+  );
+  assert.equal(judgment?.applicability, "applicable");
+  assert.deepEqual(judgment?.supportEvidenceItemIds, [fact.id]);
+  const passageResult = result.passageResults.find(
+    ({ judgmentOrCatalogCandidateId }) =>
+      judgmentOrCatalogCandidateId === judgment?.id,
+  );
+  assert.deepEqual(
+    passageResult && {
+      status: passageResult.status,
+      reasonCode: passageResult.status === "validated"
+        ? null
+        : passageResult.reasonCode,
+    },
+    { status: "withheld", reasonCode: "foreign_passage_evidence" },
+  );
+  assert.equal(
+    Object.hasOwn(result.taxonomyByFrameworkId, judgment!.frameworkCardId),
+    true,
+  );
 });
 
 test("rejects cloned catalogs and keeps caller-created advisory lookalikes inert", async () => {
@@ -734,6 +832,35 @@ test("fails closed when cached advisory metadata does not exactly match the auth
     oldDigestReplay.runAll(runInput()),
     /cache record.*authorized|cache record.*metadata|cache.*mismatch/i,
   );
+
+  const prePassageContract = structuredClone(valid) as Partial<
+    FrameworkLensCacheRecord
+  >;
+  delete prePassageContract.passageContract;
+  delete prePassageContract.passageCandidate;
+  delete prePassageContract.passageValidationResult;
+  const prePassageReplay = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    cache: {
+      async find(fingerprint) {
+        return fingerprint === valid.fingerprint
+          ? prePassageContract as FrameworkLensCacheRecord
+          : null;
+      },
+      async save() {},
+    },
+    client: {
+      async complete(request) {
+        return JSON.stringify(advisoryOutput(promptCard(request)));
+      },
+    },
+  });
+  await assert.rejects(
+    prePassageReplay.runAll(runInput()),
+    /cache record.*invalid|passage contract/i,
+  );
 });
 
 function runInput() {
@@ -746,9 +873,67 @@ function runInput() {
 }
 
 function advisoryOutput(card: ExperimentalAdvisoryFrameworkCard) {
+  const binding = card.experimentalAdvisory.decisionTaxonomyBindings[0]!;
+  const component = card.experimentalAdvisory.components.find(
+    ({ frameworkId }) => frameworkId === binding.frameworkId,
+  );
+  if (!component) throw new Error("Expected an authorized component binding.");
+  const sourceRef = component.sourceRefs[0]!;
   return {
     ...advisoryOutputShape(),
     frameworkRuleRefs: [card.id],
+    counterevidenceBoundary: {
+      kind: "grounded_counterevidence",
+      evidenceRequestRefs: [],
+    },
+    passage: {
+      focus: {
+        componentFrameworkId: component.frameworkId,
+        componentVersion: component.version,
+        cardFieldRef: binding.cardFieldRef,
+        decisionQuestionCode: binding.decisionQuestionCode,
+        evidenceDomainCodes: [...binding.evidenceDomainCodes].sort(),
+      },
+      premise: {
+        text: "VSee applies the public framework premise to a testable company question.",
+        componentFrameworkId: component.frameworkId,
+        componentVersion: component.version,
+        cardFieldRef: binding.cardFieldRef,
+        publicSourceIds: [sourceRef.sourceId],
+        claimIds: [...sourceRef.claimIds].sort(),
+        locator: sourceRef.locator,
+        attributionScope: sourceRef.attributionScope,
+      },
+      caseApplication: {
+        text: "Reported customer retention supports the premise through observed company performance.",
+        evidenceItemIds: [fact.id],
+      },
+      countercase: {
+        text: "The unverified cohort assumption limits confidence in durability.",
+        boundaryKind: "grounded_counterevidence",
+        evidenceItemIds: [assumption.id],
+        evidenceRequestRefs: [],
+      },
+      unknownBoundary: {
+        text: "Independent customer calls and cohort exports would resolve the saved unknown.",
+        judgmentUnknownRefs: [
+          "Independent customer calls and cohort exports remain unknown.",
+        ],
+        judgmentLimitationRefs: [],
+        evidenceRequestRefs: [],
+      },
+      conditionalConclusion: {
+        text: "The framework supports further diligence if independent cohorts confirm durability.",
+        stance: "supportive",
+        advisoryPosture: "supports_further_diligence",
+      },
+      advisoryContract: {
+        formalDecisionWeight: "0",
+        noEndorsement: true,
+        namedPersonImpersonation: false,
+        hiddenChainOfThought: false,
+      },
+    },
   };
 }
 

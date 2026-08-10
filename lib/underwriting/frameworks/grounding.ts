@@ -15,9 +15,11 @@ import {
 } from "../../contracts/underwriting";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../../seed/underwriting/framework-pack-v1";
 import {
+  ClaudeAdvisoryFrameworkJudgmentOutputSchema,
   ClaudeFrameworkLensOutputSchema,
   FrameworkCardSchema,
   isExperimentalAdvisoryFrameworkCard,
+  type ClaudeAdvisoryFrameworkJudgmentOutput,
   type ClaudeFrameworkLensOutput,
   type FrameworkCard,
 } from "./schemas";
@@ -53,7 +55,9 @@ export function groundFrameworkLensOutput(input: {
   card: FrameworkCard;
   calculations: Calculation[];
   fingerprint: string;
-  output: ClaudeFrameworkLensOutput;
+  output:
+    | ClaudeFrameworkLensOutput
+    | ClaudeAdvisoryFrameworkJudgmentOutput;
 }): FrameworkJudgment {
   const candidate = CandidateRunSchema.parse(input.candidate);
   const pack = EvidencePackSchema.parse(input.pack);
@@ -61,7 +65,12 @@ export function groundFrameworkLensOutput(input: {
   const calculations = input.calculations.map((item) =>
     CalculationSchema.parse(item)
   );
-  const output = ClaudeFrameworkLensOutputSchema.parse(input.output);
+  const advisory = isExperimentalAdvisoryFrameworkCard(card);
+  const advisoryOutput = advisory
+    ? ClaudeAdvisoryFrameworkJudgmentOutputSchema.parse(input.output)
+    : null;
+  const output = advisoryOutput
+    ?? ClaudeFrameworkLensOutputSchema.parse(input.output);
   const dependencies = new Map<string, ClaimEdge["dependencyType"]>();
   for (const fact of pack.facts) dependencies.set(fact.id, "fact");
   for (const assumption of pack.assumptions) {
@@ -148,8 +157,11 @@ export function groundFrameworkLensOutput(input: {
     ]),
     confidence: output.confidence,
     claimEdges,
-    ...(isExperimentalAdvisoryFrameworkCard(card)
-      ? { frameworkMetadata: card.experimentalAdvisory }
+    ...(advisory
+      ? {
+        frameworkMetadata: card.experimentalAdvisory,
+        counterevidenceBoundary: advisoryOutput!.counterevidenceBoundary,
+      }
       : {}),
     fingerprint: input.fingerprint,
   });

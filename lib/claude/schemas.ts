@@ -1,5 +1,18 @@
 import { z } from "zod";
 
+import {
+  CompanyEvidenceSegmentSchema,
+  ConditionalConclusionSegmentSchema,
+  CountercaseSegmentSchema,
+  FrameworkPremiseSegmentSchema,
+  NamedLensAdvisoryContractSchema,
+  NamedLensPassageFocusSchema,
+  UnknownBoundarySegmentSchema,
+} from "../contracts/named-lens";
+import {
+  CounterevidenceBoundarySchema,
+} from "../contracts/underwriting";
+
 const BoundedObservationScoreSchema = z.coerce.number().min(0).max(1);
 
 export const ClaudeReasonedMatchSchema = z.strictObject({
@@ -48,7 +61,7 @@ const FrameworkIdSchema = z.string().min(1).refine(
 );
 const FrameworkConfidenceLevelSchema = z.enum(["low", "medium", "high"]);
 
-export const ClaudeFrameworkLensOutputSchema = z.strictObject({
+const ClaudeFrameworkLensOutputShape = {
   applicability: z.enum(["applicable", "not_applicable"]),
   conclusion: z.enum(["supportive", "mixed", "negative", "abstain"]),
   supportEvidenceItemIds: z.array(FrameworkIdSchema),
@@ -66,7 +79,103 @@ export const ClaudeFrameworkLensOutputSchema = z.strictObject({
     judgment: FrameworkConfidenceLevelSchema,
   }),
   frameworkRuleRefs: z.array(FrameworkIdSchema).min(1),
-}).superRefine((output, context) => {
+} as const;
+
+export const ClaudeFrameworkLensOutputBaseSchema = z.strictObject(
+  ClaudeFrameworkLensOutputShape,
+);
+
+const NamedLensProviderFocusSchema = z.strictObject({
+  componentFrameworkId:
+    NamedLensPassageFocusSchema.shape.componentFrameworkId,
+  componentVersion: NamedLensPassageFocusSchema.shape.componentVersion,
+  cardFieldRef: NamedLensPassageFocusSchema.shape.cardFieldRef,
+  decisionQuestionCode:
+    NamedLensPassageFocusSchema.shape.decisionQuestionCode,
+  evidenceDomainCodes:
+    NamedLensPassageFocusSchema.shape.evidenceDomainCodes,
+}).superRefine((value, context) => {
+  if (!isCanonicalStrings(value.evidenceDomainCodes)) {
+    context.addIssue({
+      code: "custom",
+      message: "Named Lens focus evidence-domain codes must be unique and UTF-8 sorted.",
+    });
+  }
+});
+
+export const NamedLensPassageCandidateSchema = z.strictObject({
+  focus: NamedLensProviderFocusSchema,
+  premise: FrameworkPremiseSegmentSchema,
+  caseApplication: CompanyEvidenceSegmentSchema,
+  countercase: CountercaseSegmentSchema,
+  unknownBoundary: UnknownBoundarySegmentSchema,
+  conditionalConclusion: ConditionalConclusionSegmentSchema,
+  advisoryContract: NamedLensAdvisoryContractSchema,
+}).superRefine((value, context) => {
+  if (
+    value.focus.componentFrameworkId !== value.premise.componentFrameworkId
+    || value.focus.componentVersion !== value.premise.componentVersion
+    || value.focus.cardFieldRef !== value.premise.cardFieldRef
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Named Lens focus must exactly match its premise Card binding.",
+    });
+  }
+});
+
+export const ClaudeFrameworkLensOutputSchema =
+  ClaudeFrameworkLensOutputBaseSchema.superRefine((output, context) => {
+    validateNonApplicableFrameworkLensOutput(output, context);
+    if (
+      output.applicability === "applicable"
+      && (
+        output.conclusion === "abstain"
+        || output.supportEvidenceItemIds.length === 0
+        || output.counterEvidenceItemIds.length === 0
+        || output.strongestSupport === null
+        || output.strongestCounterargument === null
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "An applicable framework lens requires a bounded conclusion with grounded support and counterevidence",
+      });
+    }
+  });
+
+export const ClaudeAdvisoryFrameworkJudgmentOutputSchema =
+  ClaudeFrameworkLensOutputBaseSchema.extend({
+    counterevidenceBoundary: CounterevidenceBoundarySchema,
+  }).strict().superRefine(validateAdvisoryFrameworkJudgmentOutput);
+
+export const ClaudeAdvisoryFrameworkLensOutputSchema =
+  ClaudeFrameworkLensOutputBaseSchema.extend({
+    counterevidenceBoundary: CounterevidenceBoundarySchema,
+    passage: NamedLensPassageCandidateSchema,
+  }).strict().superRefine((output, context) => {
+    validateAdvisoryFrameworkJudgmentOutput(output, context);
+    if (
+      output.counterevidenceBoundary.kind
+        !== output.passage.countercase.boundaryKind
+      || !sameStrings(
+        output.counterevidenceBoundary.evidenceRequestRefs,
+        output.passage.countercase.evidenceRequestRefs,
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Advisory passage counterevidence boundary must match the judgment boundary.",
+      });
+    }
+  });
+
+function validateNonApplicableFrameworkLensOutput(
+  output: z.infer<typeof ClaudeFrameworkLensOutputBaseSchema>,
+  context: z.core.$RefinementCtx,
+): void {
   if (
     output.applicability === "not_applicable"
     && (
@@ -82,23 +191,74 @@ export const ClaudeFrameworkLensOutputSchema = z.strictObject({
       message: "A non-applicable framework lens must abstain without claims",
     });
   }
+}
+
+function validateAdvisoryFrameworkJudgmentOutput(
+  output: z.infer<typeof ClaudeFrameworkLensOutputBaseSchema> & {
+    counterevidenceBoundary: z.infer<typeof CounterevidenceBoundarySchema>;
+  },
+  context: z.core.$RefinementCtx,
+): void {
+  validateNonApplicableFrameworkLensOutput(output, context);
+  if (output.applicability !== "applicable") return;
+  const groundedCounterevidence = output.counterEvidenceItemIds.length > 0;
   if (
-    output.applicability === "applicable"
-    && (
-      output.conclusion === "abstain"
-      || output.supportEvidenceItemIds.length === 0
-      || output.counterEvidenceItemIds.length === 0
-      || output.strongestSupport === null
-      || output.strongestCounterargument === null
+    output.conclusion === "abstain"
+    || output.supportEvidenceItemIds.length === 0
+    || output.strongestSupport === null
+    || (
+      groundedCounterevidence
+        ? output.strongestCounterargument === null
+          || output.counterevidenceBoundary.kind
+            !== "grounded_counterevidence"
+          || output.counterevidenceBoundary.evidenceRequestRefs.length > 0
+        : output.strongestCounterargument !== null
+          || output.counterevidenceBoundary.kind
+            !== "no_candidate_local_counterevidence"
+          || output.counterevidenceBoundary.evidenceRequestRefs.length === 0
     )
   ) {
     context.addIssue({
       code: "custom",
       message:
-        "An applicable framework lens requires a bounded conclusion with grounded support and counterevidence",
+        "An applicable advisory lens requires grounded support and either grounded counterevidence or an exact evidence-request boundary.",
     });
   }
-});
+}
+
+function sameStrings(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function isCanonicalStrings(values: readonly string[]): boolean {
+  return new Set(values).size === values.length
+    && values.every((value, index) =>
+      index === 0
+      || Buffer.compare(
+        Buffer.from(values[index - 1]!, "utf8"),
+        Buffer.from(value, "utf8"),
+      ) < 0
+    );
+}
+
+/*
+ * Keep this type below the validators so Zod can infer the complete strict
+ * one-call artifact without making the provider's passage metadata authoritative
+ * for deterministic selection.
+ */
+export type NamedLensPassageCandidate = z.infer<
+  typeof NamedLensPassageCandidateSchema
+>;
+export type ClaudeAdvisoryFrameworkJudgmentOutput = z.infer<
+  typeof ClaudeAdvisoryFrameworkJudgmentOutputSchema
+>;
+export type ClaudeAdvisoryFrameworkLensOutput = z.infer<
+  typeof ClaudeAdvisoryFrameworkLensOutputSchema
+>;
 
 export type ClaudeFrameworkLensOutput = z.infer<
   typeof ClaudeFrameworkLensOutputSchema
