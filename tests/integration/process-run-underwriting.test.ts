@@ -24,6 +24,10 @@ import { createRunsRepository } from "../../db/repositories/runs";
 import {
   createMemoryUnderwritingArtifactsRepository,
 } from "../../db/repositories/underwriting-artifacts";
+import { createMemoryNamedLensArtifactsRepository } from
+  "../../db/repositories/named-lens-artifacts";
+import type { NamedLensArtifactsRepository } from
+  "../../db/repositories/named-lens-artifacts";
 import {
   createMemoryUnderwritingRunsRepository,
   type CandidateFinalization,
@@ -85,6 +89,10 @@ import {
 import type {
   FrameworkLensService,
 } from "../../lib/underwriting/frameworks/service";
+import { withEmptyCurrentNamedLensArtifacts } from
+  "../helpers/current-named-lens-finalization";
+import { withWithheldCurrentNamedLensArtifacts } from
+  "../helpers/current-named-lens-finalization";
 import {
   CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
 } from "../../lib/underwriting/frameworks/passage-contract";
@@ -790,7 +798,7 @@ function finalization(input: {
         "Providing accepted evidence may raise or lower the formal decision ceiling.",
     }),
   );
-  return {
+  return withEmptyCurrentNamedLensArtifacts({
     workerId: input.workerId,
     leaseToken: input.leaseToken,
     candidateRunId: input.candidateRunId,
@@ -909,7 +917,7 @@ function finalization(input: {
       applicationCommit: "task13-test",
       companyAnalysisUnknowns: [],
     },
-  };
+  });
 }
 
 async function saveFinalizationBuild(
@@ -936,6 +944,40 @@ async function saveFinalizationBuild(
       createdAt: "2026-07-29T10:05:00.000Z",
     }],
   });
+}
+
+function createCurrentFixtureSourceGroundedCandidateExecutor(
+  options: Parameters<typeof createSourceGroundedCandidateExecutor>[0],
+  namedLensArtifacts?: NamedLensArtifactsRepository,
+): ReturnType<typeof createSourceGroundedCandidateExecutor> {
+  const execute = createSourceGroundedCandidateExecutor(options);
+  return async (request) => {
+    const executionResult = await execute(request);
+    if ("kind" in executionResult) return executionResult;
+    const finalization = {
+      ...executionResult,
+      workerId: request.workerId,
+      leaseToken: request.leaseToken,
+      candidateRunId: request.candidate.id,
+    } satisfies CandidateFinalization;
+    if (!finalization.judgments.some(({ frameworkMetadata }) =>
+      frameworkMetadata !== undefined
+    )) {
+      return withEmptyCurrentNamedLensArtifacts(finalization);
+    }
+    if (!namedLensArtifacts) {
+      throw new Error(
+        "Advisory fixture execution requires its shared Named Lens repository.",
+      );
+    }
+    return withWithheldCurrentNamedLensArtifacts(
+      finalization,
+      await namedLensArtifacts.listAttempts(
+        request.candidate.workspaceId,
+        request.candidate.id,
+      ),
+    );
+  };
 }
 
 async function uploadedDealRegistry() {
@@ -1993,15 +2035,29 @@ test("byte-identical force refresh completes as an immutable artifact alias", as
     originalCandidate.candidateAnalysisFingerprint,
   );
   assert.equal(artifacts.inspect().bundles.length, 1);
+  const aliasBundle = await artifacts.getByCandidateRunId({
+    workspaceId: "workspace_1",
+    candidateRunId: refreshedCandidate.id,
+  });
+  const sourceBundle = await artifacts.getByCandidateRunId({
+    workspaceId: "workspace_1",
+    candidateRunId: originalCandidate.id,
+  });
+  assert.equal(aliasBundle?.candidateRunId, refreshedCandidate.id);
+  assert.equal(aliasBundle?.sourceCandidateRunId, originalCandidate.id);
+  assert.equal(sourceBundle?.candidateRunId, originalCandidate.id);
+  assert.equal(sourceBundle?.sourceCandidateRunId, originalCandidate.id);
   assert.deepEqual(
-    await artifacts.getByCandidateRunId({
-      workspaceId: "workspace_1",
-      candidateRunId: refreshedCandidate.id,
-    }),
-    await artifacts.getByCandidateRunId({
-      workspaceId: "workspace_1",
-      candidateRunId: originalCandidate.id,
-    }),
+    {
+      ...aliasBundle!,
+      candidateRunId: "comparison_candidate",
+      sourceCandidateRunId: "comparison_source",
+    },
+    {
+      ...sourceBundle!,
+      candidateRunId: "comparison_candidate",
+      sourceCandidateRunId: "comparison_source",
+    },
   );
   assert.equal(refreshed.status, "completed");
 });
@@ -2189,7 +2245,7 @@ test("missing valuation inputs continue through every stage and finalize a termi
     runs,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
-    candidateExecutor: createSourceGroundedCandidateExecutor({
+    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
       grounding,
       resolveFrameworkLenses: async () => ({
         catalogVersion: "research-framework-catalog-v1",
@@ -2298,7 +2354,7 @@ test("runs the source-grounded candidate chain once and persists communication c
     runs,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
-    candidateExecutor: createSourceGroundedCandidateExecutor({
+    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
       grounding,
       resolveFrameworkLenses: async (context) => {
         frameworkResolutions += 1;
@@ -2501,9 +2557,12 @@ test("runs the source-grounded candidate chain once and persists communication c
   );
 });
 
-test("real authorized eight-core and twenty-advisory execution completes within the default provider budget", async () => {
+test("real authorized eight-core and twenty-advisory execution settles a truthful partial graph within budget", async () => {
   let sequence = 0;
-  const artifacts = createMemoryUnderwritingArtifactsRepository();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const artifacts = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
   const evidencePacks = createMemoryEvidencePacksRepository();
   let activeProviderCalls = 0;
   let maximumProviderCalls = 0;
@@ -2554,9 +2613,10 @@ test("real authorized eight-core and twenty-advisory execution completes within 
   });
   const orchestrator = createUnderwritingOrchestrator({
     runs,
+    namedLensArtifacts,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
-    candidateExecutor: createSourceGroundedCandidateExecutor({
+    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
       grounding,
       resolveFrameworkLenses: (context, signal) =>
         frameworkResolver.resolve(context, signal),
@@ -2568,7 +2628,7 @@ test("real authorized eight-core and twenty-advisory execution completes within 
         settingsFingerprint: `sha256:${"b".repeat(64)}`,
         applicationCommit: "task13-test",
       },
-    }),
+    }, namedLensArtifacts),
     now: () => NOW,
   });
   const analyses = [analysis("deal_a", 0.99)];
@@ -2596,7 +2656,14 @@ test("real authorized eight-core and twenty-advisory execution completes within 
     ({ frameworkMetadata }) => frameworkMetadata === undefined,
   );
 
-  assert.equal(batch.status, "completed");
+  assert.equal(batch.status, "partial");
+  assert.equal(bundle.terminalStatus, "partial");
+  assert.deepEqual(bundle.terminalReasonCodes,
+    ["named_lens_passage_attempts_exhausted"]);
+  assert.equal(bundle.namedLensCatalogConsiderations?.length, 20);
+  assert.equal(bundle.namedLensDispositions?.length, 20);
+  assert.equal(bundle.namedLensAttemptRefs?.length, 19);
+  assert.equal(namedLensArtifacts.inspect().rawAttemptEvents.length, 38);
   assert.equal(coreJudgments.length, 8);
   assert.equal(advisoryJudgments.length, 20);
   assert.equal(
@@ -2691,6 +2758,14 @@ function frameworkPromptOutput(request: ClaudeCompleteInput) {
       judgment: "medium",
     },
     frameworkRuleRefs: [payload.card.id],
+    ...("experimentalAdvisory" in payload.card
+      ? {
+        counterevidenceBoundary: {
+          kind: "grounded_counterevidence" as const,
+          evidenceRequestRefs: [],
+        },
+      }
+      : {}),
   };
 }
 
@@ -2715,7 +2790,7 @@ test("a clock-advanced source-grounded force refresh aliases the canonical artif
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
     refreshNonce: () => `refresh_${++sequence}`,
-    candidateExecutor: createSourceGroundedCandidateExecutor({
+    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
       grounding,
       frameworkLenses: {
         async runAll(request) {
@@ -2966,6 +3041,7 @@ test("settled provider overage blocks the next physical request before dispatch"
 
 test("unknown provider usage conservatively retains the full reservation", async () => {
   let sequence = 0;
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
   const runs = createMemoryUnderwritingRunsRepository({
     now: () => NOW,
     idGenerator: (kind) => `${kind}_${++sequence}`,
@@ -2973,6 +3049,7 @@ test("unknown provider usage conservatively retains the full reservation", async
   });
   const orchestrator = createUnderwritingOrchestrator({
     runs,
+    namedLensArtifacts,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
     candidateExecutor: async ({ stages }) => {
@@ -2990,6 +3067,12 @@ test("unknown provider usage conservatively retains the full reservation", async
             attemptFingerprint: `sha256:${"2".repeat(64)}`,
             costUnits: 3,
             tokenUnits: 4_000,
+            namedLensAttempt: {
+              judgmentOrCatalogCandidateId: "judgment_provider_failure",
+              logicalPassageId:
+                "judgment_provider_failure@named-lens-passage-v1@named-lens-generator-v1",
+              attemptNumber: 1,
+            },
             operation: async () => {
               throw new IntegrationTransportError({ retryable: true });
             },
@@ -3027,6 +3110,14 @@ test("unknown provider usage conservatively retains the full reservation", async
     actualTokenUnits: 0,
     usageKnown: false,
   }]);
+  assert.equal(namedLensArtifacts.inspect().rawAttemptEvents.length, 2);
+  assert.equal(
+    (await namedLensArtifacts.listAttempts(
+      "workspace_1",
+      runs.inspect().candidates[0]!.id,
+    ))[0]?.status,
+    "failed",
+  );
 });
 
 test("concurrent provider settlements preserve every ledger entry without serializing provider work", async () => {
@@ -3317,7 +3408,7 @@ test("a reclaimed lease recovers from a persisted catalog failure without changi
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
     candidateLeaseSeconds: 1,
-    candidateExecutor: createSourceGroundedCandidateExecutor({
+    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
       grounding,
       resolveFrameworkLenses: async () => {
         frameworkResolutions += 1;
@@ -3475,7 +3566,7 @@ test("retries a transient framework catalog transport failure before exposing un
     runs,
     activeFundPolicy: async () => policy,
     referenceCatalog: TEST_REFERENCE_CATALOG,
-    candidateExecutor: createSourceGroundedCandidateExecutor({
+    candidateExecutor: createCurrentFixtureSourceGroundedCandidateExecutor({
       grounding,
       resolveFrameworkLenses: async () => {
         frameworkResolutions += 1;

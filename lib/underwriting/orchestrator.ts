@@ -4,6 +4,8 @@ import type {
   CandidateFinalization,
   UnderwritingRunsRepository,
 } from "../../db/repositories/underwriting-runs";
+import type { NamedLensArtifactsRepository } from
+  "../../db/repositories/named-lens-artifacts";
 import type {
   RegisteredDeal,
 } from "../../db/repositories/deal-registry";
@@ -198,6 +200,7 @@ export interface UnderwritingOrchestrator {
 
 export function createUnderwritingOrchestrator(options: {
   runs: UnderwritingRunsRepository;
+  namedLensArtifacts?: NamedLensArtifactsRepository;
   activeFundPolicy(
     workspaceId: string,
   ): Promise<FundPolicySnapshot>;
@@ -297,6 +300,7 @@ export function createUnderwritingOrchestrator(options: {
     const controller = new AbortController();
     const stages = await createCandidateStageRuntime({
       runs: options.runs,
+      namedLensArtifacts: options.namedLensArtifacts,
       candidate: claimed.candidate,
       workerId: ORCHESTRATOR_WORKER_ID,
       leaseToken: claimed.leaseToken,
@@ -388,12 +392,13 @@ export function createUnderwritingOrchestrator(options: {
       leaseToken: claimed.leaseToken,
       candidateRunId,
     };
-    const {
-      workerId: _checkpointWorkerId,
-      leaseToken: _checkpointLeaseToken,
-      candidateRunId: _checkpointCandidateRunId,
-      ...durableFinalizationPayload
-    } = payload;
+    const durableFinalizationPayload = Object.fromEntries(
+      Object.entries(payload).filter(([key]) =>
+        key !== "workerId"
+        && key !== "leaseToken"
+        && key !== "candidateRunId"
+      ),
+    ) as CandidateFinalizationPayload;
     const finalizationInputFingerprint = fingerprint({
       stage: "finalization",
       candidateRunId,
@@ -881,6 +886,9 @@ export function createSourceGroundedCandidateExecutor(options: {
                 attemptFingerprint: request.attemptFingerprint,
                 costUnits: 1,
                 tokenUnits: request.outputTokenUnits,
+                ...(request.namedLensAttempt
+                  ? { namedLensAttempt: request.namedLensAttempt }
+                  : {}),
                 operation: request.operation,
               }),
             },

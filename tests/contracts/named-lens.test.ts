@@ -155,6 +155,8 @@ const attempt = {
     inputTokens: 500,
     outputTokens: 180,
     costUsd: "0.0042",
+    costUsdPricingVersion: "anthropic-test-pricing-v1",
+    costUsdUnavailableReason: null,
     latencyMs: 900,
   },
   failureReason: null,
@@ -260,13 +262,28 @@ test("round-trips strict selected, appendix, attempt, and presentation artifacts
   assert.deepEqual(NamedLensProviderAttemptSchema.parse(attempt), attempt);
   assert.throws(() => NamedLensProviderAttemptSchema.parse({
     ...attempt,
-    status: "failed",
+    telemetry: {
+      ...attempt.telemetry,
+      costUsdPricingVersion: null,
+    },
+  }), /USD|cost|pricing|telemetry/i);
+  const failedAttempt = {
+    ...attempt,
+    status: "failed" as const,
     telemetry: null,
     failureReason: {
-      code: "provider_error",
+      code: "provider_error" as const,
       detail: "Provider failed.",
       retryable: false,
     },
+  };
+  assert.deepEqual(
+    NamedLensProviderAttemptSchema.parse(failedAttempt),
+    failedAttempt,
+  );
+  assert.throws(() => NamedLensProviderAttemptSchema.parse({
+    ...failedAttempt,
+    telemetry: attempt.telemetry,
   }));
   assert.deepEqual(
     NamedLensPresentationSchema.parse(presentation),

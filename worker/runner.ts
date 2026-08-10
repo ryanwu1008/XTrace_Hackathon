@@ -11,6 +11,17 @@ import {
   createSupabaseUnderwritingRunsRepository,
 } from "../db/repositories/underwriting-runs";
 import {
+  createMemoryUnderwritingArtifactsRepository,
+  type MemoryUnderwritingArtifactsRepository,
+} from "../db/repositories/underwriting-artifacts";
+import {
+  createMemoryNamedLensArtifactsRepository,
+  createSupabaseNamedLensArtifactsRepository,
+  type NamedLensArtifactsRepository,
+} from "../db/repositories/named-lens-artifacts";
+import type { EvidencePacksRepository } from
+  "../db/repositories/evidence-packs";
+import {
   getUnderwritingReferencesRepository,
 } from "../db/repositories/underwriting-references";
 import { createRunsRepository } from "../db/repositories/runs";
@@ -115,8 +126,12 @@ export async function runNextQueuedScan(): Promise<boolean> {
     const references = getUnderwritingReferencesRepository();
     const lineage = getXTraceLineageRepository();
     const evidenceRepository = getEvidencePacksRepository();
-    const underwritingRuns =
-      createDefaultUnderwritingRunsRepository(evidenceRepository);
+    const underwritingPersistence = createWorkerUnderwritingPersistence({
+      evidencePacks: evidenceRepository,
+      url: process.env.SUPABASE_URL,
+      serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    });
+    const underwritingRuns = underwritingPersistence.runs;
     const sourceRegistry = getSourceRegistry();
     const router = createContextRouter();
     const criticalEvidenceProfiles = (
@@ -221,6 +236,7 @@ export async function runNextQueuedScan(): Promise<boolean> {
     });
     const underwriting = createUnderwritingOrchestrator({
       runs: underwritingRuns,
+      namedLensArtifacts: underwritingPersistence.namedLensArtifacts,
       activeFundPolicy: (workspaceId) =>
         references.activeFundPolicy(workspaceId),
       candidateExecutionFingerprint:
@@ -300,14 +316,47 @@ export async function runNextQueuedScan(): Promise<boolean> {
   return true;
 }
 
-function createDefaultUnderwritingRunsRepository(
-  evidencePacks: ReturnType<typeof getEvidencePacksRepository>,
-) {
-  const url = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  return url && serviceRoleKey
-    ? createSupabaseUnderwritingRunsRepository({ url, serviceRoleKey })
-    : createMemoryUnderwritingRunsRepository({ evidencePacks });
+export function createWorkerUnderwritingPersistence(input: {
+  evidencePacks: EvidencePacksRepository;
+  url?: string;
+  serviceRoleKey?: string;
+  fetchImpl?: typeof fetch;
+}): {
+  runs: ReturnType<typeof createMemoryUnderwritingRunsRepository>
+    | ReturnType<typeof createSupabaseUnderwritingRunsRepository>;
+  namedLensArtifacts: NamedLensArtifactsRepository;
+  underwritingArtifacts: MemoryUnderwritingArtifactsRepository | null;
+} {
+  if (input.url && input.serviceRoleKey) {
+    const namedLensArtifacts = createSupabaseNamedLensArtifactsRepository({
+      url: input.url,
+      serviceRoleKey: input.serviceRoleKey,
+      fetchImpl: input.fetchImpl,
+    });
+    return {
+      namedLensArtifacts,
+      underwritingArtifacts: null,
+      runs: createSupabaseUnderwritingRunsRepository({
+        url: input.url,
+        serviceRoleKey: input.serviceRoleKey,
+        fetchImpl: input.fetchImpl,
+        namedLensArtifacts,
+      }),
+    };
+  }
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const underwritingArtifacts = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
+  return {
+    namedLensArtifacts,
+    underwritingArtifacts,
+    runs: createMemoryUnderwritingRunsRepository({
+      evidencePacks: input.evidencePacks,
+      artifacts: underwritingArtifacts,
+      namedLensArtifacts,
+    }),
+  };
 }
 
 // Uploaded documents are staged here for explicit confirmation. They never

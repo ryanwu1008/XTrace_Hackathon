@@ -28,6 +28,10 @@ import {
   createMemoryEvidencePacksRepository,
   type EvidencePacksRepository,
 } from "./evidence-packs";
+import type { MemoryNamedLensArtifactsRepository } from
+  "./named-lens-artifacts";
+import type { NamedLensArtifactsRepository } from
+  "./named-lens-artifacts";
 
 export type { CandidateFinalization } from "./underwriting-artifacts";
 
@@ -139,6 +143,7 @@ export interface MemoryUnderwritingRunsOptions {
   idGenerator?: (kind: "batch" | "candidate") => string;
   leaseTokenGenerator?: () => string;
   artifacts?: MemoryUnderwritingArtifactsRepository;
+  namedLensArtifacts?: MemoryNamedLensArtifactsRepository;
   evidencePacks?: EvidencePacksRepository;
 }
 
@@ -150,7 +155,9 @@ export function createMemoryUnderwritingRunsRepository(
     ?? ((kind) => `${kind}_${randomUUID()}`);
   const leaseTokenGenerator = options.leaseTokenGenerator ?? randomUUID;
   const artifacts = options.artifacts
-    ?? createMemoryUnderwritingArtifactsRepository();
+    ?? createMemoryUnderwritingArtifactsRepository({
+      namedLensArtifacts: options.namedLensArtifacts,
+    });
   const evidencePacks = options.evidencePacks
     ?? createMemoryEvidencePacksRepository();
   const batches = new Map<string, StoredBatch>();
@@ -378,6 +385,8 @@ export function createMemoryUnderwritingRunsRepository(
             dealId: selection.dealId,
             status: "queued",
             candidateAnalysisFingerprint: `pending:${id}`,
+            artifactSourceCandidateRunId: null,
+            terminalReasonCodes: [],
             rerunOfId,
             createdAt: now().toISOString(),
             finalizedAt: null,
@@ -507,11 +516,11 @@ export function createMemoryUnderwritingRunsRepository(
       ) {
         throw new Error("The checkpoint lease does not match its owner.");
       }
-      const {
-        workerId: _workerId,
-        leaseToken: _leaseToken,
-        ...checkpointInput
-      } = input;
+      const checkpointInput = Object.fromEntries(
+        Object.entries(input).filter(([key]) =>
+          key !== "workerId" && key !== "leaseToken"
+        ),
+      );
       const checkpoint = CandidateCheckpointSchema.parse(checkpointInput);
       const identity = checkpointIdentity(
         checkpoint.candidateRunId,
@@ -527,9 +536,10 @@ export function createMemoryUnderwritingRunsRepository(
         );
       }
       if (prior?.status === "completed") {
-        const { savedAt: _priorSavedAt, ...priorState } = prior;
-        const { savedAt: _nextSavedAt, ...nextState } = checkpoint;
-        if (!isDeepStrictEqual(priorState, nextState)) {
+        if (!isDeepStrictEqual(
+          { ...prior, savedAt: checkpoint.savedAt },
+          checkpoint,
+        )) {
           throw new Error("Completed candidate checkpoint is immutable.");
         }
         return;
@@ -633,8 +643,10 @@ export function createMemoryUnderwritingRunsRepository(
         }
         const completed = CandidateRunSchema.parse({
           ...candidate,
-          status: "completed",
+          status: reusable.terminalStatus,
           candidateAnalysisFingerprint,
+          artifactSourceCandidateRunId: reusable.candidateRunId,
+          terminalReasonCodes: reusable.terminalReasonCodes,
           finalizedAt: now().toISOString(),
         });
         artifacts.aliasCandidate({
@@ -683,6 +695,8 @@ export function createMemoryUnderwritingRunsRepository(
         status: candidateRunStatusForFinalization(prepared),
         candidateAnalysisFingerprint:
           prepared.candidateAnalysisFingerprint,
+        artifactSourceCandidateRunId: null,
+        terminalReasonCodes: prepared.terminalReasonCodes ?? [],
         finalizedAt: now().toISOString(),
       });
 
@@ -729,6 +743,7 @@ export function createSupabaseUnderwritingRunsRepository(options: {
   url: string;
   serviceRoleKey: string;
   fetchImpl?: typeof fetch;
+  namedLensArtifacts?: NamedLensArtifactsRepository;
 }): UnderwritingRunsRepository {
   const base = `${options.url.replace(/\/$/, "")}/rest/v1`;
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -784,7 +799,7 @@ export function createSupabaseUnderwritingRunsRepository(options: {
 
   async function validatePersistedFinalizationAuthority(
     input: CandidateFinalization,
-  ): Promise<void> {
+  ): Promise<CandidateRun> {
     const candidateRunId = requiredText(
       input.candidateRunId,
       "A candidate run",
@@ -843,13 +858,25 @@ export function createSupabaseUnderwritingRunsRepository(options: {
         (policyRows[0] as Record<string, unknown>).values,
       );
     }
+    const persistedNamedLensProviderAttempts = input.namedLensAttemptRefs
+      ? await options.namedLensArtifacts?.listAttempts(
+        candidate.workspaceId,
+        candidate.id,
+      )
+      : undefined;
+    if (input.namedLensAttemptRefs && !persistedNamedLensProviderAttempts) {
+      throw new Error(
+        "Current finalization requires the shared Named Lens artifact repository.",
+      );
+    }
     prepareCandidateFinalization({
       id: candidate.id,
       workspaceId: candidate.workspaceId,
       dealId: candidate.dealId,
       fundPolicySnapshotId: batch.fundPolicySnapshotId,
       fundPolicyValues,
-    }, input);
+    }, input, { persistedNamedLensProviderAttempts });
+    return candidate;
   }
 
   return {
@@ -998,11 +1025,11 @@ export function createSupabaseUnderwritingRunsRepository(options: {
     },
 
     async saveCheckpoint(input) {
-      const {
-        workerId: _workerId,
-        leaseToken: _leaseToken,
-        ...checkpointInput
-      } = input;
+      const checkpointInput = Object.fromEntries(
+        Object.entries(input).filter(([key]) =>
+          key !== "workerId" && key !== "leaseToken"
+        ),
+      );
       const checkpoint = CandidateCheckpointSchema.parse(checkpointInput);
       await request("/rpc/save_underwriting_checkpoint", {
         p_payload: {
@@ -1058,17 +1085,92 @@ export function createSupabaseUnderwritingRunsRepository(options: {
     },
 
     async finalizeCandidate(input) {
-      await validatePersistedFinalizationAuthority(input);
-      const finalized = parseCandidate(await request(
+      const authority = await validatePersistedFinalizationAuthority(input);
+      await request(
         "/rpc/finalize_or_reuse_candidate_underwriting",
         { p_payload: input },
-      ));
+      );
+      const targetQuery = new URLSearchParams({
+        id: `eq.${authority.id}`,
+        workspace_id: `eq.${authority.workspaceId}`,
+        limit: "2",
+      });
+      const targetRows = await read(`/candidate_runs?${targetQuery}`);
+      if (!Array.isArray(targetRows) || targetRows.length !== 1) {
+        throw new Error(
+          "Finalization must reread exactly one persisted target Candidate.",
+        );
+      }
+      const finalized = parseCandidate(targetRows[0]);
+      if (
+        finalized.id !== authority.id
+        || finalized.batchId !== authority.batchId
+        || finalized.workspaceId !== authority.workspaceId
+        || finalized.dealId !== authority.dealId
+        || finalized.rerunOfId !== authority.rerunOfId
+        || finalized.candidateAnalysisFingerprint
+          !== input.candidateAnalysisFingerprint
+        || !["completed", "partial"].includes(finalized.status)
+        || finalized.finalizedAt === null
+      ) {
+        throw new Error(
+          "The reread finalized Candidate does not match its persisted ownership and fingerprint authority.",
+        );
+      }
+      const sourceId = finalized.artifactSourceCandidateRunId ?? null;
+      if (sourceId !== null) {
+        if (sourceId === finalized.id || finalized.rerunOfId !== sourceId) {
+          throw new Error(
+            "A finalized Candidate alias must name its linked canonical rerun parent.",
+          );
+        }
+        const sourceQuery = new URLSearchParams({
+          id: `eq.${sourceId}`,
+          workspace_id: `eq.${finalized.workspaceId}`,
+          limit: "2",
+        });
+        const sourceRows = await read(`/candidate_runs?${sourceQuery}`);
+        if (!Array.isArray(sourceRows) || sourceRows.length !== 1) {
+          throw new Error(
+            "A finalized Candidate alias requires exactly one canonical source.",
+          );
+        }
+        const source = parseCandidate(sourceRows[0]);
+        if (
+          source.id !== sourceId
+          || (source.artifactSourceCandidateRunId ?? null) !== null
+          || source.workspaceId !== finalized.workspaceId
+          || source.dealId !== finalized.dealId
+          || source.candidateAnalysisFingerprint
+            !== finalized.candidateAnalysisFingerprint
+          || source.status !== finalized.status
+          || !isDeepStrictEqual(
+            source.terminalReasonCodes ?? [],
+            finalized.terminalReasonCodes ?? [],
+          )
+          || source.finalizedAt === null
+        ) {
+          throw new Error(
+            "A finalized Candidate alias must exactly inherit canonical source ownership, fingerprint, status, and reasons.",
+          );
+        }
+        return finalized;
+      }
       const expectedStatus = input.terminalStatus === "partial"
         ? "partial"
         : "completed";
-      if (finalized.status !== expectedStatus) {
+      const expectedReasons = expectedStatus === "partial"
+        ? input.terminalReasonCodes ?? []
+        : [];
+      if (
+        finalized.status !== expectedStatus
+        || !isDeepStrictEqual(
+          finalized.terminalReasonCodes ?? [],
+          expectedReasons,
+        )
+      ) {
         throw new Error(
-          "Persisted Candidate status does not match the immutable finalization terminal status.",
+          "Persisted Candidate status and reasons do not match the immutable finalization terminal state.",
         );
       }
       return finalized;
@@ -1103,6 +1205,15 @@ function parseCandidate(value: unknown): CandidateRun {
     candidateAnalysisFingerprint:
       row.candidateAnalysisFingerprint
       ?? row.candidate_analysis_fingerprint,
+    artifactSourceCandidateRunId:
+      row.artifactSourceCandidateRunId
+      ?? row.artifact_source_candidate_run_id
+      ?? null,
+    terminalReasonCodes:
+      row.terminalReasonCodes
+      ?? row.unavailableReasonCodes
+      ?? row.unavailable_reason_codes
+      ?? [],
     rerunOfId: row.rerunOfId ?? row.rerun_of_id ?? null,
     createdAt: row.createdAt ?? row.created_at,
     finalizedAt: row.finalizedAt ?? row.finalized_at ?? null,

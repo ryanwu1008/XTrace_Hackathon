@@ -608,6 +608,8 @@ export const CandidateRunSchema = z.strictObject({
     "failed",
   ]),
   candidateAnalysisFingerprint: z.string().min(1),
+  artifactSourceCandidateRunId: IdSchema.nullable().optional(),
+  terminalReasonCodes: z.array(z.string().min(1)).optional(),
   rerunOfId: IdSchema.nullable(),
   createdAt: IsoDateTimeSchema,
   finalizedAt: IsoDateTimeSchema.nullable(),

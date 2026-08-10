@@ -16,6 +16,11 @@ import { ScenarioInputFieldSchema } from "../../lib/contracts/underwriting";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import { toCandidateUnderwritingDetail } from "../../lib/underwriting/read-model";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
+import {
+  createCurrentNamedLensFinalizationFixture,
+  withEmptyCurrentNamedLensArtifacts,
+} from
+  "../helpers/current-named-lens-finalization";
 
 function deterministicOptions() {
   let sequence = 0;
@@ -81,7 +86,7 @@ function statusSafeFinalization(): CandidateFinalization {
       assumptionItemId: null,
       unavailableReason: `${field} is unavailable.`,
     }));
-  return {
+  return withEmptyCurrentNamedLensArtifacts({
     workerId: "worker_target",
     leaseToken: "lease_target",
     candidateRunId,
@@ -239,7 +244,7 @@ function statusSafeFinalization(): CandidateFinalization {
       applicationCommit: "task-9-test",
       companyAnalysisUnknowns: [],
     },
-  };
+  });
 }
 
 test("public underwriting detail exposes only safe source actions from persisted Fact locators", () => {
@@ -248,6 +253,7 @@ test("public underwriting detail exposes only safe source actions from persisted
     ...finalization,
     workspaceId: "workspace_1",
     dealId: "deal_1",
+    sourceCandidateRunId: finalization.candidateRunId,
     claimEdges: finalization.calculationClaimEdges,
   };
   const publicFact: CandidateFinalization["evidencePack"]["facts"][number] = {
@@ -1015,7 +1021,10 @@ test("Supabase adapters use controlled RPC writes and workspace-scoped artifact 
   });
   const reuseUrl = new URL(requests[1].url);
   assert.equal(reuseUrl.searchParams.get("workspace_id"), "eq.workspace_1");
-  assert.equal(reuseUrl.searchParams.get("status"), "eq.completed");
+  assert.equal(
+    reuseUrl.searchParams.get("status"),
+    "in.(completed,partial)",
+  );
   assert.equal(
     reuseUrl.searchParams.get("artifact_source_candidate_run_id"),
     "is.null",
@@ -1097,6 +1106,20 @@ test("Supabase candidate writes fail closed before RPC for a legacy finalization
   });
   assert.equal(claimed?.candidate.id, "candidate_target");
   const finalization = statusSafeFinalization();
+  delete finalization.versionSnapshot.namedLensSelectionPolicyVersion;
+  delete finalization.versionSnapshot.namedLensPassageSchemaVersion;
+  delete finalization.versionSnapshot.namedLensGeneratorVersion;
+  delete finalization.versionSnapshot.underwritingPresentationSchemaVersion;
+  delete finalization.versionSnapshot.decisionTaxonomyVersion;
+  delete finalization.namedLensCatalogConsiderations;
+  delete finalization.decisionCriticalEvidenceProjection;
+  delete finalization.namedLensAttemptRefs;
+  delete finalization.namedLensDispositions;
+  delete finalization.namedLensPassages;
+  delete finalization.underwritingPresentationReportId;
+  delete finalization.namedLensPresentation;
+  delete finalization.terminalStatus;
+  delete finalization.terminalReasonCodes;
   await assert.rejects(
     runs.finalizeCandidate(finalization),
     /Named Lens finalization requires all artifacts/i,
@@ -1286,6 +1309,105 @@ test("Supabase finalization fails closed on ambiguous or misaligned persisted id
     assert.equal(requests.some((url) =>
       url.endsWith("/rpc/finalize_or_reuse_candidate_underwriting")
     ), false, testCase.name);
+  }
+});
+
+test("Supabase finalization rereads a partial canonical reuse instead of trusting an incomplete RPC response", async () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const finalization = fixture.finalization;
+  const sourceId = "candidate_source";
+  const targetRunning = {
+    id: finalization.candidateRunId,
+    batch_id: "batch_current",
+    workspace_id: finalization.evidencePack.workspaceId,
+    deal_id: finalization.evidencePack.dealId,
+    status: "running",
+    candidate_analysis_fingerprint: "pending:candidate_current",
+    artifact_source_candidate_run_id: null,
+    unavailable_reason_codes: [],
+    rerun_of_id: sourceId,
+    created_at: "2026-08-10T12:00:00.000Z",
+    finalized_at: null,
+  };
+  const reasons = ["named_lens_passage_attempts_exhausted"];
+  const targetFinalized = {
+    ...targetRunning,
+    status: "partial",
+    candidate_analysis_fingerprint:
+      finalization.candidateAnalysisFingerprint,
+    artifact_source_candidate_run_id: sourceId,
+    unavailable_reason_codes: reasons,
+    finalized_at: "2026-08-10T12:01:00.000Z",
+  };
+  const sourceFinalized = {
+    ...targetFinalized,
+    id: sourceId,
+    batch_id: "batch_source",
+    artifact_source_candidate_run_id: null,
+    rerun_of_id: null,
+  };
+  const createRuns = (sourceOverride: Record<string, unknown> = {}) => {
+    let finalized = false;
+    return createSupabaseUnderwritingRunsRepository({
+      url: "https://supabase.example",
+      serviceRoleKey: "secret",
+      namedLensArtifacts: {
+        reserveAttempt: async () => {
+          throw new Error("not used");
+        },
+        settleAttempt: async () => {
+          throw new Error("not used");
+        },
+        listAttempts: async () => fixture.persistedAttempts,
+      },
+      fetchImpl: async (url, init = {}) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname.endsWith(
+          "/rpc/finalize_or_reuse_candidate_underwriting",
+        )) {
+          finalized = true;
+          return Response.json({ id: finalization.candidateRunId });
+        }
+        if (parsed.pathname.endsWith("/candidate_runs")) {
+          if (!finalized) return Response.json([targetRunning]);
+          return Response.json([
+            parsed.searchParams.get("id") === `eq.${sourceId}`
+              ? { ...sourceFinalized, ...sourceOverride }
+              : targetFinalized,
+          ]);
+        }
+        if (parsed.pathname.endsWith("/underwriting_batches")) {
+          return Response.json([{
+            id: "batch_current",
+            workspace_id: finalization.evidencePack.workspaceId,
+            scan_run_id: "scan_current",
+            status: "running",
+            batch_input_fingerprint: `sha256:${"8".repeat(64)}`,
+            fund_policy_snapshot_id: finalization.versionSnapshot.fundPolicyId,
+            rerun_of_id: null,
+            created_at: "2026-08-10T11:00:00.000Z",
+          }]);
+        }
+        throw new Error(`Unexpected URL ${url}; ${init.method ?? "GET"}`);
+      },
+    });
+  };
+
+  const result = await createRuns().finalizeCandidate(finalization);
+  assert.equal(result.status, "partial");
+  assert.equal(result.artifactSourceCandidateRunId, sourceId);
+  assert.deepEqual(result.terminalReasonCodes, reasons);
+  for (const sourceOverride of [{
+    workspace_id: "workspace_foreign",
+  }, {
+    deal_id: "deal_foreign",
+  }, {
+    candidate_analysis_fingerprint: `sha256:${"f".repeat(64)}`,
+  }]) {
+    await assert.rejects(
+      createRuns(sourceOverride).finalizeCandidate(finalization),
+      /canonical source ownership|fingerprint|inherit/i,
+    );
   }
 });
 

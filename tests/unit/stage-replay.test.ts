@@ -3,6 +3,10 @@ import test from "node:test";
 
 import type { UnderwritingRunsRepository } from "../../db/repositories/underwriting-runs";
 import type { CandidateRun } from "../../lib/contracts/underwriting";
+import {
+  createMemoryNamedLensArtifactsRepository,
+  type NamedLensArtifactsRepository,
+} from "../../db/repositories/named-lens-artifacts";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
 import {
   createCandidateStagePolicies,
@@ -205,4 +209,369 @@ test("completed legacy narrative checkpoint verifies its raw fingerprint before 
     }),
     /fingerprint does not match its payload/u,
   );
+});
+
+test("Named Lens provider I/O starts only after durable and checkpoint reservations", async () => {
+  const order: string[] = [];
+  let checkpoint: Parameters<UnderwritingRunsRepository["saveCheckpoint"]>[0]
+    | undefined;
+  const runs = {
+    listCheckpoints: async () => checkpoint ? [checkpoint] : [],
+    saveCheckpoint: async (value: typeof checkpoint) => {
+      checkpoint = structuredClone(value);
+      if (value?.providerAttempts.at(-1)?.status === "reserved") {
+        order.push("checkpoint-reserve");
+      }
+    },
+  } as unknown as UnderwritingRunsRepository;
+  const storage = createMemoryNamedLensArtifactsRepository();
+  const namedLensArtifacts: NamedLensArtifactsRepository = {
+    async reserveAttempt(input) {
+      order.push("durable-reserve");
+      return storage.reserveAttempt(input);
+    },
+    async settleAttempt(input) {
+      order.push(`durable-${input.status}`);
+      return storage.settleAttempt(input);
+    },
+    listAttempts: storage.listAttempts,
+  };
+  const candidate: CandidateRun = {
+    id: "candidate_named_lens",
+    batchId: "batch_named_lens",
+    workspaceId: "workspace_named_lens",
+    dealId: "deal_named_lens",
+    status: "running",
+    candidateAnalysisFingerprint: `sha256:${"1".repeat(64)}`,
+    rerunOfId: null,
+    createdAt: "2026-08-10T12:00:00.000Z",
+    finalizedAt: null,
+  };
+  const runtime = await createCandidateStageRuntime({
+    runs,
+    namedLensArtifacts,
+    candidate,
+    workerId: "worker_1",
+    leaseToken: "lease_1",
+    budget: {
+      maxCostUnits: 10,
+      maxTokenUnits: 10_000,
+      maxConcurrency: 1,
+      stages: createCandidateStagePolicies({
+        timeoutMs: 1_000,
+        retryableAttempts: 1,
+      }),
+    },
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+  } as Parameters<typeof createCandidateStageRuntime>[0] & {
+    namedLensArtifacts: NamedLensArtifactsRepository;
+  });
+  await runtime.run({
+    stage: "framework_lenses",
+    inputFingerprint: `sha256:${"2".repeat(64)}`,
+    parseOutput: (value) => value,
+    operation: async () => {
+      await (runtime.runProviderAttempt as (input: Record<string, unknown>) =>
+        Promise<unknown>)({
+        stage: "framework_lenses",
+        inputFingerprint: `sha256:${"2".repeat(64)}`,
+        attemptFingerprint: `sha256:${"3".repeat(64)}`,
+        costUnits: 1,
+        tokenUnits: 100,
+        namedLensAttempt: {
+          judgmentOrCatalogCandidateId: "judgment_1",
+          logicalPassageId: "judgment_1@named-lens-passage-v1@named-lens-generator-v1",
+          attemptNumber: 1,
+        },
+        operation: async () => {
+          order.push("provider");
+          return {
+            text: "grounded",
+            stopReason: "end_turn",
+            usage: {
+              inputTokens: 10,
+              outputTokens: 5,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 0,
+            },
+          };
+        },
+      });
+      return { ok: true };
+    },
+  });
+  assert.deepEqual(order, [
+    "durable-reserve",
+    "checkpoint-reserve",
+    "provider",
+    "durable-completed",
+  ]);
+  assert.equal(storage.inspect().rawAttemptEvents.length, 2);
+});
+
+test("checkpoint reservation failure aborts the durable attempt before provider I/O", async () => {
+  const order: string[] = [];
+  const storage = createMemoryNamedLensArtifactsRepository();
+  const namedLensArtifacts: NamedLensArtifactsRepository = {
+    async reserveAttempt(input) {
+      order.push("durable-reserve");
+      return storage.reserveAttempt(input);
+    },
+    async settleAttempt(input) {
+      order.push(`durable-${input.status}`);
+      return storage.settleAttempt(input);
+    },
+    listAttempts: storage.listAttempts,
+  };
+  const runs = {
+    listCheckpoints: async () => [],
+    saveCheckpoint: async (value: { providerAttempts: unknown[] }) => {
+      if (value.providerAttempts.length > 0) {
+        order.push("checkpoint-rejected");
+        throw new Error("simulated checkpoint failure");
+      }
+    },
+  } as unknown as UnderwritingRunsRepository;
+  const candidate = {
+    id: "candidate_named_lens",
+    batchId: "batch_named_lens",
+    workspaceId: "workspace_named_lens",
+    dealId: "deal_named_lens",
+    status: "running",
+    candidateAnalysisFingerprint: `sha256:${"1".repeat(64)}`,
+    rerunOfId: null,
+    createdAt: "2026-08-10T12:00:00.000Z",
+    finalizedAt: null,
+  } satisfies CandidateRun;
+  const runtime = await createCandidateStageRuntime({
+    runs,
+    namedLensArtifacts,
+    candidate,
+    workerId: "worker_1",
+    leaseToken: "lease_1",
+    budget: {
+      maxCostUnits: 10,
+      maxTokenUnits: 10_000,
+      maxConcurrency: 1,
+      stages: createCandidateStagePolicies({
+        timeoutMs: 1_000,
+        retryableAttempts: 1,
+      }),
+    },
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+  } as Parameters<typeof createCandidateStageRuntime>[0] & {
+    namedLensArtifacts: NamedLensArtifactsRepository;
+  });
+  await assert.rejects(runtime.run({
+    stage: "framework_lenses",
+    inputFingerprint: `sha256:${"2".repeat(64)}`,
+    parseOutput: (value) => value,
+    operation: async () => (runtime.runProviderAttempt as (
+      input: Record<string, unknown>,
+    ) => Promise<unknown>)({
+      stage: "framework_lenses",
+      inputFingerprint: `sha256:${"2".repeat(64)}`,
+      attemptFingerprint: `sha256:${"3".repeat(64)}`,
+      costUnits: 1,
+      tokenUnits: 100,
+      namedLensAttempt: {
+        judgmentOrCatalogCandidateId: "judgment_1",
+        logicalPassageId: "judgment_1@named-lens-passage-v1@named-lens-generator-v1",
+        attemptNumber: 1,
+      },
+      operation: async () => {
+        order.push("provider");
+        throw new Error("provider must not execute");
+      },
+    }),
+  }), /checkpoint failure/);
+  assert.deepEqual(order, [
+    "durable-reserve",
+    "checkpoint-rejected",
+    "durable-aborted",
+  ]);
+  assert.equal(
+    (await storage.listAttempts(
+      "workspace_named_lens",
+      "candidate_named_lens",
+    ))[0]?.status,
+    "aborted",
+  );
+});
+
+test("timeout settlement wins and a late provider resolution cannot complete the durable attempt", async () => {
+  let checkpoint: Parameters<UnderwritingRunsRepository["saveCheckpoint"]>[0]
+    | undefined;
+  let resolveProvider!: (value: {
+    text: string;
+    stopReason: string;
+    usage: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheCreationInputTokens: number;
+      cacheReadInputTokens: number;
+    };
+  }) => void;
+  const provider = new Promise<Parameters<typeof resolveProvider>[0]>(
+    (resolve) => {
+      resolveProvider = resolve;
+    },
+  );
+  const runs = {
+    listCheckpoints: async () => checkpoint ? [checkpoint] : [],
+    saveCheckpoint: async (value: typeof checkpoint) => {
+      checkpoint = structuredClone(value);
+    },
+  } as unknown as UnderwritingRunsRepository;
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const candidate = {
+    id: "candidate_named_lens_timeout",
+    batchId: "batch_named_lens",
+    workspaceId: "workspace_named_lens",
+    dealId: "deal_named_lens",
+    status: "running",
+    candidateAnalysisFingerprint: `sha256:${"1".repeat(64)}`,
+    rerunOfId: null,
+    createdAt: "2026-08-10T12:00:00.000Z",
+    finalizedAt: null,
+  } satisfies CandidateRun;
+  const runtime = await createCandidateStageRuntime({
+    runs,
+    namedLensArtifacts,
+    candidate,
+    workerId: "worker_1",
+    leaseToken: "lease_1",
+    budget: {
+      maxCostUnits: 10,
+      maxTokenUnits: 10_000,
+      maxConcurrency: 1,
+      stages: createCandidateStagePolicies({
+        timeoutMs: 10,
+        retryableAttempts: 1,
+      }),
+    },
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+  });
+  await assert.rejects(runtime.run({
+    stage: "framework_lenses",
+    inputFingerprint: `sha256:${"2".repeat(64)}`,
+    parseOutput: (value) => value,
+    operation: async () => runtime.runProviderAttempt({
+      stage: "framework_lenses",
+      inputFingerprint: `sha256:${"2".repeat(64)}`,
+      attemptFingerprint: `sha256:${"3".repeat(64)}`,
+      costUnits: 1,
+      tokenUnits: 100,
+      namedLensAttempt: {
+        judgmentOrCatalogCandidateId: "judgment_1",
+        logicalPassageId:
+          "judgment_1@named-lens-passage-v1@named-lens-generator-v1",
+        attemptNumber: 1,
+      },
+      operation: () => provider,
+    }),
+  }), /timeout|bounded/i);
+  assert.equal(
+    (await namedLensArtifacts.listAttempts(
+      candidate.workspaceId,
+      candidate.id,
+    ))[0]?.status,
+    "aborted",
+  );
+  resolveProvider({
+    text: "late passage",
+    stopReason: "end_turn",
+    usage: {
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(namedLensArtifacts.inspect().rawAttemptEvents.length, 2);
+  assert.equal(
+    (await namedLensArtifacts.listAttempts(
+      candidate.workspaceId,
+      candidate.id,
+    ))[0]?.status,
+    "aborted",
+  );
+});
+
+test("timeout checkpoint settlement wins over a late provider rejection", async () => {
+  let checkpoint: Parameters<UnderwritingRunsRepository["saveCheckpoint"]>[0]
+    | undefined;
+  let rejectProvider!: (error: Error) => void;
+  const provider = new Promise<never>((_resolve, reject) => {
+    rejectProvider = reject;
+  });
+  const runs = {
+    listCheckpoints: async () => checkpoint ? [checkpoint] : [],
+    saveCheckpoint: async (value: typeof checkpoint) => {
+      checkpoint = structuredClone(value);
+    },
+  } as unknown as UnderwritingRunsRepository;
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  const candidate = {
+    id: "candidate_named_lens_late_rejection",
+    batchId: "batch_named_lens",
+    workspaceId: "workspace_named_lens",
+    dealId: "deal_named_lens",
+    status: "running",
+    candidateAnalysisFingerprint: `sha256:${"1".repeat(64)}`,
+    rerunOfId: null,
+    createdAt: "2026-08-10T12:00:00.000Z",
+    finalizedAt: null,
+  } satisfies CandidateRun;
+  const runtime = await createCandidateStageRuntime({
+    runs,
+    namedLensArtifacts,
+    candidate,
+    workerId: "worker_1",
+    leaseToken: "lease_1",
+    budget: {
+      maxCostUnits: 10,
+      maxTokenUnits: 10_000,
+      maxConcurrency: 1,
+      stages: createCandidateStagePolicies({
+        timeoutMs: 10,
+        retryableAttempts: 1,
+      }),
+    },
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+  });
+  await assert.rejects(runtime.run({
+    stage: "framework_lenses",
+    inputFingerprint: `sha256:${"2".repeat(64)}`,
+    parseOutput: (value) => value,
+    operation: async () => runtime.runProviderAttempt({
+      stage: "framework_lenses",
+      inputFingerprint: `sha256:${"2".repeat(64)}`,
+      attemptFingerprint: `sha256:${"3".repeat(64)}`,
+      costUnits: 1,
+      tokenUnits: 100,
+      namedLensAttempt: {
+        judgmentOrCatalogCandidateId: "judgment_1",
+        logicalPassageId:
+          "judgment_1@named-lens-passage-v1@named-lens-generator-v1",
+        attemptNumber: 1,
+      },
+      operation: () => provider,
+    }),
+  }), /timeout|bounded/i);
+  rejectProvider(new Error("late provider rejection"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(namedLensArtifacts.inspect().rawAttemptEvents.length, 2);
+  assert.equal(
+    (await namedLensArtifacts.listAttempts(
+      candidate.workspaceId,
+      candidate.id,
+    ))[0]?.status,
+    "aborted",
+  );
+  assert.equal(checkpoint?.providerAttempts[0]?.status, "aborted");
+  assert.equal(checkpoint?.reasonCode,
+    "CANDIDATE_STAGE_TIMEOUT_FRAMEWORK_LENSES");
 });

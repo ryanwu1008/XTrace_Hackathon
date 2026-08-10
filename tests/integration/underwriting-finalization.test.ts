@@ -30,6 +30,8 @@ import {
 import { CONTEXT_ROUTER_VERSION } from "../../lib/underwriting/router";
 import { createValuationEngine } from "../../lib/underwriting/valuation/service";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
+import { withEmptyCurrentNamedLensArtifacts } from
+  "../helpers/current-named-lens-finalization";
 
 const migrationPath = fileURLToPath(
   new URL("../../drizzle/0011_underwriting_runs.sql", import.meta.url),
@@ -216,7 +218,7 @@ function finalization(input: {
       assumptionItemId: null,
       unavailableReason: `${field} is not available.`,
     }));
-  return {
+  return withEmptyCurrentNamedLensArtifacts({
     workerId: input.workerId,
     leaseToken: input.leaseToken,
     candidateRunId: input.candidateRunId,
@@ -371,7 +373,7 @@ function finalization(input: {
       applicationCommit: "0002f6b",
       companyAnalysisUnknowns: [],
     },
-  };
+  });
 }
 
 function canonicalFrameworkAbstentions(input: {
@@ -832,6 +834,12 @@ test("failed finalization leaves no partial artifacts and retains the active lea
     actionDrafts: 0,
     claimEdges: 0,
     versionSnapshots: 0,
+    decisionCriticalEvidenceProjections: 0,
+    namedLensProviderAttemptEvents: 0,
+    namedLensDispositions: 0,
+    namedLensPassages: 0,
+    namedLensPassageSegments: 0,
+    underwritingPresentations: 0,
   });
   assert.equal(
     runs.inspect().candidates.find(({ id }) => id === first.candidate.id)

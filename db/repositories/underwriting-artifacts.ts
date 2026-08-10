@@ -82,6 +82,11 @@ import {
 } from "../../lib/underwriting/valuation/ownership";
 import { computeGrossReturns } from "../../lib/underwriting/valuation/returns";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../seed/underwriting/framework-pack-v1";
+import {
+  collapseNamedLensAttemptEvents,
+  createMemoryNamedLensArtifactsRepository,
+  type MemoryNamedLensArtifactsRepository,
+} from "./named-lens-artifacts";
 
 const IdSchema = z.string().min(1).refine(
   (value) => value.trim() === value,
@@ -277,6 +282,7 @@ export interface CandidateArtifactBundle
     | "evidencePackBuildInputFingerprint"
   > {
   candidateRunId: string;
+  sourceCandidateRunId: string;
   workspaceId: string;
   dealId: string;
   claimEdges: ClaimEdge[];
@@ -301,6 +307,8 @@ export interface ReusableCandidateArtifacts {
   workspaceId: string;
   dealId: string;
   candidateAnalysisFingerprint: string;
+  terminalStatus: "completed" | "partial";
+  terminalReasonCodes: string[];
 }
 
 export interface ArtifactRowCounts {
@@ -316,6 +324,12 @@ export interface ArtifactRowCounts {
   actionDrafts: number;
   claimEdges: number;
   versionSnapshots: number;
+  decisionCriticalEvidenceProjections: number;
+  namedLensProviderAttemptEvents: number;
+  namedLensDispositions: number;
+  namedLensPassages: number;
+  namedLensPassageSegments: number;
+  underwritingPresentations: number;
 }
 
 export interface UnderwritingArtifactsRepository {
@@ -377,11 +391,17 @@ export interface MemoryUnderwritingArtifactsRepository
 
 export function createMemoryUnderwritingArtifactsRepository(options: {
   now?: () => Date;
+  namedLensArtifacts?: MemoryNamedLensArtifactsRepository;
 } = {}): MemoryUnderwritingArtifactsRepository {
   const bundles = new Map<string, CandidateArtifactBundle>();
   const reusable = new Map<string, ReusableCandidateArtifacts>();
-  const aliases = new Map<string, string>();
-  const namedLensProviderAttempts = new Map<string, NamedLensProviderAttempt>();
+  const aliases = new Map<string, {
+    sourceCandidateRunId: string;
+    terminalStatus: "completed" | "partial";
+    terminalReasonCodes: string[];
+  }>();
+  const namedLensArtifacts = options.namedLensArtifacts
+    ?? createMemoryNamedLensArtifactsRepository();
   const now = options.now ?? (() => new Date());
 
   return {
@@ -404,13 +424,28 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
         "A candidate run",
       );
       const candidateKey = identity(workspaceId, candidateRunId);
-      const artifactCandidateRunId = aliases.get(candidateKey)
+      const alias = aliases.get(candidateKey);
+      const artifactCandidateRunId = alias?.sourceCandidateRunId
         ?? candidateRunId;
       const value = bundles.get(identity(
         workspaceId,
         artifactCandidateRunId,
       ));
-      return value ? structuredClone(value) : null;
+      if (!value) return null;
+      const bundle = structuredClone(value);
+      return alias
+        ? {
+          ...bundle,
+          candidateRunId,
+          sourceCandidateRunId: artifactCandidateRunId,
+          terminalStatus: alias.terminalStatus,
+          terminalReasonCodes: structuredClone(alias.terminalReasonCodes),
+        }
+        : {
+          ...bundle,
+          candidateRunId,
+          sourceCandidateRunId: candidateRunId,
+        };
     },
 
     async listFinalizedForWorkspace(input) {
@@ -467,24 +502,7 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
     },
 
     recordNamedLensProviderAttempt(value) {
-      const attempt = NamedLensProviderAttemptSchema.parse(value);
-      const key = namedLensProviderAttemptIdentity(attempt);
-      const existing = namedLensProviderAttempts.get(key);
-      if (!existing) {
-        namedLensProviderAttempts.set(key, structuredClone(attempt));
-        return;
-      }
-      if (isDeepStrictEqual(existing, attempt)) return;
-      if (
-        existing.status !== "reserved"
-        || attempt.status === "reserved"
-        || existing.attemptFingerprint !== attempt.attemptFingerprint
-      ) {
-        throw new Error(
-          "Named Lens provider attempt identity is immutable after settlement.",
-        );
-      }
-      namedLensProviderAttempts.set(key, structuredClone(attempt));
+      namedLensArtifacts.recordAttemptEvent(value);
     },
 
     listNamedLensProviderAttempts(input) {
@@ -493,18 +511,7 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
         input.artifactSourceCandidateRunId,
         "An artifact source candidate run",
       );
-      return [...namedLensProviderAttempts.values()]
-        .filter((attempt) =>
-          attempt.workspaceId === workspaceId
-          && attempt.artifactSourceCandidateRunId === candidateRunId
-        )
-        .sort((left, right) =>
-          compareUtf8(
-            `${left.logicalPassageId}\u0000${left.attemptNumber}`,
-            `${right.logicalPassageId}\u0000${right.attemptNumber}`,
-          )
-        )
-        .map((attempt) => structuredClone(attempt));
+      return namedLensArtifacts.listAttemptsSync(workspaceId, candidateRunId);
     },
 
     prepareFinalization({ candidate, finalization }) {
@@ -535,14 +542,14 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
       }
       const saved = structuredClone(bundle);
       bundles.set(key, saved);
-      if (saved.terminalStatus !== "partial") {
-        reusable.set(reuseKey, {
-          candidateRunId: saved.candidateRunId,
-          workspaceId: saved.workspaceId,
-          dealId: saved.dealId,
-          candidateAnalysisFingerprint: saved.candidateAnalysisFingerprint,
-        });
-      }
+      reusable.set(reuseKey, {
+        candidateRunId: saved.candidateRunId,
+        workspaceId: saved.workspaceId,
+        dealId: saved.dealId,
+        candidateAnalysisFingerprint: saved.candidateAnalysisFingerprint,
+        terminalStatus: saved.terminalStatus ?? "completed",
+        terminalReasonCodes: structuredClone(saved.terminalReasonCodes ?? []),
+      });
     },
 
     aliasCandidate(input) {
@@ -556,13 +563,19 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
         "A source candidate run",
       );
       const candidateKey = identity(workspaceId, candidateRunId);
+      const sourceKey = identity(workspaceId, sourceCandidateRunId);
       if (bundles.has(candidateKey) || aliases.has(candidateKey)) {
         throw new Error("Candidate artifacts are immutable once finalized.");
       }
-      const source = bundles.get(identity(workspaceId, sourceCandidateRunId));
+      if (aliases.has(sourceKey)) {
+        throw new Error("Reusable candidate aliases may resolve exactly one hop.");
+      }
+      const source = bundles.get(sourceKey);
       if (
         !source
-        || source.terminalStatus === "partial"
+        || !["completed", "partial"].includes(
+          source.terminalStatus ?? "completed",
+        )
         || source.dealId !== requiredText(input.dealId, "A Deal")
         || source.candidateAnalysisFingerprint
           !== requiredText(
@@ -571,36 +584,54 @@ export function createMemoryUnderwritingArtifactsRepository(options: {
           )
       ) {
         throw new Error(
-          "Reusable candidate artifacts do not match the immutable rerun or are partial.",
+          "Reusable candidate artifacts do not match the immutable rerun.",
         );
       }
-      aliases.set(candidateKey, sourceCandidateRunId);
+      aliases.set(candidateKey, {
+        sourceCandidateRunId,
+        terminalStatus: source.terminalStatus ?? "completed",
+        terminalReasonCodes: structuredClone(source.terminalReasonCodes ?? []),
+      });
     },
 
     inspect() {
       const values = [...bundles.values()].map((bundle) =>
         structuredClone(bundle)
       );
+      const rowCounts = values.reduce<ArtifactRowCounts>(
+        (counts, bundle) => ({
+          evidencePacks: counts.evidencePacks + 1,
+          contexts: counts.contexts + 1,
+          scenarioModels: counts.scenarioModels + 1,
+          calculations: counts.calculations + bundle.calculations.length,
+          judgments: counts.judgments + bundle.judgments.length,
+          disagreements: counts.disagreements + bundle.disagreements.length,
+          valuations: counts.valuations + 1,
+          decisions: counts.decisions + 1,
+          narratives: counts.narratives + 1,
+          actionDrafts: counts.actionDrafts + bundle.actionDrafts.length,
+          claimEdges: counts.claimEdges + bundle.claimEdges.length,
+          versionSnapshots: counts.versionSnapshots + 1,
+          decisionCriticalEvidenceProjections:
+            counts.decisionCriticalEvidenceProjections
+            + (bundle.decisionCriticalEvidenceProjection ? 1 : 0),
+          namedLensProviderAttemptEvents: 0,
+          namedLensDispositions: counts.namedLensDispositions
+            + (bundle.namedLensDispositions?.length ?? 0),
+          namedLensPassages: counts.namedLensPassages
+            + (bundle.namedLensPassages?.length ?? 0),
+          namedLensPassageSegments: counts.namedLensPassageSegments
+            + ((bundle.namedLensPassages?.length ?? 0) * 5),
+          underwritingPresentations: counts.underwritingPresentations
+            + (bundle.namedLensPresentation ? 1 : 0),
+        }),
+        emptyRowCounts(),
+      );
+      rowCounts.namedLensProviderAttemptEvents =
+        namedLensArtifacts.inspect().rawAttemptEvents.length;
       return {
         bundles: values,
-        rowCounts: values.reduce<ArtifactRowCounts>(
-          (counts, bundle) => ({
-            evidencePacks: counts.evidencePacks + 1,
-            contexts: counts.contexts + 1,
-            scenarioModels: counts.scenarioModels + 1,
-            calculations: counts.calculations + bundle.calculations.length,
-            judgments: counts.judgments + bundle.judgments.length,
-            disagreements:
-              counts.disagreements + bundle.disagreements.length,
-            valuations: counts.valuations + 1,
-            decisions: counts.decisions + 1,
-            narratives: counts.narratives + 1,
-            actionDrafts: counts.actionDrafts + bundle.actionDrafts.length,
-            claimEdges: counts.claimEdges + bundle.claimEdges.length,
-            versionSnapshots: counts.versionSnapshots + 1,
-          }),
-          emptyRowCounts(),
-        ),
+        rowCounts,
       };
     },
   };
@@ -666,10 +697,10 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
       const query = new URLSearchParams({
         workspace_id: `eq.${workspaceId}`,
         candidate_analysis_fingerprint: `eq.${fingerprint}`,
-        status: "eq.completed",
+        status: "in.(completed,partial)",
         artifact_source_candidate_run_id: "is.null",
         select:
-          "id,workspace_id,deal_id,candidate_analysis_fingerprint",
+          "id,workspace_id,deal_id,status,unavailable_reason_codes,candidate_analysis_fingerprint",
         limit: "1",
       });
       const values = await request(`/candidate_runs?${query}`) as Array<
@@ -684,6 +715,10 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           candidateAnalysisFingerprint: String(
             value.candidate_analysis_fingerprint,
           ),
+          terminalStatus: value.status === "partial" ? "partial" : "completed",
+          terminalReasonCodes: Array.isArray(value.unavailable_reason_codes)
+            ? value.unavailable_reason_codes.map(String)
+            : [],
         }
         : null;
     },
@@ -699,28 +734,67 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
         id: `eq.${candidateRunId}`,
         status: "in.(completed,partial)",
         select:
-          "id,batch_id,workspace_id,deal_id,candidate_analysis_fingerprint,artifact_source_candidate_run_id",
-        limit: "1",
+          "id,batch_id,workspace_id,deal_id,status,candidate_analysis_fingerprint,artifact_source_candidate_run_id,unavailable_reason_codes,rerun_of_id",
+        limit: "2",
       });
       const candidates = await request(
         `/candidate_runs?${candidateQuery}`,
       ) as Array<Record<string, unknown>>;
-      const candidate = candidates[0];
-      if (!candidate) return null;
+      if (candidates.length === 0) return null;
+      if (candidates.length !== 1) {
+        throw new Error("Candidate artifact identity is ambiguous.");
+      }
+      const candidate = candidates[0]!;
       const artifactCandidateRunId =
         typeof candidate.artifact_source_candidate_run_id === "string"
           ? candidate.artifact_source_candidate_run_id
           : candidateRunId;
+      let sourceCandidate = candidate;
+      if (artifactCandidateRunId !== candidateRunId) {
+        const sourceQuery = new URLSearchParams({
+          workspace_id: `eq.${workspaceId}`,
+          id: `eq.${artifactCandidateRunId}`,
+          status: "in.(completed,partial)",
+          select:
+            "id,batch_id,workspace_id,deal_id,status,candidate_analysis_fingerprint,artifact_source_candidate_run_id,unavailable_reason_codes,rerun_of_id",
+          limit: "2",
+        });
+        const sources = await request(
+          `/candidate_runs?${sourceQuery}`,
+        ) as Array<Record<string, unknown>>;
+        if (sources.length !== 1) {
+          throw new Error(
+            "Candidate artifact alias requires exactly one canonical source.",
+          );
+        }
+        sourceCandidate = sources[0]!;
+        const aliasReasons = parseTerminalReasonCodes(candidate);
+        const sourceReasons = parseTerminalReasonCodes(sourceCandidate);
+        if (
+          candidate.rerun_of_id !== artifactCandidateRunId
+          || sourceCandidate.artifact_source_candidate_run_id !== null
+          || sourceCandidate.workspace_id !== workspaceId
+          || sourceCandidate.deal_id !== candidate.deal_id
+          || sourceCandidate.candidate_analysis_fingerprint
+            !== candidate.candidate_analysis_fingerprint
+          || sourceCandidate.status !== candidate.status
+          || !isDeepStrictEqual(sourceReasons, aliasReasons)
+        ) {
+          throw new Error(
+            "Candidate artifact alias does not exactly match its canonical source.",
+          );
+        }
+      }
       const batchQuery = new URLSearchParams({
         workspace_id: `eq.${workspaceId}`,
-        id: `eq.${String(candidate.batch_id)}`,
+        id: `eq.${String(sourceCandidate.batch_id)}`,
         select: "fund_policy_snapshot_id",
-        limit: "1",
+        limit: "2",
       });
       const batchRows = await request(
         `/underwriting_batches?${batchQuery}`,
       ) as Array<Record<string, unknown>>;
-      if (!batchRows[0]) {
+      if (batchRows.length !== 1) {
         throw new Error(
           "Completed candidate artifacts are missing their pinned Fund Policy.",
         );
@@ -739,6 +813,12 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
         draftRows,
         edgeRows,
         versionRows,
+        criticalProjectionRows,
+        namedLensAttemptEventRows,
+        namedLensDispositionRows,
+        namedLensPassageRows,
+        namedLensSegmentRows,
+        presentationRows,
       ] = await Promise.all([
         rows(
           "evidence_packs",
@@ -812,6 +892,42 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           artifactCandidateRunId,
           "&limit=1",
         ),
+        rows(
+          "decision_critical_evidence_projections",
+          workspaceId,
+          artifactCandidateRunId,
+          "&limit=2",
+        ),
+        rows(
+          "named_lens_passage_attempt_events",
+          workspaceId,
+          artifactCandidateRunId,
+          "&order=logical_passage_id.asc,attempt_no.asc,created_at.asc",
+        ),
+        rows(
+          "named_lens_dispositions",
+          workspaceId,
+          artifactCandidateRunId,
+          "&order=catalog_ordinal.asc",
+        ),
+        rows(
+          "named_lens_passages",
+          workspaceId,
+          artifactCandidateRunId,
+          "&order=judgment_id.asc",
+        ),
+        rows(
+          "named_lens_passage_segments",
+          workspaceId,
+          artifactCandidateRunId,
+          "&order=judgment_id.asc,segment_ordinal.asc",
+        ),
+        rows(
+          "underwriting_presentations",
+          workspaceId,
+          artifactCandidateRunId,
+          "&limit=2",
+        ),
       ]);
       if (
         !evidenceRows[0]
@@ -861,11 +977,120 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           policyRows[0].values,
         );
       }
+      const persistedVersionSnapshot = CandidateVersionSnapshotSchema.parse(
+        versionRows[0].payload,
+      );
+      const namedLensVersions = [
+        persistedVersionSnapshot.namedLensSelectionPolicyVersion,
+        persistedVersionSnapshot.namedLensPassageSchemaVersion,
+        persistedVersionSnapshot.namedLensGeneratorVersion,
+        persistedVersionSnapshot.underwritingPresentationSchemaVersion,
+        persistedVersionSnapshot.decisionTaxonomyVersion,
+      ];
+      const currentNamedLens = namedLensVersions.every(
+        (value) => value !== undefined,
+      );
+      const anyNamedLensRows = [
+        criticalProjectionRows,
+        namedLensAttemptEventRows,
+        namedLensDispositionRows,
+        namedLensPassageRows,
+        namedLensSegmentRows,
+        presentationRows,
+      ].some((values) => values.length > 0);
+      let persistedNamedLensProviderAttempts:
+        | NamedLensProviderAttempt[]
+        | undefined;
+      let currentNamedLensArtifacts: Partial<CandidateFinalization> = {};
+      if (currentNamedLens) {
+        if (
+          criticalProjectionRows.length !== 1
+          || presentationRows.length !== 1
+        ) {
+          throw new Error(
+            "Current persisted Named Lens artifacts require one projection and one presentation.",
+          );
+        }
+        const reconstructed = reconstructNamedLensPersistence({
+          dispositionRows: namedLensDispositionRows,
+          passageRows: namedLensPassageRows,
+          segmentRows: namedLensSegmentRows,
+        });
+        persistedNamedLensProviderAttempts = collapseNamedLensAttemptEvents(
+          namedLensAttemptEventRows.map((row) =>
+            NamedLensProviderAttemptSchema.parse(row.payload)
+          ),
+        );
+        const projection = DecisionCriticalEvidenceProjectionSchema.parse(
+          criticalProjectionRows[0]!.payload,
+        );
+        const presentation = NamedLensPresentationSchema.parse(
+          presentationRows[0]!.payload,
+        );
+        const terminalStatus = parsePersistedTerminalStatus(sourceCandidate);
+        const persistedReasonCodes = parseTerminalReasonCodes(sourceCandidate);
+        if (terminalStatus === "completed" && persistedReasonCodes.length > 0) {
+          throw new Error(
+            "Completed canonical candidates cannot persist partial reason codes.",
+          );
+        }
+        const applicable = reconstructed.catalogConsiderations.filter(
+          ({ initialDisposition }) =>
+            initialDisposition !== "context_inapplicable"
+            && initialDisposition !== "ineligible",
+        );
+        const unavailableApplicable = applicable.filter(
+          ({ judgmentOrCatalogCandidateId }) => {
+            const disposition = reconstructed.dispositions.find((value) =>
+              value.judgmentOrCatalogCandidateId
+                === judgmentOrCatalogCandidateId
+            );
+            return disposition?.disposition !== "selected_main"
+              && disposition?.disposition !== "appendix_only";
+          },
+        );
+        const completedLimited = terminalStatus === "completed"
+          && reconstructed.passages.length < 4
+          && applicable.length < 4
+          && reconstructed.passages.length === applicable.length
+          && unavailableApplicable.length === 0;
+        currentNamedLensArtifacts = {
+          namedLensCatalogConsiderations:
+            reconstructed.catalogConsiderations,
+          decisionCriticalEvidenceProjection: projection,
+          namedLensAttemptRefs: persistedNamedLensProviderAttempts.map(
+            (attempt) => ({
+              judgmentOrCatalogCandidateId:
+                attempt.judgmentOrCatalogCandidateId,
+              logicalPassageId: attempt.logicalPassageId,
+              attemptNumber: attempt.attemptNumber,
+              attemptFingerprint: attempt.attemptFingerprint,
+            }),
+          ),
+          namedLensDispositions: reconstructed.dispositions,
+          namedLensPassages: reconstructed.passages,
+          underwritingPresentationReportId: requiredText(
+            String(presentationRows[0]!.report_id),
+            "An Underwriting presentation report",
+          ),
+          namedLensPresentation: presentation,
+          terminalStatus,
+          terminalReasonCodes: terminalStatus === "partial"
+            ? persistedReasonCodes
+            : completedLimited
+            ? ["limited_framework_coverage"]
+            : [],
+        };
+      } else if (anyNamedLensRows) {
+        throw new Error(
+          "Legacy persisted reads cannot contain current Named Lens rows.",
+        );
+      }
       const prepared = prepareCandidateFinalization(
         {
           id: artifactCandidateRunId,
           workspaceId,
-          dealId: String(candidate.deal_id),
+          dealId: String(sourceCandidate.deal_id),
           fundPolicySnapshotId: String(
             batchRows[0].fund_policy_snapshot_id,
           ),
@@ -876,7 +1101,7 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           leaseToken: "persisted",
           candidateRunId: artifactCandidateRunId,
           candidateAnalysisFingerprint: String(
-            candidate.candidate_analysis_fingerprint,
+            sourceCandidate.candidate_analysis_fingerprint,
           ),
           evidencePack: evidenceRows[0].payload as EvidencePack,
           context: contextRows[0].payload as ResolvedUnderwritingContext,
@@ -895,10 +1120,13 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           decision: decisionRows[0].payload as DecisionResult,
           narrative: String(narrativeRows[0].body),
           actionDrafts: draftRows.map((row) => row.payload as ActionDraft),
-          versionSnapshot:
-            versionRows[0].payload as CandidateVersionSnapshot,
+          versionSnapshot: persistedVersionSnapshot,
+          ...currentNamedLensArtifacts,
         },
-        { mode: "persisted_read" },
+        {
+          mode: "persisted_read",
+          persistedNamedLensProviderAttempts,
+        },
       );
       if (
         JSON.stringify(sortedClaimEdges(persistedEdges))
@@ -908,7 +1136,11 @@ export function createSupabaseUnderwritingArtifactsRepository(options: {
           "Persisted candidate claim edges do not match artifact claims.",
         );
       }
-      return prepared;
+      return {
+        ...prepared,
+        candidateRunId,
+        sourceCandidateRunId: artifactCandidateRunId,
+      };
     },
     async listFinalizedForWorkspace(input) {
       const workspaceId = requiredText(input.workspaceId, "A workspace");
@@ -1279,6 +1511,8 @@ export function prepareCandidateFinalization(
       disagreements,
       valuation,
       decision,
+      actionDrafts,
+      terminalStatus,
     });
   }
 
@@ -1428,6 +1662,7 @@ export function prepareCandidateFinalization(
 
   return {
     candidateRunId,
+    sourceCandidateRunId: candidateRunId,
     workspaceId,
     dealId,
     candidateAnalysisFingerprint,
@@ -1939,6 +2174,73 @@ export function validateNamedLensFinalization(input: {
   }
 }
 
+export function reconstructNamedLensPersistence(input: {
+  dispositionRows: Array<Record<string, unknown>>;
+  passageRows: Array<Record<string, unknown>>;
+  segmentRows: Array<Record<string, unknown>>;
+}): {
+  catalogConsiderations: NamedLensCatalogConsideration[];
+  dispositions: NamedLensFinalizationDisposition[];
+  passages: NamedLensPassage[];
+} {
+  const orderedDispositions = [...input.dispositionRows].sort(
+    (left, right) => Number(left.catalog_ordinal) - Number(right.catalog_ordinal),
+  );
+  if (orderedDispositions.some((row, index) =>
+    Number(row.catalog_ordinal) !== index + 1
+  )) {
+    throw new Error(
+      "Named Lens disposition catalog ordinals must be contiguous from one.",
+    );
+  }
+  const catalogConsiderations = orderedDispositions.map((row) =>
+    NamedLensCatalogConsiderationSchema.parse(row.catalog_consideration)
+  );
+  const dispositions = orderedDispositions.map((row) =>
+    NamedLensFinalizationDispositionSchema.parse(row.payload)
+  );
+  const segmentProperties = new Map<string, keyof NamedLensPassage>([
+    ["premise", "premise"],
+    ["case_application", "caseApplication"],
+    ["countercase", "countercase"],
+    ["unknown_boundary", "unknownBoundary"],
+    ["conditional_conclusion", "conditionalConclusion"],
+  ]);
+  const passages = input.passageRows.map((row) => {
+    const judgmentId = requiredText(String(row.judgment_id), "A judgment");
+    const segments = input.segmentRows
+      .filter((segment) => String(segment.judgment_id) === judgmentId)
+      .sort((left, right) =>
+        Number(left.segment_ordinal) - Number(right.segment_ordinal)
+      );
+    if (
+      segments.length !== 5
+      || segments.some((segment, index) =>
+        Number(segment.segment_ordinal) !== index + 1
+      )
+      || new Set(segments.map((segment) => segment.segment_kind)).size !== 5
+    ) {
+      throw new Error(
+        "Each persisted Named Lens passage requires exactly five ordered segment rows.",
+      );
+    }
+    const payload = { ...(row.payload as Record<string, unknown>) };
+    for (const property of segmentProperties.values()) delete payload[property];
+    for (const segment of segments) {
+      const property = segmentProperties.get(String(segment.segment_kind));
+      if (!property) {
+        throw new Error("A persisted Named Lens segment kind is invalid.");
+      }
+      payload[property] = segment.payload;
+    }
+    return NamedLensPassageSchema.parse(payload);
+  });
+  if (input.segmentRows.length !== passages.length * 5) {
+    throw new Error("Named Lens segment rows include an orphaned passage segment.");
+  }
+  return { catalogConsiderations, dispositions, passages };
+}
+
 function frameworkPremiseResolvesExactly(
   premise: NamedLensPassage["premise"],
   metadata: FrameworkAdvisoryMetadata,
@@ -2119,6 +2421,8 @@ function validatePartialUnderwritingTerminalSemantics(input: {
   disagreements: FrameworkDisagreement[];
   valuation: ValuationEvaluation;
   decision: DecisionResult;
+  actionDrafts: ActionDraft[];
+  terminalStatus: "completed" | "partial" | undefined;
 }): void {
   if (
     input.context.asOfDate !== input.evidencePack.asOfDate
@@ -2196,6 +2500,42 @@ function validatePartialUnderwritingTerminalSemantics(input: {
       input.context.analysisMode === "core_only"
       && input.context.geography === "unavailable"
     );
+  const formalDecisionMustBeAvailable =
+    input.evidencePack.coverage.minimumModelInputsComplete
+    && input.evidencePack.coverage.underwritingStatus !== "unavailable"
+    && input.context.analysisMode === "full"
+    && input.context.geography === "us";
+  if (input.terminalStatus === "partial" && formalDecisionMustBeAvailable) {
+    const scenarioPlaceholder = input.scenarioModel.scenarios.every(
+      ({ inputs }) => inputs.every(({ value }) => value === null),
+    );
+    const valuationPlaceholder = input.valuation.status === "unavailable";
+    const decisionPlaceholder = !hasUnavailableDecisionViolation;
+    const formalJudgments = input.judgments.filter(
+      ({ frameworkMetadata }) => frameworkMetadata === undefined,
+    );
+    const formalJudgmentPlaceholder = formalJudgments.length === 0
+      || formalJudgments.every(({ applicability, conclusion }) =>
+        applicability === "unavailable" && conclusion === "abstain"
+      );
+    if (
+      decisionPlaceholder
+      || (
+        input.evidencePack.coverage.criticalEvidenceComplete
+        && (
+          scenarioPlaceholder
+          || input.calculations.length === 0
+          || valuationPlaceholder
+          || formalJudgmentPlaceholder
+          || input.actionDrafts.length === 0
+        )
+      )
+    ) {
+      throw new Error(
+        "Named Lens partial finalization must preserve non-placeholder formal scenario, calculation, valuation, decision, framework, and draft artifacts.",
+      );
+    }
+  }
   if (requiresUnavailableDecision && hasUnavailableDecisionViolation) {
     throw new Error(
       "Unavailable underwriting inputs require an unavailable low-confidence formal decision.",
@@ -2813,6 +3153,12 @@ function emptyRowCounts(): ArtifactRowCounts {
     actionDrafts: 0,
     claimEdges: 0,
     versionSnapshots: 0,
+    decisionCriticalEvidenceProjections: 0,
+    namedLensProviderAttemptEvents: 0,
+    namedLensDispositions: 0,
+    namedLensPassages: 0,
+    namedLensPassageSegments: 0,
+    underwritingPresentations: 0,
   };
 }
 
@@ -2820,23 +3166,23 @@ function identity(workspaceId: string, id: string): string {
   return `${workspaceId.length}:${workspaceId}${id.length}:${id}`;
 }
 
-function namedLensProviderAttemptIdentity(
-  attempt: Pick<
-    NamedLensProviderAttempt,
-    | "workspaceId"
-    | "artifactSourceCandidateRunId"
-    | "judgmentOrCatalogCandidateId"
-    | "logicalPassageId"
-    | "attemptNumber"
-  >,
-): string {
-  return [
-    attempt.workspaceId,
-    attempt.artifactSourceCandidateRunId,
-    attempt.judgmentOrCatalogCandidateId,
-    attempt.logicalPassageId,
-    String(attempt.attemptNumber),
-  ].join("\u0000");
+function parseTerminalReasonCodes(
+  candidate: Record<string, unknown>,
+): string[] {
+  return z.array(z.string().min(1)).parse(
+    candidate.unavailable_reason_codes ?? [],
+  );
+}
+
+function parsePersistedTerminalStatus(
+  candidate: Record<string, unknown>,
+): "completed" | "partial" {
+  if (candidate.status !== "completed" && candidate.status !== "partial") {
+    throw new Error(
+      "Persisted candidate artifacts require a completed or partial source.",
+    );
+  }
+  return candidate.status;
 }
 
 function requiredText(value: string, label: string): string {

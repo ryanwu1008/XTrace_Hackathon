@@ -4,15 +4,26 @@ import test from "node:test";
 import {
   candidateRunStatusForFinalization,
   createMemoryUnderwritingRunsRepository,
+  createSupabaseUnderwritingRunsRepository,
 } from "../../db/repositories/underwriting-runs";
 import {
   createMemoryUnderwritingArtifactsRepository,
+  createSupabaseUnderwritingArtifactsRepository,
   validateNamedLensFinalization,
   type CandidateArtifactBundle,
   type CandidateFinalization,
 } from "../../db/repositories/underwriting-artifacts";
+import * as underwritingArtifactsModule from
+  "../../db/repositories/underwriting-artifacts";
+import {
+  createMemoryNamedLensArtifactsRepository,
+  createSupabaseNamedLensArtifactsRepository,
+} from
+  "../../db/repositories/named-lens-artifacts";
 import { createMemoryEvidencePacksRepository } from
   "../../db/repositories/evidence-packs";
+import { createCurrentNamedLensFinalizationFixture } from
+  "../helpers/current-named-lens-finalization";
 import type { EvidencePack } from "../../lib/contracts/evidence";
 import type {
   DecisionResult,
@@ -231,6 +242,8 @@ function currentArtifacts(count = 4) {
       inputTokens: 100,
       outputTokens: 50,
       costUsd: "0.01",
+      costUsdPricingVersion: "provider-test-pricing-v1",
+      costUsdUnavailableReason: null,
       latencyMs: 100,
     },
     failureReason: null,
@@ -348,6 +361,7 @@ test("requires settled persisted attempt rows that exactly cover provider execut
     persistedAttempts: valid.persistedAttempts.map((attempt) => ({
       ...attempt,
       status: "failed" as const,
+      telemetry: null,
       failureReason: {
         code: "provider_error" as const,
         detail: "Provider failed.",
@@ -557,21 +571,740 @@ test("resolves unknown and conclusion citations only to their saved segment fiel
   )), /citation|conclusion|posture|segment/i);
 });
 
-test("persists attempt transitions before finalization and keeps partial artifacts canonical-only", async () => {
+test("persists two immutable attempt events and collapses them to one settled logical attempt", async () => {
   const current = currentArtifacts();
-  const repository = createMemoryUnderwritingArtifactsRepository();
+  const repository = createMemoryNamedLensArtifactsRepository();
   const reserved = {
-    ...current.persistedAttempts[0]!,
-    status: "reserved" as const,
-    telemetry: null,
+    workspaceId: current.persistedAttempts[0]!.workspaceId,
+    artifactSourceCandidateRunId:
+      current.persistedAttempts[0]!.artifactSourceCandidateRunId,
+    judgmentOrCatalogCandidateId:
+      current.persistedAttempts[0]!.judgmentOrCatalogCandidateId,
+    logicalPassageId: current.persistedAttempts[0]!.logicalPassageId,
+    attemptNumber: current.persistedAttempts[0]!.attemptNumber,
+    attemptFingerprint: current.persistedAttempts[0]!.attemptFingerprint,
+    workerId: "worker_1",
+    leaseToken: "lease_1",
   };
-  repository.recordNamedLensProviderAttempt(reserved);
-  repository.recordNamedLensProviderAttempt(current.persistedAttempts[0]!);
-  assert.throws(() => repository.recordNamedLensProviderAttempt({
-    ...current.persistedAttempts[0]!,
-    attemptFingerprint: sha("0"),
-  }), /immutable|identity|attempt/i);
+  await repository.reserveAttempt(reserved);
+  await assert.rejects(
+    repository.reserveAttempt(reserved),
+    /duplicate|reserved|attempt/i,
+  );
+  const settlement = {
+    ...reserved,
+    status: "completed" as const,
+    telemetry: current.persistedAttempts[0]!.telemetry,
+    failureReason: null,
+  };
+  await repository.settleAttempt(settlement);
+  await assert.rejects(
+    repository.settleAttempt(settlement),
+    /duplicate|settled|attempt/i,
+  );
+  assert.deepEqual(
+    await repository.listAttempts("workspace_1", "candidate_1"),
+    [current.persistedAttempts[0]],
+  );
+  assert.equal(
+    repository.inspect().rawAttemptEvents.length,
+    2,
+  );
+});
 
+test("memory row counts include global attempt events once and exclude aliases", () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  for (const event of fixture.rawAttemptEvents) {
+    namedLensArtifacts.recordAttemptEvent(event);
+  }
+  const repository = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
+  const first = repository.prepareFinalization({
+    candidate: {
+      id: fixture.finalization.candidateRunId,
+      workspaceId: fixture.finalization.evidencePack.workspaceId,
+      dealId: fixture.finalization.evidencePack.dealId,
+      fundPolicySnapshotId: fixture.finalization.versionSnapshot.fundPolicyId,
+    },
+    finalization: fixture.finalization,
+  });
+  repository.commitPrepared(first);
+  repository.commitPrepared({
+    ...structuredClone(first),
+    candidateRunId: "candidate_second",
+    sourceCandidateRunId: "candidate_second",
+    candidateAnalysisFingerprint: sha("b"),
+  });
+  repository.aliasCandidate({
+    workspaceId: first.workspaceId,
+    candidateRunId: "candidate_alias",
+    sourceCandidateRunId: first.candidateRunId,
+    dealId: first.dealId,
+    candidateAnalysisFingerprint: first.candidateAnalysisFingerprint,
+  });
+
+  const counts = repository.inspect().rowCounts;
+  assert.equal(counts.decisionCriticalEvidenceProjections, 2);
+  assert.equal(counts.namedLensProviderAttemptEvents, 2);
+  assert.equal(counts.namedLensDispositions, 2);
+  assert.equal(counts.namedLensPassages, 2);
+  assert.equal(counts.namedLensPassageSegments, 10);
+  assert.equal(counts.underwritingPresentations, 2);
+});
+
+function namedLensOnlyPartialWithFormalPlaceholders() {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const finalization = structuredClone(fixture.finalization);
+  finalization.evidencePack.coverage = {
+    minimumModelInputsComplete: true,
+    criticalEvidenceComplete: true,
+    missingFieldIds: [],
+    blockingConflictIds: [],
+    decisionCeiling: "Advance",
+    underwritingStatus: "available",
+    reasonCodes: [],
+  };
+  finalization.context = {
+    ...finalization.context,
+    analysisMode: "full",
+    geography: "us",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkCompatibility: "exact",
+  };
+  finalization.versionSnapshot = {
+    ...finalization.versionSnapshot,
+    analysisMode: "full",
+    geography: "us",
+    benchmarkCompatibility: "exact",
+    benchmarkPackId: "benchmark_pack_synthetic_us_software_v1",
+    benchmarkEntryId: "benchmark_entry_synthetic_seed_valuation_v1",
+    benchmarkDefinitionFingerprint: sha("d"),
+  };
+  finalization.actionDrafts = finalization.actionDrafts.map((draft) => ({
+    ...draft,
+    missingEvidence: [],
+  }));
+  const unavailableId = "catalog_unavailable_1";
+  const firstCatalog = finalization.namedLensCatalogConsiderations![0]!;
+  const firstDisposition = finalization.namedLensDispositions![0]!;
+  finalization.namedLensCatalogConsiderations!.push({
+    ...firstCatalog,
+    judgmentOrCatalogCandidateId: unavailableId,
+    judgmentId: null,
+    initialDisposition: "unavailable",
+    reasonCodes: ["PROVIDER_ATTEMPTS_EXHAUSTED"],
+    fingerprint: sha("c"),
+  });
+  finalization.namedLensDispositions!.push({
+    ...firstDisposition,
+    judgmentOrCatalogCandidateId: unavailableId,
+    judgmentId: null,
+    disposition: "unavailable",
+    selectedPosition: null,
+    priorityTier: null,
+    reasonCodes: ["PROVIDER_ATTEMPTS_EXHAUSTED"],
+    decisionQuestionCode: null,
+    stance: null,
+    advisoryPosture: null,
+    selectionBasisEvidenceIds: [],
+    criticalEvidence: [],
+    passageFingerprint: null,
+    fingerprint: sha("d"),
+  });
+  const failedAttempt = {
+    ...fixture.persistedAttempts[0]!,
+    judgmentOrCatalogCandidateId: unavailableId,
+    logicalPassageId:
+      `${unavailableId}@named-lens-passage-v1@named-lens-generator-v1`,
+    attemptFingerprint: sha("e"),
+    status: "failed" as const,
+    telemetry: null,
+    failureReason: {
+      code: "provider_error" as const,
+      detail: "Provider attempts exhausted.",
+      retryable: false,
+    },
+  };
+  finalization.namedLensAttemptRefs!.push({
+    judgmentOrCatalogCandidateId: unavailableId,
+    logicalPassageId: failedAttempt.logicalPassageId,
+    attemptNumber: failedAttempt.attemptNumber,
+    attemptFingerprint: failedAttempt.attemptFingerprint,
+  });
+  finalization.terminalStatus = "partial";
+  finalization.terminalReasonCodes = [
+    "named_lens_passage_attempts_exhausted",
+  ];
+  return {
+    finalization,
+    persistedAttempts: [...fixture.persistedAttempts, failedAttempt],
+    rawAttemptEvents: [
+      ...fixture.rawAttemptEvents,
+      { ...failedAttempt, status: "reserved" as const, failureReason: null },
+      failedAttempt,
+    ],
+  };
+}
+
+test("Named Lens-only partial finalization rejects unavailable formal placeholders before any commit or RPC", async () => {
+  const fixture = namedLensOnlyPartialWithFormalPlaceholders();
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  for (const event of fixture.rawAttemptEvents) {
+    namedLensArtifacts.recordAttemptEvent(event);
+  }
+  const memory = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
+  assert.throws(() => memory.prepareFinalization({
+    candidate: {
+      id: fixture.finalization.candidateRunId,
+      workspaceId: fixture.finalization.evidencePack.workspaceId,
+      dealId: fixture.finalization.evidencePack.dealId,
+      fundPolicySnapshotId: fixture.finalization.versionSnapshot.fundPolicyId,
+    },
+    finalization: fixture.finalization,
+  }), /partial|formal|placeholder|preserve/i);
+  assert.equal(memory.inspect().bundles.length, 0);
+
+  let finalizeRpcCalled = false;
+  const candidate = {
+    id: fixture.finalization.candidateRunId,
+    batchId: "batch_current",
+    workspaceId: fixture.finalization.evidencePack.workspaceId,
+    dealId: fixture.finalization.evidencePack.dealId,
+    status: "running",
+    candidateAnalysisFingerprint: "pending:candidate_current",
+    rerunOfId: null,
+    createdAt: "2026-08-10T12:00:00.000Z",
+    finalizedAt: null,
+  };
+  const supabase = createSupabaseUnderwritingRunsRepository({
+    url: "https://supabase.example",
+    serviceRoleKey: "secret",
+    namedLensArtifacts: {
+      reserveAttempt: async () => { throw new Error("not used"); },
+      settleAttempt: async () => { throw new Error("not used"); },
+      listAttempts: async () => fixture.persistedAttempts,
+    },
+    fetchImpl: async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.endsWith("/candidate_runs")) {
+        return Response.json([candidate]);
+      }
+      if (parsed.pathname.endsWith("/underwriting_batches")) {
+        return Response.json([{
+          id: "batch_current",
+          workspaceId: candidate.workspaceId,
+          scanRunId: "scan_current",
+          status: "running",
+          batchInputFingerprint: sha("b"),
+          fundPolicySnapshotId: fixture.finalization.versionSnapshot.fundPolicyId,
+          rerunOfId: null,
+          createdAt: "2026-08-10T11:00:00.000Z",
+        }]);
+      }
+      if (parsed.pathname.endsWith(
+        "/rpc/finalize_or_reuse_candidate_underwriting",
+      )) {
+        finalizeRpcCalled = true;
+        return Response.json(candidate);
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    },
+  });
+  await assert.rejects(
+    supabase.finalizeCandidate(fixture.finalization),
+    /partial|formal|placeholder|preserve/i,
+  );
+  assert.equal(finalizeRpcCalled, false);
+});
+
+test("critical-incomplete full US partial finalization cannot erase an available formal decision", () => {
+  const fixture = namedLensOnlyPartialWithFormalPlaceholders();
+  fixture.finalization.evidencePack.coverage = {
+    ...fixture.finalization.evidencePack.coverage,
+    criticalEvidenceComplete: false,
+    missingFieldIds: ["arr"],
+    decisionCeiling: "Advance",
+    reasonCodes: ["MISSING_CRITICAL_EVIDENCE"],
+  };
+  fixture.finalization.actionDrafts = fixture.finalization.actionDrafts.map(
+    (draft) => ({
+      ...draft,
+      missingEvidence: [{
+        fieldId: "arr",
+        label: "arr",
+        externalLabel: "arr",
+        reasonCode: "MISSING_CRITICAL_EVIDENCE" as const,
+        mostLikelyDecisionImpact:
+          "Providing accepted evidence may raise or lower the formal decision ceiling." as const,
+      }],
+    }),
+  );
+  const namedLensArtifacts = createMemoryNamedLensArtifactsRepository();
+  for (const event of fixture.rawAttemptEvents) {
+    namedLensArtifacts.recordAttemptEvent(event);
+  }
+  const memory = createMemoryUnderwritingArtifactsRepository({
+    namedLensArtifacts,
+  });
+  assert.throws(() => memory.prepareFinalization({
+    candidate: {
+      id: fixture.finalization.candidateRunId,
+      workspaceId: fixture.finalization.evidencePack.workspaceId,
+      dealId: fixture.finalization.evidencePack.dealId,
+      fundPolicySnapshotId: fixture.finalization.versionSnapshot.fundPolicyId,
+    },
+    finalization: fixture.finalization,
+  }), /partial|formal|decision|placeholder|preserve/i);
+});
+
+test("Supabase attempt persistence sends exact lease RPC payloads and collapses two raw events", async () => {
+  const current = currentArtifacts().persistedAttempts[0]!;
+  const reserved = { ...current, status: "reserved", telemetry: null };
+  const requests: Array<{ pathname: string; body: unknown }> = [];
+  const repository = createSupabaseNamedLensArtifactsRepository({
+    url: "https://supabase.example",
+    serviceRoleKey: "secret",
+    fetchImpl: async (url, init = {}) => {
+      const pathname = new URL(String(url)).pathname;
+      const body = init.body === undefined
+        ? null
+        : JSON.parse(String(init.body));
+      requests.push({ pathname, body });
+      if (pathname.endsWith("/reserve_named_lens_passage_attempt")) {
+        return Response.json(reserved);
+      }
+      if (pathname.endsWith("/settle_named_lens_passage_attempt")) {
+        return Response.json(current);
+      }
+      return Response.json([{ payload: reserved }, { payload: current }]);
+    },
+  });
+  const identity = {
+    workspaceId: current.workspaceId,
+    artifactSourceCandidateRunId: current.artifactSourceCandidateRunId,
+    judgmentOrCatalogCandidateId: current.judgmentOrCatalogCandidateId,
+    logicalPassageId: current.logicalPassageId,
+    attemptNumber: current.attemptNumber,
+    attemptFingerprint: current.attemptFingerprint,
+    workerId: "worker_1",
+    leaseToken: "lease_1",
+  };
+  await repository.reserveAttempt(identity);
+  await repository.settleAttempt({
+    ...identity,
+    status: "completed",
+    telemetry: current.telemetry,
+    failureReason: null,
+  });
+  assert.deepEqual(
+    await repository.listAttempts("workspace_1", "candidate_1"),
+    [current],
+  );
+  assert.deepEqual(requests.slice(0, 2), [{
+    pathname: "/rest/v1/rpc/reserve_named_lens_passage_attempt",
+    body: { p_payload: identity },
+  }, {
+    pathname: "/rest/v1/rpc/settle_named_lens_passage_attempt",
+    body: {
+      p_payload: {
+        ...identity,
+        status: "completed",
+        telemetry: current.telemetry,
+        failureReason: null,
+      },
+    },
+  }]);
+});
+
+function currentReadFetch(
+  fixture: ReturnType<typeof createCurrentNamedLensFinalizationFixture>,
+  overrides: Record<string, unknown[]> = {},
+) {
+  const current = fixture.finalization;
+  const rowsByTable: Record<string, unknown[]> = {
+    candidate_runs: [{
+      id: current.candidateRunId,
+      batch_id: "batch_current",
+      workspace_id: current.evidencePack.workspaceId,
+      deal_id: current.evidencePack.dealId,
+      status: "completed",
+      unavailable_reason_codes: [],
+      candidate_analysis_fingerprint: current.candidateAnalysisFingerprint,
+      artifact_source_candidate_run_id: null,
+      rerun_of_id: null,
+    }],
+    underwriting_batches: [{
+      fund_policy_snapshot_id: current.versionSnapshot.fundPolicyId,
+    }],
+    evidence_packs: [{ payload: current.evidencePack }],
+    candidate_context_snapshots: [{ payload: current.context }],
+    scenario_models: [{ payload: current.scenarioModel }],
+    underwriting_calculations: [],
+    framework_judgment_artifacts: current.judgments.map((payload) => ({
+      artifact_id: payload.id,
+      payload,
+    })),
+    framework_disagreement_artifacts: [],
+    valuation_evaluations: [{ payload: current.valuation }],
+    final_syntheses: [{ payload: current.decision }],
+    underwriting_narratives: [{ body: current.narrative }],
+    action_drafts: current.actionDrafts.map((payload) => ({
+      artifact_id: payload.id,
+      payload,
+    })),
+    underwriting_claim_edges: current.judgments.flatMap(({ claimEdges }) =>
+      claimEdges.map((edge) => ({
+        claim_item_id: edge.claimItemId,
+        dependency_item_id: edge.dependencyItemId,
+        dependency_type: edge.dependencyType,
+      }))
+    ),
+    candidate_version_snapshots: [{ payload: current.versionSnapshot }],
+    decision_critical_evidence_projections: fixture.projectionRows,
+    named_lens_passage_attempt_events: fixture.rawAttemptEvents.map(
+      (payload) => ({ payload }),
+    ),
+    named_lens_dispositions: fixture.dispositionRows,
+    named_lens_passages: fixture.passageRows,
+    named_lens_passage_segments: fixture.segmentRows,
+    underwriting_presentations: fixture.presentationRows,
+  };
+  return async (url: string | URL | Request) => {
+    const table = new URL(String(url)).pathname.split("/").at(-1)!;
+    return Response.json(overrides[table] ?? rowsByTable[table] ?? []);
+  };
+}
+
+test("Supabase current bundle reads every Named Lens row authority before reconstruction", async () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const current = fixture.finalization;
+  const requestedTables: string[] = [];
+  const repository = createSupabaseUnderwritingArtifactsRepository({
+    url: "https://supabase.example",
+    serviceRoleKey: "secret",
+    fetchImpl: async (url) => {
+      const parsed = new URL(String(url));
+      requestedTables.push(parsed.pathname.split("/").at(-1)!);
+      if (parsed.pathname.endsWith("/candidate_runs")) {
+        return Response.json([{
+          id: current.candidateRunId,
+          batch_id: "batch_current",
+          workspace_id: current.evidencePack.workspaceId,
+          deal_id: current.evidencePack.dealId,
+          status: "completed",
+          unavailable_reason_codes: [],
+          candidate_analysis_fingerprint:
+            current.candidateAnalysisFingerprint,
+          artifact_source_candidate_run_id: null,
+          rerun_of_id: null,
+        }]);
+      }
+      if (parsed.pathname.endsWith("/underwriting_batches")) {
+        return Response.json([{
+          fund_policy_snapshot_id: current.versionSnapshot.fundPolicyId,
+        }]);
+      }
+      if (parsed.pathname.endsWith("/evidence_packs")) {
+        return Response.json([{ payload: current.evidencePack }]);
+      }
+      if (parsed.pathname.endsWith("/candidate_context_snapshots")) {
+        return Response.json([{ payload: current.context }]);
+      }
+      if (parsed.pathname.endsWith("/scenario_models")) {
+        return Response.json([{ payload: current.scenarioModel }]);
+      }
+      if (parsed.pathname.endsWith("/underwriting_calculations")) {
+        return Response.json([]);
+      }
+      if (parsed.pathname.endsWith("/framework_judgment_artifacts")) {
+        return Response.json(current.judgments.map((payload) => ({
+          artifact_id: payload.id,
+          payload,
+        })));
+      }
+      if (parsed.pathname.endsWith("/framework_disagreement_artifacts")) {
+        return Response.json([]);
+      }
+      if (parsed.pathname.endsWith("/valuation_evaluations")) {
+        return Response.json([{ payload: current.valuation }]);
+      }
+      if (parsed.pathname.endsWith("/final_syntheses")) {
+        return Response.json([{ payload: current.decision }]);
+      }
+      if (parsed.pathname.endsWith("/underwriting_narratives")) {
+        return Response.json([{ body: current.narrative }]);
+      }
+      if (parsed.pathname.endsWith("/action_drafts")) {
+        return Response.json(current.actionDrafts.map((payload) => ({
+          artifact_id: payload.id,
+          payload,
+        })));
+      }
+      if (parsed.pathname.endsWith("/underwriting_claim_edges")) {
+        return Response.json(current.judgments.flatMap(({ claimEdges }) =>
+          claimEdges.map((edge) => ({
+            claim_item_id: edge.claimItemId,
+            dependency_item_id: edge.dependencyItemId,
+            dependency_type: edge.dependencyType,
+          }))
+        ));
+      }
+      if (parsed.pathname.endsWith("/candidate_version_snapshots")) {
+        return Response.json([{ payload: current.versionSnapshot }]);
+      }
+      if (parsed.pathname.endsWith("/decision_critical_evidence_projections")) {
+        return Response.json(fixture.projectionRows);
+      }
+      if (parsed.pathname.endsWith("/named_lens_passage_attempt_events")) {
+        return Response.json(fixture.rawAttemptEvents.map((payload) => ({
+          payload,
+        })));
+      }
+      if (parsed.pathname.endsWith("/named_lens_dispositions")) {
+        return Response.json(fixture.dispositionRows);
+      }
+      if (parsed.pathname.endsWith("/named_lens_passages")) {
+        return Response.json(fixture.passageRows);
+      }
+      if (parsed.pathname.endsWith("/named_lens_passage_segments")) {
+        return Response.json(fixture.segmentRows);
+      }
+      if (parsed.pathname.endsWith("/underwriting_presentations")) {
+        return Response.json(fixture.presentationRows);
+      }
+      return Response.json([]);
+    },
+  });
+  const bundle = await repository.getByCandidateRunId({
+    workspaceId: current.evidencePack.workspaceId,
+    candidateRunId: current.candidateRunId,
+  });
+  assert.deepEqual(bundle?.decisionCriticalEvidenceProjection,
+    current.decisionCriticalEvidenceProjection);
+  assert.deepEqual(bundle?.namedLensCatalogConsiderations,
+    current.namedLensCatalogConsiderations);
+  assert.deepEqual(bundle?.namedLensDispositions,
+    current.namedLensDispositions);
+  assert.deepEqual(bundle?.namedLensPassages, current.namedLensPassages);
+  assert.deepEqual(bundle?.namedLensPresentation,
+    current.namedLensPresentation);
+  assert.equal(bundle?.underwritingPresentationReportId,
+    current.underwritingPresentationReportId);
+  assert.deepEqual(bundle?.namedLensAttemptRefs, current.namedLensAttemptRefs);
+  assert.equal(bundle?.terminalStatus, "completed");
+  assert.deepEqual(bundle?.terminalReasonCodes,
+    ["limited_framework_coverage"]);
+  for (const table of [
+    "decision_critical_evidence_projections",
+    "named_lens_passage_attempt_events",
+    "named_lens_dispositions",
+    "named_lens_passages",
+    "named_lens_passage_segments",
+    "underwriting_presentations",
+  ]) {
+    assert.ok(requestedTables.includes(table), `missing current read: ${table}`);
+  }
+});
+
+test("Supabase current bundle reads fail closed on missing or foreign Named Lens rows", async () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const input = {
+    workspaceId: fixture.finalization.evidencePack.workspaceId,
+    candidateRunId: fixture.finalization.candidateRunId,
+  };
+  const missingSegment = createSupabaseUnderwritingArtifactsRepository({
+    url: "https://supabase.example",
+    serviceRoleKey: "secret",
+    fetchImpl: currentReadFetch(fixture, {
+      named_lens_passage_segments: fixture.segmentRows.slice(1),
+    }),
+  });
+  await assert.rejects(
+    missingSegment.getByCandidateRunId(input),
+    /five|segment|complete/i,
+  );
+
+  const presentation = fixture.presentationRows[0]!;
+  const foreignPresentation = createSupabaseUnderwritingArtifactsRepository({
+    url: "https://supabase.example",
+    serviceRoleKey: "secret",
+    fetchImpl: currentReadFetch(fixture, {
+      underwriting_presentations: [{
+        ...presentation,
+        payload: {
+          ...(presentation.payload as Record<string, unknown>),
+          artifactSourceCandidateRunId: "candidate_foreign",
+        },
+      }],
+    }),
+  });
+  await assert.rejects(
+    foreignPresentation.getByCandidateRunId(input),
+    /candidate-local|presentation|artifact/i,
+  );
+});
+
+test("Supabase alias reads validate the canonical source before loading its owning batch", async () => {
+  const candidateQueries: string[] = [];
+  const batchQueries: string[] = [];
+  const repository = createSupabaseUnderwritingArtifactsRepository({
+    url: "https://supabase.example",
+    serviceRoleKey: "secret",
+    fetchImpl: async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.endsWith("/candidate_runs")) {
+        const id = parsed.searchParams.get("id") ?? "";
+        candidateQueries.push(id);
+        if (id === "eq.candidate_alias") {
+          return Response.json([{
+            id: "candidate_alias",
+            batch_id: "batch_alias",
+            workspace_id: "workspace_1",
+            deal_id: "deal_1",
+            status: "partial",
+            unavailable_reason_codes: [
+              "named_lens_passage_attempts_exhausted",
+            ],
+            candidate_analysis_fingerprint: sha("a"),
+            artifact_source_candidate_run_id: "candidate_source",
+            rerun_of_id: "candidate_source",
+          }]);
+        }
+        if (id === "eq.candidate_source") {
+          return Response.json([{
+            id: "candidate_source",
+            batch_id: "batch_source",
+            workspace_id: "workspace_1",
+            deal_id: "deal_1",
+            status: "partial",
+            unavailable_reason_codes: [
+              "named_lens_passage_attempts_exhausted",
+            ],
+            candidate_analysis_fingerprint: sha("a"),
+            artifact_source_candidate_run_id: null,
+            rerun_of_id: null,
+          }]);
+        }
+      }
+      if (parsed.pathname.endsWith("/underwriting_batches")) {
+        batchQueries.push(parsed.searchParams.get("id") ?? "");
+        return Response.json([{ fund_policy_snapshot_id: "fund_policy_1" }]);
+      }
+      return Response.json([]);
+    },
+  });
+  await assert.rejects(repository.getByCandidateRunId({
+    workspaceId: "workspace_1",
+    candidateRunId: "candidate_alias",
+  }), /incomplete|artifact/i);
+  assert.deepEqual(candidateQueries, [
+    "eq.candidate_alias",
+    "eq.candidate_source",
+  ]);
+  assert.deepEqual(batchQueries, ["eq.batch_source"]);
+});
+
+test("bundle reconstruction derives catalog from dispositions and passage bodies from five segment rows", () => {
+  const current = currentArtifacts();
+  const reconstruct = (underwritingArtifactsModule as unknown as {
+    reconstructNamedLensPersistence(input: {
+      dispositionRows: Array<Record<string, unknown>>;
+      passageRows: Array<Record<string, unknown>>;
+      segmentRows: Array<Record<string, unknown>>;
+    }): {
+      catalogConsiderations: NamedLensCatalogConsideration[];
+      dispositions: NamedLensFinalizationDisposition[];
+      passages: NamedLensPassage[];
+    };
+  }).reconstructNamedLensPersistence;
+  assert.equal(typeof reconstruct, "function");
+  const segmentKinds = [
+    ["premise", "premise"],
+    ["case_application", "caseApplication"],
+    ["countercase", "countercase"],
+    ["unknown_boundary", "unknownBoundary"],
+    ["conditional_conclusion", "conditionalConclusion"],
+  ] as const;
+  const result = reconstruct({
+    dispositionRows: current.dispositions.map((payload, index) => ({
+      catalog_ordinal: index + 1,
+      catalog_consideration: current.catalogConsiderations[index],
+      payload,
+    })),
+    passageRows: current.passages.map((passage) => ({
+      judgment_id: passage.judgmentId,
+      payload: {
+        ...passage,
+        premise: { ...passage.premise, text: "Contradictory flat payload." },
+      },
+    })),
+    segmentRows: current.passages.flatMap((passage) =>
+      segmentKinds.map(([segment_kind, property], index) => ({
+        judgment_id: passage.judgmentId,
+        segment_ordinal: index + 1,
+        segment_kind,
+        payload: passage[property],
+      }))
+    ),
+  });
+  assert.deepEqual(result.catalogConsiderations, current.catalogConsiderations);
+  assert.deepEqual(result.dispositions, current.dispositions);
+  assert.deepEqual(result.passages, current.passages);
+});
+
+test("attempt settlement fails closed for orphans and ignores every terminal event after abort", async () => {
+  const current = currentArtifacts().persistedAttempts[0]!;
+  const repository = createMemoryNamedLensArtifactsRepository();
+  const identity = {
+    workspaceId: current.workspaceId,
+    artifactSourceCandidateRunId: current.artifactSourceCandidateRunId,
+    judgmentOrCatalogCandidateId: current.judgmentOrCatalogCandidateId,
+    logicalPassageId: current.logicalPassageId,
+    attemptNumber: current.attemptNumber,
+    attemptFingerprint: current.attemptFingerprint,
+    workerId: "worker_1",
+    leaseToken: "lease_1",
+  };
+  await assert.rejects(repository.settleAttempt({
+    ...identity,
+    status: "failed",
+    telemetry: null,
+    failureReason: {
+      code: "provider_error",
+      detail: "Orphan settlement.",
+      retryable: false,
+    },
+  }), /reserved|orphan|attempt/i);
+  await repository.reserveAttempt(identity);
+  await repository.settleAttempt({
+    ...identity,
+    status: "aborted",
+    telemetry: null,
+    failureReason: {
+      code: "aborted",
+      detail: "Timed out before provider completion.",
+      retryable: false,
+    },
+  });
+  await assert.rejects(repository.settleAttempt({
+    ...identity,
+    status: "completed",
+    telemetry: current.telemetry,
+    failureReason: null,
+  }), /already settled|terminal|attempt/i);
+  assert.equal(repository.inspect().rawAttemptEvents.length, 2);
+  assert.equal(
+    (await repository.listAttempts("workspace_1", "candidate_1"))[0]?.status,
+    "aborted",
+  );
+});
+
+test("partial canonical artifacts are reusable while alias bundles preserve requested and source identities", async () => {
+  const repository = createMemoryUnderwritingArtifactsRepository();
   const partial = {
     candidateRunId: "candidate_1",
     workspaceId: "workspace_1",
@@ -580,21 +1313,39 @@ test("persists attempt transitions before finalization and keeps partial artifac
     terminalStatus: "partial",
   } as unknown as CandidateArtifactBundle;
   repository.commitPrepared(partial);
-  assert.equal(await repository.findReusable({
+  assert.deepEqual(await repository.findReusable({
     workspaceId: "workspace_1",
     candidateAnalysisFingerprint: partial.candidateAnalysisFingerprint,
-  }), null);
-  assert.throws(() => repository.aliasCandidate({
+  }), {
+    candidateRunId: "candidate_1",
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    candidateAnalysisFingerprint: sha("a"),
+    terminalStatus: "partial",
+    terminalReasonCodes: [],
+  });
+  repository.aliasCandidate({
     workspaceId: "workspace_1",
     candidateRunId: "candidate_alias",
     sourceCandidateRunId: "candidate_1",
     dealId: "deal_1",
     candidateAnalysisFingerprint: partial.candidateAnalysisFingerprint,
-  }), /partial|reusable/i);
+  });
+  const alias = await repository.getByCandidateRunId({
+    workspaceId: "workspace_1",
+    candidateRunId: "candidate_alias",
+  });
+  assert.equal(alias?.candidateRunId, "candidate_alias");
+  assert.equal(
+    (alias as CandidateArtifactBundle & { sourceCandidateRunId: string })
+      ?.sourceCandidateRunId,
+    "candidate_1",
+  );
+  assert.equal(alias?.terminalStatus, "partial");
   assert.equal(candidateRunStatusForFinalization(partial), "partial");
 });
 
-test("a partial finalization marks its Candidate partial and cannot enter reuse", async () => {
+test("a partial finalization preserves typed coverage reasons and enters canonical reuse", async () => {
   let sequence = 0;
   const artifacts = createMemoryUnderwritingArtifactsRepository();
   const evidencePacks = createMemoryEvidencePacksRepository();
@@ -660,10 +1411,12 @@ test("a partial finalization marks its Candidate partial and cannot enter reuse"
   });
   const partialBundle = {
     candidateRunId: candidate!.id,
+    sourceCandidateRunId: candidate!.id,
     workspaceId: "workspace_1",
     dealId: "deal_1",
     candidateAnalysisFingerprint: sha("a"),
     terminalStatus: "partial",
+    terminalReasonCodes: ["named_lens_passage_attempts_exhausted"],
   } as unknown as CandidateArtifactBundle;
   artifacts.prepareFinalization = () => partialBundle;
   const result = await runs.finalizeCandidate({
@@ -676,10 +1429,19 @@ test("a partial finalization marks its Candidate partial and cannot enter reuse"
   } as unknown as CandidateFinalization);
 
   assert.equal(result.status, "partial");
-  assert.equal(await artifacts.findReusable({
+  assert.deepEqual(result.terminalReasonCodes,
+    ["named_lens_passage_attempts_exhausted"]);
+  assert.deepEqual(await artifacts.findReusable({
     workspaceId: "workspace_1",
     candidateAnalysisFingerprint: sha("a"),
-  }), null);
+  }), {
+    candidateRunId: candidate!.id,
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    candidateAnalysisFingerprint: sha("a"),
+    terminalStatus: "partial",
+    terminalReasonCodes: ["named_lens_passage_attempts_exhausted"],
+  });
   const refresh = await runs.createOrReuseBatch({
     workspaceId: "workspace_1",
     scanRunId: "scan_2",

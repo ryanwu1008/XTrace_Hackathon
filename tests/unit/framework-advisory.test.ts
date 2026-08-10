@@ -1279,6 +1279,66 @@ test("fails closed on cached applicable advisory passage mutations", async () =>
   }
 });
 
+test("authorized advisory provider attempts carry stable logical and physical Named Lens identity", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const attempts: Array<Record<string, unknown>> = [];
+  const result = await createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    client: {
+      async complete(request) {
+        return JSON.stringify(advisoryOutput(promptCard(request)));
+      },
+    },
+  }).runAll({
+    ...runInput(),
+    providerAttempt: {
+      async execute(input) {
+        attempts.push(input as unknown as Record<string, unknown>);
+        return input.operation();
+      },
+    },
+  });
+  assert.ok(attempts.length > 0);
+  const judgmentIds = new Set(result.judgments.map(({ id }) => id));
+  for (const attempt of attempts) {
+    const identity = attempt.namedLensAttempt as Record<string, unknown>;
+    assert.ok(identity);
+    assert.ok(judgmentIds.has(String(identity.judgmentOrCatalogCandidateId)));
+    assert.equal(identity.attemptNumber, 1);
+    assert.equal(
+      identity.logicalPassageId,
+      `${identity.judgmentOrCatalogCandidateId}@${NAMED_LENS_PASSAGE_SCHEMA_VERSION}@${NAMED_LENS_GENERATOR_VERSION}`,
+    );
+  }
+});
+
+test("formal core lens provider calls never claim Named Lens persistence identity", async () => {
+  const attempts: Array<Record<string, unknown>> = [];
+  await createFrameworkLensService({
+    cards: [SYNTHETIC_FRAMEWORK_PACK.cards[0]!],
+    execution,
+    client: {
+      async complete() {
+        return "{}";
+      },
+    },
+  }).runAll({
+    ...runInput(),
+    providerAttempt: {
+      async execute(input) {
+        attempts.push(input as unknown as Record<string, unknown>);
+        return input.operation();
+      },
+    },
+  });
+  assert.ok(attempts.length > 0);
+  assert.ok(attempts.every((attempt) =>
+    !("namedLensAttempt" in attempt)
+  ));
+});
+
 function runInput() {
   return {
     candidate,

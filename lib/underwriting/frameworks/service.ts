@@ -230,6 +230,11 @@ export interface FrameworkProviderAttemptExecutor {
   execute(input: {
     attemptFingerprint: string;
     outputTokenUnits: number;
+    namedLensAttempt?: {
+      judgmentOrCatalogCandidateId: string;
+      logicalPassageId: string;
+      attemptNumber: number;
+    };
     operation(): Promise<MeasuredClaudeCompletion>;
   }): Promise<MeasuredClaudeCompletion>;
 }

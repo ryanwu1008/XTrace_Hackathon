@@ -17,9 +17,11 @@ import type {
 } from "../../contracts/underwriting";
 import {
   NAMED_LENS_GENERATOR_VERSION,
+  NAMED_LENS_PASSAGE_SCHEMA_VERSION,
 } from "../../contracts/named-lens";
 import {
   buildFrameworkAbstention,
+  createFrameworkJudgmentId,
   groundFrameworkLensOutput,
   isValuationFrameworkCard,
 } from "./grounding";
@@ -146,6 +148,21 @@ export async function runClaudeFrameworkLens(input: {
             messages: request.messages,
             maxTokens: request.maxTokens,
           }),
+          namedLensAttempt: advisory
+            ? (() => {
+              const judgmentId = createFrameworkJudgmentId(
+                input.candidate.id,
+                input.card.id,
+                input.fingerprint,
+              );
+              return {
+                judgmentOrCatalogCandidateId: judgmentId,
+                logicalPassageId:
+                  `${judgmentId}@${NAMED_LENS_PASSAGE_SCHEMA_VERSION}@${NAMED_LENS_GENERATOR_VERSION}`,
+                attemptNumber: ((attempt - 1) * 2) + transportAttempt,
+              };
+            })()
+            : undefined,
         });
         break;
       } catch (error) {
@@ -280,6 +297,11 @@ async function executeProviderAttempt(input: {
   providerAttempt?: FrameworkProviderAttemptExecutor;
   request: ClaudeCompleteInput & { maxTokens: number };
   attemptFingerprint: string;
+  namedLensAttempt?: {
+    judgmentOrCatalogCandidateId: string;
+    logicalPassageId: string;
+    attemptNumber: number;
+  };
 }): Promise<MeasuredClaudeCompletion> {
   const operation = async (): Promise<MeasuredClaudeCompletion> => {
     if (input.client.completeMeasured) {
@@ -304,6 +326,9 @@ async function executeProviderAttempt(input: {
     ? input.providerAttempt.execute({
         attemptFingerprint: input.attemptFingerprint,
         outputTokenUnits: input.request.maxTokens,
+        ...(input.namedLensAttempt
+          ? { namedLensAttempt: input.namedLensAttempt }
+          : {}),
         operation,
       })
     : operation();

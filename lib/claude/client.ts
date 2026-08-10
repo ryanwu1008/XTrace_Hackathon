@@ -37,6 +37,7 @@ export interface MeasuredClaudeCompletion {
   text: string;
   stopReason: string | null;
   usage: ClaudeTokenUsage;
+  costUsd?: { amount: string; pricingVersion: string };
 }
 
 export interface ClaudeClient {

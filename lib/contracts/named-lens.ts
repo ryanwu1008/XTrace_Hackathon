@@ -460,8 +460,24 @@ export const NamedLensProviderFailureReasonSchema = z.strictObject({
 export const NamedLensProviderTelemetrySchema = z.strictObject({
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
-  costUsd: z.string().regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/),
+  costUsd: z.string().regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/).nullable(),
+  costUsdPricingVersion: z.string().min(1).nullable(),
+  costUsdUnavailableReason: z.literal("provider_cost_unavailable")
+    .nullable(),
   latencyMs: z.number().int().nonnegative(),
+}).superRefine((value, context) => {
+  if (
+    value.costUsd === null
+      ? value.costUsdUnavailableReason !== "provider_cost_unavailable"
+        || value.costUsdPricingVersion !== null
+      : value.costUsdPricingVersion === null
+        || value.costUsdUnavailableReason !== null
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Named Lens USD telemetry must be exact or explicitly unavailable.",
+    });
+  }
 });
 
 export const NamedLensProviderAttemptSchema = z.strictObject({
@@ -480,7 +496,7 @@ export const NamedLensProviderAttemptSchema = z.strictObject({
       ? value.telemetry !== null || value.failureReason !== null
       : value.status === "completed"
       ? value.telemetry === null || value.failureReason !== null
-      : value.telemetry === null || value.failureReason === null
+      : value.telemetry !== null || value.failureReason === null
   ) {
     context.addIssue({
       code: "custom",

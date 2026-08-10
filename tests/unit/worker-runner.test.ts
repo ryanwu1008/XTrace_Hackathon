@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import * as workerRunner from "../../worker/runner";
+import { createMemoryEvidencePacksRepository } from
+  "../../db/repositories/evidence-packs";
 
 test("a transient worker error backs off instead of terminating the loop", async () => {
   let backoffMs = 0;
@@ -57,4 +59,48 @@ test("the worker rotates successful queue classes so confirmed ingest cannot sta
   assert.equal(await fairQueue!(handlers), true);
   assert.equal(await fairQueue!(handlers), true);
   assert.deepEqual(calls, ["queued", "confirmed"]);
+});
+
+test("worker underwriting composition shares one Named Lens repository with runtime and finalization", async () => {
+  const composition = workerRunner.createWorkerUnderwritingPersistence({
+    evidencePacks: createMemoryEvidencePacksRepository(),
+  });
+  assert.ok(composition.underwritingArtifacts);
+  const identity = {
+    workspaceId: "workspace_1",
+    artifactSourceCandidateRunId: "candidate_1",
+    judgmentOrCatalogCandidateId: "judgment_1",
+    logicalPassageId:
+      "judgment_1@named-lens-passage-v1@named-lens-generator-v1",
+    attemptNumber: 1,
+    attemptFingerprint: `sha256:${"1".repeat(64)}`,
+    workerId: "worker_1",
+    leaseToken: "lease_1",
+  };
+  await composition.namedLensArtifacts.reserveAttempt(identity);
+  await composition.namedLensArtifacts.settleAttempt({
+    ...identity,
+    status: "failed",
+    telemetry: null,
+    failureReason: {
+      code: "provider_error",
+      detail: "Deterministic worker composition fixture.",
+      retryable: false,
+    },
+  });
+  assert.deepEqual(
+    composition.underwritingArtifacts.listNamedLensProviderAttempts({
+      workspaceId: "workspace_1",
+      artifactSourceCandidateRunId: "candidate_1",
+    }),
+    await composition.namedLensArtifacts.listAttempts(
+      "workspace_1",
+      "candidate_1",
+    ),
+  );
+  assert.equal(
+    composition.underwritingArtifacts.inspect().rowCounts
+      .namedLensProviderAttemptEvents,
+    2,
+  );
 });

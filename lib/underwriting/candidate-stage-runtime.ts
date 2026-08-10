@@ -12,6 +12,10 @@ import {
 import type {
   UnderwritingRunsRepository,
 } from "../../db/repositories/underwriting-runs";
+import type {
+  NamedLensArtifactsRepository,
+  NamedLensProviderAttemptReservation,
+} from "../../db/repositories/named-lens-artifacts";
 import { createCanonicalFingerprint } from "./fingerprints";
 
 export type CandidateExecutionStage = Exclude<
@@ -46,6 +50,11 @@ export interface CandidateStageRuntime {
     attemptFingerprint: string;
     costUnits: number;
     tokenUnits: number;
+    namedLensAttempt?: {
+      judgmentOrCatalogCandidateId: string;
+      logicalPassageId: string;
+      attemptNumber: number;
+    };
     operation(): Promise<MeasuredClaudeCompletion>;
   }): Promise<MeasuredClaudeCompletion>;
   usage(): {
@@ -161,6 +170,7 @@ export function createCandidateStagePolicies(input: {
 
 export async function createCandidateStageRuntime(input: {
   runs: UnderwritingRunsRepository;
+  namedLensArtifacts?: NamedLensArtifactsRepository;
   candidate: CandidateRun;
   workerId: string;
   leaseToken: string;
@@ -177,6 +187,10 @@ export async function createCandidateStageRuntime(input: {
   >();
   let initialization: Promise<void> | undefined;
   let ledgerMutationTail = Promise.resolve();
+  const activeNamedLensAttempts = new Map<
+    string,
+    NamedLensProviderAttemptReservation & { inputFingerprint: string }
+  >();
 
   const mutateProviderLedger = async <T>(
     mutation: () => Promise<T>,
@@ -402,7 +416,7 @@ export async function createCandidateStageRuntime(input: {
             );
             continue;
           }
-          const current = stateFor(
+          let current = stateFor(
             request.stage,
             request.inputFingerprint,
           );
@@ -411,6 +425,34 @@ export async function createCandidateStageRuntime(input: {
             : error instanceof CandidateBudgetExhaustedError
             ? "budget"
             : "execution";
+          if (kind === "timeout" && request.stage === "framework_lenses") {
+            for (const [attemptFingerprint, reservation] of
+              activeNamedLensAttempts) {
+              if (reservation.inputFingerprint !== request.inputFingerprint) {
+                continue;
+              }
+              await input.namedLensArtifacts!.settleAttempt({
+                ...reservation,
+                status: "aborted",
+                telemetry: null,
+                failureReason: {
+                  code: "timeout",
+                  detail: "The framework stage timed out before provider completion.",
+                  retryable: false,
+                },
+              });
+              activeNamedLensAttempts.delete(attemptFingerprint);
+              current = updateProviderAttempt({
+                checkpoint: current,
+                attemptFingerprint,
+                status: "aborted",
+                actualCostUnits: 0,
+                actualTokenUnits: 0,
+                usageKnown: false,
+                savedAt: input.now().toISOString(),
+              });
+            }
+          }
           const details = failure(request.stage, kind);
           stageState = await save({
             ...current,
@@ -469,6 +511,24 @@ export async function createCandidateStageRuntime(input: {
         request.tokenUnits,
         "Provider attempt token units",
       );
+      const namedLensIdentity = request.namedLensAttempt
+        ? {
+          workspaceId: input.candidate.workspaceId,
+          artifactSourceCandidateRunId: input.candidate.id,
+          judgmentOrCatalogCandidateId:
+            request.namedLensAttempt.judgmentOrCatalogCandidateId,
+          logicalPassageId: request.namedLensAttempt.logicalPassageId,
+          attemptNumber: request.namedLensAttempt.attemptNumber,
+          attemptFingerprint: request.attemptFingerprint,
+          workerId: input.workerId,
+          leaseToken: input.leaseToken,
+        }
+        : null;
+      if (namedLensIdentity && !input.namedLensArtifacts) {
+        throw new Error(
+          "Named Lens provider execution requires its shared artifact repository.",
+        );
+      }
       await mutateProviderLedger(async () => {
         const stageState = stateFor(
           request.stage,
@@ -509,37 +569,94 @@ export async function createCandidateStageRuntime(input: {
           );
           throw new CandidateBudgetExhaustedError(request.stage);
         }
-
-        await save({
-          ...stageState,
-          costUnits: stageState.costUnits + requestedCostUnits,
-          tokenUnits: stageState.tokenUnits + requestedTokenUnits,
-          providerAttempts: [
-            ...stageState.providerAttempts,
-            {
-              attemptFingerprint: request.attemptFingerprint,
-              status: "reserved",
-              reservedCostUnits: requestedCostUnits,
-              reservedTokenUnits: requestedTokenUnits,
-              actualCostUnits: 0,
-              actualTokenUnits: 0,
-              usageKnown: false,
-            },
-          ],
-          savedAt: input.now().toISOString(),
-        });
+        if (namedLensIdentity) {
+          await input.namedLensArtifacts!.reserveAttempt(namedLensIdentity);
+          activeNamedLensAttempts.set(request.attemptFingerprint, {
+            ...namedLensIdentity,
+            inputFingerprint: request.inputFingerprint,
+          });
+        }
+        try {
+          await save({
+            ...stageState,
+            costUnits: stageState.costUnits + requestedCostUnits,
+            tokenUnits: stageState.tokenUnits + requestedTokenUnits,
+            providerAttempts: [
+              ...stageState.providerAttempts,
+              {
+                attemptFingerprint: request.attemptFingerprint,
+                status: "reserved",
+                reservedCostUnits: requestedCostUnits,
+                reservedTokenUnits: requestedTokenUnits,
+                actualCostUnits: 0,
+                actualTokenUnits: 0,
+                usageKnown: false,
+              },
+            ],
+            savedAt: input.now().toISOString(),
+          });
+        } catch (error) {
+          if (namedLensIdentity) {
+            await input.namedLensArtifacts!.settleAttempt({
+              ...namedLensIdentity,
+              status: "aborted",
+              telemetry: null,
+              failureReason: {
+                code: "aborted",
+                detail:
+                  "Checkpoint reservation failed after durable attempt reservation.",
+                retryable: false,
+              },
+            });
+            activeNamedLensAttempts.delete(request.attemptFingerprint);
+          }
+          throw error;
+        }
         consumedCostUnits += requestedCostUnits;
         consumedTokenUnits += requestedTokenUnits;
       });
 
       let completion: MeasuredClaudeCompletion;
+      const providerStartedAt = input.now().getTime();
       try {
         completion = await request.operation();
       } catch (error) {
+        if (
+          namedLensIdentity
+          && !activeNamedLensAttempts.has(request.attemptFingerprint)
+        ) {
+          throw new CandidateProviderAttemptReplayError(
+            request.attemptFingerprint,
+          );
+        }
         const actualTokenUnits = error instanceof ClaudeCompletionTruncatedError
           ? measuredTokenUnits(error.usage)
           : 0;
         const usageKnown = error instanceof ClaudeCompletionTruncatedError;
+        if (
+          namedLensIdentity
+          && activeNamedLensAttempts.has(request.attemptFingerprint)
+        ) {
+          const aborted = error instanceof CandidateStageTimeoutError;
+          await input.namedLensArtifacts!.settleAttempt({
+            ...namedLensIdentity,
+            status: aborted ? "aborted" : "failed",
+            telemetry: null,
+            failureReason: {
+              code: aborted
+                ? "timeout"
+                : error instanceof IntegrationTransportError
+                ? "transport_error"
+                : "provider_error",
+              detail: error instanceof Error
+                ? error.message
+                : "Named Lens provider execution failed.",
+              retryable: error instanceof IntegrationTransportError
+                && error.retryable,
+            },
+          });
+          activeNamedLensAttempts.delete(request.attemptFingerprint);
+        }
         await mutateProviderLedger(async () => {
           const current = stateFor(
             request.stage,
@@ -573,6 +690,30 @@ export async function createCandidateStageRuntime(input: {
       }
 
       const actualTokenUnits = measuredTokenUnits(completion.usage);
+      if (namedLensIdentity) {
+        if (!activeNamedLensAttempts.has(request.attemptFingerprint)) {
+          throw new CandidateProviderAttemptReplayError(
+            request.attemptFingerprint,
+          );
+        }
+        await input.namedLensArtifacts!.settleAttempt({
+          ...namedLensIdentity,
+          status: "completed",
+          telemetry: {
+            inputTokens: completion.usage.inputTokens,
+            outputTokens: completion.usage.outputTokens,
+            costUsd: completion.costUsd?.amount ?? null,
+            costUsdPricingVersion:
+              completion.costUsd?.pricingVersion ?? null,
+            costUsdUnavailableReason: completion.costUsd
+              ? null
+              : "provider_cost_unavailable",
+            latencyMs: Math.max(0, input.now().getTime() - providerStartedAt),
+          },
+          failureReason: null,
+        });
+        activeNamedLensAttempts.delete(request.attemptFingerprint);
+      }
       await mutateProviderLedger(async () => {
         const current = stateFor(
           request.stage,
