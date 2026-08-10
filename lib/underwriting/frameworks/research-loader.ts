@@ -100,7 +100,7 @@ const EXPECTED_CANONICAL_STATS = {
   excludedCardCount: 19,
 } as const;
 const EXPECTED_CANONICAL_CORPUS_DIGEST =
-  "sha256:a02b583381f386d824fdf7d92cb38960b80c9434d08492642198f72989cf40e8";
+  "sha256:222c869b57362bdc38742717b9a5e894693f66843f6851d265c344439de3c461";
 const NO_ENDORSEMENT_NOTICE =
   "This experimental product synthesis is not an endorsement by any named person or organization.";
 const NO_PRIVATE_REASONING_NOTICE =
@@ -165,12 +165,12 @@ export async function loadResearchFrameworkCatalog(
     canonicalRoot,
     "Decision taxonomy",
   );
-  const decisionTaxonomy = await readParsedJson(
+  const decisionTaxonomy = deepFreeze(await readParsedJson(
     decisionTaxonomyPath,
     DecisionQuestionTaxonomyAuthoringSchema,
     "Decision taxonomy",
     input.signal,
-  );
+  ));
   const resolvedDecisionTaxonomyDigest = decisionTaxonomyDigest(
     decisionTaxonomy,
   );

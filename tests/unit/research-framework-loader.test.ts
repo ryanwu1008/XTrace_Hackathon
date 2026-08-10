@@ -99,9 +99,7 @@ test("binds each audited Card decision question to one exact taxonomy row", asyn
       `${right.frameworkId}\u0000${right.cardFieldRef}`,
     )
   );
-  const actual = expected.map(({ frameworkId, cardFieldRef }) =>
-    resolveDecisionTaxonomy(frameworkId, cardFieldRef)
-  );
+  const actual = [...catalog.decisionTaxonomyBindings];
 
   assert.equal(catalog.decisionTaxonomyVersion, DECISION_TAXONOMY_VERSION);
   assert.match(catalog.decisionTaxonomyDigest, /^sha256:[a-f0-9]{64}$/);
@@ -119,6 +117,50 @@ test("binds each audited Card decision question to one exact taxonomy row", asyn
     )).size,
     expected.length,
   );
+});
+
+test("uses explicit semantic taxonomy assignments for collision words", () => {
+  assert.deepEqual(
+    pickDecisionTaxonomy("BG-10", "decisionQuestions[3]"),
+    { decisionQuestionCode: "governance", evidenceDomainCodes: ["governance"] },
+  );
+  assert.deepEqual(
+    pickDecisionTaxonomy("CSP-06", "decisionQuestions[3]"),
+    { decisionQuestionCode: "customer_adoption", evidenceDomainCodes: ["customer"] },
+  );
+  assert.deepEqual(
+    pickDecisionTaxonomy("SP-03", "decisionQuestions[3]"),
+    { decisionQuestionCode: "founder_team_execution", evidenceDomainCodes: ["team"] },
+  );
+  assert.deepEqual(
+    pickDecisionTaxonomy("SQ-03", "decisionQuestions[4]"),
+    { decisionQuestionCode: "customer_adoption", evidenceDomainCodes: ["customer"] },
+  );
+  assert.deepEqual(
+    pickDecisionTaxonomy("VD-02", "decisionQuestions[0]"),
+    { decisionQuestionCode: "financing_valuation", evidenceDomainCodes: ["financing_terms", "valuation"] },
+  );
+  assert.deepEqual(
+    pickDecisionTaxonomy("BVC-03", "decisionQuestions[0]"),
+    { decisionQuestionCode: "financing_valuation", evidenceDomainCodes: ["financing_terms", "valuation"] },
+  );
+  assert.deepEqual(
+    pickDecisionTaxonomy("VM-07", "decisionQuestions[2]"),
+    { decisionQuestionCode: "financing_valuation", evidenceDomainCodes: ["financing_terms", "valuation"] },
+  );
+});
+
+test("does not expose mutable taxonomy rows after computing the digest", () => {
+  const binding = resolveDecisionTaxonomy("BG-10", "decisionQuestions[3]");
+  assert.equal(Object.isFrozen(binding), true);
+  assert.equal(Object.isFrozen(binding.evidenceDomainCodes), true);
+  assert.throws(() => {
+    (binding as { decisionQuestionCode: string }).decisionQuestionCode =
+      "security";
+  }, TypeError);
+  assert.throws(() => {
+    (binding.evidenceDomainCodes as string[]).push("security");
+  }, TypeError);
 });
 
 test("loads the audited corpus into twenty immutable pack composites and excludes all pending-review cards", async () => {
@@ -139,7 +181,7 @@ test("loads the audited corpus into twenty immutable pack composites and exclude
   assert.deepEqual(catalog.authorization, {
     mode: "canonical_audited",
     corpusDigest:
-      "sha256:a02b583381f386d824fdf7d92cb38960b80c9434d08492642198f72989cf40e8",
+      "sha256:222c869b57362bdc38742717b9a5e894693f66843f6851d265c344439de3c461",
   });
   assert.equal(catalog.composites.length, 20);
   assert.equal(new Set(catalog.composites.map(({ id }) => id)).size, 20);
@@ -415,6 +457,61 @@ test("rejects missing, extra, stale, or unsorted taxonomy bindings before catalo
   );
 });
 
+test("rejects duplicate taxonomy rows and propagates a taxonomy-code change through loader digests", async (t) => {
+  const duplicate = await copyPeterThielFixture(t);
+  const duplicatePath = join(duplicate, "decision-question-taxonomy.v1.json");
+  const duplicateTaxonomy = await readJson(duplicatePath);
+  const duplicateBindings = duplicateTaxonomy.bindings as Array<Record<string, unknown>>;
+  duplicateBindings.splice(1, 0, structuredClone(duplicateBindings[0]!));
+  await writeJson(duplicatePath, duplicateTaxonomy);
+  await assert.rejects(
+    loadResearchFrameworkCatalog({
+      context,
+      researchRoot: duplicate,
+      authorizationMode: "validation_only",
+    }),
+    /unique and UTF-8 sorted/i,
+  );
+
+  const fixture = await copyPeterThielFixture(t);
+  const before = await loadResearchFrameworkCatalog({
+    context,
+    researchRoot: fixture,
+    authorizationMode: "validation_only",
+  });
+  const taxonomyPath = join(fixture, "decision-question-taxonomy.v1.json");
+  const taxonomy = await readJson(taxonomyPath);
+  const binding = (taxonomy.bindings as Array<Record<string, unknown>>).find(
+    ({ frameworkId, cardFieldRef }) =>
+      frameworkId === "PT-01" && cardFieldRef === "decisionQuestions[0]",
+  );
+  assert.ok(binding);
+  binding.decisionQuestionCode = binding.decisionQuestionCode === "market_structure"
+    ? "operating_model"
+    : "market_structure";
+  await writeJson(taxonomyPath, taxonomy);
+  const after = await loadResearchFrameworkCatalog({
+    context,
+    researchRoot: fixture,
+    authorizationMode: "validation_only",
+  });
+  const beforeComposite = before.composites.find(({ experimentalAdvisory }) =>
+    experimentalAdvisory.packId === "peter_thiel_public_frameworks_v0_1"
+  );
+  const afterComposite = after.composites.find(({ experimentalAdvisory }) =>
+    experimentalAdvisory.packId === "peter_thiel_public_frameworks_v0_1"
+  );
+  assert.ok(beforeComposite);
+  assert.ok(afterComposite);
+  assert.notEqual(after.decisionTaxonomyDigest, before.decisionTaxonomyDigest);
+  assert.notEqual(after.authorization.corpusDigest, before.authorization.corpusDigest);
+  assert.notEqual(after.fingerprint, before.fingerprint);
+  assert.notEqual(
+    afterComposite.experimentalAdvisory.authorizationDigest,
+    beforeComposite.experimentalAdvisory.authorizationDigest,
+  );
+});
+
 test("rejects client-supplied taxonomy bindings rather than accepting a catalog-order fallback", async () => {
   await assert.rejects(
     loadResearchFrameworkCatalog({
@@ -599,4 +696,15 @@ async function writeJson(
 
 function compareUtf8(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function pickDecisionTaxonomy(
+  frameworkId: string,
+  cardFieldRef: string,
+): { decisionQuestionCode: string; evidenceDomainCodes: string[] } {
+  const binding = resolveDecisionTaxonomy(frameworkId, cardFieldRef);
+  return {
+    decisionQuestionCode: binding.decisionQuestionCode,
+    evidenceDomainCodes: [...binding.evidenceDomainCodes],
+  };
 }

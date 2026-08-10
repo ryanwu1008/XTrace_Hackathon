@@ -41,9 +41,40 @@ export type DecisionTaxonomyDocument = z.infer<
   typeof DecisionTaxonomyDocumentSchema
 >;
 
-const decisionTaxonomy = DecisionTaxonomyDocumentSchema.parse(
+/** Explicit review standard applied when authoring each taxonomy row. */
+export const DECISION_TAXONOMY_SEMANTIC_CRITERIA = {
+  market_structure: "Market shape, competition, category boundaries, and durable demand.",
+  product_differentiation: "Product capabilities, technical advantages, and defensibility of the offering.",
+  customer_adoption: "Observed customer behavior, demand, retention, willingness to pay, and adoption evidence.",
+  founder_team_execution: "Founders, leaders, team behavior, incentives, and organizational execution.",
+  operating_model: "Repeatable operating processes, resource allocation, and delivery mechanics.",
+  unit_economics: "Incremental revenue, cost, margin, payback, and profitability mechanics.",
+  financing_valuation: "Ownership, dilution, security terms, price, valuation, financing, and return economics.",
+  governance: "Oversight, controls, accountability, fiduciary process, and decision rights.",
+  security: "Information security, privacy, technical risk controls, and regulatory security obligations.",
+  portfolio_risk: "Fund-level concentration, reserves, follow-on allocation, and portfolio exposure.",
+} as const satisfies Record<DecisionQuestionCode, string>;
+
+export const EVIDENCE_DOMAIN_SEMANTIC_CRITERIA = {
+  market: "Market size, structure, competition, and demand evidence.",
+  product: "Product behavior, capabilities, quality, and technical evidence.",
+  customer: "Customer behavior, feedback, retention, and purchase evidence.",
+  distribution: "Channels, go-to-market, acquisition, and reach evidence.",
+  team: "Founder, executive, employee, and organization evidence.",
+  operations: "Operating process, delivery, and execution evidence.",
+  financial_performance: "Reported financial outcomes and performance evidence.",
+  unit_economics: "Incremental revenue, cost, margin, and payback evidence.",
+  financing_terms: "Security, capitalization, ownership, and financing agreement evidence.",
+  valuation: "Price, valuation, return, and exit-value evidence.",
+  governance: "Oversight, controls, accountability, and decision-right evidence.",
+  security: "Security, privacy, and technical-control evidence.",
+  regulatory: "Legal, regulatory, and compliance evidence.",
+  portfolio_risk: "Fund concentration, reserve, and portfolio exposure evidence.",
+} as const satisfies Record<EvidenceDomainCode, string>;
+
+const decisionTaxonomy = deepFreeze(DecisionTaxonomyDocumentSchema.parse(
   rawDecisionTaxonomy,
-);
+));
 validateIntrinsicTaxonomy(decisionTaxonomy.bindings);
 const bindingByIdentity = new Map(
   decisionTaxonomy.bindings.map((binding) => [
@@ -169,4 +200,12 @@ function canonicalJson(value: unknown): string {
 
 function compareUtf8(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
 }
