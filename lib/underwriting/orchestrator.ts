@@ -68,7 +68,6 @@ import {
   type CandidateGroundingPort,
 } from "./candidate-grounding";
 import {
-  CURRENT_FRAMEWORK_LENS_STAGE_REPLAY_CONTRACT,
   parseCandidateGroundingSnapshot,
   parseDecisionResult,
   parseFrameworkCatalogBinding,
@@ -77,6 +76,10 @@ import {
   parseNarrativeArtifacts,
   parseValuationArtifactSet,
 } from "./stage-replay";
+import {
+  CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+  createFrameworkLensStageInputFingerprint,
+} from "./frameworks/passage-contract";
 import {
   CandidateBudgetExhaustedError,
   CandidateStageTimeoutError,
@@ -827,25 +830,26 @@ export function createSourceGroundedCandidateExecutor(options: {
     }
     let lensResult;
     try {
-      const frameworkInputFingerprint = fingerprint({
-        stage: "framework_lenses",
-        candidate: input.candidate,
-        pack,
-        context,
-        calculations: valuationArtifacts.calculations,
-        execution,
-        frameworkCatalog: {
-          version: frameworkCatalog?.catalogVersion ?? null,
-          fingerprint: frameworkCatalog?.catalogFingerprint ?? null,
-          corpusDigest: frameworkCatalog?.corpusDigest ?? null,
-        },
-      });
+      const frameworkInputFingerprint =
+        createFrameworkLensStageInputFingerprint({
+          candidate: input.candidate,
+          pack,
+          context,
+          calculations: valuationArtifacts.calculations,
+          execution,
+          frameworkCatalog: {
+            version: frameworkCatalog?.catalogVersion ?? null,
+            fingerprint: frameworkCatalog?.catalogFingerprint ?? null,
+            corpusDigest: frameworkCatalog?.corpusDigest ?? null,
+          },
+          passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+        });
       lensResult = await input.stages.run({
         stage: "framework_lenses",
         inputFingerprint: frameworkInputFingerprint,
         parseOutput: (value) => parseFrameworkLensResult(
           value,
-          CURRENT_FRAMEWORK_LENS_STAGE_REPLAY_CONTRACT,
+          CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
         ),
         operation: async (signal) => {
           let service = options.frameworkLenses;

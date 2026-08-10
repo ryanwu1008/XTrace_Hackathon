@@ -26,7 +26,6 @@ import {
 } from "../../contracts/underwriting";
 import {
   NAMED_LENS_GENERATOR_VERSION,
-  NAMED_LENS_PASSAGE_SCHEMA_VERSION,
 } from "../../contracts/named-lens";
 import { SYNTHETIC_FRAMEWORK_PACK } from "../../../seed/underwriting/framework-pack-v1";
 import { runClaudeFrameworkLens } from "./claude-lens";
@@ -52,9 +51,13 @@ import {
   type FrameworkCard,
 } from "./schemas";
 import {
-  DECISION_TAXONOMY_VERSION,
   type DecisionTaxonomyBinding,
 } from "./decision-taxonomy";
+import {
+  CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+  FrameworkLensPassageContractSchema,
+  type FrameworkLensPassageContract,
+} from "./passage-contract";
 import {
   NamedLensPassageValidationResultSchema,
   groundNamedLensPassage,
@@ -93,12 +96,7 @@ export interface FrameworkLensCacheBinding {
   compositeAuthorizationDigest: string | null;
 }
 
-export interface FrameworkLensPassageContract {
-  passageSchemaVersion: typeof NAMED_LENS_PASSAGE_SCHEMA_VERSION;
-  generatorVersion: typeof NAMED_LENS_GENERATOR_VERSION;
-  decisionTaxonomyVersion: typeof DECISION_TAXONOMY_VERSION;
-  decisionTaxonomyDigest: string;
-}
+export type { FrameworkLensPassageContract } from "./passage-contract";
 
 export interface FrameworkLensPassageCandidateRecord {
   judgmentOrCatalogCandidateId: string;
@@ -185,13 +183,6 @@ const FrameworkLensCacheBindingSchema = z.strictObject({
   compositeAuthorizationDigest: z.string().min(1).nullable(),
 });
 
-const FrameworkLensPassageContractSchema = z.strictObject({
-  passageSchemaVersion: z.literal(NAMED_LENS_PASSAGE_SCHEMA_VERSION),
-  generatorVersion: z.literal(NAMED_LENS_GENERATOR_VERSION),
-  decisionTaxonomyVersion: z.literal(DECISION_TAXONOMY_VERSION),
-  decisionTaxonomyDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-});
-
 const FrameworkLensCacheRecordSchema = z.strictObject({
   fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   judgment: FrameworkJudgmentSchema,
@@ -216,6 +207,7 @@ export interface FrameworkLensService {
     passageCandidates: FrameworkLensPassageCandidateRecord[];
     passageResults: NamedLensPassageValidationResult[];
     taxonomyByFrameworkId: Readonly<Record<string, DecisionTaxonomyBinding>>;
+    passageContract: FrameworkLensPassageContract;
   }>;
 }
 
@@ -714,6 +706,7 @@ export function createFrameworkLensService(options: {
         passageCandidates,
         passageResults,
         taxonomyByFrameworkId,
+        passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
       };
     },
   };
@@ -874,8 +867,7 @@ function passageContractFor(
 ): FrameworkLensPassageContract | null {
   if (!isExperimentalAdvisoryFrameworkCard(card)) return null;
   return FrameworkLensPassageContractSchema.parse({
-    passageSchemaVersion: NAMED_LENS_PASSAGE_SCHEMA_VERSION,
-    generatorVersion: NAMED_LENS_GENERATOR_VERSION,
+    ...CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
     decisionTaxonomyVersion: card.experimentalAdvisory.decisionTaxonomyVersion,
     decisionTaxonomyDigest: card.experimentalAdvisory.decisionTaxonomyDigest,
   });

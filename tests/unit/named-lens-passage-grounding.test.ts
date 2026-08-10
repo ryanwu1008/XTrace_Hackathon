@@ -371,7 +371,7 @@ test("withholds foreign, mixed, and wrong-partition evidence without mutating th
 test("withholds stance/posture mismatches and unsafe action, voice, or quotation text", () => {
   const ordinaryVerbs = passage();
   ordinaryVerbs.caseApplication.text =
-    "Observed gains may pass through to retained usage while teams watch independent cohorts.";
+    "Observed gains may pass through the company’s cohorts while the customer’s team may watch independent validation.";
   assert.equal(grounded(ordinaryVerbs).status, "validated");
 
   const mismatch = passage();
@@ -393,6 +393,7 @@ test("withholds stance/posture mismatches and unsafe action, voice, or quotation
 
   const unsafeCases = [
     ["The formal decision should be Invest Candidate.", "unsafe_passage_action"],
+    ["The recommendation is to invest.", "unsafe_passage_action"],
     ["The decision ceiling is Watch.", "unsafe_passage_action"],
     ["This framework creates a veto.", "unsafe_passage_action"],
     ["VSee should invest in this company.", "unsafe_passage_action"],
@@ -408,6 +409,7 @@ test("withholds stance/posture mismatches and unsafe action, voice, or quotation
     ["I interpret this premise as contingent.", "unsafe_passage_voice"],
     ["We interpret this premise as contingent.", "unsafe_passage_voice"],
     ["The framework says “this company must win.”", "unsafe_passage_quote"],
+    ["The framework says ‘this company must win.’", "unsafe_passage_quote"],
   ] as const;
   for (const [text, reasonCode] of unsafeCases) {
     const unsafe = passage();

@@ -82,10 +82,12 @@ export type NamedLensPassageValidationResult = z.infer<
 
 const FORMAL_GOVERNANCE_PATTERN = /\b(?:formal[ _-]+decision|decision[ _-]+ceiling|hard[ _-]+veto|veto|invest[ _-]+candidate|(?:decision|recommendation|rating|label|outcome)(?:\s+(?:is|of|to))?\s+(?:pass|watch|advance))\b/iu;
 const FORMAL_DECISION_LABEL_PATTERN = /\b(?:Pass|Watch|Advance|Invest Candidate)\b/u;
+const FORMAL_RECOMMENDATION_PATTERN = /\b(?:formal[ _-]+)?(?:decision|recommendation|rating|label|outcome|ceiling|veto|next[ _-]+step)\b(?=[^.!?\n]{0,64}\b(?:invest|investing|investment|buy|buying|purchase|reject|pass|watch|advance)\b)/iu;
 const TYPED_ACTION_PATTERN = /\b(?:advance[ _-]+(?:internal[ _-]+)?diligence|continue[ _-]+(?:internal[ _-]+)?monitoring|deprioritize|reopen[ _-]+(?:internal[ _-]+)?diligence|evaluate[ _-]+(?:a[ _-]+)?follow[ _-]+on(?:[ _-]+investment)?|pause[ _-]+follow[ _-]+on(?:[ _-]+investment(?:[ _-]+activity)?)?|(?:begin[ _-]+(?:an[ _-]+)?internal[ _-]+)?portfolio[ _-]+risk[ _-]+review|no[ _-]+new[ _-]+(?:internal[ _-]+)?action|review[ _-]+(?:the[ _-]+)?analysis[ _-]+failure)\b/iu;
 const ORGANIZATION_DIRECTIVE_PATTERN = /\b(?:VSee|(?:the[ _-]+)?fund|(?:the[ _-]+)?IC|(?:the[ _-]+)?investment[ _-]+committee)\s+(?:(?:should|must|ought[ _-]+to|needs?[ _-]+to|will|is[ _-]+(?:directed|expected|recommended)[ _-]+to)\s+(?:invest|reject|pass|watch|advance|deprioritize|reopen|evaluate|pause|begin|review)|(?:recommends?|directs?|endorses?|approves?)\s+(?:(?:an?|the)[ _-]+)?(?:investment|investing|buying|purchase|rejection))\b/iu;
 const FIRST_PERSON_PATTERN = /\b(?:I|me|my|mine|myself|we|us|our|ours|ourselves)\b/iu;
-const QUOTATION_PATTERN = /["“”]/u;
+const QUOTATION_PUNCTUATION_PATTERN = /["“”„‟«»‹›「」『』〝〞〟＂‘‚‛]/u;
+const PAIRED_SINGLE_QUOTATION_PATTERN = /'[^'\n]+'/u;
 const NAMED_PERSON_STANCE_PATTERN = /\b\p{Lu}[\p{L}'’.-]+(?:\s+\p{Lu}[\p{L}'’.-]+)+\s+(?:(?:would|should)\s+(?:invest|reject|pass|watch|advance)|endorses?|recommends?|rejects?|(?:supports?|opposes?)\s+(?:the\s+)?investment|believes?|thinks?|argues?|concludes?|maintains?|expects?|predicts?|says?)\b/u;
 const LENS_ENDORSEMENT_PATTERN = /\b(?:this|the)[ _-]+(?:framework|lens|analysis|passage)\s+(?:endorses?|recommends?|approves?|rejects?|supports?|opposes?)\s+(?:(?:an?|the)\s+)?(?:investment|investing|buying|company)\b/iu;
 const IMPERSONATION_PATTERN = /\b(?:endorsed|recommends?[ _-]+investing|would[ _-]+invest|private[ _-]+reasoning|hidden[ _-]+reasoning|chain[ _-]+of[ _-]+thought)\b/iu;
@@ -219,6 +221,7 @@ export function groundNamedLensPassage(input: {
     texts.some((text) =>
       FORMAL_GOVERNANCE_PATTERN.test(text)
       || FORMAL_DECISION_LABEL_PATTERN.test(text)
+      || FORMAL_RECOMMENDATION_PATTERN.test(text)
       || TYPED_ACTION_PATTERN.test(text)
       || ORGANIZATION_DIRECTIVE_PATTERN.test(text)
     )
@@ -229,13 +232,14 @@ export function groundNamedLensPassage(input: {
     texts.some((text) =>
       FIRST_PERSON_PATTERN.test(text)
       || NAMED_PERSON_STANCE_PATTERN.test(text)
+      || hasAuthorizedNamedPersonVoice(text, card)
       || LENS_ENDORSEMENT_PATTERN.test(text)
       || IMPERSONATION_PATTERN.test(text)
     )
   ) {
     return withheld("unsafe_passage_voice", authorizedFocus);
   }
-  if (texts.some((text) => QUOTATION_PATTERN.test(text))) {
+  if (texts.some(hasQuotationPunctuation)) {
     return withheld("unsafe_passage_quote", authorizedFocus);
   }
 
@@ -287,6 +291,44 @@ export function groundNamedLensPassage(input: {
     authorizedFocus,
     groundedCandidate,
   };
+}
+
+function hasAuthorizedNamedPersonVoice(
+  text: string,
+  card: ExperimentalAdvisoryFrameworkCard,
+): boolean {
+  const aliases = new Set<string>();
+  for (const component of card.experimentalAdvisory.components) {
+    for (const person of component.attribution.people) {
+      const words = person.trim().split(/\s+/u).filter(Boolean);
+      if (words.length === 0) continue;
+      aliases.add(person.trim());
+      const surname = words.at(-1)!;
+      if (surname.length >= 3) aliases.add(surname);
+    }
+  }
+  if (aliases.size === 0) return false;
+  const aliasPattern = [...aliases]
+    .sort((left, right) => right.length - left.length)
+    .map(escapeRegExp)
+    .join("|");
+  const attributedVoice = new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])(?:${aliasPattern})(?:['’]s)?\\s+`
+      + "(?:(?:would|should)\\s+(?:invest|reject|pass|watch|advance)|"
+      + "endorses?|recommends?|rejects?|supports?|opposes?|believes?|thinks?|"
+      + "argues?|concludes?|maintains?|expects?|predicts?|says?)\\b",
+    "iu",
+  );
+  return attributedVoice.test(text);
+}
+
+function hasQuotationPunctuation(text: string): boolean {
+  return QUOTATION_PUNCTUATION_PATTERN.test(text)
+    || PAIRED_SINGLE_QUOTATION_PATTERN.test(text);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function authorizeFocus(

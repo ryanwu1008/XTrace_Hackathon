@@ -343,6 +343,7 @@ test("stage replay requires the exact current passage generation contract", asyn
   )) as Record<string, unknown>;
   const current = currentPassageContract();
 
+  assert.deepEqual(persisted.passageContract, current);
   assert.deepEqual(parseFrameworkLensResult(persisted, current), persisted);
 
   const staleGenerator = structuredClone(persisted) as {
@@ -375,6 +376,30 @@ test("stage replay requires the exact current passage generation contract", asyn
   assert.throws(
     () => parseFrameworkLensResult(staleTaxonomy, current),
     /passage.*contract|taxonomy.*digest|current/i,
+  );
+
+  for (const [field, staleValue] of [
+    ["passageSchemaVersion", "named-lens-passage-stale"],
+    ["generatorVersion", "named-lens-generator-stale"],
+    ["decisionTaxonomyVersion", "named-lens-taxonomy-stale"],
+    ["decisionTaxonomyDigest", `sha256:${"0".repeat(64)}`],
+  ] as const) {
+    const staleContract = structuredClone(persisted) as {
+      passageContract: Record<string, string>;
+    };
+    staleContract.passageContract[field] = staleValue;
+    assert.throws(
+      () => parseFrameworkLensResult(staleContract, current),
+      /passage.*contract|invalid|version|digest/i,
+      field,
+    );
+  }
+
+  const missingContract = structuredClone(persisted);
+  delete missingContract.passageContract;
+  assert.throws(
+    () => parseFrameworkLensResult(missingContract, current),
+    /passage.*contract|invalid|required/i,
   );
 });
 
@@ -700,6 +725,90 @@ test("keeps a grounded advisory judgment when only its one-call passage has fore
   assert.equal(
     Object.hasOwn(result.taxonomyByFrameworkId, judgment!.frameworkCardId),
     true,
+  );
+});
+
+test("full advisory service path withholds formal advice, metadata-named voice, and Unicode quotation", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const applicable = authorizedResearchComposites(catalog).filter(
+    ({ experimentalAdvisory }) => experimentalAdvisory.applicable,
+  );
+  const peter = applicable.find(
+    ({ experimentalAdvisory }) =>
+      experimentalAdvisory.packId === "peter_thiel_public_frameworks_v0_1",
+  );
+  assert.ok(peter);
+  const other = applicable.filter(({ id }) => id !== peter.id).slice(0, 2);
+  assert.equal(other.length, 2);
+  const unsafeByCardId = new Map([
+    [other[0]!.id, {
+      text: "The recommendation is to invest.",
+      reasonCode: "unsafe_passage_action",
+    }],
+    [peter.id, {
+      text: "Thiel believes this company will win.",
+      reasonCode: "unsafe_passage_voice",
+    }],
+    [other[1]!.id, {
+      text: "The framework says ‘this company must win.’",
+      reasonCode: "unsafe_passage_quote",
+    }],
+  ] as const);
+  const service = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    client: {
+      async complete(request) {
+        const card = promptCard(request);
+        const output = advisoryOutput(card);
+        const unsafe = unsafeByCardId.get(card.id);
+        if (unsafe) output.passage.premise.text = unsafe.text;
+        return JSON.stringify(output);
+      },
+    },
+  });
+
+  const result = await service.runAll(runInput());
+  for (const [frameworkCardId, unsafe] of unsafeByCardId) {
+    const judgment = result.judgments.find(
+      (item) => item.frameworkCardId === frameworkCardId,
+    );
+    assert.equal(judgment?.applicability, "applicable");
+    assert.ok(result.passageCandidates.some(
+      (item) => item.frameworkCardId === frameworkCardId,
+    ));
+    const passageResult = result.passageResults.find(
+      ({ judgmentOrCatalogCandidateId }) =>
+        judgmentOrCatalogCandidateId === judgment?.id,
+    );
+    assert.deepEqual(
+      passageResult && {
+        status: passageResult.status,
+        reasonCode: passageResult.status === "validated"
+          ? null
+          : passageResult.reasonCode,
+      },
+      { status: "withheld", reasonCode: unsafe.reasonCode },
+    );
+  }
+
+  const persisted = JSON.parse(JSON.stringify(result));
+  assert.deepEqual(
+    parseFrameworkLensResult(persisted, currentPassageContract()),
+    persisted,
+  );
+  const staleWithheld = structuredClone(persisted) as {
+    passageContract: { generatorVersion: string };
+  };
+  staleWithheld.passageContract.generatorVersion =
+    "named-lens-generator-stale";
+  assert.throws(
+    () => parseFrameworkLensResult(
+      staleWithheld,
+      currentPassageContract(),
+    ),
+    /passage.*contract|generator.*version|current/i,
   );
 });
 

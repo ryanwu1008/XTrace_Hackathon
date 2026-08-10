@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { z } from "zod";
 
 import {
@@ -6,10 +8,6 @@ import {
   EvidencePackSchema,
   SourceRevisionSchema,
 } from "../contracts/evidence";
-import {
-  NAMED_LENS_GENERATOR_VERSION,
-  NAMED_LENS_PASSAGE_SCHEMA_VERSION,
-} from "../contracts/named-lens";
 import {
   DecisionResultSchema,
   FrameworkDisagreementSchema,
@@ -25,10 +23,12 @@ import type {
 } from "./candidate-grounding";
 import type { ValuationArtifactSet } from "./valuation/contracts";
 import {
-  DECISION_TAXONOMY_DIGEST,
-  DECISION_TAXONOMY_VERSION,
   DecisionTaxonomyBindingSchema,
 } from "./frameworks/decision-taxonomy";
+import {
+  FrameworkLensPassageContractSchema,
+  type FrameworkLensPassageContract,
+} from "./frameworks/passage-contract";
 import {
   NamedLensPassageCandidateSchema,
 } from "./frameworks/schemas";
@@ -114,22 +114,8 @@ const FrameworkLensResultSchema = z.strictObject({
     IdSchema,
     DecisionTaxonomyBindingSchema,
   ),
+  passageContract: FrameworkLensPassageContractSchema,
 });
-export const FrameworkLensStageReplayContractSchema = z.strictObject({
-  passageSchemaVersion: z.literal(NAMED_LENS_PASSAGE_SCHEMA_VERSION),
-  generatorVersion: z.literal(NAMED_LENS_GENERATOR_VERSION),
-  decisionTaxonomyVersion: z.literal(DECISION_TAXONOMY_VERSION),
-  decisionTaxonomyDigest: z.literal(DECISION_TAXONOMY_DIGEST),
-});
-export type FrameworkLensStageReplayContract = z.infer<
-  typeof FrameworkLensStageReplayContractSchema
->;
-export const CURRENT_FRAMEWORK_LENS_STAGE_REPLAY_CONTRACT = Object.freeze({
-  passageSchemaVersion: NAMED_LENS_PASSAGE_SCHEMA_VERSION,
-  generatorVersion: NAMED_LENS_GENERATOR_VERSION,
-  decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
-  decisionTaxonomyDigest: DECISION_TAXONOMY_DIGEST,
-}) satisfies FrameworkLensStageReplayContract;
 const FrameworkCatalogBindingSchema = z.strictObject({
   catalogVersion: IdSchema,
   catalogFingerprint: FingerprintSchema,
@@ -162,20 +148,15 @@ export function parseValuationArtifactSet(
 
 export function parseFrameworkLensResult(
   value: unknown,
-  expectedContract: FrameworkLensStageReplayContract,
+  expectedContract: FrameworkLensPassageContract,
 ): z.infer<typeof FrameworkLensResultSchema> {
-  const contract = FrameworkLensStageReplayContractSchema.parse(
+  const contract = FrameworkLensPassageContractSchema.parse(
     expectedContract,
   );
   const parsed = FrameworkLensResultSchema.parse(value);
-  const stalePassage = parsed.passageResults.some((result) =>
-    result.status === "validated"
-    && (
-      result.groundedCandidate.schemaVersion
-        !== contract.passageSchemaVersion
-      || result.groundedCandidate.generatorVersion
-        !== contract.generatorVersion
-    )
+  const stalePassageContract = !isDeepStrictEqual(
+    parsed.passageContract,
+    contract,
   );
   const staleTaxonomy = parsed.judgments.some((judgment) =>
     judgment.frameworkMetadata !== undefined
@@ -186,7 +167,7 @@ export function parseFrameworkLensResult(
         !== contract.decisionTaxonomyDigest
     )
   );
-  if (stalePassage || staleTaxonomy) {
+  if (stalePassageContract || staleTaxonomy) {
     throw new Error(
       "Framework lens stage replay does not match the current passage generation contract.",
     );

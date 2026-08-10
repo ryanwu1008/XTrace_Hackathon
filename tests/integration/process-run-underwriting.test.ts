@@ -86,6 +86,9 @@ import type {
   FrameworkLensService,
 } from "../../lib/underwriting/frameworks/service";
 import {
+  CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+} from "../../lib/underwriting/frameworks/passage-contract";
+import {
   buildFrameworkAbstention,
 } from "../../lib/underwriting/frameworks/grounding";
 import type {
@@ -121,6 +124,7 @@ function canonicalFrameworkAbstentions(
     passageCandidates: [],
     passageResults: [],
     taxonomyByFrameworkId: {},
+    passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
   };
 }
 
@@ -2355,11 +2359,10 @@ test("runs the source-grounded candidate chain once and persists communication c
   assert.equal(lensExecutions, 1);
   assert.equal(runs.inspect().candidates[0]?.status, "completed");
   assert.ok(frameworkInput);
-  assert.equal(
-    runs.inspect().checkpoints.find(
-      ({ stage }) => stage === "framework_lenses",
-    )?.inputFingerprint,
-    createCanonicalFingerprint({
+  const frameworkCheckpointFingerprint = runs.inspect().checkpoints.find(
+    ({ stage }) => stage === "framework_lenses",
+  )?.inputFingerprint;
+  const frameworkStageFingerprintInput = {
       stage: "framework_lenses",
       candidate: frameworkInput.candidate,
       pack: frameworkInput.pack,
@@ -2377,8 +2380,30 @@ test("runs the source-grounded candidate chain once and persists communication c
         fingerprint: `sha256:${"7".repeat(64)}`,
         corpusDigest: `sha256:${"8".repeat(64)}`,
       },
-    }),
+      passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+  };
+  assert.equal(
+    frameworkCheckpointFingerprint,
+    createCanonicalFingerprint(frameworkStageFingerprintInput),
   );
+  for (const [field, staleValue] of [
+    ["passageSchemaVersion", "named-lens-passage-stale"],
+    ["generatorVersion", "named-lens-generator-stale"],
+    ["decisionTaxonomyVersion", "named-lens-taxonomy-stale"],
+    ["decisionTaxonomyDigest", `sha256:${"0".repeat(64)}`],
+  ] as const) {
+    assert.notEqual(
+      frameworkCheckpointFingerprint,
+      createCanonicalFingerprint({
+        ...frameworkStageFingerprintInput,
+        passageContract: {
+          ...CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
+          [field]: staleValue,
+        },
+      }),
+      field,
+    );
+  }
   assert.deepEqual(
     runs.inspect().checkpoints.map(({ stage, status }) => [stage, status]),
     [
@@ -2791,6 +2816,7 @@ test("exhausted provider capacity is a visible truncation without starting the p
             passageCandidates: [],
             passageResults: [],
             taxonomyByFrameworkId: {},
+            passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
           };
         },
       },
@@ -2903,6 +2929,7 @@ test("settled provider overage blocks the next physical request before dispatch"
             passageCandidates: [],
             passageResults: [],
             taxonomyByFrameworkId: {},
+            passageContract: CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
           };
         },
       },
@@ -3543,6 +3570,8 @@ test("framework catalog resolution is aborted by the bounded framework stage tim
                     passageCandidates: [],
                     passageResults: [],
                     taxonomyByFrameworkId: {},
+                    passageContract:
+                      CURRENT_FRAMEWORK_LENS_PASSAGE_CONTRACT,
                   };
                 },
               },

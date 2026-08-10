@@ -312,3 +312,171 @@ The focused safety command was RED with 0 passed / 1 failed (`validated`
 instead of `withheld`), then GREEN with 1 passed / 0 failed after extending the
 same bounded organization-directive, lens-endorsement, and named-person stance
 grammar. No further Critical or Important finding remains from that review.
+
+---
+
+## Fix round 2/5 — reviewer findings before implementation
+
+### Important 1 — prose safety still admits formal advice, metadata-named voice, and quote punctuation
+
+A complete schema-valid passage can still be grounded as `validated` when its
+text is `The recommendation is to invest.`, `Thiel believes this company will
+win.`, or `The framework says ‘this company must win.’`. The remaining gaps
+are an unsubjected formal-investment recommendation form, named-person belief
+voice using only the surname represented by the exact authorized Card
+metadata, and Unicode single quotation punctuation. The required correction
+must be fail closed from exact authorized Card/named-person metadata and cover
+quotation punctuation; it must not become an indefinitely growing phrase
+blacklist or reject ordinary analytical lowercase `pass` and `watch`. Exact
+full service-path regressions are required in addition to grounding-unit
+coverage.
+
+### Important 2 — withheld stage outcomes and checkpoint identity are not bound to the current contract
+
+Stage replay currently checks schema/generator versions only inside a
+`validated` grounded candidate. The replay payload has no persisted passage
+contract of its own, so an applicable `withheld` candidate/result carries no
+version to compare and a result produced under an old generator can replay.
+The `framework_lenses` stage input fingerprint also omits the passage contract.
+Every applicable passage outcome, validated or withheld, and the replay input
+identity must be bound to the exact current passage schema, generator, decision
+taxonomy version, and decision taxonomy digest. Missing, old, or one-field
+mutated contracts must fail closed. Regressions must cover withheld replay plus
+fingerprint/version/digest mutations.
+
+### Non-blocking compatibility note
+
+Making `NamedLensPassageSchema.generatorVersion` a current-version literal
+will eventually require a version-dispatched legacy reader. This round must not
+weaken current writes or replay. If a bounded reader is not needed by the
+present stage/cache path, that compatibility work remains parked for the Task 8
+legacy adapter.
+
+### Round 2 root cause and implementation
+
+- Passage safety was still classified only from global text patterns. It had
+  no access to the exact `attribution.people` arrays already persisted on each
+  authorized component Card, so a surname-only attributed voice could not be
+  resolved. Grounding now derives full-name and surname aliases only from
+  those loader-owned Card records and applies a bounded attributed-voice
+  grammar. The existing full-name guard remains as a fail-closed defense for a
+  foreign explicit full name.
+- Formal recommendation detection now binds a formal governance noun to an
+  investment/action term within the same bounded sentence span. Ordinary
+  analytical lowercase `pass` and `watch` without that governance context
+  remain valid.
+- Quotation detection now covers Unicode double/open-single quotation
+  punctuation and paired straight/curly single quotations without treating an
+  ordinary in-word apostrophe as a quotation.
+- Added one shared framework passage-contract module. The service result now
+  persists the exact current schema/generator/taxonomy version and digest once
+  for the complete stage result, so it binds validated and withheld outcomes
+  alike. Strict stage replay requires that field and compares it to the
+  executor-supplied current contract. Cache records continue to carry and
+  independently re-ground their exact per-advisory passage contract.
+- The framework-stage input fingerprint is now created by one helper that
+  includes the passage contract. Missing contracts are rejected; mutating any
+  one schema, generator, taxonomy-version, or taxonomy-digest field produces a
+  distinct canonical checkpoint identity, and the current helper itself
+  refuses every stale mutation. The source-grounded executor supplies only the
+  frozen current contract.
+
+### Round 2 strict TDD evidence
+
+Before production changes, the exact grounding regression was RED:
+
+```text
+node --import tsx --test --test-concurrency=1 --test-name-pattern='withholds stance/posture' tests/unit/named-lens-passage-grounding.test.ts
+```
+
+Exit 1: 0 passed / 1 failed because the first new complete passage was
+`validated` instead of `withheld`.
+
+The full service-path and stage replay regressions were also RED:
+
+```text
+node --import tsx --test --test-concurrency=1 --test-name-pattern='stage replay requires|full advisory service path' tests/unit/framework-advisory.test.ts
+```
+
+Exit 1: 0 passed / 2 failed. The service result had no persisted
+`passageContract`, and `The recommendation is to invest.` remained validated.
+The same service test maps the exact Thiel-surname and Unicode-single-quote
+examples to two other complete applicable advisory responses.
+
+The new checkpoint-identity regression was RED with `ERR_MODULE_NOT_FOUND`
+because the shared passage-contract/fingerprint boundary did not yet exist:
+
+```text
+node --import tsx --test --test-concurrency=1 tests/unit/framework-stage-passage-contract.test.ts
+```
+
+After the safety implementation, the grounding regression was GREEN (1/1).
+The service-path test then passed all three withheld-result assertions and
+stopped only at the still-missing stage contract, proving the two boundaries
+independently. After the shared contract implementation, the stage/service
+command was GREEN (2/2), and the checkpoint-contract command was GREEN (1/1).
+Self-review then added current-helper rejection for all four stale contract
+mutations; it was RED with `Missing expected exception` and GREEN after the
+fingerprint boundary began parsing the exact current contract.
+
+### Round 2 focused verification
+
+```text
+node --import tsx --test --test-concurrency=1 tests/unit/framework-lens.test.ts tests/unit/framework-grounding.test.ts tests/unit/named-lens-passage-grounding.test.ts tests/unit/framework-stage-passage-contract.test.ts
+```
+
+Exit 0: 25 passed / 0 failed.
+
+```text
+node --import tsx --test --test-concurrency=1 tests/unit/framework-advisory.test.ts tests/unit/framework-context-runtime.test.ts
+```
+
+Exit 0: 19 passed / 0 failed.
+
+```text
+node --import tsx --test --test-concurrency=1 tests/unit/named-lens-relevance.test.ts tests/unit/named-lens-finalization.test.ts tests/contracts/named-lens.test.ts
+```
+
+Exit 0: 29 passed / 0 failed. `npm run typecheck` and `git diff --check`
+completed with exit 0. Focused ESLint completed with no errors and the same
+three base-commit unused checkpoint-binding warnings in `orchestrator.ts`.
+
+The existing broad integration test containing the durable checkpoint
+assertion was updated to include the contract, but it remains red before
+reaching that assertion because the branch's previously documented Task 2/3
+finalization fixture still yields Candidate `failed` rather than `completed`.
+The isolated stage-fingerprint test is the executable round-2 proof; no
+controller workaround was added.
+
+### Round 2 self-review and residual concern
+
+- Confirmed the full service path keeps all three judgments applicable and
+  their strict provider candidates selection-neutral while independently
+  returning the intended action, voice, and quote withholding reason.
+- Confirmed top-level stage contract validation runs for every result, including
+  a payload containing applicable withheld results, rather than branching only
+  on `validated`.
+- Confirmed missing and all four one-field contract mutations fail replay, and
+  all four corresponding mutations change the stage input fingerprint.
+- Confirmed no provider attempt count, prompt, judgment partition, Task 3
+  selection basis, decision, valuation, action, migration, UI, research corpus,
+  or hidden-reasoning boundary changed.
+- Self-review added a positive passage containing two ordinary curly possessive
+  apostrophes plus lowercase `pass/watch`. It was initially RED because a
+  paired-closing-apostrophe heuristic misclassified the span as a quotation;
+  quotation detection was narrowed to real opening quote punctuation or paired
+  straight quotes, and the exact test returned GREEN without weakening the
+  Unicode `‘…’` rejection.
+- The current generator literal remains intentionally strict for current
+  writes/replay. Version-dispatched historical passage reading remains parked
+  for the Task 8 legacy adapter rather than weakening this boundary.
+
+### Round 2 independent review
+
+An independent diff review against `30138c1` returned no Critical, Important,
+or Minor findings. It independently reran the 44 directly affected framework,
+grounding, advisory, replay-contract, and context tests plus typecheck and diff
+validation, and confirmed the service-path safety cases, metadata surname
+aliases, possessive-apostrophe positive case, withheld contract persistence,
+stale/missing replay refusal, fingerprint refusal, one-call judgment-first
+grounding, selection neutrality, Task 3 authority, and hidden-CoT boundary.
