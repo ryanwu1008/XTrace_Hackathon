@@ -551,8 +551,8 @@ function currentPayload(candidateRunId = "candidate_named_lens") {
     frameworkCardId: passage.frameworkCardId,
     frameworkVersion: passage.frameworkVersion,
     disposition: "selected_main",
-    selectedPosition: index + 1,
-    priorityTier: "changed_belief",
+    selectedPosition: (index + 1) as number | null,
+    priorityTier: "changed_belief" as string | null,
     reasonCodes: ["CHANGED_BELIEF_EVIDENCE"],
     decisionQuestionCode: passage.decisionQuestionCode,
     stance: passage.conditionalConclusion.stance,
@@ -562,7 +562,7 @@ function currentPayload(candidateRunId = "candidate_named_lens") {
     decisionCriticalEvidenceProjectionId: projection.id,
     decisionCriticalEvidenceProjectionFingerprint: projection.fingerprint,
     selectionPolicyVersion: "named-lens-selection-v1",
-    passageFingerprint: passage.fingerprint,
+    passageFingerprint: passage.fingerprint as string | null,
     fingerprint: sha(String(index + 5)),
   }));
   const attemptRefs = passages.map((passage, index) => ({
@@ -611,7 +611,7 @@ function currentPayload(candidateRunId = "candidate_named_lens") {
       fingerprint: sha("f"),
     },
     terminalStatus: "completed",
-    terminalReasonCodes: [],
+    terminalReasonCodes: [] as string[],
   };
 }
 
@@ -1063,7 +1063,7 @@ test(
             payload.namedLensPresentation.firstScreenProjectionRefs
               .selectedJudgmentIds = payload.namedLensPresentation
                 .firstScreenProjectionRefs.selectedJudgmentIds.slice(0, 2);
-            (payload as any).terminalReasonCodes = [
+            payload.terminalReasonCodes = [
               "limited_framework_coverage",
             ];
             reserveAndSettleAttempts(context, targetDatabase, payload);
@@ -1087,7 +1087,7 @@ test(
             payload.namedLensPresentation.firstScreenProjectionRefs
               .selectedJudgmentIds = payload.namedLensPresentation
                 .firstScreenProjectionRefs.selectedJudgmentIds.slice(0, 2);
-            (payload as any).terminalReasonCodes = [
+            payload.terminalReasonCodes = [
               "limited_framework_coverage",
             ];
             reserveAndSettleAttempts(context, targetDatabase, payload);
@@ -1578,10 +1578,10 @@ test(
       runMigrations(postgres, database);
       fixtureSetup(postgres, database);
       const source = currentPayload();
-      const partial = structuredClone(source) as any;
+      const partial = structuredClone(source);
       partial.candidateAnalysisFingerprint = sha("b");
       partial.namedLensDispositions = partial.namedLensDispositions.map(
-        (disposition: any) => ({
+        (disposition) => ({
           ...disposition,
           disposition: "withheld",
           selectedPosition: null,
