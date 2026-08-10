@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { EvidencePack, Fact, Assumption } from "../../lib/contracts/evidence";
+import {
+  BeliefActionKindSchema,
+  type BeliefActionKind,
+} from "../../lib/contracts/domain";
 import type {
   CandidateRun,
   FrameworkJudgment,
@@ -369,10 +373,15 @@ test("withholds foreign, mixed, and wrong-partition evidence without mutating th
 });
 
 test("withholds stance/posture mismatches and unsafe action, voice, or quotation text", () => {
-  const ordinaryVerbs = passage();
-  ordinaryVerbs.caseApplication.text =
-    "Observed gains may pass through the company’s cohorts while the customer’s team may watch independent validation.";
-  assert.equal(grounded(ordinaryVerbs).status, "validated");
+  for (const text of [
+    "The company's evidence may pass while the customer's team may watch.",
+    "Observed gains may pass through the company’s cohorts while the customer’s team may watch independent validation.",
+    "The recommendation remains provisional. The evidence reflects advancing diligence quality.",
+  ]) {
+    const ordinaryVerbs = passage();
+    ordinaryVerbs.caseApplication.text = text;
+    assert.equal(grounded(ordinaryVerbs).status, "validated", text);
+  }
 
   const mismatch = passage();
   mismatch.conditionalConclusion.stance = "negative";
@@ -394,6 +403,19 @@ test("withholds stance/posture mismatches and unsafe action, voice, or quotation
   const unsafeCases = [
     ["The formal decision should be Invest Candidate.", "unsafe_passage_action"],
     ["The recommendation is to invest.", "unsafe_passage_action"],
+    ["Investing in this company is recommended.", "unsafe_passage_action"],
+    [
+      "The recommendation for the U.S. market is advancing diligence.",
+      "unsafe_passage_action",
+    ],
+    [
+      "The recommendation for the U.K. market is advancing diligence.",
+      "unsafe_passage_action",
+    ],
+    [
+      "The recommendation at 3.5 times revenue is advancing diligence.",
+      "unsafe_passage_action",
+    ],
     ["The decision ceiling is Watch.", "unsafe_passage_action"],
     ["This framework creates a veto.", "unsafe_passage_action"],
     ["VSee should invest in this company.", "unsafe_passage_action"],
@@ -410,31 +432,120 @@ test("withholds stance/posture mismatches and unsafe action, voice, or quotation
     ["We interpret this premise as contingent.", "unsafe_passage_voice"],
     ["The framework says “this company must win.”", "unsafe_passage_quote"],
     ["The framework says ‘this company must win.’", "unsafe_passage_quote"],
+    ["The framework says 'quoted text'.", "unsafe_passage_quote"],
+    [
+      "The framework says 'company's evidence is weak'.",
+      "unsafe_passage_quote",
+    ],
+    ["The framework says 'this isn't durable'.", "unsafe_passage_quote"],
   ] as const;
   for (const [text, reasonCode] of unsafeCases) {
     const unsafe = passage();
     unsafe.premise.text = text;
     const result = grounded(unsafe);
-    assert.equal(result.status, "withheld");
+    assert.equal(result.status, "withheld", text);
     if ("reasonCode" in result) assert.equal(result.reasonCode, reasonCode);
   }
 
-  for (const [action, humanized] of [
-    ["advance_diligence", "advance internal diligence"],
-    ["continue_monitoring", "continue internal monitoring"],
-    ["deprioritize", "deprioritize this Deal"],
-    ["reopen_diligence", "reopen internal diligence"],
-    ["evaluate_follow_on", "evaluate a follow-on investment"],
-    ["pause_follow_on", "pause follow-on investment activity"],
-    ["portfolio_risk_review", "begin an internal portfolio-risk review"],
-    ["no_new_action", "no new internal action"],
-    ["review_analysis_failure", "review the analysis failure"],
-  ] as const) {
-    for (const phrase of [
+  const actionFormCases = [
+    ["advance_diligence", "advance internal diligence", [
+      "advance diligence",
+      "advances diligence",
+      "advanced diligence",
+      "advancing diligence",
+      "advance internal diligence",
+      "advances internal diligence",
+      "advanced internal diligence",
+      "advancing internal diligence",
+    ]],
+    ["continue_monitoring", "continue internal monitoring", [
+      "continue monitoring",
+      "continues monitoring",
+      "continued monitoring",
+      "continuing monitoring",
+      "continue internal monitoring",
+      "continues internal monitoring",
+      "continued internal monitoring",
+      "continuing internal monitoring",
+    ]],
+    ["deprioritize", "deprioritize this Deal", [
+      "deprioritize",
+      "deprioritizes",
+      "deprioritized",
+      "deprioritizing",
+      "deprioritize this Deal",
+      "deprioritizes this Deal",
+      "deprioritized this Deal",
+      "deprioritizing this Deal",
+    ]],
+    ["reopen_diligence", "reopen internal diligence", [
+      "reopen diligence",
+      "reopens diligence",
+      "reopened diligence",
+      "reopening diligence",
+      "reopen internal diligence",
+      "reopens internal diligence",
+      "reopened internal diligence",
+      "reopening internal diligence",
+    ]],
+    ["evaluate_follow_on", "evaluate a follow-on investment", [
+      "evaluate follow on",
+      "evaluates follow on",
+      "evaluated follow on",
+      "evaluating follow on",
+      "evaluate a follow-on investment",
+      "evaluates a follow-on investment",
+      "evaluated a follow-on investment",
+      "evaluating a follow-on investment",
+    ]],
+    ["pause_follow_on", "pause follow-on investment activity", [
+      "pause follow on",
+      "pauses follow on",
+      "paused follow on",
+      "pausing follow on",
+      "pause follow-on investment activity",
+      "pauses follow-on investment activity",
+      "paused follow-on investment activity",
+      "pausing follow-on investment activity",
+    ]],
+    ["portfolio_risk_review", "begin an internal portfolio-risk review", [
+      "portfolio risk review",
+      "begin an internal portfolio-risk review",
+      "begins an internal portfolio-risk review",
+      "began an internal portfolio-risk review",
+      "beginning an internal portfolio-risk review",
+    ]],
+    ["no_new_action", "no new internal action", [
+      "no new action",
+      "no new internal action",
+    ]],
+    ["review_analysis_failure", "review the analysis failure", [
+      "review analysis failure",
+      "reviews analysis failure",
+      "reviewed analysis failure",
+      "reviewing analysis failure",
+      "review the analysis failure",
+      "reviews the analysis failure",
+      "reviewed the analysis failure",
+      "reviewing the analysis failure",
+    ]],
+  ] as const satisfies readonly (readonly [
+    BeliefActionKind,
+    string,
+    readonly string[],
+  ])[];
+  assert.deepEqual(
+    actionFormCases.map(([action]) => action),
+    BeliefActionKindSchema.options,
+  );
+  for (const [action, humanized, inflectedPhrases] of actionFormCases) {
+    const phrases = new Set<string>([
       action,
       action.replaceAll("_", " "),
       humanized,
-    ]) {
+      ...inflectedPhrases,
+    ]);
+    for (const phrase of phrases) {
       const unsafe = passage();
       unsafe.premise.text = `The prescribed action is ${phrase}.`;
       const result = grounded(unsafe);
@@ -442,6 +553,60 @@ test("withholds stance/posture mismatches and unsafe action, voice, or quotation
       if ("reasonCode" in result) {
         assert.equal(result.reasonCode, "unsafe_passage_action", phrase);
       }
+
+      const adviceFirst = passage();
+      adviceFirst.premise.text = `The recommendation concerns ${phrase}.`;
+      const adviceFirstResult = grounded(adviceFirst);
+      assert.equal(adviceFirstResult.status, "withheld", phrase);
+      if ("reasonCode" in adviceFirstResult) {
+        assert.equal(
+          adviceFirstResult.reasonCode,
+          "unsafe_passage_action",
+          phrase,
+        );
+      }
+
+      const reversed = passage();
+      reversed.premise.text = `${phrase} is the recommendation.`;
+      const reversedResult = grounded(reversed);
+      assert.equal(reversedResult.status, "withheld", phrase);
+      if ("reasonCode" in reversedResult) {
+        assert.equal(
+          reversedResult.reasonCode,
+          "unsafe_passage_action",
+          phrase,
+        );
+      }
+    }
+  }
+});
+
+test("fails closed on quotation markers while exempting lexical apostrophes", () => {
+  for (const text of [
+    "The company's evidence doesn't resolve the customer's unknown.",
+    "The customers' evidence may pass while the teams' work may watch.",
+    "The company’s evidence doesn’t resolve the customer’s unknown.",
+    "The customers’ evidence may pass while the teams’ work may watch.",
+  ]) {
+    const lexicalApostrophes = passage();
+    lexicalApostrophes.caseApplication.text = text;
+    assert.equal(grounded(lexicalApostrophes).status, "validated", text);
+  }
+
+  for (const text of [
+    "The framework says 'quoted but unclosed.",
+    "The framework says ‘quoted but unclosed.",
+    "The note uses 'tentative without a closing delimiter, while customers' evidence remains incomplete.",
+    "The framework marks “quoted without a close.",
+    "The framework marks «quoted without a close.",
+    "The framework marks 「quoted without a close.",
+  ]) {
+    const quotationMarker = passage();
+    quotationMarker.premise.text = text;
+    const result = grounded(quotationMarker);
+    assert.equal(result.status, "withheld", text);
+    if ("reasonCode" in result) {
+      assert.equal(result.reasonCode, "unsafe_passage_quote", text);
     }
   }
 });

@@ -3,6 +3,10 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 
 import {
+  BeliefActionKindSchema,
+  type BeliefActionKind,
+} from "../../contracts/domain";
+import {
   EvidencePackSchema,
   type EvidencePack,
 } from "../../contracts/evidence";
@@ -16,6 +20,10 @@ import {
   GroundedNamedLensPassageCandidateSchema,
 } from "../../contracts/named-lens";
 import { createCanonicalFingerprint } from "../fingerprints";
+import {
+  metadataForBeliefActionKind,
+  renderRecommendedNextMove,
+} from "../../reports/action-policy";
 import {
   DecisionTaxonomyBindingSchema,
 } from "./decision-taxonomy";
@@ -82,13 +90,16 @@ export type NamedLensPassageValidationResult = z.infer<
 
 const FORMAL_GOVERNANCE_PATTERN = /\b(?:formal[ _-]+decision|decision[ _-]+ceiling|hard[ _-]+veto|veto|invest[ _-]+candidate|(?:decision|recommendation|rating|label|outcome)(?:\s+(?:is|of|to))?\s+(?:pass|watch|advance))\b/iu;
 const FORMAL_DECISION_LABEL_PATTERN = /\b(?:Pass|Watch|Advance|Invest Candidate)\b/u;
-const FORMAL_RECOMMENDATION_PATTERN = /\b(?:formal[ _-]+)?(?:decision|recommendation|rating|label|outcome|ceiling|veto|next[ _-]+step)\b(?=[^.!?\n]{0,64}\b(?:invest|investing|investment|buy|buying|purchase|reject|pass|watch|advance)\b)/iu;
-const TYPED_ACTION_PATTERN = /\b(?:advance[ _-]+(?:internal[ _-]+)?diligence|continue[ _-]+(?:internal[ _-]+)?monitoring|deprioritize|reopen[ _-]+(?:internal[ _-]+)?diligence|evaluate[ _-]+(?:a[ _-]+)?follow[ _-]+on(?:[ _-]+investment)?|pause[ _-]+follow[ _-]+on(?:[ _-]+investment(?:[ _-]+activity)?)?|(?:begin[ _-]+(?:an[ _-]+)?internal[ _-]+)?portfolio[ _-]+risk[ _-]+review|no[ _-]+new[ _-]+(?:internal[ _-]+)?action|review[ _-]+(?:the[ _-]+)?analysis[ _-]+failure)\b/iu;
-const ORGANIZATION_DIRECTIVE_PATTERN = /\b(?:VSee|(?:the[ _-]+)?fund|(?:the[ _-]+)?IC|(?:the[ _-]+)?investment[ _-]+committee)\s+(?:(?:should|must|ought[ _-]+to|needs?[ _-]+to|will|is[ _-]+(?:directed|expected|recommended)[ _-]+to)\s+(?:invest|reject|pass|watch|advance|deprioritize|reopen|evaluate|pause|begin|review)|(?:recommends?|directs?|endorses?|approves?)\s+(?:(?:an?|the)[ _-]+)?(?:investment|investing|buying|purchase|rejection))\b/iu;
+const FORMAL_ADVICE_TERM_PATTERN = /\b(?:decision|recommend(?:ation|ations|ed|ing|s)?|directive|directed|directing|directs|endorse(?:ment|ments|d|s)?|approval|approved|rating|label|outcome|ceiling|veto|prescrib(?:e|ed|es|ing)|next[ _-]+step)\b/iu;
+const INVESTMENT_OR_DEAL_TERM_PATTERN = /\b(?:invest(?:ment|ments|ed|ing|s)?|deal|transaction|buy|buying|purchase|reject|pass|watch|advance)\b/iu;
+const ORGANIZATION_DIRECTIVE_PATTERN = /\b(?:VSee|(?:the[ _-]+)?fund|(?:the[ _-]+)?IC|(?:the[ _-]+)?investment[ _-]+committee)\s+(?:(?:should|must|ought[ _-]+to|needs?[ _-]+to|will|is[ _-]+(?:directed|expected|recommended)[ _-]+to)\s+(?:invest|reject|pass|watch|advance|continue|deprioritize|reopen|evaluate|pause|begin|review)|(?:recommends?|directs?|endorses?|approves?)\s+(?:(?:an?|the)[ _-]+)?(?:investment|investing|buying|purchase|rejection))\b/iu;
 const FIRST_PERSON_PATTERN = /\b(?:I|me|my|mine|myself|we|us|our|ours|ourselves)\b/iu;
-const QUOTATION_PUNCTUATION_PATTERN = /["“”„‟«»‹›「」『』〝〞〟＂‘‚‛]/u;
-const PAIRED_SINGLE_QUOTATION_PATTERN = /'[^'\n]+'/u;
-const NAMED_PERSON_STANCE_PATTERN = /\b\p{Lu}[\p{L}'’.-]+(?:\s+\p{Lu}[\p{L}'’.-]+)+\s+(?:(?:would|should)\s+(?:invest|reject|pass|watch|advance)|endorses?|recommends?|rejects?|(?:supports?|opposes?)\s+(?:the\s+)?investment|believes?|thinks?|argues?|concludes?|maintains?|expects?|predicts?|says?)\b/u;
+const NON_SINGLE_QUOTATION_MARKER_PATTERN = /["“”„‟«»‹›「」『』〝〞〟＂]/u;
+const SINGLE_QUOTATION_MARKERS = new Set(["'", "‘", "’", "‚", "‛"]);
+const ENGLISH_SENTENCE_SEGMENTER = new Intl.Segmenter("en", {
+  granularity: "sentence",
+});
+const NAMED_PERSON_STANCE_PATTERN = /\b(?!(?:The|This)\b)\p{Lu}[\p{L}'’.-]+(?:\s+\p{Lu}[\p{L}'’.-]+)+\s+(?:(?:would|should)\s+(?:invest|reject|pass|watch|advance)|endorses?|recommends?|rejects?|(?:supports?|opposes?)\s+(?:the\s+)?investment|believes?|thinks?|argues?|concludes?|maintains?|expects?|predicts?|says?)\b/u;
 const LENS_ENDORSEMENT_PATTERN = /\b(?:this|the)[ _-]+(?:framework|lens|analysis|passage)\s+(?:endorses?|recommends?|approves?|rejects?|supports?|opposes?)\s+(?:(?:an?|the)\s+)?(?:investment|investing|buying|company)\b/iu;
 const IMPERSONATION_PATTERN = /\b(?:endorsed|recommends?[ _-]+investing|would[ _-]+invest|private[ _-]+reasoning|hidden[ _-]+reasoning|chain[ _-]+of[ _-]+thought)\b/iu;
 
@@ -219,25 +230,24 @@ export function groundNamedLensPassage(input: {
   const texts = passageTexts(passage);
   if (
     texts.some((text) =>
-      FORMAL_GOVERNANCE_PATTERN.test(text)
-      || FORMAL_DECISION_LABEL_PATTERN.test(text)
-      || FORMAL_RECOMMENDATION_PATTERN.test(text)
-      || TYPED_ACTION_PATTERN.test(text)
-      || ORGANIZATION_DIRECTIVE_PATTERN.test(text)
-    )
-  ) {
-    return withheld("unsafe_passage_action", authorizedFocus);
-  }
-  if (
-    texts.some((text) =>
       FIRST_PERSON_PATTERN.test(text)
       || NAMED_PERSON_STANCE_PATTERN.test(text)
-      || hasAuthorizedNamedPersonVoice(text, card)
+      || hasAuthorizedNamedPersonReference(text, card)
       || LENS_ENDORSEMENT_PATTERN.test(text)
       || IMPERSONATION_PATTERN.test(text)
     )
   ) {
     return withheld("unsafe_passage_voice", authorizedFocus);
+  }
+  if (
+    texts.some((text) =>
+      FORMAL_GOVERNANCE_PATTERN.test(text)
+      || FORMAL_DECISION_LABEL_PATTERN.test(text)
+      || hasFormalAdviceSentence(text)
+      || ORGANIZATION_DIRECTIVE_PATTERN.test(text)
+    )
+  ) {
+    return withheld("unsafe_passage_action", authorizedFocus);
   }
   if (texts.some(hasQuotationPunctuation)) {
     return withheld("unsafe_passage_quote", authorizedFocus);
@@ -293,7 +303,7 @@ export function groundNamedLensPassage(input: {
   };
 }
 
-function hasAuthorizedNamedPersonVoice(
+function hasAuthorizedNamedPersonReference(
   text: string,
   card: ExperimentalAdvisoryFrameworkCard,
 ): boolean {
@@ -303,6 +313,8 @@ function hasAuthorizedNamedPersonVoice(
       const words = person.trim().split(/\s+/u).filter(Boolean);
       if (words.length === 0) continue;
       aliases.add(person.trim());
+      const givenName = words[0]!;
+      if (givenName.length >= 3) aliases.add(givenName);
       const surname = words.at(-1)!;
       if (surname.length >= 3) aliases.add(surname);
     }
@@ -312,19 +324,120 @@ function hasAuthorizedNamedPersonVoice(
     .sort((left, right) => right.length - left.length)
     .map(escapeRegExp)
     .join("|");
-  const attributedVoice = new RegExp(
-    `(?:^|[^\\p{L}\\p{N}])(?:${aliasPattern})(?:['’]s)?\\s+`
-      + "(?:(?:would|should)\\s+(?:invest|reject|pass|watch|advance)|"
-      + "endorses?|recommends?|rejects?|supports?|opposes?|believes?|thinks?|"
-      + "argues?|concludes?|maintains?|expects?|predicts?|says?)\\b",
+  const namedPersonReference = new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])(?:${aliasPattern})(?=$|[^\\p{L}\\p{N}])`,
     "iu",
   );
-  return attributedVoice.test(text);
+  return namedPersonReference.test(text);
 }
 
 function hasQuotationPunctuation(text: string): boolean {
-  return QUOTATION_PUNCTUATION_PATTERN.test(text)
-    || PAIRED_SINGLE_QUOTATION_PATTERN.test(text);
+  return NON_SINGLE_QUOTATION_MARKER_PATTERN.test(text)
+    || hasUnsafeSingleQuotationMarker(text);
+}
+
+function hasFormalAdviceSentence(text: string): boolean {
+  return [...ENGLISH_SENTENCE_SEGMENTER.segment(text)].some(({ segment }) => {
+    return FORMAL_ADVICE_TERM_PATTERN.test(segment)
+      && (
+        INVESTMENT_OR_DEAL_TERM_PATTERN.test(segment)
+        || hasTypedActionSemantic(segment)
+      );
+  });
+}
+
+const TYPED_ACTION_SEMANTIC_PHRASES = deriveTypedActionSemanticPhrases();
+
+function deriveTypedActionSemanticPhrases(): readonly (readonly string[])[] {
+  const phrases = new Map<string, readonly string[]>();
+  const add = (phrase: string): void => {
+    const tokens = semanticTokens(phrase);
+    if (tokens.length > 0) phrases.set(tokens.join("\u0000"), tokens);
+  };
+
+  for (const kind of BeliefActionKindSchema.options) {
+    const canonical = kind.replaceAll("_", " ");
+    const humanized = humanizedActionCore(kind);
+    add(canonical);
+    add(humanized);
+
+    if (kind === "no_new_action") continue;
+    const humanizedTokens = semanticTokens(humanized);
+    const baseVerb = humanizedTokens[0];
+    if (!baseVerb) continue;
+    for (const inflection of boundedVerbInflections(baseVerb)) {
+      add([inflection, ...humanizedTokens.slice(1)].join(" "));
+    }
+
+    const canonicalTokens = semanticTokens(canonical);
+    if (canonicalTokens[0] !== baseVerb) continue;
+    for (const inflection of boundedVerbInflections(baseVerb)) {
+      add([inflection, ...canonicalTokens.slice(1)].join(" "));
+    }
+  }
+  return [...phrases.values()];
+}
+
+function humanizedActionCore(kind: BeliefActionKind): string {
+  const rendered = renderRecommendedNextMove([{
+    kind,
+    ...metadataForBeliefActionKind(kind),
+  }]);
+  return rendered
+    .replace(/\s+based on the cited evidence\.$/iu, "")
+    .replace(/\s+before relying on this company analysis\.$/iu, "")
+    .replace(/\s+is recommended\.$/iu, "")
+    .replace(/\.$/u, "");
+}
+
+function boundedVerbInflections(base: string): readonly string[] {
+  if (base === "begin") return ["begin", "begins", "began", "beginning"];
+  if (base.endsWith("e")) {
+    return [base, `${base}s`, `${base}d`, `${base.slice(0, -1)}ing`];
+  }
+  return [base, `${base}s`, `${base}ed`, `${base}ing`];
+}
+
+function hasTypedActionSemantic(sentence: string): boolean {
+  const tokens = semanticTokens(sentence);
+  return TYPED_ACTION_SEMANTIC_PHRASES.some((phrase) =>
+    containsTokenSequence(tokens, phrase)
+  );
+}
+
+function semanticTokens(value: string): string[] {
+  return value.toLocaleLowerCase("en-US").match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+function containsTokenSequence(
+  tokens: readonly string[],
+  phrase: readonly string[],
+): boolean {
+  if (phrase.length === 0 || phrase.length > tokens.length) return false;
+  return tokens.some((_, start) =>
+    start + phrase.length <= tokens.length
+    && phrase.every((token, offset) => tokens[start + offset] === token)
+  );
+}
+
+function hasUnsafeSingleQuotationMarker(text: string): boolean {
+  const characters = [...text];
+  for (let index = 0; index < characters.length; index += 1) {
+    const marker = characters[index];
+    if (!marker || !SINGLE_QUOTATION_MARKERS.has(marker)) continue;
+    const previous = characters[index - 1];
+    const next = characters[index + 1];
+    if (isWordCharacter(previous) && isWordCharacter(next)) continue;
+    if ((previous === "s" || previous === "S") && !isWordCharacter(next)) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function isWordCharacter(value: string | undefined): boolean {
+  return value !== undefined && /[\p{L}\p{N}]/u.test(value);
 }
 
 function escapeRegExp(value: string): string {

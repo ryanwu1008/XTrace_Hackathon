@@ -812,6 +812,128 @@ test("full advisory service path withholds formal advice, metadata-named voice, 
   );
 });
 
+test("full advisory service path structurally classifies reverse advice, metadata aliases, and paired quotes", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const applicable = authorizedResearchComposites(catalog).filter(
+    ({ experimentalAdvisory }) => experimentalAdvisory.applicable,
+  );
+  const peter = applicable.find(
+    ({ experimentalAdvisory }) =>
+      experimentalAdvisory.packId === "peter_thiel_public_frameworks_v0_1",
+  );
+  assert.ok(peter);
+  const remaining = applicable.filter(({ id }) => id !== peter.id);
+  const metadataAliasCard = remaining.find(({ experimentalAdvisory }) =>
+    experimentalAdvisory.components.some(
+      ({ attribution }) => attribution.people.length > 0,
+    )
+  );
+  assert.ok(metadataAliasCard);
+  const metadataPerson = metadataAliasCard.experimentalAdvisory.components
+    .flatMap(({ attribution }) => attribution.people)[0];
+  assert.ok(metadataPerson);
+  const metadataGivenName = metadataPerson.split(/\s+/u)[0];
+  assert.ok(metadataGivenName);
+  const unused = remaining.filter(({ id }) => id !== metadataAliasCard.id);
+  assert.ok(unused.length >= 9);
+  const cases = new Map([
+    [unused[0]!.id, {
+      text: "Investing in this company is recommended.",
+      status: "withheld",
+      reasonCode: "unsafe_passage_action",
+    }],
+    [peter.id, {
+      text: "Thiel’s view is that this company will win.",
+      status: "withheld",
+      reasonCode: "unsafe_passage_voice",
+    }],
+    [unused[1]!.id, {
+      text:
+        "The company's evidence may pass while the customer's team may watch.",
+      status: "validated",
+      reasonCode: null,
+    }],
+    [metadataAliasCard.id, {
+      text: `${metadataGivenName} appears in this application.`,
+      status: "withheld",
+      reasonCode: "unsafe_passage_voice",
+    }],
+    [unused[2]!.id, {
+      text: "The framework says 'quoted text'.",
+      status: "withheld",
+      reasonCode: "unsafe_passage_quote",
+    }],
+    [unused[3]!.id, {
+      text: "Advancing internal diligence is recommended.",
+      status: "withheld",
+      reasonCode: "unsafe_passage_action",
+    }],
+    [unused[4]!.id, {
+      text: "The framework says 'company's evidence is weak'.",
+      status: "withheld",
+      reasonCode: "unsafe_passage_quote",
+    }],
+    [unused[5]!.id, {
+      text: "The recommendation for the U.S. market is advancing diligence.",
+      status: "withheld",
+      reasonCode: "unsafe_passage_action",
+    }],
+    [unused[6]!.id, {
+      text:
+        "The recommendation remains provisional. The evidence reflects advancing diligence quality.",
+      status: "validated",
+      reasonCode: null,
+    }],
+    [unused[7]!.id, {
+      text:
+        "The customers' evidence may pass while the teams' work may watch.",
+      status: "validated",
+      reasonCode: null,
+    }],
+    [unused[8]!.id, {
+      text: "The framework says 'quoted but unclosed.",
+      status: "withheld",
+      reasonCode: "unsafe_passage_quote",
+    }],
+  ] as const);
+  const service = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    client: {
+      async complete(request) {
+        const card = promptCard(request);
+        const output = advisoryOutput(card);
+        const testCase = cases.get(card.id);
+        if (testCase) output.passage.premise.text = testCase.text;
+        return JSON.stringify(output);
+      },
+    },
+  });
+
+  const result = await service.runAll(runInput());
+  for (const [frameworkCardId, expected] of cases) {
+    const judgment = result.judgments.find(
+      (item) => item.frameworkCardId === frameworkCardId,
+    );
+    assert.equal(judgment?.applicability, "applicable");
+    const passageResult = result.passageResults.find(
+      ({ judgmentOrCatalogCandidateId }) =>
+        judgmentOrCatalogCandidateId === judgment?.id,
+    );
+    assert.deepEqual(
+      passageResult && {
+        status: passageResult.status,
+        reasonCode: passageResult.status === "validated"
+          ? null
+          : passageResult.reasonCode,
+      },
+      { status: expected.status, reasonCode: expected.reasonCode },
+      expected.text,
+    );
+  }
+});
+
 test("rejects cloned catalogs and keeps caller-created advisory lookalikes inert", async () => {
   const catalog = await loadResearchFrameworkCatalog({
     context,

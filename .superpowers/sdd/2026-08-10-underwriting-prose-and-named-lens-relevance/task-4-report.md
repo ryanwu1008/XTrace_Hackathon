@@ -480,3 +480,299 @@ validation, and confirmed the service-path safety cases, metadata surname
 aliases, possessive-apostrophe positive case, withheld contract persistence,
 stale/missing replay refusal, fingerprint refusal, one-call judgment-first
 grounding, selection neutrality, Task 3 authority, and hidden-CoT boundary.
+
+---
+
+## Fix round 3/5 — reviewer finding before implementation
+
+### Important — prose safety still depends on directional phrase forms and misclassifies ASCII possessives
+
+The stage-contract finding is addressed. The remaining open Important is the
+passage-safety classifier. Complete valid service responses can still ground
+`Investing in this company is recommended.` and `Thiel’s view is that this
+company will win.` as validated because the formal matcher assumes a
+governance noun precedes the action and the metadata alias matcher assumes one
+of a finite set of following verbs. Conversely, `The company's evidence may
+pass while the customer's team may watch.` is incorrectly withheld as a quote
+because two intra-word ASCII apostrophes are treated as a paired quotation.
+
+The correction must be bounded and structural rather than another expanding
+sentence blacklist:
+
+- derive full, given, and surname aliases from exact authorized component Card
+  `attribution.people` metadata and withhold any token-boundary occurrence in
+  provider prose; headings already carry attribution, so the application prose
+  does not need to repeat a person;
+- classify advice sentence by sentence when a decision/recommendation/
+  directive/endorsement term and an investment/deal/typed-action term coexist,
+  independent of order, voice, or gerund form, while retaining analytical
+  lowercase `pass/watch` without governance language;
+- recognize only genuinely paired quote delimiters, including straight and
+  curly double quotes, curly single quotes, and boundary-paired straight single
+  quotes; never treat intra-word ASCII/curly possessives or contractions as
+  quotations;
+- prove all three reported examples through the exact full service path, derive
+  additional alias cases from metadata rather than fixed Peter/Thiel strings,
+  and keep one-call execution, selection neutrality, grounding, and current
+  stage-contract authority unchanged.
+
+### Round 3 implementation and TDD evidence
+
+- Authorized-person safety now derives full, given, and surname aliases from
+  the exact loader-owned `component.attribution.people` arrays. Any
+  token-boundary occurrence in provider prose is withheld, independent of the
+  surrounding verb or noun construction. The full service test includes the
+  exact Thiel possessive reviewer case and an additional given name computed
+  from a different Card's metadata rather than a fixed test string.
+- Formal advice is classified by splitting each passage segment into sentences,
+  normalizing typed-action separators, and requiring same-sentence coexistence
+  of a bounded governance/advice vocabulary with an investment, Deal, or
+  canonical typed-action vocabulary. Order, active/passive voice, and gerund
+  form are irrelevant. The existing nine-action/humanized table now exercises
+  the reversed `action … recommendation` permutation too.
+- Quote safety now enumerates paired delimiter families: straight/curly double,
+  guillemet, CJK, curly single, and boundary-paired straight single quotes.
+  Apostrophes embedded in ASCII or curly possessive/contraction tokens are not
+  delimiters.
+
+Initial exact grounding command:
+
+```text
+node --import tsx --test --test-concurrency=1 --test-name-pattern='withholds stance/posture' tests/unit/named-lens-passage-grounding.test.ts
+```
+
+Exit 1: 0 passed / 1 failed because the exact ASCII two-possessive
+`company's … customer's` sentence was withheld instead of validated.
+
+Initial exact service command:
+
+```text
+node --import tsx --test --test-concurrency=1 --test-name-pattern='structurally classifies reverse advice' tests/unit/framework-advisory.test.ts
+```
+
+Exit 1: 0 passed / 1 failed because `Investing in this company is recommended.`
+remained validated. The same complete service response matrix also includes
+the exact `Thiel’s view …` case, the positive ASCII possessive case, a
+metadata-derived given-name case, and a real boundary-paired `'quoted text'`
+case.
+
+After the structural implementation, both exact commands completed GREEN at
+1 passed / 0 failed. Self-review preserved the established reason precedence:
+explicit person/lens voice is classified before a formal-action overlap, while
+`The IC should advance …` remains an action rather than a generic proper-name
+voice match.
+
+### Round 3 focused verification
+
+```text
+framework/grounding/stage contract: 25 passed / 0 failed
+advisory/context: 20 passed / 0 failed
+relevance/finalization/contracts: 29 passed / 0 failed
+npm run typecheck: exit 0
+focused ESLint: exit 0, no findings
+git diff --check: exit 0
+```
+
+No provider count, prompt, judgment, selection-neutral candidate, Task 3
+selection-basis authority, relevance, stage contract, decision, valuation,
+action, persistence, controller, migration, UI, research corpus, or hidden-CoT
+path changed.
+
+---
+
+## Fix round 4/5 — independent reviewer findings before implementation
+
+### Important — action semantics are still limited to base forms
+
+The round-3 independent review found that typed-action detection still depends
+on the base form encoded in a regular expression. Complete passages containing
+`Advancing internal diligence is recommended.`,
+`Continuing internal monitoring is recommended.`, or
+`Reopening internal diligence is recommended.` therefore remain validated.
+The correction must derive bounded base/third-person/past/gerund variants from
+the authoritative action taxonomy and its humanized leading verbs, recognize
+the action at token/sentence level, and require same-sentence governance/advice
+context rather than adding those three sentences as literals.
+
+### Important — straight-single quote matching stops at an internal apostrophe
+
+The same review found that the straight-single regular expression treats the
+possessive apostrophe inside `'company's evidence is weak'` as the candidate
+closing delimiter and never reaches the real boundary-paired closing quote.
+The correction must use delimiter state: ASCII `'` opens or closes only at a
+non-word boundary, while an apostrophe surrounded by word characters is
+ignored inside the quoted span. Standalone ASCII/curly possessives remain
+valid, but genuine paired quotes containing possessives or contractions are
+withheld.
+
+### Round 4 implementation and RED→GREEN evidence
+
+Typed-action semantics are now derived at module initialization from every
+option in the authoritative `BeliefActionKindSchema` plus the existing
+`renderRecommendedNextMove` humanized text. The leading verb receives only
+the bounded base/third-person/past/gerund variants needed by that closed
+taxonomy, including silent-e removal and the `begin/begins/began/beginning`
+irregular family. Canonical and humanized cores are tokenized and matched as
+whole token sequences inside one sentence; the passage is withheld only when
+the same sentence also contains the bounded advice/governance vocabulary.
+
+The table-driven grounding test enumerates canonical and humanized forms for
+all nine action kinds, asserts its kind list exactly equals the authoritative
+schema options, and exercises advice-first plus action-first/reversed order.
+Ordinary analytical `pass/watch` and two unquoted ASCII or curly possessives
+remain validated.
+
+Straight ASCII single quotation is now a small state scanner. A delimiter can
+open only outside a word, word-internal apostrophes are ignored while scanning,
+and a close is accepted only at a non-word boundary. Thus both
+`'company's evidence is weak'` and `'this isn't durable'` are withheld, while
+the existing `company's … customer's` non-quotation remains valid. The paired
+curly and other quotation families remain explicit and unchanged.
+
+Initial exact grounding command:
+
+```text
+node --import tsx --test --test-concurrency=1 --test-name-pattern='withholds stance/posture' tests/unit/named-lens-passage-grounding.test.ts
+```
+
+Exit 1: 0 passed / 1 failed because the true straight-single quotation
+containing the internal possessive apostrophe was returned `validated`.
+
+Initial exact full-service command:
+
+```text
+node --import tsx --test --test-concurrency=1 --test-name-pattern='structurally classifies reverse advice' tests/unit/framework-advisory.test.ts
+```
+
+Exit 1: 0 passed / 1 failed because
+`Advancing internal diligence is recommended.` completed the full provider,
+judgment, and passage-grounding path as `validated`.
+
+After the structural implementation, both exact commands completed at
+1 passed / 0 failed. The service matrix also includes the internal-apostrophe
+quotation and the two-possessive positive case.
+
+### Round 4 fresh focused verification
+
+```text
+framework/grounding/stage contract: 25 passed / 0 failed
+advisory/context full service: 20 passed / 0 failed
+relevance/finalization/contracts: 29 passed / 0 failed
+npm run typecheck: exit 0
+focused ESLint: exit 0, no findings
+git diff --check: exit 0
+```
+
+No provider count, prompt, judgment, selection-neutral candidate, Task 3
+selection authority, relevance, stage contract, decision, valuation, action,
+persistence, controller, migration, UI, research corpus, or hidden-CoT path
+changed in round 4.
+
+### Round 4 independent review — open Important findings
+
+The independent review returned no Critical or Minor findings, but two
+Important boundary cases remain open, so round 4 was intentionally not
+committed:
+
+- The sentence splitter treats every period as a boundary. In
+  `The recommendation for the U.S. market is advancing diligence.`, the
+  abbreviation separates the advice term from the action semantic even though
+  they are grammatically in the same sentence, allowing validation.
+- Once a boundary apostrophe opens scanner state, a later plural-possessive
+  apostrophe can be accepted as the close. In
+  `The note uses 'tentative without a closing delimiter, while customers' evidence remains incomplete.`,
+  no genuine paired quotation exists, but the passage is withheld as a quote.
+
+The reviewer otherwise confirmed all nine action kinds, canonical/humanized
+derivation, silent-e morphology, the `begin` special case, reversed-order
+coverage, curly quote families, and no changes to one-call, selection, or
+replay production paths. It independently reran the focused grounding test,
+typecheck, and diff validation successfully.
+
+---
+
+## Fix round 5/5 — final bounded correction
+
+### Root cause and converged design
+
+The round-4 reviewer cases confirmed two mechanism-level errors rather than
+missing phrases. Splitting on every period is not English sentence
+segmentation: abbreviations such as `U.S.` and `U.K.` separate the advice noun
+from an action in the same grammatical sentence. Stateful quote pairing is
+also the wrong contract because the provider is forbidden to emit quotation
+punctuation at all; waiting for a close both admits unmatched openers and
+creates ambiguous cross-pairing with later possessives.
+
+Round 5 replaces those mechanisms directly:
+
+- `Intl.Segmenter("en", { granularity: "sentence" })` supplies formal English
+  sentence boundaries. Same-sentence advice/action survives `U.S.`, `U.K.`,
+  and decimal periods, while two real sentences remain independent.
+- Quote safety is marker-level and fail-closed. Any double, guillemet, or CJK
+  quotation marker is unsafe. Each straight/curly single marker is unsafe
+  unless it is between two word characters (a contraction or possessive) or
+  is an `s/S` plural-possessive suffix followed by a non-word. There is no
+  pairing state, so unmatched openers fail immediately and a later
+  `customers'` suffix cannot be mistaken for their close.
+- The round-4 taxonomy-derived canonical/humanized action semantics and
+  bounded base/third-person/past/gerund inflections remain unchanged, as do
+  metadata alias withholding, one-call execution, selection neutrality, and
+  the current stage contract.
+
+### Round 5 RED→GREEN evidence
+
+The exact grounding action command initially returned 0 passed / 1 failed:
+`The recommendation for the U.S. market is advancing diligence.` was
+`validated` because the period splitter separated its terms. The corresponding
+`U.K.` and decimal cases were added to the same bounded regression table, with
+a real two-sentence positive control.
+
+The exact quote-marker grounding command initially returned 0 passed / 1
+failed: `The framework says 'quoted but unclosed.` was `validated`. The same
+test covers the prior reviewer sentence containing a later `customers'`,
+unmatched curly single/double/guillemet/CJK openers, ASCII/curly word-internal
+apostrophes, and ASCII/curly plural possessives.
+
+The exact full-service command initially returned 0 passed / 1 failed on the
+same `U.S.` passage. Its real Card matrix also carries the separate-sentence
+positive control, plural-possessive positive control, and unmatched straight
+single opener.
+
+After the converged implementation, all three exact commands completed at
+1 passed / 0 failed.
+
+### Round 5 fresh focused verification
+
+```text
+framework/grounding/stage contract: 26 passed / 0 failed
+advisory/context full service: 20 passed / 0 failed
+relevance/finalization/contracts: 29 passed / 0 failed
+npm run typecheck: exit 0
+focused ESLint: exit 0, no findings
+git diff --check: exit 0
+```
+
+The focused verification includes every round-4 taxonomy action form and all
+round-5 segmentation/marker cases. No provider count, prompt, judgment,
+selection, replay, relevance, stage-contract, decision, valuation, action,
+persistence, controller, migration, UI, research-corpus, or hidden-CoT path
+changed in round 5.
+
+### Round 5 independent review and controller residual
+
+The final independent review returned no Critical or Minor findings and
+confirmed the required `U.S.`/`U.K.`/decimal segmentation, real-sentence
+separation, all taxonomy-derived action inflections, straight/curly lexical
+and plural possessive exemptions, unmatched-opener refusal, exact later-
+`customers'` refusal, full-service grounding, and unchanged one-call,
+selection, replay, and stage contracts.
+
+It reported one remaining Important marker-inventory gap: the explicit Unicode
+sets do not include every possible double/CJK/fullwidth quotation code point.
+Examples include reversed double-low `⹂`, vertical CJK corner quotes
+`﹁﹂﹃﹄`, halfwidth CJK corner quotes `｢｣`, and fullwidth
+apostrophe `＇`. The first groups currently evade the unconditional-marker
+check; fullwidth apostrophe would need to join the same contextual lexical/
+plural-possessive policy as ASCII and curly single markers. This final 5/5
+round does not expand scope again; the verified correction is committed with
+this residual recorded for controller adjudication.
