@@ -150,7 +150,7 @@ test(
         "insert into public.companies(id,workspace_id,name) values ('company_partial','workspace_partial','Partial Co')",
         "insert into public.deals(id,workspace_id,company_id,company_name,status) values ('deal_partial','workspace_partial','company_partial','Partial Co','screening'),('deal_completed','workspace_partial','company_partial','Partial Co','screening')",
         "insert into public.underwriting_batches(id,workspace_id,scan_run_id,status,batch_input_fingerprint,fund_policy_snapshot_id,force_refresh) values ('batch_partial','workspace_partial','00000000-0000-4000-8000-000000000025','running','sha256:1111111111111111111111111111111111111111111111111111111111111111','fund_policy:workspace_partial:v1',false),('batch_mixed','workspace_partial','00000000-0000-4000-8000-000000000025','running','sha256:2222222222222222222222222222222222222222222222222222222222222222','fund_policy:workspace_partial:v1',false)",
-        "insert into public.candidate_runs(id,batch_id,workspace_id,deal_id,status,candidate_analysis_fingerprint,finalized_at) values ('candidate_partial','batch_partial','workspace_partial','deal_partial','partial','pending:candidate_partial',now()),('candidate_mixed_partial','batch_mixed','workspace_partial','deal_partial','partial','pending:candidate_mixed_partial',now()),('candidate_mixed_completed','batch_mixed','workspace_partial','deal_completed','completed','sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',now())",
+        "insert into public.candidate_runs(id,batch_id,workspace_id,deal_id,status,candidate_analysis_fingerprint,unavailable_reason_codes,finalized_at) values ('candidate_partial','batch_partial','workspace_partial','deal_partial','partial','pending:candidate_partial','[\"PARTIAL_UNDERWRITING_ARTIFACT\"]'::jsonb,now()),('candidate_mixed_partial','batch_mixed','workspace_partial','deal_partial','partial','pending:candidate_mixed_partial','[\"PARTIAL_UNDERWRITING_ARTIFACT\"]'::jsonb,now()),('candidate_mixed_completed','batch_mixed','workspace_partial','deal_completed','completed','sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','[]'::jsonb,now())",
         "select public.refresh_underwriting_batch_status('batch_partial')",
         "select public.refresh_underwriting_batch_status('batch_mixed')",
       ].join("; "));
@@ -229,7 +229,7 @@ test(
 
       run([
         "insert into public.workspaces(id,name) values ('workspace_priority','Priority')",
-        "insert into public.scan_runs(id,workspace_id,mode,status) select lpad(i::text,8,'0') || '-0000-4000-8000-000000000026','workspace_priority','structured','completed' from generate_series(1,10) i",
+        "insert into public.scan_runs(id,workspace_id,mode,status) select (lpad(i::text,8,'0') || '-0000-4000-8000-000000000026')::uuid,'workspace_priority','structured','completed' from generate_series(1,10) i",
         "select public.activate_fund_policy_version(jsonb_build_object('workspaceId','workspace_priority','actorId',null,'expectedActiveVersionId',null,'action','recommended'))",
         "insert into public.companies(id,workspace_id,name) values ('company_priority','workspace_priority','Priority Co')",
         "insert into public.deals(id,workspace_id,company_id,company_name,status) select 'deal_' || i,'workspace_priority','company_priority','Priority Co','screening' from generate_series(1,30) i",
@@ -241,22 +241,28 @@ test(
       ].join(" "));
       const saveAndCreate = (batchId: string, count: number) => run([
         "set role service_role",
-        "select public.save_underwriting_selections(jsonb_build_object(",
-        `'batchId','${batchId}',`,
-        "'selections',coalesce((select jsonb_agg(jsonb_build_object('dealId','deal_' || i,'status','selected','rank',i,'reason','Belief revision admitted')) from generate_series(1," + count + ") i),'[]'::jsonb)",
-        "))",
-        "select public.create_selected_underwriting_candidates(jsonb_build_object(",
-        `'batchId','${batchId}',`,
-        "'dealIds',coalesce((select jsonb_agg('deal_' || i) from generate_series(1," + count + ") i),'[]'::jsonb)",
-        "))",
+        [
+          "select public.save_underwriting_selections(jsonb_build_object(",
+          `'batchId','${batchId}',`,
+          "'selections',coalesce((select jsonb_agg(jsonb_build_object('dealId','deal_' || i,'status','selected','rank',i,'reason','Belief revision admitted')) from generate_series(1," + count + ") i),'[]'::jsonb)",
+          "))",
+        ].join(" "),
+        [
+          "select public.create_selected_underwriting_candidates(jsonb_build_object(",
+          `'batchId','${batchId}',`,
+          "'dealIds',coalesce((select jsonb_agg('deal_' || i) from generate_series(1," + count + ") i),'[]'::jsonb)",
+          "))",
+        ].join(" "),
       ].join("; "));
 
       createBatch("batch_priority", 1);
       run([
         "set role service_role",
-        "select public.save_underwriting_selections(jsonb_build_object('batchId','batch_priority','selections',jsonb_build_array(",
-        "jsonb_build_object('dealId','deal_1','status','selected','rank',2,'reason','Second priority'),",
-        "jsonb_build_object('dealId','deal_7','status','selected','rank',1,'reason','First priority'))))",
+        [
+          "select public.save_underwriting_selections(jsonb_build_object('batchId','batch_priority','selections',jsonb_build_array(",
+          "jsonb_build_object('dealId','deal_1','status','selected','rank',2,'reason','Second priority'),",
+          "jsonb_build_object('dealId','deal_7','status','selected','rank',1,'reason','First priority'))))",
+        ].join(" "),
         "select public.create_selected_underwriting_candidates(jsonb_build_object('batchId','batch_priority','dealIds',jsonb_build_array('deal_1','deal_7')))",
         "select (public.claim_next_underwriting_candidate('priority_worker',60)->'candidate'->>'dealId')",
       ].join("; "));

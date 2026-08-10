@@ -20,7 +20,9 @@ import type {
   ResolvedUnderwritingContext,
 } from "../../lib/contracts/underwriting";
 import type {
-  NamedLensDisposition,
+  DecisionCriticalEvidenceProjection,
+  NamedLensCatalogConsideration,
+  NamedLensFinalizationDisposition,
   NamedLensPassage,
   NamedLensPresentation,
   NamedLensProviderAttempt,
@@ -109,6 +111,19 @@ function currentArtifacts(count = 4) {
       fingerprint: `judgment-${ordinal}`,
     } satisfies FrameworkJudgment;
   });
+  const decisionCriticalEvidenceProjection = {
+    id: "decision_critical_projection_1",
+    workspaceId: "workspace_1",
+    artifactSourceCandidateRunId: "candidate_1",
+    evidenceRefs: Array.from({ length: count }, (_, index) => ({
+      evidencePackItemId: `fact_${index + 1}`,
+      classification: "fact" as const,
+      originRefs: [{ kind: "fired_rule" as const, id: `rule_${index + 1}` }],
+      reasonCodes: ["FORMAL_DECISION_RULE_INPUT"],
+      resolutionPath: [`fact_${index + 1}`, `rule_${index + 1}`],
+    })),
+    fingerprint: sha("8"),
+  } satisfies DecisionCriticalEvidenceProjection;
   const passages = judgments.slice(0, count).map((judgment, index) => ({
     schemaVersion: "named-lens-passage-v1",
     workspaceId: "workspace_1",
@@ -187,7 +202,22 @@ function currentArtifacts(count = 4) {
     selectionPolicyVersion: "named-lens-selection-v1",
     passageFingerprint: passage.fingerprint,
     fingerprint: sha(String(index + 5)),
-  } satisfies NamedLensDisposition));
+    decisionCriticalEvidenceProjectionId:
+      decisionCriticalEvidenceProjection.id,
+    decisionCriticalEvidenceProjectionFingerprint:
+      decisionCriticalEvidenceProjection.fingerprint,
+  } satisfies NamedLensFinalizationDisposition));
+  const catalogConsiderations = passages.map((passage, index) => ({
+    workspaceId: "workspace_1",
+    artifactSourceCandidateRunId: "candidate_1",
+    judgmentOrCatalogCandidateId: passage.judgmentId,
+    judgmentId: passage.judgmentId,
+    frameworkCardId: passage.frameworkCardId,
+    frameworkVersion: passage.frameworkVersion,
+    initialDisposition: "judgment_eligible",
+    reasonCodes: ["JUDGMENT_ELIGIBLE"],
+    fingerprint: sha(String(index + 1)),
+  } satisfies NamedLensCatalogConsideration));
   const attempts = passages.map((passage, index) => ({
     workspaceId: "workspace_1",
     artifactSourceCandidateRunId: "candidate_1",
@@ -277,10 +307,13 @@ function currentArtifacts(count = 4) {
   return {
     workspaceId: "workspace_1",
     candidateRunId: "candidate_1",
+    catalogConsiderations,
+    decisionCriticalEvidenceProjection,
     attemptRefs,
     persistedAttempts: attempts,
     dispositions,
     passages,
+    underwritingPresentationReportId: "report_1",
     presentation,
     terminalStatus: "completed" as const,
     terminalReasonCodes: [] as string[],
@@ -324,14 +357,21 @@ test("requires settled persisted attempt rows that exactly cover provider execut
   }), /completed attempt|publishable|passage/i);
 });
 
-test("requires four to six grounded selections only for completed results", () => {
+test("requires explicit limited coverage for fewer applicable catalogs", () => {
   const onlyThree = currentArtifacts(3);
-  assert.throws(() => validateNamedLensFinalization(onlyThree), /four|4|six|6/i);
+  assert.throws(
+    () => validateNamedLensFinalization(onlyThree),
+    /coverage|reason/i,
+  );
   assert.doesNotThrow(() => validateNamedLensFinalization({
     ...onlyThree,
-    terminalStatus: "partial",
-    terminalReasonCodes: ["FRAMEWORK_COVERAGE_INCOMPLETE"],
+    terminalReasonCodes: ["limited_framework_coverage"],
   }));
+  assert.throws(() => validateNamedLensFinalization({
+    ...onlyThree,
+    terminalStatus: "partial",
+    terminalReasonCodes: ["named_lens_passage_attempts_exhausted"],
+  }), /coverage|reason/i);
 });
 
 test("resolves critical, passage, and disposition refs to the saved pack and judgment", () => {
@@ -362,7 +402,7 @@ test("resolves critical, passage, and disposition refs to the saved pack and jud
       ...valid.dispositions[0]!,
       judgmentId: valid.judgments[1]!.id,
     }, ...valid.dispositions.slice(1)],
-  }), /judgment|identity/i);
+  }), /catalog|judgment|identity/i);
   assert.throws(() => validateNamedLensFinalization({
     ...valid,
     passages: [{

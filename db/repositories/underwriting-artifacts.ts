@@ -39,13 +39,17 @@ import {
 import {
   NAMED_LENS_PASSAGE_SCHEMA_VERSION,
   NAMED_LENS_SELECTION_POLICY_VERSION,
-  NamedLensDispositionSchema,
+  DecisionCriticalEvidenceProjectionSchema,
+  NamedLensCatalogConsiderationSchema,
+  NamedLensFinalizationDispositionSchema,
   NamedLensPassageSchema,
   NamedLensPresentationSchema,
   NamedLensProviderAttemptSchema,
   NamedLensProviderAttemptRefSchema,
   UNDERWRITING_PRESENTATION_SCHEMA_VERSION,
-  type NamedLensDisposition,
+  type DecisionCriticalEvidenceProjection,
+  type NamedLensCatalogConsideration,
+  type NamedLensFinalizationDisposition,
   type NamedLensPassage,
   type NamedLensPresentation,
   type NamedLensProviderAttempt,
@@ -240,9 +244,12 @@ export interface CandidateFinalization {
   narrative: string;
   actionDrafts: ActionDraft[];
   versionSnapshot: CandidateVersionSnapshot;
+  namedLensCatalogConsiderations?: NamedLensCatalogConsideration[];
+  decisionCriticalEvidenceProjection?: DecisionCriticalEvidenceProjection;
   namedLensAttemptRefs?: NamedLensProviderAttemptRef[];
-  namedLensDispositions?: NamedLensDisposition[];
+  namedLensDispositions?: NamedLensFinalizationDisposition[];
   namedLensPassages?: NamedLensPassage[];
+  underwritingPresentationReportId?: string;
   namedLensPresentation?: NamedLensPresentation;
   terminalStatus?: "completed" | "partial";
   terminalReasonCodes?: string[];
@@ -250,9 +257,12 @@ export interface CandidateFinalization {
 
 export interface CurrentCandidateFinalization extends CandidateFinalization {
   versionSnapshot: CurrentCandidateVersionSnapshot;
+  namedLensCatalogConsiderations: NamedLensCatalogConsideration[];
+  decisionCriticalEvidenceProjection: DecisionCriticalEvidenceProjection;
   namedLensAttemptRefs: NamedLensProviderAttemptRef[];
-  namedLensDispositions: NamedLensDisposition[];
+  namedLensDispositions: NamedLensFinalizationDisposition[];
   namedLensPassages: NamedLensPassage[];
+  underwritingPresentationReportId: string;
   namedLensPresentation: NamedLensPresentation;
   terminalStatus: "completed" | "partial";
   terminalReasonCodes: string[];
@@ -275,9 +285,12 @@ export interface CandidateArtifactBundle
 export interface CurrentCandidateArtifactBundle
   extends CandidateArtifactBundle {
   versionSnapshot: CurrentCandidateVersionSnapshot;
+  namedLensCatalogConsiderations: NamedLensCatalogConsideration[];
+  decisionCriticalEvidenceProjection: DecisionCriticalEvidenceProjection;
   namedLensAttemptRefs: NamedLensProviderAttemptRef[];
-  namedLensDispositions: NamedLensDisposition[];
+  namedLensDispositions: NamedLensFinalizationDisposition[];
   namedLensPassages: NamedLensPassage[];
+  underwritingPresentationReportId: string;
   namedLensPresentation: NamedLensPresentation;
   terminalStatus: "completed" | "partial";
   terminalReasonCodes: string[];
@@ -1005,11 +1018,21 @@ export function prepareCandidateFinalization(
   const versionSnapshot = CandidateVersionSnapshotSchema.parse(
     input.versionSnapshot,
   );
+  const namedLensCatalogConsiderations =
+    input.namedLensCatalogConsiderations?.map((value) =>
+      NamedLensCatalogConsiderationSchema.parse(value)
+    );
+  const decisionCriticalEvidenceProjection =
+    input.decisionCriticalEvidenceProjection === undefined
+      ? undefined
+      : DecisionCriticalEvidenceProjectionSchema.parse(
+        input.decisionCriticalEvidenceProjection,
+      );
   const namedLensAttemptRefs = input.namedLensAttemptRefs?.map((value) =>
     NamedLensProviderAttemptRefSchema.parse(value)
   );
   const namedLensDispositions = input.namedLensDispositions?.map((value) =>
-    NamedLensDispositionSchema.parse(value)
+    NamedLensFinalizationDispositionSchema.parse(value)
   );
   const namedLensPassages = input.namedLensPassages?.map((value) =>
     NamedLensPassageSchema.parse(value)
@@ -1017,12 +1040,17 @@ export function prepareCandidateFinalization(
   const namedLensPresentation = input.namedLensPresentation === undefined
     ? undefined
     : NamedLensPresentationSchema.parse(input.namedLensPresentation);
+  const underwritingPresentationReportId =
+    input.underwritingPresentationReportId;
   const terminalStatus = input.terminalStatus;
   const terminalReasonCodes = input.terminalReasonCodes;
   const namedLensArtifacts = [
+    namedLensCatalogConsiderations,
+    decisionCriticalEvidenceProjection,
     namedLensAttemptRefs,
     namedLensDispositions,
     namedLensPassages,
+    underwritingPresentationReportId,
     namedLensPresentation,
     terminalStatus,
     terminalReasonCodes,
@@ -1057,10 +1085,18 @@ export function prepareCandidateFinalization(
     validateNamedLensFinalization({
       workspaceId,
       candidateRunId,
+      catalogConsiderations: namedLensCatalogConsiderations!,
+      decisionCriticalEvidenceProjection:
+        decisionCriticalEvidenceProjection!,
       attemptRefs: namedLensAttemptRefs!,
       persistedAttempts: options.persistedNamedLensProviderAttempts ?? [],
       dispositions: namedLensDispositions!,
       passages: namedLensPassages!,
+      underwritingPresentationReportId:
+        requiredText(
+          underwritingPresentationReportId!,
+          "An Underwriting presentation report",
+        ),
       presentation: namedLensPresentation!,
       terminalStatus: terminalStatus!,
       terminalReasonCodes: terminalReasonCodes!,
@@ -1410,8 +1446,13 @@ export function prepareCandidateFinalization(
     ...(hasCurrentNamedLensContract
       ? {
         namedLensAttemptRefs: namedLensAttemptRefs!,
+        namedLensCatalogConsiderations: namedLensCatalogConsiderations!,
+        decisionCriticalEvidenceProjection:
+          decisionCriticalEvidenceProjection!,
         namedLensDispositions: namedLensDispositions!,
         namedLensPassages: namedLensPassages!,
+        underwritingPresentationReportId:
+          underwritingPresentationReportId!,
         namedLensPresentation: namedLensPresentation!,
         terminalStatus: terminalStatus!,
         terminalReasonCodes: terminalReasonCodes!,
@@ -1424,10 +1465,13 @@ export function prepareCandidateFinalization(
 export function validateNamedLensFinalization(input: {
   workspaceId: string;
   candidateRunId: string;
+  catalogConsiderations: NamedLensCatalogConsideration[];
+  decisionCriticalEvidenceProjection: DecisionCriticalEvidenceProjection;
   attemptRefs: NamedLensProviderAttemptRef[];
   persistedAttempts: NamedLensProviderAttempt[];
-  dispositions: NamedLensDisposition[];
+  dispositions: NamedLensFinalizationDisposition[];
   passages: NamedLensPassage[];
+  underwritingPresentationReportId: string;
   presentation: NamedLensPresentation;
   terminalStatus: "completed" | "partial";
   terminalReasonCodes: string[];
@@ -1450,6 +1494,12 @@ export function validateNamedLensFinalization(input: {
       `${logicalPassageId}\u0000${attemptNumber}`
     ),
     "Persisted Named Lens provider attempt",
+  );
+  assertUnique(
+    input.catalogConsiderations.map(({ judgmentOrCatalogCandidateId }) =>
+      judgmentOrCatalogCandidateId
+    ),
+    "Named Lens catalog consideration",
   );
   assertUnique(
     input.dispositions.map(({ judgmentOrCatalogCandidateId }) =>
@@ -1478,11 +1528,52 @@ export function validateNamedLensFinalization(input: {
     );
   }
   if (
-    input.terminalStatus === "completed"
-    && (orderedPositions.length < 4 || orderedPositions.length > 6)
+    orderedPositions.length > 6
   ) {
     throw new Error(
-      "Completed Named Lens finalization requires four through six selected passages.",
+      "Named Lens finalization accepts at most six selected passages.",
+    );
+  }
+  const considerationIds = new Set(
+    input.catalogConsiderations.map(({ judgmentOrCatalogCandidateId }) =>
+      judgmentOrCatalogCandidateId
+    ),
+  );
+  if (
+    considerationIds.size !== input.dispositions.length
+    || input.dispositions.some(({ judgmentOrCatalogCandidateId }) =>
+      !considerationIds.has(judgmentOrCatalogCandidateId)
+    )
+    || input.catalogConsiderations.some((consideration) => {
+      const disposition = input.dispositions.find((candidate) =>
+        candidate.judgmentOrCatalogCandidateId
+          === consideration.judgmentOrCatalogCandidateId
+      );
+      return !disposition
+        || disposition.workspaceId !== consideration.workspaceId
+        || disposition.artifactSourceCandidateRunId
+          !== consideration.artifactSourceCandidateRunId
+        || disposition.judgmentId !== consideration.judgmentId
+        || disposition.frameworkCardId !== consideration.frameworkCardId
+        || disposition.frameworkVersion !== consideration.frameworkVersion;
+    })
+  ) {
+    throw new Error(
+      "Every authorized Named Lens catalog consideration requires exactly one matching disposition.",
+    );
+  }
+  const projection = input.decisionCriticalEvidenceProjection;
+  if (
+    projection.workspaceId !== input.workspaceId
+    || projection.artifactSourceCandidateRunId !== input.candidateRunId
+    || input.dispositions.some((disposition) =>
+      disposition.decisionCriticalEvidenceProjectionId !== projection.id
+      || disposition.decisionCriticalEvidenceProjectionFingerprint
+        !== projection.fingerprint
+    )
+  ) {
+    throw new Error(
+      "Every Named Lens disposition must bind the authoritative decision-critical projection identity and fingerprint.",
     );
   }
   const attemptIdentity = (
@@ -1568,6 +1659,21 @@ export function validateNamedLensFinalization(input: {
     input.evidencePack.assumptions.map(({ id }) => id),
   );
   const evidenceIds = new Set([...facts, ...assumptions]);
+  for (const evidence of projection.evidenceRefs) {
+    const expectedClassification = facts.has(evidence.evidencePackItemId)
+      ? "fact"
+      : assumptions.has(evidence.evidencePackItemId)
+      ? "assumption"
+      : null;
+    if (expectedClassification !== evidence.classification) {
+      throw new Error(
+        "Decision-critical projection classification must resolve to the saved Evidence Pack.",
+      );
+    }
+  }
+  const projectionEvidenceIds = new Set(
+    projection.evidenceRefs.map(({ evidencePackItemId }) => evidencePackItemId),
+  );
   const judgmentsById = new Map(
     input.judgments.map((judgment) => [judgment.id, judgment]),
   );
@@ -1589,7 +1695,7 @@ export function validateNamedLensFinalization(input: {
     }
     if (
       disposition.selectionBasisEvidenceIds.some((id) =>
-        !evidenceIds.has(id)
+        !evidenceIds.has(id) || !projectionEvidenceIds.has(id)
       )
     ) {
       throw new Error(
@@ -1787,6 +1893,25 @@ export function validateNamedLensFinalization(input: {
       );
     }
   }
+  const applicableConsiderations = input.catalogConsiderations.filter(
+    ({ initialDisposition }) =>
+      initialDisposition !== "context_inapplicable"
+      && initialDisposition !== "ineligible",
+  );
+  const unavailableApplicable = applicableConsiderations.filter(
+    ({ judgmentOrCatalogCandidateId }) => {
+      const disposition = input.dispositions.find((candidate) =>
+        candidate.judgmentOrCatalogCandidateId
+          === judgmentOrCatalogCandidateId
+      );
+      return disposition?.disposition !== "selected_main"
+        && disposition?.disposition !== "appendix_only";
+    },
+  );
+  const completedLimited = input.passages.length < 4
+    && applicableConsiderations.length < 4
+    && input.passages.length === applicableConsiderations.length
+    && unavailableApplicable.length === 0;
   if (
     new Set(input.terminalReasonCodes).size
       !== input.terminalReasonCodes.length
@@ -1796,8 +1921,17 @@ export function validateNamedLensFinalization(input: {
         && compareUtf8(input.terminalReasonCodes[index - 1]!, reasonCode) >= 0)
     )
     || (input.terminalStatus === "completed"
-      ? input.terminalReasonCodes.length !== 0
-      : input.terminalReasonCodes.length === 0)
+      ? completedLimited
+        ? !isDeepStrictEqual(
+          input.terminalReasonCodes,
+          ["limited_framework_coverage"],
+        )
+        : input.terminalReasonCodes.length !== 0
+          || unavailableApplicable.length !== 0
+          || (input.passages.length < 4
+            && applicableConsiderations.length >= 4)
+      : input.terminalReasonCodes.length === 0
+        || unavailableApplicable.length === 0)
   ) {
     throw new Error(
       "Named Lens terminal status requires canonical explicit coverage reasons.",

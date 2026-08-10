@@ -56,6 +56,14 @@ import type {
 import type {
   CandidateVersionSnapshot,
 } from "./repositories/underwriting-artifacts";
+import type {
+  DecisionCriticalEvidenceProjection,
+  NamedLensCatalogConsideration,
+  NamedLensFinalizationDisposition,
+  NamedLensPassage,
+  NamedLensPresentation,
+  NamedLensProviderAttempt,
+} from "../lib/contracts/named-lens";
 import type { ExtractionPreview } from "./repositories/uploaded-documents";
 import type {
   FundPolicyValues,
@@ -1351,6 +1359,11 @@ export const candidateRuns = pgTable("candidate_runs", {
   finalizedAt: timestamp("finalized_at", { withTimezone: true }),
 }, (table) => [
   unique("candidate_runs_workspace_id_unique").on(table.workspaceId, table.id),
+  unique("candidate_runs_workspace_id_deal_unique").on(
+    table.workspaceId,
+    table.id,
+    table.dealId,
+  ),
   unique("candidate_runs_batch_deal_unique").on(table.batchId, table.dealId),
   foreignKey({
     columns: [table.workspaceId, table.batchId],
@@ -1386,12 +1399,12 @@ export const candidateRuns = pgTable("candidate_runs", {
   ),
   check(
     "candidate_runs_artifact_alias_shape_check",
-    sql`${table.artifactSourceCandidateRunId} is null or (${table.status} = 'completed' and ${table.rerunOfId} = ${table.artifactSourceCandidateRunId})`,
+    sql`${table.artifactSourceCandidateRunId} is null or (${table.status} in ('completed', 'partial') and ${table.rerunOfId} = ${table.artifactSourceCandidateRunId})`,
   ),
-  uniqueIndex("candidate_runs_completed_fingerprint_unique")
+  uniqueIndex("candidate_runs_terminal_fingerprint_unique")
     .on(table.workspaceId, table.candidateAnalysisFingerprint)
     .where(
-      sql`${table.status} = 'completed' and ${table.artifactSourceCandidateRunId} is null`,
+      sql`${table.status} in ('completed', 'partial') and ${table.artifactSourceCandidateRunId} is null`,
     ),
   index("candidate_runs_claim_queue_idx").on(
     table.status,
@@ -1432,7 +1445,7 @@ export const candidateCheckpoints = pgTable("candidate_checkpoints", {
   ),
   check(
     "candidate_checkpoints_stage_check",
-    sql`${table.stage} in ('evidence_pack', 'context_router', 'valuation', 'framework_catalog', 'framework_lenses', 'decision', 'narrative_drafts', 'finalization')`,
+    sql`${table.stage} in ('evidence_pack', 'context_router', 'valuation', 'framework_catalog', 'framework_lenses', 'decision', 'named_lens_presentation', 'narrative_drafts', 'finalization')`,
   ),
   check(
     "candidate_checkpoints_usage_check",
@@ -1596,6 +1609,221 @@ export const candidateVersionSnapshots = pgTable(
       .notNull(),
   },
   artifactTableConfig("candidate_version_snapshots_workspace_candidate_fkey"),
+);
+
+export const decisionCriticalEvidenceProjections = pgTable(
+  "decision_critical_evidence_projections",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    candidateRunId: text("candidate_run_id").notNull(),
+    dealId: text("deal_id").notNull(),
+    projectionId: text("projection_id").notNull(),
+    payloadFingerprint: text("payload_fingerprint").notNull(),
+    payload: jsonb("payload").$type<DecisionCriticalEvidenceProjection>()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.candidateRunId] }),
+    candidateOwnedArtifactForeignKey(
+      table,
+      "decision_critical_evidence_projections_candidate_fkey",
+    ),
+  ],
+);
+
+export const namedLensPassageAttemptEvents = pgTable(
+  "named_lens_passage_attempt_events",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    candidateRunId: text("candidate_run_id").notNull(),
+    dealId: text("deal_id").notNull(),
+    judgmentOrCatalogCandidateId: text("judgment_or_catalog_candidate_id")
+      .notNull(),
+    logicalPassageId: text("logical_passage_id").notNull(),
+    attemptNo: integer("attempt_no").notNull(),
+    eventStatus: text("event_status").notNull(),
+    attemptFingerprint: text("attempt_fingerprint").notNull(),
+    telemetry: jsonb("telemetry")
+      .$type<NamedLensProviderAttempt["telemetry"]>(),
+    failureReason: jsonb("failure_reason")
+      .$type<NamedLensProviderAttempt["failureReason"]>(),
+    payload: jsonb("payload").$type<NamedLensProviderAttempt>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [
+      table.workspaceId,
+      table.candidateRunId,
+      table.logicalPassageId,
+      table.attemptNo,
+      table.eventStatus,
+    ] }),
+    candidateOwnedArtifactForeignKey(
+      table,
+      "named_lens_passage_attempt_events_candidate_fkey",
+    ),
+    check(
+      "named_lens_passage_attempt_events_attempt_check",
+      sql`${table.attemptNo} > 0`,
+    ),
+    check(
+      "named_lens_passage_attempt_events_status_check",
+      sql`${table.eventStatus} in ('reserved', 'completed', 'failed', 'aborted')`,
+    ),
+  ],
+);
+
+export const namedLensDispositions = pgTable("named_lens_dispositions", {
+  workspaceId: text("workspace_id").notNull(),
+  candidateRunId: text("candidate_run_id").notNull(),
+  dealId: text("deal_id").notNull(),
+  catalogOrdinal: integer("catalog_ordinal").notNull(),
+  judgmentOrCatalogCandidateId: text("judgment_or_catalog_candidate_id")
+    .notNull(),
+  judgmentId: text("judgment_id"),
+  disposition: text("disposition").notNull(),
+  selectedPosition: integer("selected_position"),
+  passageFingerprint: text("passage_fingerprint"),
+  projectionId: text("projection_id").notNull(),
+  projectionFingerprint: text("projection_fingerprint").notNull(),
+  payloadFingerprint: text("payload_fingerprint").notNull(),
+  catalogConsiderationFingerprint: text("catalog_consideration_fingerprint")
+    .notNull(),
+  catalogConsideration: jsonb("catalog_consideration")
+    .$type<NamedLensCatalogConsideration>().notNull(),
+  payload: jsonb("payload").$type<NamedLensFinalizationDisposition>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+    .notNull(),
+}, (table) => [
+  primaryKey({ columns: [
+    table.workspaceId,
+    table.candidateRunId,
+    table.judgmentOrCatalogCandidateId,
+  ] }),
+  candidateOwnedArtifactForeignKey(
+    table,
+    "named_lens_dispositions_candidate_fkey",
+  ),
+  unique("named_lens_dispositions_catalog_ordinal_unique").on(
+    table.workspaceId,
+    table.candidateRunId,
+    table.catalogOrdinal,
+  ),
+  unique("named_lens_dispositions_judgment_unique").on(
+    table.workspaceId,
+    table.candidateRunId,
+    table.judgmentId,
+  ),
+  unique("named_lens_dispositions_selected_position_unique").on(
+    table.workspaceId,
+    table.candidateRunId,
+    table.selectedPosition,
+  ),
+]);
+
+export const namedLensPassages = pgTable("named_lens_passages", {
+  workspaceId: text("workspace_id").notNull(),
+  candidateRunId: text("candidate_run_id").notNull(),
+  dealId: text("deal_id").notNull(),
+  judgmentId: text("judgment_id").notNull(),
+  passageFingerprint: text("passage_fingerprint").notNull(),
+  payload: jsonb("payload").$type<NamedLensPassage>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+    .notNull(),
+}, (table) => [
+  primaryKey({ columns: [
+    table.workspaceId,
+    table.candidateRunId,
+    table.judgmentId,
+  ] }),
+  candidateOwnedArtifactForeignKey(
+    table,
+    "named_lens_passages_candidate_fkey",
+  ),
+  unique("named_lens_passages_fingerprint_unique").on(
+    table.workspaceId,
+    table.candidateRunId,
+    table.passageFingerprint,
+  ),
+  foreignKey({
+    columns: [table.workspaceId, table.candidateRunId, table.judgmentId],
+    foreignColumns: [
+      namedLensDispositions.workspaceId,
+      namedLensDispositions.candidateRunId,
+      namedLensDispositions.judgmentId,
+    ],
+    name: "named_lens_passages_disposition_fkey",
+  }),
+]);
+
+export const namedLensPassageSegments = pgTable(
+  "named_lens_passage_segments",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    candidateRunId: text("candidate_run_id").notNull(),
+    dealId: text("deal_id").notNull(),
+    judgmentId: text("judgment_id").notNull(),
+    segmentOrdinal: integer("segment_ordinal").notNull(),
+    segmentKind: text("segment_kind").notNull(),
+    payloadFingerprint: text("payload_fingerprint").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [
+      table.workspaceId,
+      table.candidateRunId,
+      table.judgmentId,
+      table.segmentOrdinal,
+    ] }),
+    candidateOwnedArtifactForeignKey(
+      table,
+      "named_lens_passage_segments_candidate_fkey",
+    ),
+    foreignKey({
+      columns: [table.workspaceId, table.candidateRunId, table.judgmentId],
+      foreignColumns: [
+        namedLensPassages.workspaceId,
+        namedLensPassages.candidateRunId,
+        namedLensPassages.judgmentId,
+      ],
+      name: "named_lens_passage_segments_passage_fkey",
+    }),
+    check(
+      "named_lens_passage_segments_ordinal_check",
+      sql`${table.segmentOrdinal} between 1 and 5`,
+    ),
+  ],
+);
+
+export const underwritingPresentations = pgTable(
+  "underwriting_presentations",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    candidateRunId: text("candidate_run_id").notNull(),
+    dealId: text("deal_id").notNull(),
+    reportId: text("report_id").notNull(),
+    presentationFingerprint: text("presentation_fingerprint").notNull(),
+    payload: jsonb("payload").$type<NamedLensPresentation>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.candidateRunId] }),
+    candidateOwnedArtifactForeignKey(
+      table,
+      "underwriting_presentations_candidate_fkey",
+    ),
+    foreignKey({
+      columns: [table.workspaceId, table.reportId],
+      foreignColumns: [intelligenceReports.workspaceId, intelligenceReports.id],
+      name: "underwriting_presentations_report_fkey",
+    }),
+  ],
 );
 
 export const researchCandidates = pgTable("research_candidates", {
@@ -2135,4 +2363,19 @@ function manyArtifactTableConfig(constraintName: string) {
       name: constraintName,
     }),
   ];
+}
+
+function candidateOwnedArtifactForeignKey(
+  table: {
+    workspaceId: AnyPgColumn;
+    candidateRunId: AnyPgColumn;
+    dealId: AnyPgColumn;
+  },
+  name: string,
+) {
+  return foreignKey({
+    columns: [table.workspaceId, table.candidateRunId, table.dealId],
+    foreignColumns: [candidateRuns.workspaceId, candidateRuns.id, candidateRuns.dealId],
+    name,
+  });
 }

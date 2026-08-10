@@ -93,6 +93,59 @@ export const DecisionCriticalEvidenceRefSchema = z.strictObject({
   );
 });
 
+export const DecisionCriticalEvidenceProjectionSchema = z.strictObject({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  artifactSourceCandidateRunId: z.string().min(1),
+  evidenceRefs: z.array(DecisionCriticalEvidenceRefSchema),
+  fingerprint: Sha256Schema,
+}).superRefine((value, context) => {
+  requireCanonicalUnique(
+    value.evidenceRefs,
+    ({ evidencePackItemId }) => evidencePackItemId,
+    context,
+    "Decision-critical projection evidence IDs",
+  );
+});
+
+export const NamedLensCatalogConsiderationSchema = z.strictObject({
+  workspaceId: z.string().min(1),
+  artifactSourceCandidateRunId: z.string().min(1),
+  judgmentOrCatalogCandidateId: z.string().min(1),
+  judgmentId: z.string().min(1).nullable(),
+  frameworkCardId: z.string().min(1),
+  frameworkVersion: z.string().min(1),
+  initialDisposition: z.enum([
+    "judgment_eligible",
+    "context_inapplicable",
+    "ineligible",
+    "abstained",
+    "unavailable",
+  ]),
+  reasonCodes: z.array(z.string().min(1)).min(1),
+  fingerprint: Sha256Schema,
+}).superRefine((value, context) => {
+  requireCanonicalStrings(
+    value.reasonCodes,
+    context,
+    "Named Lens catalog consideration reason codes",
+  );
+  if (
+    value.initialDisposition === "judgment_eligible"
+      ? value.judgmentId === null
+      : value.initialDisposition === "context_inapplicable"
+        || value.initialDisposition === "ineligible"
+      ? value.judgmentId !== null
+      : false
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Catalog consideration judgment identity must match its authorized initial disposition.",
+    });
+  }
+});
+
 const PlainTextSchema = z.string().min(1).superRefine((value, context) => {
   if (
     /<\/?[A-Za-z][^>]*>/.test(value)
@@ -315,7 +368,18 @@ const NamedLensDispositionBaseSchema = z.strictObject({
 });
 
 export const NamedLensDispositionSchema = NamedLensDispositionBaseSchema
-  .superRefine((value, context) => {
+  .superRefine(validateNamedLensDisposition);
+
+export const NamedLensFinalizationDispositionSchema =
+  NamedLensDispositionBaseSchema.extend({
+    decisionCriticalEvidenceProjectionId: z.string().min(1),
+    decisionCriticalEvidenceProjectionFingerprint: Sha256Schema,
+  }).superRefine(validateNamedLensDisposition);
+
+function validateNamedLensDisposition(
+  value: z.infer<typeof NamedLensDispositionBaseSchema>,
+  context: z.core.$RefinementCtx,
+): void {
     const hasSelectedShape = value.disposition === "selected_main"
       ? value.selectedPosition !== null
       : value.selectedPosition === null;
@@ -378,7 +442,7 @@ export const NamedLensDispositionSchema = NamedLensDispositionBaseSchema
           "Selection-basis IDs must be candidate-local decision-critical Evidence Pack item IDs.",
       });
     }
-  });
+}
 
 export const NamedLensProviderFailureReasonSchema = z.strictObject({
   code: z.enum([
@@ -604,6 +668,12 @@ export type DecisionCriticalOriginRef = z.infer<
 export type DecisionCriticalEvidenceRef = z.infer<
   typeof DecisionCriticalEvidenceRefSchema
 >;
+export type DecisionCriticalEvidenceProjection = z.infer<
+  typeof DecisionCriticalEvidenceProjectionSchema
+>;
+export type NamedLensCatalogConsideration = z.infer<
+  typeof NamedLensCatalogConsiderationSchema
+>;
 export type FrameworkPremiseSegment = z.infer<
   typeof FrameworkPremiseSegmentSchema
 >;
@@ -628,6 +698,9 @@ export type GroundedNamedLensPassageCandidate = z.infer<
 >;
 export type NamedLensPassage = z.infer<typeof NamedLensPassageSchema>;
 export type NamedLensDisposition = z.infer<typeof NamedLensDispositionSchema>;
+export type NamedLensFinalizationDisposition = z.infer<
+  typeof NamedLensFinalizationDispositionSchema
+>;
 export type NamedLensProviderAttempt = z.infer<
   typeof NamedLensProviderAttemptSchema
 >;

@@ -3,7 +3,18 @@ import test from "node:test";
 
 import { getTableConfig, PgDialect } from "drizzle-orm/pg-core";
 
-import { deals, scanRunSteps } from "../../db/schema";
+import {
+  candidateCheckpoints,
+  candidateRuns,
+  decisionCriticalEvidenceProjections,
+  deals,
+  namedLensDispositions,
+  namedLensPassageAttemptEvents,
+  namedLensPassages,
+  namedLensPassageSegments,
+  scanRunSteps,
+  underwritingPresentations,
+} from "../../db/schema";
 import {
   CandidateVersionSnapshotSchema,
 } from "../../db/repositories/underwriting-artifacts";
@@ -71,6 +82,42 @@ test("pins all five Named Lens version values together", () => {
     ...current,
     namedLensGeneratorVersion: undefined,
   }));
+});
+
+test("declares the six append-only Named Lens presentation tables and terminal stage", () => {
+  assert.deepEqual([
+    decisionCriticalEvidenceProjections,
+    namedLensPassageAttemptEvents,
+    namedLensDispositions,
+    namedLensPassages,
+    namedLensPassageSegments,
+    underwritingPresentations,
+  ].map((table) => getTableConfig(table).name), [
+    "decision_critical_evidence_projections",
+    "named_lens_passage_attempt_events",
+    "named_lens_dispositions",
+    "named_lens_passages",
+    "named_lens_passage_segments",
+    "underwriting_presentations",
+  ]);
+  assert.match(
+    checks(candidateCheckpoints).find(({ name }) =>
+      name === "candidate_checkpoints_stage_check"
+    )?.definition ?? "",
+    /'named_lens_presentation'/u,
+  );
+  assert.match(
+    checks(candidateRuns).find(({ name }) =>
+      name === "candidate_runs_artifact_alias_shape_check"
+    )?.definition ?? "",
+    /in \('completed', 'partial'\)/u,
+  );
+  assert.equal(
+    getTableConfig(underwritingPresentations).columns.some(({ name }) =>
+      name === "report_id"
+    ),
+    true,
+  );
 });
 
 const legacyJudgment = {

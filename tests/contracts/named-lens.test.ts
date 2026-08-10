@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DecisionCriticalEvidenceProjectionSchema,
   DecisionCriticalEvidenceRefSchema,
   NAMED_LENS_PASSAGE_SCHEMA_VERSION,
   NAMED_LENS_SELECTION_POLICY_VERSION,
   NamedLensDispositionSchema,
+  NamedLensFinalizationDispositionSchema,
+  NamedLensCatalogConsiderationSchema,
   NamedLensPassageSchema,
   NamedLensPresentationSchema,
   NamedLensProviderAttemptSchema,
@@ -209,6 +212,37 @@ const presentation = {
   },
   fingerprint: sha("7"),
 };
+
+test("types current finalization catalog and projection authority explicitly", () => {
+  const projection = {
+    id: "projection_1",
+    workspaceId: "workspace_1",
+    artifactSourceCandidateRunId: "candidate_1",
+    evidenceRefs: [criticalEvidence],
+    fingerprint: sha("8"),
+  };
+  assert.deepEqual(
+    DecisionCriticalEvidenceProjectionSchema.parse(projection),
+    projection,
+  );
+  assert.deepEqual(NamedLensCatalogConsiderationSchema.parse({
+    workspaceId: "workspace_1",
+    artifactSourceCandidateRunId: "candidate_1",
+    judgmentOrCatalogCandidateId: "judgment_1",
+    judgmentId: "judgment_1",
+    frameworkCardId: "MA-01-PRODUCT-MARKET-FIT",
+    frameworkVersion: "1.0.0",
+    initialDisposition: "judgment_eligible",
+    reasonCodes: ["JUDGMENT_ELIGIBLE"],
+    fingerprint: sha("9"),
+  }).initialDisposition, "judgment_eligible");
+  assert.deepEqual(NamedLensFinalizationDispositionSchema.parse({
+    ...selected,
+    decisionCriticalEvidenceProjectionId: projection.id,
+    decisionCriticalEvidenceProjectionFingerprint: projection.fingerprint,
+  }).decisionCriticalEvidenceProjectionFingerprint, projection.fingerprint);
+  assert.throws(() => NamedLensFinalizationDispositionSchema.parse(selected));
+});
 
 test("round-trips strict selected, appendix, attempt, and presentation artifacts", () => {
   assert.equal(

@@ -839,6 +839,18 @@ test(
         "--no-password", "-At", "-d", database,
         "-c", "select artifact_source_candidate_run_id from public.candidate_runs where id='candidate_authority_rerun'",
       ]), "rerun alias").split("\n").at(-1), "candidate_authority");
+      assert.equal(success(postgres.run("psql", [
+        "--no-password", "-At", "-d", database,
+        "-c", [
+          "select",
+          "(select count(*) from public.decision_critical_evidence_projections) +",
+          "(select count(*) from public.named_lens_passage_attempt_events) +",
+          "(select count(*) from public.named_lens_dispositions) +",
+          "(select count(*) from public.named_lens_passages) +",
+          "(select count(*) from public.named_lens_passage_segments) +",
+          "(select count(*) from public.underwriting_presentations)",
+        ].join(" "),
+      ]), "legacy Task 9 Named Lens row isolation").split("\n").at(-1), "0");
     } finally {
       success(postgres.run("dropdb", ["--if-exists", database]), "database cleanup");
     }
