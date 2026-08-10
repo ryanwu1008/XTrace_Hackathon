@@ -68,6 +68,7 @@ import {
   type CandidateGroundingPort,
 } from "./candidate-grounding";
 import {
+  CURRENT_FRAMEWORK_LENS_STAGE_REPLAY_CONTRACT,
   parseCandidateGroundingSnapshot,
   parseDecisionResult,
   parseFrameworkCatalogBinding,
@@ -842,7 +843,10 @@ export function createSourceGroundedCandidateExecutor(options: {
       lensResult = await input.stages.run({
         stage: "framework_lenses",
         inputFingerprint: frameworkInputFingerprint,
-        parseOutput: parseFrameworkLensResult,
+        parseOutput: (value) => parseFrameworkLensResult(
+          value,
+          CURRENT_FRAMEWORK_LENS_STAGE_REPLAY_CONTRACT,
+        ),
         operation: async (signal) => {
           let service = options.frameworkLenses;
           if (options.resolveFrameworkLenses) {

@@ -20,6 +20,7 @@ import {
   NAMED_LENS_PASSAGE_SCHEMA_VERSION,
 } from "../../lib/contracts/named-lens";
 import {
+  DECISION_TAXONOMY_DIGEST,
   DECISION_TAXONOMY_VERSION,
 } from "../../lib/underwriting/frameworks/decision-taxonomy";
 import {
@@ -214,7 +215,10 @@ test("executes each applicable real pack once through a stable four-worker pool 
   assert.equal(result.passageCandidates.length, applicable.length);
   assert.equal(result.passageResults.length, applicable.length);
   assert.deepEqual(
-    parseFrameworkLensResult(JSON.parse(JSON.stringify(result))),
+    parseFrameworkLensResult(
+      JSON.parse(JSON.stringify(result)),
+      currentPassageContract(),
+    ),
     result,
   );
   assert.equal(
@@ -320,6 +324,58 @@ test("executes each applicable real pack once through a stable four-worker pool 
     true,
   );
   assert.equal(peter.frameworkMetadata.formalDecisionWeight, "0");
+});
+
+test("stage replay requires the exact current passage generation contract", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const service = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    execution,
+    client: {
+      async complete(request) {
+        return JSON.stringify(advisoryOutput(promptCard(request)));
+      },
+    },
+  });
+  const persisted = JSON.parse(JSON.stringify(
+    await service.runAll(runInput()),
+  )) as Record<string, unknown>;
+  const current = currentPassageContract();
+
+  assert.deepEqual(parseFrameworkLensResult(persisted, current), persisted);
+
+  const staleGenerator = structuredClone(persisted) as {
+    passageResults: Array<{
+      status: string;
+      groundedCandidate?: { generatorVersion: string };
+    }>;
+  };
+  const validated = staleGenerator.passageResults.find(
+    ({ status }) => status === "validated",
+  );
+  assert.ok(validated?.groundedCandidate);
+  validated.groundedCandidate.generatorVersion = "named-lens-generator-stale";
+  assert.throws(
+    () => parseFrameworkLensResult(staleGenerator, current),
+    /passage.*contract|generator.*version|current/i,
+  );
+
+  const staleTaxonomy = structuredClone(persisted) as {
+    judgments: Array<{
+      frameworkMetadata?: { decisionTaxonomyDigest: string };
+    }>;
+  };
+  const advisory = staleTaxonomy.judgments.find(
+    ({ frameworkMetadata }) => frameworkMetadata !== undefined,
+  );
+  assert.ok(advisory?.frameworkMetadata);
+  advisory.frameworkMetadata.decisionTaxonomyDigest =
+    `sha256:${"0".repeat(64)}`;
+  assert.throws(
+    () => parseFrameworkLensResult(staleTaxonomy, current),
+    /passage.*contract|taxonomy.*digest|current/i,
+  );
 });
 
 test("core-only Deal context executes geography-agnostic named advisory packs without weakening the valuation ceiling", async () => {
@@ -443,6 +499,42 @@ test("replays advisory fingerprints without calls and never stores prompts or ra
   }
 });
 
+test("provider-declared non-applicable advisory outputs replay identically without passage artifacts", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const cache = createMemoryFrameworkLensCache();
+  let calls = 0;
+  const service = createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    cache,
+    execution,
+    client: {
+      async complete(request) {
+        calls += 1;
+        return JSON.stringify(notApplicableAdvisoryOutput(promptCard(request)));
+      },
+    },
+  });
+
+  const first = await service.runAll(runInput());
+  const second = await service.runAll(runInput());
+
+  assert.equal(calls, 19);
+  assert.deepEqual(second, first);
+  assert.equal(first.passageCandidates.length, 0);
+  assert.equal(first.passageResults.length, 0);
+  assert.deepEqual(first.taxonomyByFrameworkId, {});
+  assert.equal(
+    first.judgments.filter(
+      ({ frameworkMetadata }) => frameworkMetadata?.applicable === true,
+    ).every(
+      ({ applicability, conclusion }) =>
+        applicability === "not_applicable" && conclusion === "abstain",
+    ),
+    true,
+  );
+});
+
 test("coalesces two concurrent full-catalog runs to one call per applicable pack", async () => {
   const catalog = await loadResearchFrameworkCatalog({ context });
   let calls = 0;
@@ -534,6 +626,9 @@ test("stops advisory failures after one attempt and records unavailable abstenti
   });
 
   const result = await service.runAll(runInput());
+  const replayed = await service.runAll(runInput());
+
+  assert.deepEqual(replayed, result);
 
   for (const packId of [malformedPack, truncatedPack]) {
     assert.equal(callsByPack.get(packId), 1);
@@ -863,6 +958,96 @@ test("fails closed when cached advisory metadata does not exactly match the auth
   );
 });
 
+test("fails closed on cached applicable advisory passage mutations", async () => {
+  const catalog = await loadResearchFrameworkCatalog({ context });
+  const cache = createMemoryFrameworkLensCache();
+  await createFrameworkLensService({
+    cards: [],
+    advisoryCatalog: catalog,
+    cache,
+    execution,
+    client: {
+      async complete(request) {
+        return JSON.stringify(advisoryOutput(promptCard(request)));
+      },
+    },
+  }).runAll(runInput());
+  const valid = cache.inspect().find(
+    ({ judgment, passageValidationResult }) =>
+      judgment.applicability === "applicable"
+      && passageValidationResult?.status === "validated",
+  );
+  assert.ok(valid?.passageCandidate);
+
+  const missingCandidate = structuredClone(valid) as unknown as Record<
+    string,
+    unknown
+  >;
+  missingCandidate.passageCandidate = null;
+  missingCandidate.passageValidationResult = {
+    judgmentOrCatalogCandidateId: valid.judgment.id,
+    status: "withheld",
+    reasonCode: "foreign_passage_evidence",
+    authorizedFocus: valid.passageValidationResult?.authorizedFocus ?? null,
+  };
+
+  const alteredReason = structuredClone(valid) as unknown as Record<
+    string,
+    unknown
+  >;
+  alteredReason.passageValidationResult = {
+    judgmentOrCatalogCandidateId: valid.judgment.id,
+    status: "withheld",
+    reasonCode: "arbitrary_cache_reason",
+    authorizedFocus: valid.passageValidationResult?.authorizedFocus ?? null,
+  };
+
+  const malformedCandidate = structuredClone(valid) as unknown as {
+    passageCandidate: Record<string, unknown>;
+  };
+  delete malformedCandidate.passageCandidate.caseApplication;
+
+  const mismatchedCandidate = structuredClone(valid);
+  mismatchedCandidate.passageCandidate!.caseApplication.evidenceItemIds = [
+    assumption.id,
+  ];
+
+  const alteredFingerprint = structuredClone(valid);
+  if (alteredFingerprint.passageValidationResult?.status === "validated") {
+    alteredFingerprint.passageValidationResult.groundedCandidate
+      .groundingFingerprint = `sha256:${"0".repeat(64)}`;
+  }
+
+  for (const mutated of [
+    missingCandidate as unknown as FrameworkLensCacheRecord,
+    alteredReason as unknown as FrameworkLensCacheRecord,
+    malformedCandidate as unknown as FrameworkLensCacheRecord,
+    mismatchedCandidate,
+    alteredFingerprint,
+  ]) {
+    const replay = createFrameworkLensService({
+      cards: [],
+      advisoryCatalog: catalog,
+      execution,
+      cache: {
+        async find(fingerprint) {
+          return fingerprint === valid.fingerprint ? mutated : null;
+        },
+        async save() {},
+      },
+      client: {
+        async complete(request) {
+          return JSON.stringify(advisoryOutput(promptCard(request)));
+        },
+      },
+    });
+    await assert.rejects(
+      replay.runAll(runInput()),
+      /cache record.*(?:invalid|passage|grounded|contract|mismatch)/i,
+    );
+  }
+});
+
 function runInput() {
   return {
     candidate,
@@ -935,6 +1120,49 @@ function advisoryOutput(card: ExperimentalAdvisoryFrameworkCard) {
       },
     },
   };
+}
+
+function notApplicableAdvisoryOutput(
+  card: ExperimentalAdvisoryFrameworkCard,
+) {
+  const output = advisoryOutput(card);
+  return {
+    ...output,
+    applicability: "not_applicable" as const,
+    conclusion: "abstain" as const,
+    supportEvidenceItemIds: [],
+    counterEvidenceItemIds: [],
+    unusedEvidenceItemIds: [fact.id, assumption.id].sort(),
+    strongestSupport: null,
+    strongestCounterargument: null,
+    counterevidenceBoundary: {
+      kind: "no_candidate_local_counterevidence" as const,
+      evidenceRequestRefs: ["request_if_lens_becomes_applicable"],
+    },
+    passage: {
+      ...output.passage,
+      countercase: {
+        ...output.passage.countercase,
+        boundaryKind: "no_candidate_local_counterevidence" as const,
+        evidenceItemIds: [],
+        evidenceRequestRefs: ["request_if_lens_becomes_applicable"],
+      },
+      conditionalConclusion: {
+        ...output.passage.conditionalConclusion,
+        stance: "abstain" as const,
+        advisoryPosture: "abstains" as const,
+      },
+    },
+  };
+}
+
+function currentPassageContract() {
+  return {
+    passageSchemaVersion: NAMED_LENS_PASSAGE_SCHEMA_VERSION,
+    generatorVersion: NAMED_LENS_GENERATOR_VERSION,
+    decisionTaxonomyVersion: DECISION_TAXONOMY_VERSION,
+    decisionTaxonomyDigest: DECISION_TAXONOMY_DIGEST,
+  } as const;
 }
 
 function advisoryOutputShape() {

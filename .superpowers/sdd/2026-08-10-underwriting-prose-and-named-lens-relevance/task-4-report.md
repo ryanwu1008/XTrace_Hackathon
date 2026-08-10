@@ -181,3 +181,134 @@ later persistence/orchestration tasks.
 ## Commit
 
 Commit message: `feat: ground complete named lens passages`.
+
+---
+
+## Fix round 1/5 — Important review findings
+
+### Status and implementation
+
+Addressed all four Important findings without changing the one-call advisory
+execution, independent judgment-first grounding, or selection-neutral passage
+candidate architecture.
+
+- Provider-declared `not_applicable` judgments now normalize immediately to a
+  null passage candidate and null passage result. The first run and cache
+  replay therefore expose the same semantic record, with no unavailable
+  passage artifact attached to a non-applicable judgment. Provider failures
+  that produce unavailable abstentions also replay with both passage fields
+  exactly null.
+- Replaced the narrow prose blacklist with bounded explicit safety grammar for
+  formal decisions, ceilings, vetoes, all nine canonical typed action tokens
+  and their humanized forms, VSee/fund/IC directives, named-person endorsement
+  or hypothetical decision voice, first-person voice, and quotation marks.
+  Ordinary lowercase `pass` and `watch` remain valid outside a bounded formal
+  decision or directive context.
+- Stage replay now receives the exact current passage schema, generator, and
+  decision-taxonomy version/digest contract from the executor. Both grounded
+  passage schemas require the exact current generator, and replay refuses a
+  stale grounded generator or advisory taxonomy digest.
+- Advisory cache replay now requires every applicable judgment to have both an
+  exact candidate and a validation result, independently re-grounds the
+  candidate, and compares the complete validation result. Non-applicable and
+  unavailable advisory records require both fields to be null. Applicable
+  outputs whose malformed passage cannot produce a strict candidate are not
+  persisted as replayable cache records. Passage reason codes are a closed
+  enum rather than arbitrary strings.
+
+### Strict TDD evidence
+
+Exact initial reproductions were run before the production changes:
+
+```text
+node --import tsx --test --test-concurrency=1 --test-name-pattern='stage replay requires|provider-declared non-applicable|cached applicable advisory passage mutations' tests/unit/framework-advisory.test.ts
+```
+
+Exit 1: 0 passed / 3 failed. Stage replay raised `Missing expected exception`
+for a stale generator; the second provider-declared non-applicable run threw
+`Framework lens cache record contains a mismatched advisory passage contract`;
+and a cached applicable judgment with a null candidate plus an altered
+withheld result raised `Missing expected rejection`.
+
+```text
+node --import tsx --test --test-concurrency=1 --test-name-pattern='withholds stance/posture' tests/unit/named-lens-passage-grounding.test.ts
+```
+
+Exit 1: 0 passed / 1 failed because `VSee should invest in this company.` was
+validated instead of withheld. The same regression table also covers
+`advance_diligence`, fund/IC directives, named endorsement/imitation, all nine
+typed actions plus humanized equivalents, decision ceiling, veto, first-person
+voice, and quotation.
+
+After the fixes, the exact commands were rerun:
+
+```text
+framework advisory reproductions: exit 0, 3 passed / 0 failed
+passage safety reproduction: exit 0, 1 passed / 0 failed
+```
+
+An unavailable-advisory replay assertion and separate malformed, missing,
+mismatched, stale-fingerprint, and free-form-reason cache mutations were added
+during self-review. The amended focused replay command completed with 4 passed
+/ 0 failed, and the amended safety command completed with 1 passed / 0 failed.
+
+### Verification
+
+```text
+node --import tsx --test --test-concurrency=1 tests/unit/framework-lens.test.ts tests/unit/framework-grounding.test.ts tests/unit/named-lens-passage-grounding.test.ts
+```
+
+Exit 0: 24 passed / 0 failed.
+
+```text
+node --import tsx --test --test-concurrency=1 tests/unit/framework-advisory.test.ts tests/unit/framework-context-runtime.test.ts
+```
+
+Exit 0: 18 passed / 0 failed.
+
+```text
+node --import tsx --test --test-concurrency=1 tests/unit/named-lens-relevance.test.ts tests/unit/named-lens-finalization.test.ts tests/contracts/named-lens.test.ts
+```
+
+Exit 0: 29 passed / 0 failed.
+
+`npm run typecheck` and `git diff --check` completed with exit 0. Focused ESLint
+completed with exit 0 and repeated three pre-existing unused checkpoint-binding
+warnings in `orchestrator.ts`; linting the base-commit copy of that file emits
+the same warnings.
+
+### Self-review
+
+- Rechecked that non-applicable normalization happens only after the strict
+  judgment is independently grounded, and before passage parsing/grounding.
+- Rechecked all reason codes emitted by passage grounding against the closed
+  enum and separately mutated candidate shape, evidence partition, grounded
+  fingerprint, withheld result, and reason code on replay.
+- Rechecked that stage replay obtains the current contract at the executor
+  boundary and never trusts a non-empty provider-owned generator string.
+- Rechecked the action grammar against all authoritative action-policy kinds
+  and human-readable forms, with positive ordinary lowercase `pass/watch`
+  prose retained.
+- Confirmed no formal decision, valuation, action, selection basis, migration,
+  UI, research corpus, deployment, prompt-count, or raw-response persistence
+  path changed.
+
+### Remaining concern
+
+The bounded prose grammar is deliberately explicit. A future canonical action
+kind or newly authorized humanized action phrase must be added to this grammar
+and its table-driven test in the same change.
+
+### Independent review amendment
+
+The required independent review found one further Important grammar gap:
+recommendation/direction verb forms, generic lens endorsement, and named-person
+belief voice were not covered. Exact tests for `VSee recommends buying this
+company.`, `The IC directs an investment.`, `This lens endorses the
+investment.`, and `Peter Thiel believes this company will win.` were added
+before changing production code.
+
+The focused safety command was RED with 0 passed / 1 failed (`validated`
+instead of `withheld`), then GREEN with 1 passed / 0 failed after extending the
+same bounded organization-directive, lens-endorsement, and named-person stance
+grammar. No further Critical or Important finding remains from that review.

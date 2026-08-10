@@ -674,7 +674,12 @@ export function createFrameworkLensService(options: {
                   repaired,
                 },
               });
-              await cache.save(freshRecord);
+              const replayVerifiable = !(
+                authorizedAdvisory
+                && judgment.applicability === "applicable"
+                && passageCandidate === null
+              );
+              if (replayVerifiable) await cache.save(freshRecord);
               return freshRecord;
             },
           });
@@ -937,10 +942,19 @@ function validateCacheReplay(input: {
     }
     const applicable = record.judgment.applicability === "applicable";
     if (
-      applicable !== (record.passageValidationResult !== null)
+      (
+        applicable
+        && (
+          record.passageCandidate === null
+          || record.passageValidationResult === null
+        )
+      )
       || (
-        record.passageValidationResult?.status === "validated"
-        && record.passageCandidate === null
+        !applicable
+        && (
+          record.passageCandidate !== null
+          || record.passageValidationResult !== null
+        )
       )
       || (
         record.passageValidationResult !== null
@@ -952,7 +966,7 @@ function validateCacheReplay(input: {
         "Framework lens cache record contains a mismatched advisory passage contract.",
       );
     }
-    if (record.passageCandidate) {
+    if (applicable) {
       const replayedValidation = groundNamedLensPassage({
         candidate: input.candidate,
         pack: input.pack,

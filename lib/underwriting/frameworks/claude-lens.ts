@@ -190,6 +190,18 @@ export async function runClaudeFrameworkLens(input: {
           fingerprint: input.fingerprint,
           output,
         });
+        if (
+          judgment.applicability !== "applicable"
+          || judgment.conclusion === "abstain"
+        ) {
+          return {
+            judgment,
+            passageCandidate: null,
+            passageValidationResult: null,
+            attempts: attempt,
+            repaired: false,
+          };
+        }
         const strictOutput = ClaudeAdvisoryFrameworkLensOutputSchema.safeParse(
           rawOutput,
         );

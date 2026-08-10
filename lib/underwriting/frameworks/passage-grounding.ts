@@ -36,6 +36,28 @@ export type AuthorizedNamedLensFocus = z.infer<
   typeof AuthorizedNamedLensFocusSchema
 >;
 
+export const NamedLensPassageReasonCodeSchema = z.enum([
+  "foreign_passage_judgment",
+  "foreign_passage_focus",
+  "unsafe_passage_content",
+  "invalid_passage_schema",
+  "foreign_passage_source",
+  "foreign_passage_evidence",
+  "counterevidence_boundary_mismatch",
+  "passage_partition_mismatch",
+  "foreign_passage_unknown",
+  "passage_stance_mismatch",
+  "passage_posture_mismatch",
+  "unsafe_passage_action",
+  "unsafe_passage_voice",
+  "unsafe_passage_quote",
+  "passage_word_limit_exceeded",
+]);
+
+export type NamedLensPassageReasonCode = z.infer<
+  typeof NamedLensPassageReasonCodeSchema
+>;
+
 export const NamedLensPassageValidationResultSchema = z.discriminatedUnion(
   "status",
   [
@@ -48,7 +70,7 @@ export const NamedLensPassageValidationResultSchema = z.discriminatedUnion(
     z.strictObject({
       judgmentOrCatalogCandidateId: z.string().min(1),
       status: z.enum(["withheld", "unavailable"]),
-      reasonCode: z.string().min(1),
+      reasonCode: NamedLensPassageReasonCodeSchema,
       authorizedFocus: AuthorizedNamedLensFocusSchema.nullable(),
     }),
   ],
@@ -58,11 +80,15 @@ export type NamedLensPassageValidationResult = z.infer<
   typeof NamedLensPassageValidationResultSchema
 >;
 
-const FORMAL_ACTION_PATTERN = /\b(?:formal decision|decision ceiling|veto|invest candidate|advance diligence|continue monitoring|deprioritize|reopen diligence|evaluate follow on|pause follow on|portfolio risk review|no new action|review analysis failure|(?:decision|recommendation|rating|label|outcome)(?:\s+(?:is|of|to))?\s+(?:pass|watch|advance))\b/iu;
+const FORMAL_GOVERNANCE_PATTERN = /\b(?:formal[ _-]+decision|decision[ _-]+ceiling|hard[ _-]+veto|veto|invest[ _-]+candidate|(?:decision|recommendation|rating|label|outcome)(?:\s+(?:is|of|to))?\s+(?:pass|watch|advance))\b/iu;
 const FORMAL_DECISION_LABEL_PATTERN = /\b(?:Pass|Watch|Advance|Invest Candidate)\b/u;
+const TYPED_ACTION_PATTERN = /\b(?:advance[ _-]+(?:internal[ _-]+)?diligence|continue[ _-]+(?:internal[ _-]+)?monitoring|deprioritize|reopen[ _-]+(?:internal[ _-]+)?diligence|evaluate[ _-]+(?:a[ _-]+)?follow[ _-]+on(?:[ _-]+investment)?|pause[ _-]+follow[ _-]+on(?:[ _-]+investment(?:[ _-]+activity)?)?|(?:begin[ _-]+(?:an[ _-]+)?internal[ _-]+)?portfolio[ _-]+risk[ _-]+review|no[ _-]+new[ _-]+(?:internal[ _-]+)?action|review[ _-]+(?:the[ _-]+)?analysis[ _-]+failure)\b/iu;
+const ORGANIZATION_DIRECTIVE_PATTERN = /\b(?:VSee|(?:the[ _-]+)?fund|(?:the[ _-]+)?IC|(?:the[ _-]+)?investment[ _-]+committee)\s+(?:(?:should|must|ought[ _-]+to|needs?[ _-]+to|will|is[ _-]+(?:directed|expected|recommended)[ _-]+to)\s+(?:invest|reject|pass|watch|advance|deprioritize|reopen|evaluate|pause|begin|review)|(?:recommends?|directs?|endorses?|approves?)\s+(?:(?:an?|the)[ _-]+)?(?:investment|investing|buying|purchase|rejection))\b/iu;
 const FIRST_PERSON_PATTERN = /\b(?:I|me|my|mine|myself|we|us|our|ours|ourselves)\b/iu;
 const QUOTATION_PATTERN = /["“”]/u;
-const IMPERSONATION_PATTERN = /\b(?:endorses?|endorsed|recommends? investing|would invest|private reasoning|hidden reasoning|chain of thought)\b/iu;
+const NAMED_PERSON_STANCE_PATTERN = /\b\p{Lu}[\p{L}'’.-]+(?:\s+\p{Lu}[\p{L}'’.-]+)+\s+(?:(?:would|should)\s+(?:invest|reject|pass|watch|advance)|endorses?|recommends?|rejects?|(?:supports?|opposes?)\s+(?:the\s+)?investment|believes?|thinks?|argues?|concludes?|maintains?|expects?|predicts?|says?)\b/u;
+const LENS_ENDORSEMENT_PATTERN = /\b(?:this|the)[ _-]+(?:framework|lens|analysis|passage)\s+(?:endorses?|recommends?|approves?|rejects?|supports?|opposes?)\s+(?:(?:an?|the)\s+)?(?:investment|investing|buying|company)\b/iu;
+const IMPERSONATION_PATTERN = /\b(?:endorsed|recommends?[ _-]+investing|would[ _-]+invest|private[ _-]+reasoning|hidden[ _-]+reasoning|chain[ _-]+of[ _-]+thought)\b/iu;
 
 export function groundNamedLensPassage(input: {
   candidate: CandidateRun;
@@ -78,7 +104,7 @@ export function groundNamedLensPassage(input: {
   const judgment = FrameworkJudgmentSchema.parse(input.judgment);
   const resultId = judgment.id;
   const withheld = (
-    reasonCode: string,
+    reasonCode: NamedLensPassageReasonCode,
     authorizedFocus: AuthorizedNamedLensFocus | null,
   ): NamedLensPassageValidationResult => ({
     judgmentOrCatalogCandidateId: resultId,
@@ -191,15 +217,20 @@ export function groundNamedLensPassage(input: {
   const texts = passageTexts(passage);
   if (
     texts.some((text) =>
-      FORMAL_ACTION_PATTERN.test(text)
+      FORMAL_GOVERNANCE_PATTERN.test(text)
       || FORMAL_DECISION_LABEL_PATTERN.test(text)
+      || TYPED_ACTION_PATTERN.test(text)
+      || ORGANIZATION_DIRECTIVE_PATTERN.test(text)
     )
   ) {
     return withheld("unsafe_passage_action", authorizedFocus);
   }
   if (
     texts.some((text) =>
-      FIRST_PERSON_PATTERN.test(text) || IMPERSONATION_PATTERN.test(text)
+      FIRST_PERSON_PATTERN.test(text)
+      || NAMED_PERSON_STANCE_PATTERN.test(text)
+      || LENS_ENDORSEMENT_PATTERN.test(text)
+      || IMPERSONATION_PATTERN.test(text)
     )
   ) {
     return withheld("unsafe_passage_voice", authorizedFocus);

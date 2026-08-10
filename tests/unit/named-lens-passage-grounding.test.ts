@@ -393,6 +393,18 @@ test("withholds stance/posture mismatches and unsafe action, voice, or quotation
 
   const unsafeCases = [
     ["The formal decision should be Invest Candidate.", "unsafe_passage_action"],
+    ["The decision ceiling is Watch.", "unsafe_passage_action"],
+    ["This framework creates a veto.", "unsafe_passage_action"],
+    ["VSee should invest in this company.", "unsafe_passage_action"],
+    ["The next step is advance_diligence.", "unsafe_passage_action"],
+    ["The fund must continue monitoring this company.", "unsafe_passage_action"],
+    ["The IC should advance diligence now.", "unsafe_passage_action"],
+    ["VSee recommends buying this company.", "unsafe_passage_action"],
+    ["The IC directs an investment.", "unsafe_passage_action"],
+    ["This lens endorses the investment.", "unsafe_passage_voice"],
+    ["Peter Thiel endorses this investment.", "unsafe_passage_voice"],
+    ["Peter Thiel would reject the investment.", "unsafe_passage_voice"],
+    ["Peter Thiel believes this company will win.", "unsafe_passage_voice"],
     ["I interpret this premise as contingent.", "unsafe_passage_voice"],
     ["We interpret this premise as contingent.", "unsafe_passage_voice"],
     ["The framework says “this company must win.”", "unsafe_passage_quote"],
@@ -403,6 +415,32 @@ test("withholds stance/posture mismatches and unsafe action, voice, or quotation
     const result = grounded(unsafe);
     assert.equal(result.status, "withheld");
     if ("reasonCode" in result) assert.equal(result.reasonCode, reasonCode);
+  }
+
+  for (const [action, humanized] of [
+    ["advance_diligence", "advance internal diligence"],
+    ["continue_monitoring", "continue internal monitoring"],
+    ["deprioritize", "deprioritize this Deal"],
+    ["reopen_diligence", "reopen internal diligence"],
+    ["evaluate_follow_on", "evaluate a follow-on investment"],
+    ["pause_follow_on", "pause follow-on investment activity"],
+    ["portfolio_risk_review", "begin an internal portfolio-risk review"],
+    ["no_new_action", "no new internal action"],
+    ["review_analysis_failure", "review the analysis failure"],
+  ] as const) {
+    for (const phrase of [
+      action,
+      action.replaceAll("_", " "),
+      humanized,
+    ]) {
+      const unsafe = passage();
+      unsafe.premise.text = `The prescribed action is ${phrase}.`;
+      const result = grounded(unsafe);
+      assert.equal(result.status, "withheld", phrase);
+      if ("reasonCode" in result) {
+        assert.equal(result.reasonCode, "unsafe_passage_action", phrase);
+      }
+    }
   }
 });
 

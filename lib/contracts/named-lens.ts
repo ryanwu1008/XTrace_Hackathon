@@ -246,7 +246,7 @@ export const GroundedNamedLensPassageCandidateSchema = z.strictObject({
   conditionalConclusion: ConditionalConclusionSegmentSchema,
   advisoryContract: NamedLensAdvisoryContractSchema,
   wordCount: z.number().int().min(1).max(260),
-  generatorVersion: z.string().min(1),
+  generatorVersion: z.literal(NAMED_LENS_GENERATOR_VERSION),
   groundingFingerprint: Sha256Schema,
 }).superRefine((value, context) => {
   if (
@@ -278,7 +278,7 @@ export const NamedLensPassageSchema = z.strictObject({
   advisoryContract: NamedLensAdvisoryContractSchema,
   selectionBasisEvidenceIds: z.array(z.string().min(1)),
   wordCount: z.number().int().min(1).max(260),
-  generatorVersion: z.string().min(1),
+  generatorVersion: z.literal(NAMED_LENS_GENERATOR_VERSION),
   fingerprint: Sha256Schema,
 }).superRefine((value, context) => {
   requireCanonicalStrings(
