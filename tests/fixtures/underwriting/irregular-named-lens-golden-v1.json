@@ -1,7 +1,9 @@
 {
   "schemaVersion": "underwriting-editorial-golden-v1",
   "artifactKind": "synthetic_sample_editorial_fixture",
-  "artifactLabel": "SYNTHETIC SAMPLE — permanent editorial regression fixture",
+  "artifactLabel": "SYNTHETIC SAMPLE — PERMANENT EDITORIAL REGRESSION FIXTURE",
+  "editorialNotice": "This memorandum is not a real VC interaction, meeting, investment, portfolio record, or communication. It is a complete synthetic sample used to protect editorial structure. It is not evidence of production provider quality and must not be described as observed model output.",
+  "generationPath": "manual_editorial_fixture",
   "companyName": "Irregular",
   "title": "Irregular — Portfolio Risk Reunderwrite",
   "productionProviderQualityEvidence": false,
@@ -11,8 +13,67 @@
       "title": "Decision Request",
       "paragraphs": [
         "Investment committee request: maintain the pause on follow-on capital and authorize a time-boxed portfolio-risk review. Management should not be approached and no external communication should be sent until the fund has established the incident boundary, Irregular's responsibility, the durability of remediation, and the economics of any new financing.",
-        "The evidence supports a change in posture, not a new investment conclusion. It shows that the containment failure contemplated in the prior thesis occurred, but it does not establish whether the failure was systemic, whether Irregular has corrected it, or whether the company's commercial position has weakened. The committee can therefore approve risk review and diligence while withholding approval for additional capital.",
+        "The evidence supports a change in posture, not a new investment conclusion. It shows that the containment failure contemplated in the synthetic prior thesis occurred, but it does not establish whether the failure was systemic, whether Irregular has corrected it, or whether the company's commercial position has weakened. The committee can therefore approve risk review and diligence while withholding approval for additional capital.",
         "Sample decision record — permanently synthetic: the fund is assumed to have invested on the belief that third-party cyber evaluations could remain safely contained as model capability increased. This is not a real VC interaction, meeting, investment, or portfolio record."
+      ],
+      "adjacentClaims": [
+        {
+          "paragraphIndex": 0,
+          "claims": [
+            {
+              "statement": "Anthropic reported that activity from Irregular evaluation environments led to unauthorized access to production systems at three organizations.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Anthropic Cybersecurity Evaluation Incident Review",
+                  "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+                }
+              ]
+            },
+            {
+              "statement": "Unknown: the incident boundary, Irregular's responsibility, remediation durability, and financing economics have not been established.",
+              "classification": "unknown",
+              "sourceBindings": []
+            },
+            {
+              "statement": "Assumption: the synthetic fund previously intended to evaluate a follow-on investment.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "The action exists only inside the permanently synthetic Sample decision record and is not a real fund instruction."
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 1,
+          "claims": [
+            {
+              "statement": "Anthropic's public incident report establishes that the contemplated containment failure occurred.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Anthropic Cybersecurity Evaluation Incident Review",
+                  "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+                }
+              ]
+            },
+            {
+              "statement": "Unknown: the reviewed evidence does not establish whether the failure was systemic, corrected, or commercially damaging.",
+              "classification": "unknown",
+              "sourceBindings": []
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 2,
+          "claims": [
+            {
+              "statement": "Assumption: the synthetic fund invested on a belief that third-party cyber evaluations could remain safely contained.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "This is the premise of the permanently labeled Sample decision record, not a real interaction or investment history."
+            }
+          ]
+        }
       ]
     },
     {
@@ -22,6 +83,70 @@
         "The synthetic prior thesis treated secure containment as a prerequisite for Irregular's role in frontier-model testing. On July 30, 2026, Anthropic reported that activity originating in Irregular evaluation environments led to unauthorized access to production systems at three organizations. That disclosure maps directly to the sample revisit condition because the failure crossed from a bounded test environment into real systems.",
         "The causal concern is operational: if a security evaluator cannot reliably isolate adversarial testing, customers may restrict access, demand stronger controls, delay procurement, or impose liability terms that weaken adoption and economics. The strongest counterevidence is in the same Anthropic report, which described the incidents as closer to a harness and operational failure than a model-alignment failure and said its review was conducted with Irregular. That distinction leaves open the possibility of a remediable control failure rather than a broken product thesis.",
         "The admission checks support reopening the decision. The event occurred after the sample investment record; it satisfies the stated revisit condition; the contrary interpretation has been retained rather than suppressed; and the proposed action changes from evaluating a follow-on to pausing it while a portfolio-risk review proceeds."
+      ],
+      "adjacentClaims": [
+        {
+          "paragraphIndex": 0,
+          "claims": [
+            {
+              "statement": "On July 30, 2026, Anthropic reported that activity from Irregular evaluation environments reached production systems at three organizations.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Anthropic Cybersecurity Evaluation Incident Review",
+                  "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+                }
+              ]
+            },
+            {
+              "statement": "Assumption: secure containment was a prerequisite in the synthetic prior thesis and the disclosed event satisfied its sample revisit condition.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "Both the prior thesis and revisit condition belong only to the permanently synthetic Sample decision record."
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 1,
+          "claims": [
+            {
+              "statement": "Anthropic described the episode as closer to a harness and operational failure than a model-alignment failure and said it reviewed the incident with Irregular.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Anthropic Cybersecurity Evaluation Incident Review",
+                  "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+                }
+              ]
+            },
+            {
+              "statement": "Unknown: public evidence does not show whether remediation has closed the failure pathway or preserved customer trust.",
+              "classification": "unknown",
+              "sourceBindings": []
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 2,
+          "claims": [
+            {
+              "statement": "Assumption: the synthetic sample investment record predates the event, contains the stated revisit condition, and changes its proposed next action after the event.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "Chronology, the revisit condition, and the prior action are features of the labeled synthetic record rather than public company facts."
+            },
+            {
+              "statement": "The Anthropic report preserves both the trigger and the operating-failure counterevidence used in this editorial example.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Anthropic Cybersecurity Evaluation Incident Review",
+                  "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+                }
+              ]
+            }
+          ]
+        }
       ]
     },
     {
@@ -30,6 +155,53 @@
       "paragraphs": [
         "Irregular describes itself as a frontier AI security laboratory, formerly Pattern Labs, focused on evaluating and securing advanced models. TechCrunch identifies Dan Lahav and Omer Nevo as co-founders. Wilson Sonsini reported that the company closed an $80 million Seed and Series A financing, while Irregular said it already generated millions in annual revenue and worked with the UK government on vetting cyber capabilities in frontier models. The government relationship is evidence of institutional engagement, not evidence of a paid customer contract.",
         "These are public or company-reported statements, not independent verification of revenue quality, customer concentration, retention, security controls, or unit economics. The reviewed record does not establish the legal entity name, headquarters, founding date, exact annual recurring revenue, gross margin, cash balance, burn rate, runway, contract liability, or present financing terms."
+      ],
+      "adjacentClaims": [
+        {
+          "paragraphIndex": 0,
+          "claims": [
+            {
+              "statement": "Irregular identifies itself as formerly Pattern Labs and as a frontier AI security laboratory, and says it has millions in annual revenue and UK government work.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Irregular Introducing Frontier AI Security",
+                  "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
+                }
+              ]
+            },
+            {
+              "statement": "TechCrunch identifies Dan Lahav and Omer Nevo as Irregular co-founders.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "TechCrunch Irregular Funding Report",
+                  "url": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models"
+                }
+              ]
+            },
+            {
+              "statement": "Wilson Sonsini reported an $80 million Seed and Series A financing.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Wilson Sonsini Irregular Financing Notice",
+                  "url": "https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 1,
+          "claims": [
+            {
+              "statement": "Unknown: legal entity name, headquarters, founding date, exact recurring revenue, margins, cash, burn, runway, liability, and current financing terms are not established.",
+              "classification": "unknown",
+              "sourceBindings": []
+            }
+          ]
+        }
       ]
     },
     {
@@ -38,6 +210,56 @@
       "paragraphs": [
         "The demand thesis survives. Frontier-model developers and governments still need adversarial evaluation, the financing record indicates that credible investors funded the category, and Anthropic's collaboration with Irregular confirms that the company held a consequential operating role. The incident does not by itself show that demand disappeared or that Irregular lacks technical value.",
         "The containment thesis did not survive intact. A control that was supposed to bound the downside failed in the precise way identified by the synthetic prior record. The investment question is now whether that failure reflects a correctable layer of tooling and procedure or a recurring weakness in governance, architecture, and customer deployment. Until diligence distinguishes those explanations, the case for additional capital is suspended rather than rejected."
+      ],
+      "adjacentClaims": [
+        {
+          "paragraphIndex": 0,
+          "claims": [
+            {
+              "statement": "Anthropic said it worked with Irregular on the incident review, while Irregular reports government work and Wilson Sonsini reports substantial financing.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Anthropic Cybersecurity Evaluation Incident Review",
+                  "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+                },
+                {
+                  "label": "Irregular Introducing Frontier AI Security",
+                  "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
+                },
+                {
+                  "label": "Wilson Sonsini Irregular Financing Notice",
+                  "url": "https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf"
+                }
+              ]
+            },
+            {
+              "statement": "Unknown: the reviewed evidence does not independently establish current category demand or Irregular's technical differentiation.",
+              "classification": "unknown",
+              "sourceBindings": []
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 1,
+          "claims": [
+            {
+              "statement": "Anthropic reported the real-system containment failure contemplated by the synthetic prior record.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Anthropic Cybersecurity Evaluation Incident Review",
+                  "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+                }
+              ]
+            },
+            {
+              "statement": "Unknown: diligence has not established whether the failure was a corrected operating defect or a recurring governance and architecture weakness.",
+              "classification": "unknown",
+              "sourceBindings": []
+            }
+          ]
+        }
       ]
     },
     {
@@ -46,7 +268,98 @@
       "paragraphs": [
         "Public fact: Wilson Sonsini reported an $80 million Seed and Series A financing. Public report: TechCrunch cited an anonymous deal source for a $450 million historical valuation. Company-reported fact: Irregular said it had millions in annual revenue without stating the exact amount. These observations establish financing capacity and a historical price reference, but they do not support a current valuation because the capitalization table, proposed round terms, audited revenue, retention, margins, cash, burn, and remediation costs are absent.",
         "Assumption: the fund is considering a $10 million follow-on at a $450 million pre-money price. Assumption: the investment is preferred equity with no special downside protection. Assumption: later financing dilutes this incremental ownership by 20%. Assumption: the holding period is 10 years and terminal equity values are $200 million, $1.5 billion, and $5 billion. These figures are synthetic editorial inputs, not claims about Irregular or any fund.",
-        "Assumption: under those synthetic inputs, the illustrative outcomes are 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%. MOIC means cash returned divided by cash invested; the annualized return also accounts for time. This arithmetic shows sensitivity to the terminal value but cannot justify a price. Before valuation, the committee needs a current capitalization table, proposed security terms, verified recurring revenue, retention cohorts, gross margin, cash and burn, remediation cost, insurance coverage, and customer response to the incident."
+        "Calculation: under those synthetic inputs, the illustrative outcomes are 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%. MOIC means cash returned divided by cash invested; the annualized return also accounts for time. This arithmetic shows sensitivity to the terminal value but cannot justify a price. Before valuation, the committee needs a current capitalization table, proposed security terms, verified recurring revenue, retention cohorts, gross margin, cash and burn, remediation cost, insurance coverage, and customer response to the incident."
+      ],
+      "adjacentClaims": [
+        {
+          "paragraphIndex": 0,
+          "claims": [
+            {
+              "statement": "Public fact: Wilson Sonsini reported an $80 million Seed and Series A financing.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Wilson Sonsini Irregular Financing Notice",
+                  "url": "https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf"
+                }
+              ]
+            },
+            {
+              "statement": "Public report: TechCrunch cited an anonymous deal source for a $450 million historical valuation.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "TechCrunch Irregular Funding Report",
+                  "url": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models"
+                }
+              ]
+            },
+            {
+              "statement": "Company-reported fact: Irregular said it had millions in annual revenue without stating the exact amount.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Irregular Introducing Frontier AI Security",
+                  "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
+                }
+              ]
+            },
+            {
+              "statement": "Unknown: current capitalization, round terms, audited revenue, retention, margins, cash, burn, and remediation costs are absent.",
+              "classification": "unknown",
+              "sourceBindings": []
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 1,
+          "claims": [
+            {
+              "statement": "Assumption: the fund is considering a $10 million follow-on at a $450 million pre-money price.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "Synthetic round inputs make the editorial example numerically complete without claiming private company or fund data."
+            },
+            {
+              "statement": "Assumption: the investment is preferred equity with no special downside protection.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "No reviewed public source provides a security type or term sheet, so the example uses a conventional placeholder."
+            },
+            {
+              "statement": "Assumption: later financing dilutes this incremental ownership by 20%.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "The dilution rate is a synthetic sensitivity input and is not attributed to Irregular's actual capitalization."
+            },
+            {
+              "statement": "Assumption: the holding period is 10 years and terminal equity values are $200 million, $1.5 billion, and $5 billion.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "The outcomes create a transparent downside, central, and upside illustration rather than a company forecast."
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 2,
+          "claims": [
+            {
+              "statement": "Calculation: the synthetic inputs produce 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%.",
+              "classification": "calculation",
+              "sourceBindings": [],
+              "derivedFrom": [
+                "$10 million follow-on at a $450 million pre-money price",
+                "20% later dilution",
+                "10-year holding period and $200 million, $1.5 billion, and $5 billion terminal equity values"
+              ]
+            },
+            {
+              "statement": "Unknown: current capitalization, security terms, recurring revenue, retention, margin, cash, burn, remediation cost, insurance, and customer response are required before valuation.",
+              "classification": "unknown",
+              "sourceBindings": []
+            }
+          ]
+        }
       ]
     },
     {
@@ -151,6 +464,44 @@
       "paragraphs": [
         "Recommendation: keep follow-on activity paused and open an internal portfolio-risk review. Within ten business days, obtain the root-cause record, remediation controls, independent test plan, customer and insurer notifications, liability exposure, board oversight, and any change to system access. Within the same workstream, request current recurring revenue, retention cohorts, pipeline movement, gross margin, cash, burn, capitalization, financing terms, and incident-related costs.",
         "The next committee checkpoint should answer three questions in order: can the failure recur, did customers change behavior, and does the resulting price still offer a venture return after reserve and concentration constraints? A verified control fix plus stable customer evidence permits valuation work to resume. A repeated failure, concealed impact, material customer loss, or unbounded liability should escalate the portfolio response and end follow-on consideration. All founder email, text, LinkedIn, and internal communication remains draft-only until a human approves it."
+      ],
+      "adjacentClaims": [
+        {
+          "paragraphIndex": 0,
+          "claims": [
+            {
+              "statement": "Anthropic's public report establishes the incident that makes a portfolio-risk review necessary in this synthetic example.",
+              "classification": "fact",
+              "sourceBindings": [
+                {
+                  "label": "Anthropic Cybersecurity Evaluation Incident Review",
+                  "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+                }
+              ]
+            },
+            {
+              "statement": "Unknown: root cause, remediation, customer response, liability, oversight, operating metrics, and financing terms remain to be obtained.",
+              "classification": "unknown",
+              "sourceBindings": []
+            }
+          ]
+        },
+        {
+          "paragraphIndex": 1,
+          "claims": [
+            {
+              "statement": "Unknown: recurrence risk, customer behavior, and risk-adjusted financing economics must be resolved before follow-on consideration resumes.",
+              "classification": "unknown",
+              "sourceBindings": []
+            },
+            {
+              "statement": "Assumption: this synthetic editorial fixture treats every founder-facing and internal communication as draft-only until human approval.",
+              "classification": "assumption",
+              "sourceBindings": [],
+              "rationale": "The assumption preserves the product's draft-only safety boundary without representing any communication as sent or published."
+            }
+          ]
+        }
       ]
     }
   ],
@@ -210,161 +561,186 @@
         "url": "https://blakemasters.tumblr.com/post/22405055017/peter-thiels-cs183-startup-class-9-notes-essay"
       }
     ],
-    "evidenceLedger": {
-      "facts": [
-        {
-          "statement": "Irregular identifies itself as formerly Pattern Labs and as a frontier security laboratory.",
-          "sourceBindings": [
-            {
-              "label": "Irregular Introducing Frontier AI Security",
-              "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
-            }
-          ]
-        },
-        {
-          "statement": "TechCrunch identifies Dan Lahav and Omer Nevo as Irregular co-founders.",
-          "sourceBindings": [
-            {
-              "label": "TechCrunch Irregular Funding Report",
-              "url": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models"
-            }
-          ]
-        },
-        {
-          "statement": "Anthropic reported that activity from Irregular evaluation environments led to unauthorized access to production systems at three organizations.",
-          "sourceBindings": [
-            {
-              "label": "Anthropic Cybersecurity Evaluation Incident Review",
-              "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
-            }
-          ]
-        },
-        {
-          "statement": "Anthropic said it conducted the incident review with Irregular.",
-          "sourceBindings": [
-            {
-              "label": "Anthropic Cybersecurity Evaluation Incident Review",
-              "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
-            }
-          ]
-        },
-        {
-          "statement": "Anthropic described the episode as closer to a harness and operational failure than a model-alignment failure.",
-          "sourceBindings": [
-            {
-              "label": "Anthropic Cybersecurity Evaluation Incident Review",
-              "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
-            }
-          ]
-        },
-        {
-          "statement": "Wilson Sonsini reported an $80 million Seed and Series A financing.",
-          "sourceBindings": [
-            {
-              "label": "Wilson Sonsini Irregular Financing Notice",
-              "url": "https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf"
-            }
-          ]
-        },
-        {
-          "statement": "Irregular said it had millions in annual revenue without disclosing an exact amount.",
-          "sourceBindings": [
-            {
-              "label": "Irregular Introducing Frontier AI Security",
-              "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
-            }
-          ]
-        },
-        {
-          "statement": "Irregular said it worked with the UK government on vetting cyber capabilities in frontier models; this is not a paid-customer claim.",
-          "sourceBindings": [
-            {
-              "label": "Irregular Introducing Frontier AI Security",
-              "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
-            }
-          ]
-        },
-        {
-          "statement": "TechCrunch reported that an anonymous source close to the financing cited a $450 million historical valuation.",
-          "sourceBindings": [
-            {
-              "label": "TechCrunch Irregular Funding Report",
-              "url": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models"
-            }
-          ]
-        }
-      ],
-      "assumptions": [
-        {
-          "statement": "Assumption: the fund is considering a $10 million follow-on at a $450 million pre-money price.",
-          "rationale": "Synthetic round inputs make the editorial example numerically complete without claiming private company or fund data."
-        },
-        {
-          "statement": "Assumption: the investment is preferred equity with no special downside protection.",
-          "rationale": "No reviewed public source provides a security type or term sheet, so the example uses a conventional placeholder."
-        },
-        {
-          "statement": "Assumption: later financing dilutes this incremental ownership by 20%.",
-          "rationale": "The dilution rate is a synthetic sensitivity input and is not attributed to Irregular's actual capitalization."
-        },
-        {
-          "statement": "Assumption: the holding period is 10 years and terminal equity values are $200 million, $1.5 billion, and $5 billion.",
-          "rationale": "The three outcomes create a transparent downside, central, and upside illustration rather than a company forecast."
-        },
-        {
-          "statement": "Assumption: under those synthetic inputs, the illustrative outcomes are 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%.",
-          "rationale": "These are deterministic calculations from the disclosed synthetic inputs and are not an investment recommendation."
-        }
-      ],
-      "unknowns": [
-        "Root cause, affected-system scope, and independent verification of remediation.",
-        "Customer renewals, access restrictions, pipeline movement, credits, claims, and procurement changes after the incident.",
-        "Audited recurring revenue, customer concentration, gross margin, cash, burn, runway, and incident-response cost.",
-        "Current capitalization, ownership, proposed financing price, security terms, reserves, and concentration impact.",
-        "Insurance coverage, contractual liability, regulatory response, and board oversight."
-      ],
-      "numericalClaims": [
-        {
-          "statement": "Public fact: Wilson Sonsini reported an $80 million Seed and Series A financing.",
-          "classification": "fact",
-          "sourceBindings": [
-            {
-              "label": "Wilson Sonsini Irregular Financing Notice",
-              "url": "https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf"
-            }
-          ]
-        },
-        {
-          "statement": "Public report: TechCrunch cited an anonymous deal source for a $450 million historical valuation.",
-          "classification": "fact",
-          "sourceBindings": [
-            {
-              "label": "TechCrunch Irregular Funding Report",
-              "url": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models"
-            }
-          ]
-        },
-        {
-          "statement": "Assumption: the fund is considering a $10 million follow-on at a $450 million pre-money price.",
-          "classification": "assumption",
-          "sourceBindings": []
-        },
-        {
-          "statement": "Assumption: later financing dilutes this incremental ownership by 20%.",
-          "classification": "assumption",
-          "sourceBindings": []
-        },
-        {
-          "statement": "Assumption: the holding period is 10 years and terminal equity values are $200 million, $1.5 billion, and $5 billion.",
-          "classification": "assumption",
-          "sourceBindings": []
-        },
-        {
-          "statement": "Assumption: under those synthetic inputs, the illustrative outcomes are 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%.",
-          "classification": "assumption",
-          "sourceBindings": []
-        }
-      ]
-    }
+    "typedClaims": [
+      {
+        "statement": "Irregular identifies itself as formerly Pattern Labs and as a frontier security laboratory.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "Irregular Introducing Frontier AI Security",
+            "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
+          }
+        ]
+      },
+      {
+        "statement": "TechCrunch identifies Dan Lahav and Omer Nevo as Irregular co-founders.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "TechCrunch Irregular Funding Report",
+            "url": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models"
+          }
+        ]
+      },
+      {
+        "statement": "On July 30, 2026, Anthropic reported that activity from Irregular evaluation environments led to unauthorized access to production systems at three organizations.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "Anthropic Cybersecurity Evaluation Incident Review",
+            "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+          }
+        ]
+      },
+      {
+        "statement": "Anthropic said it conducted the incident review with Irregular.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "Anthropic Cybersecurity Evaluation Incident Review",
+            "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+          }
+        ]
+      },
+      {
+        "statement": "Anthropic described the episode as closer to a harness and operational failure than a model-alignment failure.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "Anthropic Cybersecurity Evaluation Incident Review",
+            "url": "https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals"
+          }
+        ]
+      },
+      {
+        "statement": "Public fact: Wilson Sonsini reported an $80 million Seed and Series A financing.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "Wilson Sonsini Irregular Financing Notice",
+            "url": "https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf"
+          }
+        ]
+      },
+      {
+        "statement": "Company-reported fact: Irregular said it had millions in annual revenue without stating the exact amount.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "Irregular Introducing Frontier AI Security",
+            "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
+          }
+        ]
+      },
+      {
+        "statement": "Irregular said it worked with the UK government on vetting cyber capabilities in frontier models; this is not a paid-customer claim.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "Irregular Introducing Frontier AI Security",
+            "url": "https://www.irregular.com/news/introducing-frontier-ai-security"
+          }
+        ]
+      },
+      {
+        "statement": "Public report: TechCrunch cited an anonymous deal source for a $450 million historical valuation.",
+        "classification": "fact",
+        "sourceBindings": [
+          {
+            "label": "TechCrunch Irregular Funding Report",
+            "url": "https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models"
+          }
+        ]
+      },
+      {
+        "statement": "Assumption: the fund is considering a $10 million follow-on at a $450 million pre-money price.",
+        "classification": "assumption",
+        "sourceBindings": [],
+        "rationale": "Synthetic round inputs make the editorial example numerically complete without claiming private company or fund data."
+      },
+      {
+        "statement": "Assumption: the investment is preferred equity with no special downside protection.",
+        "classification": "assumption",
+        "sourceBindings": [],
+        "rationale": "No reviewed public source provides a security type or term sheet, so the example uses a conventional placeholder."
+      },
+      {
+        "statement": "Assumption: later financing dilutes this incremental ownership by 20%.",
+        "classification": "assumption",
+        "sourceBindings": [],
+        "rationale": "The dilution rate is a synthetic sensitivity input and is not attributed to Irregular's actual capitalization."
+      },
+      {
+        "statement": "Assumption: the holding period is 10 years and terminal equity values are $200 million, $1.5 billion, and $5 billion.",
+        "classification": "assumption",
+        "sourceBindings": [],
+        "rationale": "The outcomes create a transparent downside, central, and upside illustration rather than a company forecast."
+      },
+      {
+        "statement": "Calculation: the synthetic inputs produce 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%.",
+        "classification": "calculation",
+        "sourceBindings": [],
+        "derivedFrom": [
+          "$10 million follow-on at a $450 million pre-money price",
+          "20% later dilution",
+          "10-year holding period and $200 million, $1.5 billion, and $5 billion terminal equity values"
+        ]
+      },
+      {
+        "statement": "Unknown: root cause, affected-system scope, and independent verification of remediation.",
+        "classification": "unknown",
+        "sourceBindings": []
+      },
+      {
+        "statement": "Unknown: customer renewals, access restrictions, pipeline movement, credits, claims, and procurement changes after the incident.",
+        "classification": "unknown",
+        "sourceBindings": []
+      },
+      {
+        "statement": "Unknown: audited recurring revenue, customer concentration, gross margin, cash, burn, runway, and incident-response cost.",
+        "classification": "unknown",
+        "sourceBindings": []
+      },
+      {
+        "statement": "Unknown: current capitalization, ownership, proposed financing price, security terms, reserves, and concentration impact.",
+        "classification": "unknown",
+        "sourceBindings": []
+      },
+      {
+        "statement": "Unknown: insurance coverage, contractual liability, regulatory response, and board oversight.",
+        "classification": "unknown",
+        "sourceBindings": []
+      }
+    ],
+    "numericExemptions": [
+      {
+        "token": "01",
+        "reason": "Display-only section number for the Decision Request heading."
+      },
+      {
+        "token": "02",
+        "reason": "Display-only section number for the What Changed heading."
+      },
+      {
+        "token": "03",
+        "reason": "Display-only section number for the Company Position heading."
+      },
+      {
+        "token": "04",
+        "reason": "Display-only section number for the Thesis Assessment heading."
+      },
+      {
+        "token": "05",
+        "reason": "Display-only section number for the Financial and Valuation Status heading."
+      },
+      {
+        "token": "06",
+        "reason": "Display-only section number for the Named Lens Readings heading."
+      },
+      {
+        "token": "07",
+        "reason": "Display-only section number for the Recommendation and Next Steps heading."
+      }
+    ]
   }
 }

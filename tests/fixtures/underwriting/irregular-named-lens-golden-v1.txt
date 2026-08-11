@@ -8,37 +8,162 @@ This memorandum is not a real VC interaction, meeting, investment, portfolio rec
 
 Investment committee request: maintain the pause on follow-on capital and authorize a time-boxed portfolio-risk review. Management should not be approached and no external communication should be sent until the fund has established the incident boundary, Irregular's responsibility, the durability of remediation, and the economics of any new financing.
 
-The evidence supports a change in posture, not a new investment conclusion. It shows that the containment failure contemplated in the prior thesis occurred, but it does not establish whether the failure was systemic, whether Irregular has corrected it, or whether the company's commercial position has weakened. The committee can therefore approve risk review and diligence while withholding approval for additional capital.
+Evidence standing
+
+FACT — Anthropic reported that activity from Irregular evaluation environments led to unauthorized access to production systems at three organizations.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+UNKNOWN — Unknown: the incident boundary, Irregular's responsibility, remediation durability, and financing economics have not been established.
+
+ASSUMPTION — Assumption: the synthetic fund previously intended to evaluate a follow-on investment.
+Basis — The action exists only inside the permanently synthetic Sample decision record and is not a real fund instruction.
+
+The evidence supports a change in posture, not a new investment conclusion. It shows that the containment failure contemplated in the synthetic prior thesis occurred, but it does not establish whether the failure was systemic, whether Irregular has corrected it, or whether the company's commercial position has weakened. The committee can therefore approve risk review and diligence while withholding approval for additional capital.
+
+Evidence standing
+
+FACT — Anthropic's public incident report establishes that the contemplated containment failure occurred.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+UNKNOWN — Unknown: the reviewed evidence does not establish whether the failure was systemic, corrected, or commercially damaging.
 
 Sample decision record — permanently synthetic: the fund is assumed to have invested on the belief that third-party cyber evaluations could remain safely contained as model capability increased. This is not a real VC interaction, meeting, investment, or portfolio record.
+
+Evidence standing
+
+ASSUMPTION — Assumption: the synthetic fund invested on a belief that third-party cyber evaluations could remain safely contained.
+Basis — This is the premise of the permanently labeled Sample decision record, not a real interaction or investment history.
 
 02 What Changed
 
 The synthetic prior thesis treated secure containment as a prerequisite for Irregular's role in frontier-model testing. On July 30, 2026, Anthropic reported that activity originating in Irregular evaluation environments led to unauthorized access to production systems at three organizations. That disclosure maps directly to the sample revisit condition because the failure crossed from a bounded test environment into real systems.
 
+Evidence standing
+
+FACT — On July 30, 2026, Anthropic reported that activity from Irregular evaluation environments reached production systems at three organizations.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+ASSUMPTION — Assumption: secure containment was a prerequisite in the synthetic prior thesis and the disclosed event satisfied its sample revisit condition.
+Basis — Both the prior thesis and revisit condition belong only to the permanently synthetic Sample decision record.
+
 The causal concern is operational: if a security evaluator cannot reliably isolate adversarial testing, customers may restrict access, demand stronger controls, delay procurement, or impose liability terms that weaken adoption and economics. The strongest counterevidence is in the same Anthropic report, which described the incidents as closer to a harness and operational failure than a model-alignment failure and said its review was conducted with Irregular. That distinction leaves open the possibility of a remediable control failure rather than a broken product thesis.
 
+Evidence standing
+
+FACT — Anthropic described the episode as closer to a harness and operational failure than a model-alignment failure and said it reviewed the incident with Irregular.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+UNKNOWN — Unknown: public evidence does not show whether remediation has closed the failure pathway or preserved customer trust.
+
 The admission checks support reopening the decision. The event occurred after the sample investment record; it satisfies the stated revisit condition; the contrary interpretation has been retained rather than suppressed; and the proposed action changes from evaluating a follow-on to pausing it while a portfolio-risk review proceeds.
+
+Evidence standing
+
+ASSUMPTION — Assumption: the synthetic sample investment record predates the event, contains the stated revisit condition, and changes its proposed next action after the event.
+Basis — Chronology, the revisit condition, and the prior action are features of the labeled synthetic record rather than public company facts.
+
+FACT — The Anthropic report preserves both the trigger and the operating-failure counterevidence used in this editorial example.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
 
 03 Company Position
 
 Irregular describes itself as a frontier AI security laboratory, formerly Pattern Labs, focused on evaluating and securing advanced models. TechCrunch identifies Dan Lahav and Omer Nevo as co-founders. Wilson Sonsini reported that the company closed an $80 million Seed and Series A financing, while Irregular said it already generated millions in annual revenue and worked with the UK government on vetting cyber capabilities in frontier models. The government relationship is evidence of institutional engagement, not evidence of a paid customer contract.
 
+Evidence standing
+
+FACT — Irregular identifies itself as formerly Pattern Labs and as a frontier AI security laboratory, and says it has millions in annual revenue and UK government work.
+Source — Irregular Introducing Frontier AI Security
+https://www.irregular.com/news/introducing-frontier-ai-security
+
+FACT — TechCrunch identifies Dan Lahav and Omer Nevo as Irregular co-founders.
+Source — TechCrunch Irregular Funding Report
+https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models
+
+FACT — Wilson Sonsini reported an $80 million Seed and Series A financing.
+Source — Wilson Sonsini Irregular Financing Notice
+https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf
+
 These are public or company-reported statements, not independent verification of revenue quality, customer concentration, retention, security controls, or unit economics. The reviewed record does not establish the legal entity name, headquarters, founding date, exact annual recurring revenue, gross margin, cash balance, burn rate, runway, contract liability, or present financing terms.
+
+Evidence standing
+
+UNKNOWN — Unknown: legal entity name, headquarters, founding date, exact recurring revenue, margins, cash, burn, runway, liability, and current financing terms are not established.
 
 04 Thesis Assessment
 
 The demand thesis survives. Frontier-model developers and governments still need adversarial evaluation, the financing record indicates that credible investors funded the category, and Anthropic's collaboration with Irregular confirms that the company held a consequential operating role. The incident does not by itself show that demand disappeared or that Irregular lacks technical value.
 
+Evidence standing
+
+FACT — Anthropic said it worked with Irregular on the incident review, while Irregular reports government work and Wilson Sonsini reports substantial financing.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+Source — Irregular Introducing Frontier AI Security
+https://www.irregular.com/news/introducing-frontier-ai-security
+Source — Wilson Sonsini Irregular Financing Notice
+https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf
+
+UNKNOWN — Unknown: the reviewed evidence does not independently establish current category demand or Irregular's technical differentiation.
+
 The containment thesis did not survive intact. A control that was supposed to bound the downside failed in the precise way identified by the synthetic prior record. The investment question is now whether that failure reflects a correctable layer of tooling and procedure or a recurring weakness in governance, architecture, and customer deployment. Until diligence distinguishes those explanations, the case for additional capital is suspended rather than rejected.
+
+Evidence standing
+
+FACT — Anthropic reported the real-system containment failure contemplated by the synthetic prior record.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+UNKNOWN — Unknown: diligence has not established whether the failure was a corrected operating defect or a recurring governance and architecture weakness.
 
 05 Financial and Valuation Status
 
 Public fact: Wilson Sonsini reported an $80 million Seed and Series A financing. Public report: TechCrunch cited an anonymous deal source for a $450 million historical valuation. Company-reported fact: Irregular said it had millions in annual revenue without stating the exact amount. These observations establish financing capacity and a historical price reference, but they do not support a current valuation because the capitalization table, proposed round terms, audited revenue, retention, margins, cash, burn, and remediation costs are absent.
 
+Evidence standing
+
+FACT — Public fact: Wilson Sonsini reported an $80 million Seed and Series A financing.
+Source — Wilson Sonsini Irregular Financing Notice
+https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf
+
+FACT — Public report: TechCrunch cited an anonymous deal source for a $450 million historical valuation.
+Source — TechCrunch Irregular Funding Report
+https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models
+
+FACT — Company-reported fact: Irregular said it had millions in annual revenue without stating the exact amount.
+Source — Irregular Introducing Frontier AI Security
+https://www.irregular.com/news/introducing-frontier-ai-security
+
+UNKNOWN — Unknown: current capitalization, round terms, audited revenue, retention, margins, cash, burn, and remediation costs are absent.
+
 Assumption: the fund is considering a $10 million follow-on at a $450 million pre-money price. Assumption: the investment is preferred equity with no special downside protection. Assumption: later financing dilutes this incremental ownership by 20%. Assumption: the holding period is 10 years and terminal equity values are $200 million, $1.5 billion, and $5 billion. These figures are synthetic editorial inputs, not claims about Irregular or any fund.
 
-Assumption: under those synthetic inputs, the illustrative outcomes are 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%. MOIC means cash returned divided by cash invested; the annualized return also accounts for time. This arithmetic shows sensitivity to the terminal value but cannot justify a price. Before valuation, the committee needs a current capitalization table, proposed security terms, verified recurring revenue, retention cohorts, gross margin, cash and burn, remediation cost, insurance coverage, and customer response to the incident.
+Evidence standing
+
+ASSUMPTION — Assumption: the fund is considering a $10 million follow-on at a $450 million pre-money price.
+Basis — Synthetic round inputs make the editorial example numerically complete without claiming private company or fund data.
+
+ASSUMPTION — Assumption: the investment is preferred equity with no special downside protection.
+Basis — No reviewed public source provides a security type or term sheet, so the example uses a conventional placeholder.
+
+ASSUMPTION — Assumption: later financing dilutes this incremental ownership by 20%.
+Basis — The dilution rate is a synthetic sensitivity input and is not attributed to Irregular's actual capitalization.
+
+ASSUMPTION — Assumption: the holding period is 10 years and terminal equity values are $200 million, $1.5 billion, and $5 billion.
+Basis — The outcomes create a transparent downside, central, and upside illustration rather than a company forecast.
+
+Calculation: under those synthetic inputs, the illustrative outcomes are 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%. MOIC means cash returned divided by cash invested; the annualized return also accounts for time. This arithmetic shows sensitivity to the terminal value but cannot justify a price. Before valuation, the committee needs a current capitalization table, proposed security terms, verified recurring revenue, retention cohorts, gross margin, cash and burn, remediation cost, insurance coverage, and customer response to the incident.
+
+Evidence standing
+
+CALCULATION — Calculation: the synthetic inputs produce 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%.
+Derived from — $10 million follow-on at a $450 million pre-money price; 20% later dilution; 10-year holding period and $200 million, $1.5 billion, and $5 billion terminal equity values
+
+UNKNOWN — Unknown: current capitalization, security terms, recurring revenue, retention, margin, cash, burn, remediation cost, insurance, and customer response are required before valuation.
 
 06 Named Lens Readings
 
@@ -56,7 +181,7 @@ Diligence should request the root-cause analysis, incident chronology, affected-
 
 This lens supports continuing the pause until independent testing shows that the failure pathway has been closed and the residual exposure is both financeable and acceptable to customers. If remediation is reproducible, customer access remains intact, and liability is bounded, the incident becomes a priced operating risk rather than a reason to exit the thesis.
 
-Framework source: How to Think About Risk with Howard Marks
+Framework source — How to Think About Risk with Howard Marks
 https://www.oaktreecapital.com/insights/insight-video/education/how-to-think-about-risk-with-howard-marks
 
 Scott Kupor — Follow-on Reunderwrite
@@ -71,10 +196,10 @@ Before a reserve decision, diligence needs the proposed round price and preferen
 
 This lens would reconsider participation only if Irregular clears the incident review, the new terms preserve an attractive risk-adjusted return, and reserve use beats credible alternatives. Until those conditions are met, pausing the follow-on is disciplined reunderwriting rather than an adverse judgment on the company's survival or the category's importance.
 
-Framework sources: Secrets of Sand Hill Road by Scott Kupor
+Framework source — Secrets of Sand Hill Road by Scott Kupor
 https://www.penguinrandomhouse.com/books/607128/secrets-of-sand-hill-road-by-scott-kupor-foreword-by-eric-ries/
 
-How Early-Stage VCs Decide Where to Invest
+Framework source — How Early-Stage VCs Decide Where to Invest
 https://www.wired.com/story/how-early-stage-vcs-decide-where-invest/
 
 Marc Andreessen — Risk Onion
@@ -89,7 +214,7 @@ The diligence plan should request a falsifiable remediation milestone with an in
 
 This lens supports a sequenced risk review rather than a broad request for more information. If independent testing closes the containment layer but customers still narrow access, the thesis remains impaired at the trust layer. Only if the technical, governance, and customer milestones move together should the committee resume financing work; ambiguous results should extend the pause, not be counted as progress.
 
-Framework source: The Pmarca Blog Archives by Marc Andreessen
+Framework source — The Pmarca Blog Archives by Marc Andreessen
 https://info.a16z.com/rs/382-JZB-798/images/marcs-ebook.pdf
 
 Aswath Damodaran — Narrative and Numbers
@@ -104,10 +229,10 @@ Diligence should request recurring revenue by customer, renewal and expansion co
 
 This lens withholds a current valuation until the changed story can be connected to revenue, margin, reinvestment, and failure risk. If customer retention and pipeline remain stable after independently verified remediation, the base narrative may recover. If access shrinks or sales cycles extend, those effects belong in the operating model rather than in a qualitative risk discount chosen by intuition.
 
-Framework sources: Numbers and Narrative Official Companion Home
+Framework source — Numbers and Narrative Official Companion Home
 https://pages.stern.nyu.edu/~adamodar/New_Home_Page/numbers%26narrative.htm
 
-Numbers and Narrative Reacting to News
+Framework source — Numbers and Narrative Reacting to News
 https://pages.stern.nyu.edu/~adamodar/New_Home_Page/narrative/newseffect.htm
 
 Peter Thiel — Transformational Technology
@@ -122,10 +247,10 @@ Diligence should request benchmarked pre- and post-remediation performance, inde
 
 This lens would support renewed investment work only if technical improvement is independently visible, customers continue to pay through a repeatable procurement path, and economics show durable value capture. Until then, the category's importance is not evidence that this company merits additional capital. The Founders Fund hard-technology doctrine is institutional context and is not presented here as Peter Thiel's personal investment rule.
 
-Framework sources: Zero to One by Peter Thiel and Blake Masters
+Framework source — Zero to One by Peter Thiel and Blake Masters
 https://www.penguinrandomhouse.com/books/234730/zero-to-one-by-peter-thiel-with-blake-masters/9780804139304/
 
-Peter Thiel CS183 Class Nine Distribution Notes
+Framework source — Peter Thiel CS183 Class Nine Distribution Notes
 https://blakemasters.tumblr.com/post/22405055017/peter-thiels-cs183-startup-class-9-notes-essay
 
 Synthesis
@@ -136,7 +261,22 @@ The lenses agree on the immediate posture: the incident is material enough to st
 
 Recommendation: keep follow-on activity paused and open an internal portfolio-risk review. Within ten business days, obtain the root-cause record, remediation controls, independent test plan, customer and insurer notifications, liability exposure, board oversight, and any change to system access. Within the same workstream, request current recurring revenue, retention cohorts, pipeline movement, gross margin, cash, burn, capitalization, financing terms, and incident-related costs.
 
+Evidence standing
+
+FACT — Anthropic's public report establishes the incident that makes a portfolio-risk review necessary in this synthetic example.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+UNKNOWN — Unknown: root cause, remediation, customer response, liability, oversight, operating metrics, and financing terms remain to be obtained.
+
 The next committee checkpoint should answer three questions in order: can the failure recur, did customers change behavior, and does the resulting price still offer a venture return after reserve and concentration constraints? A verified control fix plus stable customer evidence permits valuation work to resume. A repeated failure, concealed impact, material customer loss, or unbounded liability should escalate the portfolio response and end follow-on consideration. All founder email, text, LinkedIn, and internal communication remains draft-only until a human approves it.
+
+Evidence standing
+
+UNKNOWN — Unknown: recurrence risk, customer behavior, and risk-adjusted financing economics must be resolved before follow-on consideration resumes.
+
+ASSUMPTION — Assumption: this synthetic editorial fixture treats every founder-facing and internal communication as draft-only until human approval.
+Basis — The assumption preserves the product's draft-only safety boundary without representing any communication as sent or published.
 
 Appendix
 
@@ -144,50 +284,113 @@ This appendix preserves the source register and the separation among public fact
 
 The Named Lens passages are an editorial regression target. They demonstrate the required memo structure and prose standard, but they are not evidence of production provider quality and must never be presented as observed model output or a real investor's opinion.
 
-Company and event sources
+Public source register
 
-Irregular Introducing Frontier AI Security
+Source — Irregular Introducing Frontier AI Security
 https://www.irregular.com/news/introducing-frontier-ai-security
 
-TechCrunch Irregular Funding Report
+Source — TechCrunch Irregular Funding Report
 https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models
 
-Anthropic Cybersecurity Evaluation Incident Review
+Source — Anthropic Cybersecurity Evaluation Incident Review
 https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
 
-Wilson Sonsini Irregular Financing Notice
+Source — Wilson Sonsini Irregular Financing Notice
 https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf
 
-Framework sources
-
-How to Think About Risk with Howard Marks
+Source — How to Think About Risk with Howard Marks
 https://www.oaktreecapital.com/insights/insight-video/education/how-to-think-about-risk-with-howard-marks
 
-Secrets of Sand Hill Road by Scott Kupor
+Source — Secrets of Sand Hill Road by Scott Kupor
 https://www.penguinrandomhouse.com/books/607128/secrets-of-sand-hill-road-by-scott-kupor-foreword-by-eric-ries/
 
-How Early-Stage VCs Decide Where to Invest
+Source — How Early-Stage VCs Decide Where to Invest
 https://www.wired.com/story/how-early-stage-vcs-decide-where-invest/
 
-The Pmarca Blog Archives by Marc Andreessen
+Source — The Pmarca Blog Archives by Marc Andreessen
 https://info.a16z.com/rs/382-JZB-798/images/marcs-ebook.pdf
 
-Numbers and Narrative Official Companion Home
+Source — Numbers and Narrative Official Companion Home
 https://pages.stern.nyu.edu/~adamodar/New_Home_Page/numbers%26narrative.htm
 
-Numbers and Narrative Reacting to News
+Source — Numbers and Narrative Reacting to News
 https://pages.stern.nyu.edu/~adamodar/New_Home_Page/narrative/newseffect.htm
 
-Zero to One by Peter Thiel and Blake Masters
+Source — Zero to One by Peter Thiel and Blake Masters
 https://www.penguinrandomhouse.com/books/234730/zero-to-one-by-peter-thiel-with-blake-masters/9780804139304/
 
-Peter Thiel CS183 Class Nine Distribution Notes
+Source — Peter Thiel CS183 Class Nine Distribution Notes
 https://blakemasters.tumblr.com/post/22405055017/peter-thiels-cs183-startup-class-9-notes-essay
 
-Evidence standing
+Typed evidence ledger
 
-Public facts: the identity, founders, incident disclosure, review collaboration, failure characterization, financing announcement, company-reported revenue, government work, and historical valuation report are bound to the sources above. They remain reported facts unless independently verified.
+FACT — Irregular identifies itself as formerly Pattern Labs and as a frontier security laboratory.
+Source — Irregular Introducing Frontier AI Security
+https://www.irregular.com/news/introducing-frontier-ai-security
 
-Synthetic assumptions: the follow-on check, price, security, dilution, holding period, terminal values, and calculated return examples are editorial inputs only. They are not company, fund, or market facts.
+FACT — TechCrunch identifies Dan Lahav and Omer Nevo as Irregular co-founders.
+Source — TechCrunch Irregular Funding Report
+https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models
 
-Unknowns: root cause; remediation durability; customer response; recurring revenue and retention; margins, cash, burn, and runway; capitalization and round terms; insurance and liability; regulatory response; and board oversight.
+FACT — On July 30, 2026, Anthropic reported that activity from Irregular evaluation environments led to unauthorized access to production systems at three organizations.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+FACT — Anthropic said it conducted the incident review with Irregular.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+FACT — Anthropic described the episode as closer to a harness and operational failure than a model-alignment failure.
+Source — Anthropic Cybersecurity Evaluation Incident Review
+https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals
+
+FACT — Public fact: Wilson Sonsini reported an $80 million Seed and Series A financing.
+Source — Wilson Sonsini Irregular Financing Notice
+https://www.wsgr.com/print/v2/content/49062871/Wilson-Sonsini-Advises-Irregular-on-%2480-Million-Funding-Round.pdf
+
+FACT — Company-reported fact: Irregular said it had millions in annual revenue without stating the exact amount.
+Source — Irregular Introducing Frontier AI Security
+https://www.irregular.com/news/introducing-frontier-ai-security
+
+FACT — Irregular said it worked with the UK government on vetting cyber capabilities in frontier models; this is not a paid-customer claim.
+Source — Irregular Introducing Frontier AI Security
+https://www.irregular.com/news/introducing-frontier-ai-security
+
+FACT — Public report: TechCrunch cited an anonymous deal source for a $450 million historical valuation.
+Source — TechCrunch Irregular Funding Report
+https://techcrunch.com/2025/09/17/irregular-raises-80-million-to-secure-frontier-ai-models
+
+ASSUMPTION — Assumption: the fund is considering a $10 million follow-on at a $450 million pre-money price.
+Basis — Synthetic round inputs make the editorial example numerically complete without claiming private company or fund data.
+
+ASSUMPTION — Assumption: the investment is preferred equity with no special downside protection.
+Basis — No reviewed public source provides a security type or term sheet, so the example uses a conventional placeholder.
+
+ASSUMPTION — Assumption: later financing dilutes this incremental ownership by 20%.
+Basis — The dilution rate is a synthetic sensitivity input and is not attributed to Irregular's actual capitalization.
+
+ASSUMPTION — Assumption: the holding period is 10 years and terminal equity values are $200 million, $1.5 billion, and $5 billion.
+Basis — The outcomes create a transparent downside, central, and upside illustration rather than a company forecast.
+
+CALCULATION — Calculation: the synthetic inputs produce 0.35x, 2.61x, and 8.70x gross MOIC, with approximate annualized returns of negative 10.0%, 10.1%, and 24.1%.
+Derived from — $10 million follow-on at a $450 million pre-money price; 20% later dilution; 10-year holding period and $200 million, $1.5 billion, and $5 billion terminal equity values
+
+UNKNOWN — Unknown: root cause, affected-system scope, and independent verification of remediation.
+
+UNKNOWN — Unknown: customer renewals, access restrictions, pipeline movement, credits, claims, and procurement changes after the incident.
+
+UNKNOWN — Unknown: audited recurring revenue, customer concentration, gross margin, cash, burn, runway, and incident-response cost.
+
+UNKNOWN — Unknown: current capitalization, ownership, proposed financing price, security terms, reserves, and concentration impact.
+
+UNKNOWN — Unknown: insurance coverage, contractual liability, regulatory response, and board oversight.
+
+Display-number exemptions
+
+01 — Display-only section number for the Decision Request heading.
+02 — Display-only section number for the What Changed heading.
+03 — Display-only section number for the Company Position heading.
+04 — Display-only section number for the Thesis Assessment heading.
+05 — Display-only section number for the Financial and Valuation Status heading.
+06 — Display-only section number for the Named Lens Readings heading.
+07 — Display-only section number for the Recommendation and Next Steps heading.

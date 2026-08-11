@@ -8,6 +8,25 @@ type SourceBinding = {
   url: string;
 };
 
+type ClaimClassification =
+  | "fact"
+  | "assumption"
+  | "calculation"
+  | "unknown";
+
+type TypedClaim = {
+  statement: string;
+  classification: ClaimClassification;
+  sourceBindings: SourceBinding[];
+  rationale?: string;
+  derivedFrom?: string[];
+};
+
+type AdjacentClaimGroup = {
+  paragraphIndex: number;
+  claims: TypedClaim[];
+};
+
 type LensPassage = {
   lens: string;
   frameworkBasis: string;
@@ -23,32 +42,23 @@ type GoldenSection = {
   number: string;
   title: string;
   paragraphs: string[];
+  adjacentClaims?: AdjacentClaimGroup[];
   disclosure?: string;
   passages?: LensPassage[];
   synthesis?: string;
 };
 
-type EvidenceLedger = {
-  facts: Array<{
-    statement: string;
-    sourceBindings: SourceBinding[];
-  }>;
-  assumptions: Array<{
-    statement: string;
-    rationale: string;
-  }>;
-  unknowns: string[];
-  numericalClaims: Array<{
-    statement: string;
-    classification: "fact" | "assumption";
-    sourceBindings: SourceBinding[];
-  }>;
+type NumericExemption = {
+  token: string;
+  reason: string;
 };
 
 type GoldenMemo = {
   schemaVersion: string;
   artifactKind: string;
   artifactLabel: string;
+  editorialNotice: string;
+  generationPath: string;
   companyName: string;
   title: string;
   productionProviderQualityEvidence: boolean;
@@ -57,7 +67,8 @@ type GoldenMemo = {
     title: string;
     paragraphs: string[];
     publicSources: SourceBinding[];
-    evidenceLedger: EvidenceLedger;
+    typedClaims: TypedClaim[];
+    numericExemptions: NumericExemption[];
   };
 };
 
@@ -80,7 +91,7 @@ const expectedSections = [
   "Recommendation and Next Steps",
 ];
 
-function loadGolden(): { memo: GoldenMemo; text: string } {
+function loadGolden(): { memo: GoldenMemo; rawJson: string; text: string } {
   assert.equal(
     existsSync(jsonPath),
     true,
@@ -92,8 +103,10 @@ function loadGolden(): { memo: GoldenMemo; text: string } {
     "the readable Irregular editorial golden fixture must exist",
   );
 
+  const rawJson = readFileSync(jsonPath, "utf8");
   return {
-    memo: JSON.parse(readFileSync(jsonPath, "utf8")) as GoldenMemo,
+    memo: JSON.parse(rawJson) as GoldenMemo,
+    rawJson,
     text: readFileSync(textPath, "utf8"),
   };
 }
@@ -112,26 +125,189 @@ function passageText(passage: LensPassage): string {
   ].join(" ");
 }
 
-test("the Irregular prose golden is permanently and explicitly synthetic", () => {
+function claimLines(claim: TypedClaim): string[] {
+  const lines = [
+    `${claim.classification.toUpperCase()} — ${claim.statement}`,
+  ];
+  for (const binding of claim.sourceBindings) {
+    lines.push(`Source — ${binding.label}`, binding.url);
+  }
+  if (claim.rationale) {
+    lines.push(`Basis — ${claim.rationale}`);
+  }
+  if (claim.derivedFrom?.length) {
+    lines.push(`Derived from — ${claim.derivedFrom.join("; ")}`);
+  }
+  return lines;
+}
+
+function pushParagraph(lines: string[], value: string): void {
+  lines.push(value, "");
+}
+
+export function renderCanonicalMemo(memo: GoldenMemo): string {
+  const lines = [memo.artifactLabel, "", memo.title, ""];
+  pushParagraph(lines, memo.editorialNotice);
+
+  for (const section of memo.sections) {
+    lines.push(`${section.number} ${section.title}`, "");
+
+    if (section.title === "Named Lens Readings") {
+      assert.ok(section.disclosure);
+      assert.ok(section.passages);
+      assert.ok(section.synthesis);
+      pushParagraph(lines, section.disclosure);
+      for (const passage of section.passages) {
+        lines.push(passage.lens, "");
+        for (const segment of [
+          passage.premise,
+          passage.caseApplication,
+          passage.countercase,
+          passage.evidenceRequest,
+          passage.conditionalPosture,
+        ]) {
+          pushParagraph(lines, segment);
+        }
+        for (const binding of passage.sourceBindings) {
+          lines.push(`Framework source — ${binding.label}`, binding.url, "");
+        }
+      }
+      lines.push("Synthesis", "");
+      pushParagraph(lines, section.synthesis);
+      continue;
+    }
+
+    const groups = section.adjacentClaims ?? [];
+    for (const [paragraphIndex, paragraph] of section.paragraphs.entries()) {
+      pushParagraph(lines, paragraph);
+      const group = groups.find((candidate) =>
+        candidate.paragraphIndex === paragraphIndex
+      );
+      assert.ok(group, `${section.title} paragraph ${paragraphIndex} lacks adjacent claims`);
+      lines.push("Evidence standing", "");
+      for (const claim of group.claims) {
+        for (const line of claimLines(claim)) {
+          lines.push(line);
+        }
+        lines.push("");
+      }
+    }
+  }
+
+  lines.push(memo.appendix.title, "");
+  for (const paragraph of memo.appendix.paragraphs) {
+    pushParagraph(lines, paragraph);
+  }
+  lines.push("Public source register", "");
+  for (const binding of memo.appendix.publicSources) {
+    lines.push(`Source — ${binding.label}`, binding.url, "");
+  }
+  lines.push("Typed evidence ledger", "");
+  for (const claim of memo.appendix.typedClaims) {
+    for (const line of claimLines(claim)) {
+      lines.push(line);
+    }
+    lines.push("");
+  }
+  lines.push("Display-number exemptions", "");
+  for (const exemption of memo.appendix.numericExemptions) {
+    lines.push(`${exemption.token} — ${exemption.reason}`);
+  }
+
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
+}
+
+function sectionClaims(section: GoldenSection): TypedClaim[] {
+  return (section.adjacentClaims ?? []).flatMap(({ claims }) => claims);
+}
+
+function allTypedClaims(memo: GoldenMemo): TypedClaim[] {
+  return [
+    ...memo.sections.flatMap(sectionClaims),
+    ...memo.appendix.typedClaims,
+  ];
+}
+
+function assertTypedClaim(claim: TypedClaim): void {
+  assert.ok(claim.statement.trim().length >= 12);
+  if (claim.classification === "fact") {
+    assert.ok(
+      claim.sourceBindings.length > 0,
+      `public fact lacks a source: ${claim.statement}`,
+    );
+  } else if (claim.classification === "assumption") {
+    assert.match(claim.statement, /^Assumption:/);
+    assert.equal(claim.sourceBindings.length, 0);
+    assert.ok((claim.rationale?.length ?? 0) >= 20);
+  } else if (claim.classification === "calculation") {
+    assert.match(claim.statement, /^Calculation:/);
+    assert.equal(claim.sourceBindings.length, 0);
+    assert.ok((claim.derivedFrom?.length ?? 0) >= 2);
+  } else {
+    assert.match(claim.statement, /^Unknown:/);
+    assert.equal(claim.sourceBindings.length, 0);
+  }
+}
+
+test("the Irregular prose golden is permanently and adjacently synthetic", () => {
   const { memo, text } = loadGolden();
 
   assert.equal(memo.schemaVersion, "underwriting-editorial-golden-v1");
   assert.equal(memo.artifactKind, "synthetic_sample_editorial_fixture");
+  assert.equal(memo.generationPath, "manual_editorial_fixture");
   assert.equal(memo.productionProviderQualityEvidence, false);
   assert.match(memo.artifactLabel, /SYNTHETIC SAMPLE/i);
-  assert.match(text.slice(0, 500), /SYNTHETIC SAMPLE/i);
-  assert.match(text.slice(0, 500), /not a real VC interaction/i);
-  assert.match(text, /Sample decision record/i);
+  assert.match(text.slice(0, 600), /SYNTHETIC SAMPLE/i);
+  assert.match(text.slice(0, 600), /not a real VC interaction/i);
   assert.match(text, /not evidence of production provider quality/i);
+
+  const nonLensParagraphs = memo.sections
+    .filter(({ title }) => title !== "Named Lens Readings")
+    .flatMap(({ paragraphs }) => paragraphs);
+  for (const paragraph of nonLensParagraphs.filter((value) =>
+    /\bprior (?:thesis|record|investment)|Sample decision record/i.test(value)
+  )) {
+    assert.match(
+      paragraph,
+      /(?:synthetic|Sample decision record)/i,
+      "every synthetic prior-history statement must carry its label locally",
+    );
+  }
+  const sampleRecord = nonLensParagraphs.find((value) =>
+    value.includes("Sample decision record")
+  );
+  assert.match(sampleRecord ?? "", /Sample decision record — permanently synthetic:/);
+});
+
+test("the TXT is the exact canonical rendering of every JSON field shown to readers", () => {
+  const { memo, text } = loadGolden();
+  assert.equal(text, renderCanonicalMemo(memo));
+
+  const missingParagraph = structuredClone(memo);
+  missingParagraph.sections[2].paragraphs.splice(0, 1);
+  missingParagraph.sections[2].adjacentClaims?.splice(0, 1);
+  for (const group of missingParagraph.sections[2].adjacentClaims ?? []) {
+    group.paragraphIndex -= 1;
+  }
+  assert.notEqual(renderCanonicalMemo(missingParagraph), text);
+
+  const replacedSection = structuredClone(memo);
+  replacedSection.sections[3].paragraphs[0] = "Replacement prose.";
+  assert.notEqual(renderCanonicalMemo(replacedSection), text);
+
+  const missingSynthesis = structuredClone(memo);
+  missingSynthesis.sections[5].synthesis = "";
+  assert.throws(() => renderCanonicalMemo(missingSynthesis));
+
+  const missingAppendix = structuredClone(memo);
+  missingAppendix.appendix.paragraphs = [];
+  assert.notEqual(renderCanonicalMemo(missingAppendix), text);
 });
 
 test("the memo is decision-first with seven numbered sections and an Appendix", () => {
   const { memo, text } = loadGolden();
 
-  assert.deepEqual(
-    memo.sections.map(({ title }) => title),
-    expectedSections,
-  );
+  assert.deepEqual(memo.sections.map(({ title }) => title), expectedSections);
   assert.deepEqual(
     memo.sections.map(({ number }) => number),
     ["01", "02", "03", "04", "05", "06", "07"],
@@ -150,17 +326,46 @@ test("the memo is decision-first with seven numbered sections and an Appendix", 
   }
 });
 
-test("Named Lens readings are complete prose within the editorial word budget", () => {
+test("decision-first reasons carry adjacent typed evidence instead of Appendix-only support", () => {
+  const { memo, text } = loadGolden();
+  const requiredSectionNumbers = new Set(["01", "02", "03", "04", "05", "07"]);
+
+  for (const section of memo.sections.filter(({ number }) =>
+    requiredSectionNumbers.has(number)
+  )) {
+    assert.equal(section.adjacentClaims?.length, section.paragraphs.length);
+    for (const [paragraphIndex, paragraph] of section.paragraphs.entries()) {
+      const group: AdjacentClaimGroup | undefined =
+        section.adjacentClaims?.[paragraphIndex];
+      assert.equal(group?.paragraphIndex, paragraphIndex);
+      assert.ok(group && group.claims.length > 0);
+      for (const claim of group.claims) {
+        assertTypedClaim(claim);
+      }
+
+      const paragraphAt = text.indexOf(paragraph);
+      const evidenceAt = text.indexOf("Evidence standing", paragraphAt);
+      const nextParagraph = section.paragraphs[paragraphIndex + 1];
+      const nextParagraphAt = nextParagraph
+        ? text.indexOf(nextParagraph, paragraphAt + paragraph.length)
+        : Number.POSITIVE_INFINITY;
+      assert.ok(evidenceAt > paragraphAt && evidenceAt < nextParagraphAt);
+    }
+  }
+
+  const firstScreenClaims = sectionClaims(memo.sections[0]);
+  assert.ok(firstScreenClaims.some(({ classification }) => classification === "fact"));
+  assert.ok(firstScreenClaims.some(({ classification }) => classification === "unknown"));
+  assert.ok(firstScreenClaims.some(({ classification }) => classification === "assumption"));
+});
+
+test("Named Lens readings are complete, exactly bound prose within the word budget", () => {
   const { memo, text } = loadGolden();
   const section = memo.sections.find(({ title }) => title === "Named Lens Readings");
-  assert.ok(section);
-  assert.ok(section.disclosure);
+  assert.ok(section?.disclosure);
   assert.ok(section.synthesis);
   assert.ok(section.passages);
-  assert.ok(
-    section.passages.length >= 4 && section.passages.length <= 6,
-    "the main memo must carry four to six decision-relevant lenses",
-  );
+  assert.ok(section.passages.length >= 4 && section.passages.length <= 6);
 
   let passageWords = 0;
   for (const passage of section.passages) {
@@ -180,98 +385,93 @@ test("Named Lens readings are complete prose within the editorial word budget", 
       passage.conditionalPosture,
     ]) {
       assert.ok(wordCount(segment) >= 18, `${passage.lens} has a thin logic segment`);
-      assert.ok(text.includes(segment), `${passage.lens} prose must appear in the readable memo`);
+      assert.ok(text.includes(segment));
     }
-    assert.match(
-      passage.caseApplication,
-      /\b(?:because|therefore|which|so that|means that)\b/i,
-      `${passage.lens} must state a causal connection to this case`,
-    );
+    assert.match(passage.caseApplication, /\b(?:because|therefore|which|so that|means that)\b/i);
     assert.match(passage.countercase, /\b(?:however|countercase|could|would|if)\b/i);
     assert.match(passage.evidenceRequest, /\b(?:request|need|before|evidence|diligence)\b/i);
     assert.match(passage.conditionalPosture, /\b(?:if|until|unless|only if|subject to)\b/i);
-  }
 
-  const combinedWords = passageWords + wordCount(section.synthesis);
-  assert.ok(
-    combinedWords <= 1_600,
-    `Named Lens passages plus synthesis must stay within 1,600 words; received ${combinedWords}`,
-  );
-});
-
-test("public frameworks and company facts have descriptive source bindings", () => {
-  const { memo, text } = loadGolden();
-  const section = memo.sections.find(({ title }) => title === "Named Lens Readings");
-  assert.ok(section?.passages);
-
-  const bindings = [
-    ...section.passages.flatMap(({ sourceBindings }) => sourceBindings),
-    ...memo.appendix.publicSources,
-  ];
-  assert.ok(bindings.length >= section.passages.length + 4);
-  for (const binding of bindings) {
-    assert.ok(wordCount(binding.label) >= 3, "source labels must be descriptive");
-    assert.match(binding.url, /^https:\/\//);
-    assert.ok(text.includes(binding.label));
-    assert.ok(text.includes(binding.url));
-  }
-
-  assert.ok(memo.appendix.evidenceLedger.facts.length >= 7);
-  for (const fact of memo.appendix.evidenceLedger.facts) {
-    assert.ok(fact.sourceBindings.length > 0, `fact lacks a source: ${fact.statement}`);
-  }
-  for (const assumption of memo.appendix.evidenceLedger.assumptions) {
-    assert.match(assumption.statement, /^Assumption:/);
-    assert.ok(assumption.rationale.length >= 20);
-  }
-  assert.ok(memo.appendix.evidenceLedger.unknowns.length >= 4);
-});
-
-test("every declared financial number is classified as a sourced fact or an explicit assumption", () => {
-  const { memo, text } = loadGolden();
-  const claims = memo.appendix.evidenceLedger.numericalClaims;
-  assert.ok(claims.length >= 6);
-
-  for (const claim of claims) {
-    assert.ok(text.includes(claim.statement));
-    if (claim.classification === "fact") {
-      assert.ok(claim.sourceBindings.length > 0, `public fact lacks a source: ${claim.statement}`);
-    } else {
-      assert.match(claim.statement, /^Assumption:/);
-      assert.equal(claim.sourceBindings.length, 0);
+    assert.ok(passage.sourceBindings.length > 0);
+    assert.equal(
+      new Set(passage.sourceBindings.map(({ url }) => url)).size,
+      passage.sourceBindings.length,
+    );
+    for (const binding of passage.sourceBindings) {
+      assert.ok(wordCount(binding.label) >= 3);
+      assert.match(binding.url, /^https:\/\//);
+      const exactBlock = `Framework source — ${binding.label}\n${binding.url}`;
+      const sourceAt = text.indexOf(exactBlock, text.indexOf(passage.conditionalPosture));
+      assert.ok(sourceAt > text.indexOf(passage.conditionalPosture));
     }
   }
+
+  assert.ok(passageWords + wordCount(section.synthesis) <= 1_600);
 });
 
-test("the readable memo uses professional prose and hides implementation language", () => {
+test("all visible numbers are typed and MOIC or IRR outputs are calculations", () => {
   const { memo, text } = loadGolden();
-  const visible = [
-    memo.title,
-    ...memo.sections.flatMap((section) => [
-      ...section.paragraphs,
-      section.disclosure ?? "",
-      section.synthesis ?? "",
-      ...(section.passages?.map(passageText) ?? []),
-    ]),
-    ...memo.appendix.paragraphs,
-  ].join("\n");
+  const claims = allTypedClaims(memo);
+  assert.ok(claims.length >= 20);
+  claims.forEach(assertTypedClaim);
 
-  assert.match(visible, /investment committee/i);
-  assert.match(visible, /valuation/i);
-  assert.match(visible, /diligence/i);
-  assert.match(visible, /counterevidence/i);
+  const returnsClaim = claims.find(({ statement }) =>
+    /0\.35x.*24\.1%/.test(statement)
+  );
+  assert.equal(returnsClaim?.classification, "calculation");
+  assert.ok(returnsClaim?.derivedFrom && returnsClaim.derivedFrom.length >= 2);
+
+  const withoutUrls = text.replace(/https:\/\/\S+/g, "");
+  const visibleNumbers = new Set(
+    withoutUrls.match(/(?<![A-Za-z0-9])\$?\d+(?:\.\d+)?(?:%|x)?(?![A-Za-z0-9])/g) ?? [],
+  );
+  const exemptions = new Set(memo.appendix.numericExemptions.map(({ token }) => token));
+  for (const token of visibleNumbers) {
+    const typed = claims.some(({ statement }) => statement.includes(token));
+    assert.ok(typed || exemptions.has(token), `visible number lacks a typed claim: ${token}`);
+  }
+  for (const exemption of memo.appendix.numericExemptions) {
+    assert.ok(exemption.reason.length >= 20);
+  }
+});
+
+test("professional and attribution safety rules cover both TXT and JSON", () => {
+  const { memo, rawJson, text } = loadGolden();
+  const corpus = `${text}\n${rawJson}`;
+  const person = "(?:Howard Marks|Scott Kupor|Marc Andreessen|Aswath Damodaran|Peter Thiel)";
+
+  assert.match(corpus, /investment committee/i);
+  assert.match(corpus, /valuation/i);
+  assert.match(corpus, /diligence/i);
+  assert.match(corpus, /counterevidence/i);
   assert.doesNotMatch(
-    visible,
+    corpus,
     /\b(?:belief_revised|no_material_change|analysis_unavailable|internal_only|pause_follow_on|portfolio_risk_review)\b/i,
   );
   assert.doesNotMatch(
-    visible,
+    corpus,
     /\b(?:source_revision|framework_advisory|evidence_pack|fixture|deal)_[a-z0-9_:-]+\b/i,
   );
   assert.doesNotMatch(
-    visible,
+    corpus,
     /\b(?:as an AI|delve|it is important to note|in conclusion|chain of thought|private reasoning|internal reasoning process)\b/i,
   );
-  assert.equal((visible.match(/\bUnavailable\b/g) ?? []).length, 0);
+  assert.doesNotMatch(
+    corpus,
+    new RegExp(`\\b${person}\\s+(?:believes|recommends|thinks|argues|concludes|endorses)\\b`, "i"),
+  );
+  assert.doesNotMatch(
+    corpus,
+    new RegExp(`(?:reviewed|approved|endorsed)\\s+by\\s+${person}|${person}.{0,40}(?:reviewed|approved|endorsed)`, "i"),
+  );
+  const lensSection = memo.sections.find(({ title }) => title === "Named Lens Readings");
+  assert.ok(lensSection?.passages);
+  for (const passage of lensSection.passages) {
+    assert.doesNotMatch(
+      passageText(passage),
+      /(?:^|[.!?]\s+)(?:I|We)\s+(?:believe|recommend|think|would|conclude)|\b(?:my|our)\s+(?:view|opinion|recommendation)\b/i,
+    );
+  }
+  assert.equal((corpus.match(/\bUnavailable\b/g) ?? []).length, 0);
   assert.doesNotMatch(text, /(?:^|\n)(?:Premise|Case application|Countercase|Evidence request|Conditional posture):/);
 });
