@@ -1,6 +1,8 @@
 import {
   type FinalizedChatTopic,
+  type FinalizedChatTopicV2,
   FinalizedChatTopicSchema,
+  FinalizedChatTopicV2Schema,
 } from "../contracts/finalized-chat";
 
 export type FinalizedChatTopicClassification =
@@ -56,6 +58,56 @@ export function classifyFinalizedChatTopic(
   const normalized = question.normalize("NFKC").trim();
   const matchedTopics = FinalizedChatTopicSchema.options.filter((topic) =>
     TOPIC_PATTERNS[topic].some((pattern) => pattern.test(normalized))
+  );
+  if (matchedTopics.length === 1) {
+    return { status: "matched", topic: matchedTopics[0] };
+  }
+  return {
+    status: "insufficient",
+    reasonCode: matchedTopics.length === 0
+      ? "unsupported_topic"
+      : "ambiguous_topic",
+    matchedTopics,
+  };
+}
+
+export type FinalizedChatTopicClassificationV2 =
+  | { status: "matched"; topic: FinalizedChatTopicV2 }
+  | {
+    status: "insufficient";
+    reasonCode: "unsupported_topic" | "ambiguous_topic";
+    matchedTopics: FinalizedChatTopicV2[];
+  };
+
+const TOPIC_PATTERNS_V2: Readonly<
+  Record<FinalizedChatTopicV2, RegExp[]>
+> = {
+  named_lens_selection_reason: [
+    /\bwhy\b[^?]*\blens\b[^?]*\bselect(?:ed|ion)\b/iu,
+    /\bwhy\b[^?]*\bselect(?:ed|ion)\b[^?]*\blens\b/iu,
+  ],
+  named_lens_exact_evidence: [
+    /\b(?:which|what)\b[^?]*\bexact\s+evidence\b[^?]*\blens\b/iu,
+    /\blens\b[^?]*\bexact\s+evidence\b/iu,
+    /\b(?:which|what)\b[^?]*\bevidence\b[^?]*\blens\b[^?]*\buse(?:d)?\b/iu,
+  ],
+  named_lens_view_change: [
+    /\bwhat\b[^?]*\bchang(?:e|ed|es)\b[^?]*\blens\b[^?]*\bview\b/iu,
+    /\blens\b[^?]*\bview\b[^?]*\bchang(?:e|ed|es)\b/iu,
+    /\bwhat\s+would\s+change\s+(?:this|its|the)\s+view\b/iu,
+  ],
+  named_lens_formal_weight: [
+    /\bwhy\b[^?]*\blens\b[^?]*\b(?:zero|0)\b[^?]*\bformal(?:-decision|\s+decision)?\s+weight\b/iu,
+    /\bformal(?:-decision|\s+decision)?\s+weight\b[^?]*\b(?:zero|0)\b/iu,
+  ],
+};
+
+export function classifyFinalizedChatTopicV2(
+  question: string,
+): FinalizedChatTopicClassificationV2 {
+  const normalized = question.normalize("NFKC").trim();
+  const matchedTopics = FinalizedChatTopicV2Schema.options.filter((topic) =>
+    TOPIC_PATTERNS_V2[topic].some((pattern) => pattern.test(normalized))
   );
   if (matchedTopics.length === 1) {
     return { status: "matched", topic: matchedTopics[0] };

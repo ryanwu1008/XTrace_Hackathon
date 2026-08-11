@@ -354,6 +354,7 @@ function bundleFixture(
   }));
   return {
     candidateRunId,
+    sourceCandidateRunId: candidateRunId,
     workspaceId: WORKSPACE_ID,
     dealId: analysis.dealId,
     candidateAnalysisFingerprint: `sha256:${"8".repeat(64)}`,

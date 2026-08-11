@@ -9,6 +9,13 @@ import {
   FinalizedChatProjectionV1Schema,
   FinalizedChatResponseSchema,
   FinalizedChatSourceRefSchema,
+  FinalizedChatArtifactRefV2Schema,
+  FinalizedChatClaimV2Schema,
+  FinalizedChatProjectionSchema,
+  FinalizedChatProjectionV2Schema,
+  FinalizedChatTextClassV2Schema,
+  createFinalizedChatClaimV2,
+  createFinalizedChatProjectionV2,
   createFinalizedChatClaimFingerprint,
   createFinalizedChatClaimId,
   createFinalizedChatClaim,
@@ -118,6 +125,182 @@ const memoryRef = {
   artifactId: "analysis_henry",
   fieldPath: "investmentMemory.decisionReason",
 } as const;
+
+const v1ByteBaseline = {
+  identity: {
+    workspaceId: "workspace_v1",
+    reportId: "report_v1",
+    runId: "run_v1",
+    dealId: "deal_v1",
+    candidateRunId: "candidate_v1",
+  },
+  evidenceFrame: { state: "legacy_unbound" } as const,
+};
+
+test("V1 bytes and fingerprints remain immutable after adding the V2 discriminant", () => {
+  const claim = createFinalizedChatClaim({
+    identity: v1ByteBaseline.identity,
+    topic: "match_confidence",
+    text: "Persisted V1 baseline.",
+    textClass: "persisted_inference",
+    artifactRefs: [{
+      artifactType: "match_assessment",
+      artifactId: "analysis_v1",
+      fieldPath: "beliefAssessment.scoreBreakdown",
+    }],
+    sourceRefs: [],
+  });
+  const projection = createFinalizedChatProjection({
+    topic: "match_confidence",
+    identity: v1ByteBaseline.identity,
+    evidenceFrame: v1ByteBaseline.evidenceFrame,
+    claims: [claim],
+  });
+
+  assert.equal(
+    claim.claimId,
+    "finalized_chat_claim_bcf30ae4ce2b0614cce5823a5299e83bbb92db2f58f26e02568128d84367dbbe",
+  );
+  assert.equal(
+    projection.projectionFingerprint,
+    "sha256:41a764ec36ef4e8405336cb349515b2e7f8ee92155646132573d0aa48935cc16",
+  );
+  assert.equal(
+    JSON.stringify(projection),
+    '{"schemaVersion":"finalized-chat-projection-v1","projectionFingerprint":"sha256:41a764ec36ef4e8405336cb349515b2e7f8ee92155646132573d0aa48935cc16","topic":"match_confidence","identity":{"workspaceId":"workspace_v1","reportId":"report_v1","runId":"run_v1","dealId":"deal_v1","candidateRunId":"candidate_v1"},"evidenceFrame":{"state":"legacy_unbound"},"claims":[{"claimId":"finalized_chat_claim_bcf30ae4ce2b0614cce5823a5299e83bbb92db2f58f26e02568128d84367dbbe","claimFingerprint":"sha256:bcf30ae4ce2b0614cce5823a5299e83bbb92db2f58f26e02568128d84367dbbe","text":"Persisted V1 baseline.","textClass":"persisted_inference","artifactRefs":[{"artifactType":"match_assessment","artifactId":"analysis_v1","fieldPath":"beliefAssessment.scoreBreakdown"}],"sourceRefs":[]}]}'
+  );
+  assert.deepEqual(FinalizedChatProjectionSchema.parse(projection), projection);
+});
+
+test("V2 binds current presentation identity, exact Named Lens target, and safe artifact classes", () => {
+  const target = {
+    judgmentId: "judgment_howard_marks",
+    frameworkCardId: "framework_advisory:marks:abc",
+    componentFrameworkId: "HM-01",
+    publicDisplayIdentity: "Howard Marks",
+    displayName: "Risk Control Through Market Cycles",
+    attributionDisplay: "Howard Marks",
+  } as const;
+  const ref = {
+    artifactType: "named_lens_disposition",
+    artifactId: target.judgmentId,
+    fieldPath: "reasonCodes",
+  } as const;
+  const claim = createFinalizedChatClaimV2({
+    identity,
+    topic: "named_lens_selection_reason",
+    target,
+    text:
+      "The saved disposition selected this lens because it addresses changed-belief evidence.",
+    textClass: "framework_application_inference",
+    artifactRefs: [ref],
+    sourceRefs: [],
+  });
+  const presentationIdentity = {
+    adapterSchemaVersion: "decision-first-named-lens-v1",
+    sourceCandidateRunId: "candidate_henry_source",
+    presentationReportId: identity.reportId,
+    presentationSchemaVersion: "decision-first-named-lens-v1",
+    presentationFingerprint: SHA_A,
+    criticalEvidenceProjectionFingerprint: SHA_B,
+    finalDispositionsFingerprint: SHA_C,
+  } as const;
+  const projection = createFinalizedChatProjectionV2({
+    topic: "named_lens_selection_reason",
+    identity,
+    evidenceFrame: liveFrame,
+    presentationIdentity,
+    target,
+    claims: [claim],
+  });
+
+  assert.equal(projection.schemaVersion, "finalized-chat-projection-v2");
+  assert.deepEqual(FinalizedChatProjectionV2Schema.parse(projection), projection);
+  assert.deepEqual(FinalizedChatProjectionSchema.parse(projection), projection);
+  assert.notEqual(
+    projection.projectionFingerprint,
+    createFinalizedChatProjectionV2({
+      topic: projection.topic,
+      identity: projection.identity,
+      evidenceFrame: projection.evidenceFrame,
+      presentationIdentity: {
+        ...presentationIdentity,
+        presentationFingerprint: SHA_D,
+      },
+      target,
+      claims: [claim],
+    }).projectionFingerprint,
+  );
+  assert.deepEqual(
+    FinalizedChatTextClassV2Schema.options,
+    ["persisted_artifact_text", "framework_application_inference"],
+  );
+});
+
+test("V2 rejects invalid segment paths, authoring metadata, duplicate refs, and nonzero formal weight", () => {
+  const validRef = {
+    artifactType: "named_lens_passage_segment",
+    artifactId: "passage_howard_marks",
+    fieldPath: "caseApplication.text",
+  } as const;
+  assert.equal(FinalizedChatArtifactRefV2Schema.safeParse(validRef).success, true);
+  for (const fieldPath of [
+    "premise.componentFrameworkId",
+    "premise.componentVersion",
+    "premise.cardFieldRef",
+    "premise.publicSourceIds",
+    "premise.claimIds",
+    "premise.locator",
+    "premise.attributionScope",
+  ]) {
+    assert.equal(FinalizedChatArtifactRefV2Schema.safeParse({
+      ...validRef,
+      fieldPath,
+    }).success, true, fieldPath);
+  }
+  assert.equal(FinalizedChatArtifactRefV2Schema.safeParse({
+    ...validRef,
+    fieldPath: "frameworkMetadata.review.openIssues",
+  }).success, false);
+  assert.equal(FinalizedChatArtifactRefV2Schema.safeParse({
+    ...validRef,
+    fieldPath: "prompt.response",
+  }).success, false);
+
+  const target = {
+    judgmentId: "judgment_howard_marks",
+    frameworkCardId: "framework_advisory:marks:abc",
+    componentFrameworkId: "HM-01",
+    publicDisplayIdentity: "Howard Marks",
+    displayName: "Risk Control Through Market Cycles",
+    attributionDisplay: "Howard Marks",
+  } as const;
+  const claim = createFinalizedChatClaimV2({
+    identity,
+    topic: "named_lens_exact_evidence",
+    target,
+    text: "Applied to the saved evidence, the framework remains bounded.",
+    textClass: "framework_application_inference",
+    artifactRefs: [validRef],
+    sourceRefs: [],
+  });
+  assert.equal(FinalizedChatClaimV2Schema.safeParse({
+    ...claim,
+    artifactRefs: [validRef, validRef],
+  }).success, false);
+  assert.equal(FinalizedChatClaimV2Schema.safeParse({
+    ...claim,
+    textClass: "persisted_inference",
+  }).success, false);
+  assert.equal(FinalizedChatClaimV2Schema.safeParse({
+    ...claim,
+    artifactRefs: [{
+      ...validRef,
+      fieldPath: "advisoryContract.formalDecisionWeight",
+      formalDecisionWeight: "1",
+    }],
+  }).success, false);
+});
 
 test("strict finalized Chat schemas reject unknown topics, classes, artifacts, partial fingerprints, and empty refs", () => {
   const claim = createFinalizedChatClaim({

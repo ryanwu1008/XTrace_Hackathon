@@ -2,6 +2,7 @@ import {
   CandidateVersionSnapshotSchema,
   type CandidateArtifactBundle,
   type CandidateVersionSnapshot,
+  type CurrentCandidateArtifactBundle,
   type UnderwritingArtifactsRepository,
 } from "../../db/repositories/underwriting-artifacts";
 import type {
@@ -32,6 +33,13 @@ import {
   renderPublicAdvisorySections,
   sanitizeLegacyPublicActionDraftBody,
 } from "./public-advisory-rendering";
+import {
+  assertCurrentNamedLensPhysicalGraph,
+  UnderwritingPresentationIntegrityError,
+  resolveUnderwritingPresentationAdapter,
+  type UnderwritingPresentationAdapter,
+  type UnderwritingPresentationIdentityInput,
+} from "./presentation-version";
 
 export interface DealUnderwritingQueueView extends UnderwritingQueueEntry {
   decision: CandidateArtifactBundle["decision"]["decision"];
@@ -324,6 +332,15 @@ export function toCandidateUnderwritingDetail(
   bundle: CandidateArtifactBundle,
 ) {
   return {
+    ...candidateDetailBase(bundle),
+    judgments: bundle.judgments.map(toPublicFrameworkJudgment),
+    disagreements: structuredClone(bundle.disagreements),
+    narrative: publicNarrativeForBundle(bundle),
+  };
+}
+
+function candidateDetailBase(bundle: CandidateArtifactBundle) {
+  return {
     candidateRunId: bundle.candidateRunId,
     dealId: bundle.dealId,
     evidencePack: {
@@ -384,8 +401,6 @@ export function toCandidateUnderwritingDetail(
       currency: calculation.currency,
       status: calculation.status,
     })),
-    judgments: bundle.judgments.map(toPublicFrameworkJudgment),
-    disagreements: structuredClone(bundle.disagreements),
     valuation: {
       status: bundle.valuation.status,
       scenarios: structuredClone(bundle.valuation.scenarios),
@@ -414,10 +429,244 @@ export function toCandidateUnderwritingDetail(
       ],
       confidence: bundle.decision.confidence,
     },
-    narrative: publicNarrativeForBundle(bundle),
     claimEdges: structuredClone(bundle.claimEdges),
     sourceRevisionIds: [...bundle.evidencePack.sourceRevisionIds],
     versionSnapshot: toPublicVersionSnapshot(bundle.versionSnapshot),
+  };
+}
+
+export function toVersionedCandidateUnderwritingDetail(input: {
+  bundle: CandidateArtifactBundle;
+  adapter: UnderwritingPresentationAdapter;
+}) {
+  if (input.adapter.kind !== "current") {
+    return {
+      ...toCandidateUnderwritingDetail(input.bundle),
+      presentationAdapter: input.adapter,
+    };
+  }
+  const bundle = requireCurrentCandidateBundle(input.bundle);
+  return {
+    ...candidateDetailBase(bundle),
+    sourceCandidateRunId: bundle.sourceCandidateRunId,
+    presentationAdapter: input.adapter,
+    judgments: [],
+    disagreements: [],
+    narrative: bundle.namedLensPresentation.synthesis.text,
+    namedLensPresentation: currentNamedLensDetail(bundle),
+    auditAppendix: {
+      judgments: bundle.judgments.map(toCurrentAuditFrameworkJudgment),
+      disagreements: structuredClone(bundle.disagreements),
+      catalogConsiderations: structuredClone(
+        bundle.namedLensCatalogConsiderations,
+      ),
+      providerAttemptRefs: structuredClone(bundle.namedLensAttemptRefs),
+    },
+  };
+}
+
+export type VersionedCandidateUnderwritingDetail = ReturnType<
+  typeof toVersionedCandidateUnderwritingDetail
+>;
+
+function requireCurrentCandidateBundle(
+  bundle: CandidateArtifactBundle,
+): CurrentCandidateArtifactBundle {
+  if (
+    bundle.decisionCriticalEvidenceProjection === undefined
+    || bundle.namedLensCatalogConsiderations === undefined
+    || bundle.namedLensAttemptRefs === undefined
+    || bundle.namedLensDispositions === undefined
+    || bundle.namedLensPassages === undefined
+    || bundle.underwritingPresentationReportId === undefined
+    || bundle.namedLensPresentation === undefined
+    || bundle.terminalStatus === undefined
+    || bundle.terminalReasonCodes === undefined
+  ) {
+    throw new UnderwritingPresentationIntegrityError(
+      "incomplete_current_identity",
+    );
+  }
+  return bundle as CurrentCandidateArtifactBundle;
+}
+
+function currentNamedLensDetail(bundle: CurrentCandidateArtifactBundle) {
+  const passagesByFingerprint = indexCurrentNamedLensPassages(bundle);
+  const selected = bundle.namedLensDispositions
+    .filter(({ disposition }) => disposition === "selected_main")
+    .sort((left, right) => left.selectedPosition! - right.selectedPosition!);
+  const appendix = bundle.namedLensDispositions
+    .filter(({ disposition }) => disposition === "appendix_only");
+  const projectPassage = (
+    disposition: CurrentCandidateArtifactBundle["namedLensDispositions"][number],
+  ) => {
+    const passage = exactPassageForDisposition({
+      disposition,
+      passagesByFingerprint,
+    });
+    const publicIdentity = publicNamedLensIdentity({ bundle, passage });
+    return {
+      selectedPosition: disposition.selectedPosition,
+      disposition: structuredClone(disposition),
+      displayIdentity: publicIdentity.displayIdentity,
+      passage: structuredClone(passage),
+      segmentCitations: bundle.namedLensPresentation.segmentCitations
+        .filter(({ judgmentId }) => judgmentId === passage.judgmentId)
+        .map((citation) => structuredClone(citation)),
+      publicPremiseSources: publicIdentity.publicPremiseSources,
+    };
+  };
+
+  return {
+    reportId: bundle.underwritingPresentationReportId,
+    schemaVersion: bundle.namedLensPresentation.schemaVersion,
+    rendererVersion: bundle.namedLensPresentation.rendererVersion,
+    fingerprint: bundle.namedLensPresentation.fingerprint,
+    terminalStatus: bundle.terminalStatus,
+    terminalReasonCodes: [...bundle.terminalReasonCodes],
+    versionIdentity: {
+      decisionTaxonomyVersion:
+        bundle.versionSnapshot.decisionTaxonomyVersion,
+      decisionTaxonomyDigest:
+        bundle.versionSnapshot.decisionTaxonomyDigest,
+      selectionPolicyVersion:
+        bundle.versionSnapshot.namedLensSelectionPolicyVersion,
+      passageSchemaVersion:
+        bundle.versionSnapshot.namedLensPassageSchemaVersion,
+      generatorVersion: bundle.versionSnapshot.namedLensGeneratorVersion,
+      criticalEvidenceProjectionFingerprint:
+        bundle.versionSnapshot.criticalEvidenceProjectionFingerprint,
+      finalDispositionsFingerprint:
+        bundle.versionSnapshot.finalDispositionsFingerprint,
+      presentationFingerprint:
+        bundle.versionSnapshot.presentationFingerprint,
+      refreshNonce: bundle.versionSnapshot.refreshNonce,
+    },
+    decisionCriticalEvidenceProjection: structuredClone(
+      bundle.decisionCriticalEvidenceProjection,
+    ),
+    dispositions: structuredClone(bundle.namedLensDispositions),
+    selectedPassages: selected.map(projectPassage),
+    appendixPassages: appendix.map(projectPassage),
+    withheldDispositions: bundle.namedLensDispositions
+      .filter(({ disposition }) =>
+        disposition !== "selected_main" && disposition !== "appendix_only"
+      )
+      .map((disposition) => structuredClone(disposition)),
+    synthesis: structuredClone(bundle.namedLensPresentation.synthesis),
+    segmentCitations: structuredClone(
+      bundle.namedLensPresentation.segmentCitations,
+    ),
+    firstScreenProjectionRefs: structuredClone(
+      bundle.namedLensPresentation.firstScreenProjectionRefs,
+    ),
+  };
+}
+
+function indexCurrentNamedLensPassages(
+  bundle: CurrentCandidateArtifactBundle,
+) {
+  assertCurrentNamedLensPhysicalGraph({
+    dispositions: bundle.namedLensDispositions,
+    passages: bundle.namedLensPassages,
+  });
+  const passagesByFingerprint = new Map<
+    string,
+    CurrentCandidateArtifactBundle["namedLensPassages"][number]
+  >();
+  for (const passage of bundle.namedLensPassages) {
+    passagesByFingerprint.set(passage.fingerprint, passage);
+  }
+  return passagesByFingerprint;
+}
+
+function exactPassageForDisposition(input: {
+  disposition:
+    CurrentCandidateArtifactBundle["namedLensDispositions"][number];
+  passagesByFingerprint: Map<
+    string,
+    CurrentCandidateArtifactBundle["namedLensPassages"][number]
+  >;
+}) {
+  const { disposition } = input;
+  const passage = disposition.passageFingerprint === null
+    ? null
+    : input.passagesByFingerprint.get(disposition.passageFingerprint);
+  const sameSelectionBasis = passage !== null
+    && passage !== undefined
+    && disposition.selectionBasisEvidenceIds.length
+      === passage.selectionBasisEvidenceIds.length
+    && disposition.selectionBasisEvidenceIds.every(
+      (id, index) => id === passage.selectionBasisEvidenceIds[index],
+    );
+  if (
+    !passage
+    || disposition.judgmentId === null
+    || passage.judgmentId !== disposition.judgmentId
+    || passage.frameworkCardId !== disposition.frameworkCardId
+    || passage.frameworkVersion !== disposition.frameworkVersion
+    || passage.decisionQuestionCode !== disposition.decisionQuestionCode
+    || passage.conditionalConclusion.stance !== disposition.stance
+    || passage.conditionalConclusion.advisoryPosture
+      !== disposition.advisoryPosture
+    || !sameSelectionBasis
+  ) {
+    throw new UnderwritingPresentationIntegrityError(
+      "current_artifact_ownership_mismatch",
+    );
+  }
+  return passage;
+}
+
+function publicNamedLensIdentity(input: {
+  bundle: CurrentCandidateArtifactBundle;
+  passage: CurrentCandidateArtifactBundle["namedLensPassages"][number];
+}) {
+  const matchingJudgments = input.bundle.judgments.filter(({ id }) =>
+    id === input.passage.judgmentId
+  );
+  const judgment = matchingJudgments[0];
+  const matchingComponents = judgment?.frameworkMetadata?.components.filter(
+    ({ frameworkId }) =>
+      frameworkId === input.passage.premise.componentFrameworkId,
+  ) ?? [];
+  const component = matchingComponents[0];
+  if (
+    matchingJudgments.length !== 1
+    || matchingComponents.length !== 1
+    || !judgment?.frameworkMetadata
+    || !component
+  ) {
+    throw new UnderwritingPresentationIntegrityError(
+      "current_artifact_ownership_mismatch",
+    );
+  }
+  const sources = input.passage.premise.publicSourceIds.map((sourceId) => {
+    const matches = judgment.frameworkMetadata!.sources.filter((source) =>
+      source.sourceId === sourceId
+    );
+    const source = matches[0];
+    const url = source ? safeExternalHttpUrl(source.url) : null;
+    if (matches.length !== 1 || !source || !url) {
+      throw new UnderwritingPresentationIntegrityError(
+        "current_artifact_ownership_mismatch",
+      );
+    }
+    return {
+      sourceId: source.sourceId,
+      title: source.title,
+      publisher: source.publisher,
+      url,
+    };
+  });
+  return {
+    displayIdentity: {
+      judgmentId: judgment.id,
+      componentFrameworkId: component.frameworkId,
+      displayName: component.name,
+      attributionDisplay: component.attribution.display,
+    },
+    publicPremiseSources: sources,
   };
 }
 
@@ -546,6 +795,76 @@ function toPublicFrameworkJudgment(
   };
 }
 
+function toCurrentAuditFrameworkJudgment(
+  judgment: CandidateArtifactBundle["judgments"][number],
+) {
+  return {
+    id: judgment.id,
+    frameworkCardId: judgment.frameworkCardId,
+    frameworkVersion: judgment.frameworkVersion,
+    applicability: judgment.applicability,
+    conclusion: judgment.conclusion,
+    strongestSupport: judgment.strongestSupport,
+    strongestCounterargument: judgment.strongestCounterargument,
+    supportEvidenceItemIds: [...judgment.supportEvidenceItemIds],
+    counterEvidenceItemIds: [...judgment.counterEvidenceItemIds],
+    unknowns: [...judgment.unknowns],
+    limitations: publicFrameworkLimitations(judgment),
+    confidence: structuredClone(judgment.confidence),
+    ...(judgment.frameworkMetadata
+      ? {
+        frameworkMetadata: {
+          packId: judgment.frameworkMetadata.packId,
+          packName: judgment.frameworkMetadata.packName,
+          packVersion: judgment.frameworkMetadata.packVersion,
+          sourceCatalogId: judgment.frameworkMetadata.sourceCatalogId,
+          researchCutoff: judgment.frameworkMetadata.researchCutoff,
+          components: judgment.frameworkMetadata.components.map(
+            (component) => ({
+              frameworkId: component.frameworkId,
+              version: component.version,
+              name: component.name,
+              attribution: {
+                display: component.attribution.display,
+              },
+              sourceRefs: component.sourceRefs.map((reference) => ({
+                sourceId: reference.sourceId,
+                claimIds: [...reference.claimIds],
+                locator: structuredClone(reference.locator),
+                attributionScope: reference.attributionScope,
+                supportType: reference.supportType,
+              })),
+            }),
+          ),
+          sources: judgment.frameworkMetadata.sources.flatMap((source) => {
+            const url = safeExternalHttpUrl(source.url);
+            return url
+              ? [{
+                sourceId: source.sourceId,
+                title: source.title,
+                authorOrSpeaker: [...source.authorOrSpeaker],
+                publisher: source.publisher,
+                sourceClass: source.sourceClass,
+                sourceType: source.sourceType,
+                url,
+                edition: source.edition,
+                publishedAt: source.publishedAt,
+                eventAt: source.eventAt,
+                accessedAt: source.accessedAt,
+                language: source.language,
+                attributionScope: source.attributionScope,
+                immutableRevision: structuredClone(source.immutableRevision),
+              }]
+              : [];
+          }),
+          formalDecisionWeight:
+            judgment.frameworkMetadata.formalDecisionWeight,
+        },
+      }
+      : {}),
+  };
+}
+
 function publicNarrativeForBundle(bundle: CandidateArtifactBundle): string {
   const formalNarrative = buildUnderwritingNarrative({
     facts: bundle.evidencePack.facts,
@@ -620,6 +939,7 @@ export async function searchPersistedUnderwriting(input: {
   workspaceId: string;
   query: string;
   artifacts: UnderwritingArtifactsRepository;
+  report: UnderwritingPresentationIdentityInput["report"];
   candidateRunIds?: readonly string[];
 }): Promise<UnderwritingSearchResult[]> {
   const tokens = evidenceQueryTokens(input.query);
@@ -634,7 +954,10 @@ export async function searchPersistedUnderwriting(input: {
     .filter((bundle) =>
       allowedCandidates === null || allowedCandidates.has(bundle.candidateRunId)
     )
-    .flatMap(searchItemsForBundle)
+    .flatMap((bundle) => searchItemsForBundle({
+      bundle,
+      report: input.report,
+    }))
     .filter((item) => {
       const searchable = new Set(evidenceQueryTokens(item.text));
       return tokens.every((token) => searchable.has(token));
@@ -647,7 +970,31 @@ export async function searchPersistedUnderwriting(input: {
     .slice(0, 50);
 }
 
-function searchItemsForBundle(
+function searchItemsForBundle(input: {
+  bundle: CandidateArtifactBundle;
+  report: UnderwritingPresentationIdentityInput["report"];
+}): UnderwritingSearchResult[] {
+  const { bundle } = input;
+  const adapter = resolveUnderwritingPresentationAdapter({
+    report: input.report,
+    requestedDealId: bundle.dealId,
+    candidate: {
+      id: bundle.candidateRunId,
+      workspaceId: bundle.workspaceId,
+      dealId: bundle.dealId,
+      artifactSourceCandidateRunId:
+        bundle.sourceCandidateRunId === bundle.candidateRunId
+          ? null
+          : bundle.sourceCandidateRunId,
+    },
+    bundle,
+  });
+  return adapter.kind === "current"
+    ? currentSearchItemsForBundle(requireCurrentCandidateBundle(bundle))
+    : legacySearchItemsForBundle(bundle);
+}
+
+function legacySearchItemsForBundle(
   bundle: CandidateArtifactBundle,
 ): UnderwritingSearchResult[] {
   const facts = new Map(bundle.evidencePack.facts.map((fact) => [fact.id, fact]));
@@ -745,6 +1092,159 @@ function searchItemsForBundle(
       claimEdges: structuredClone(bundle.decision.claimEdges),
     },
   ];
+}
+
+function currentSearchItemsForBundle(
+  bundle: CurrentCandidateArtifactBundle,
+): UnderwritingSearchResult[] {
+  const facts = new Map(bundle.evidencePack.facts.map((fact) => [fact.id, fact]));
+  const assumptions = new Map(
+    bundle.evidencePack.assumptions.map((assumption) => [
+      assumption.id,
+      assumption,
+    ]),
+  );
+  const common = {
+    candidateRunId: bundle.candidateRunId,
+    dealId: bundle.dealId,
+  };
+  const projectionItems = bundle.decisionCriticalEvidenceProjection.evidenceRefs
+    .map((reference): UnderwritingSearchResult => {
+      if (reference.classification === "fact") {
+        const fact = facts.get(reference.evidencePackItemId);
+        if (!fact) {
+          throw new UnderwritingPresentationIntegrityError(
+            "current_artifact_ownership_mismatch",
+          );
+        }
+        return {
+          ...common,
+          itemId: fact.id,
+          analysisType: "fact",
+          text: `${fact.field}: ${fact.value}${fact.unit ? ` ${fact.unit}` : ""}`,
+          inputRefIds: [],
+          sourceRevisionIds: [fact.sourceRevisionId],
+          claimEdges: [],
+        };
+      }
+      const assumption = assumptions.get(reference.evidencePackItemId);
+      if (!assumption) {
+        throw new UnderwritingPresentationIntegrityError(
+          "current_artifact_ownership_mismatch",
+        );
+      }
+      const lineage = assumptionSearchLineage({
+        assumption,
+        facts,
+        bundle,
+      });
+      return {
+        ...common,
+        itemId: assumption.id,
+        analysisType: "assumption",
+        text:
+          `${assumption.field}: ${assumption.value}. ${assumption.rationale}`,
+        inputRefIds: [...assumption.inputRefIds],
+        sourceRevisionIds: lineage.sourceRevisionIds,
+        claimEdges: lineage.claimEdges,
+      };
+    });
+  const passagesByFingerprint = indexCurrentNamedLensPassages(bundle);
+  const passageItems = bundle.namedLensDispositions
+    .filter(({ disposition }) =>
+      disposition === "selected_main" || disposition === "appendix_only"
+    )
+    .map((disposition): UnderwritingSearchResult => {
+      const passage = exactPassageForDisposition({
+        disposition,
+        passagesByFingerprint,
+      });
+      const citations = bundle.namedLensPresentation.segmentCitations.filter(
+        ({ judgmentId }) => judgmentId === passage.judgmentId,
+      );
+      const evidenceItemIds = new Set(
+        citations.flatMap(({ evidenceItemIds }) => evidenceItemIds),
+      );
+      return {
+        ...common,
+        itemId: passage.judgmentId,
+        analysisType: "framework_judgment",
+        text: [
+          passage.premise.text,
+          passage.caseApplication.text,
+          passage.countercase.text,
+          passage.unknownBoundary.text,
+          passage.conditionalConclusion.text,
+        ].join(" "),
+        inputRefIds: [],
+        sourceRevisionIds: sourceRevisionIdsForEvidenceItems({
+          evidenceItemIds,
+          facts,
+          assumptions,
+          bundle,
+        }),
+        claimEdges: bundle.claimEdges
+          .filter((edge) =>
+            edge.claimItemId === passage.judgmentId
+            && evidenceItemIds.has(edge.dependencyItemId)
+          )
+          .map((edge) => structuredClone(edge)),
+      };
+    });
+  const synthesis = bundle.namedLensPresentation.synthesis;
+  const synthesisEvidenceIds = new Set(synthesis.evidenceItemIds);
+  const synthesisDependencyIds = new Set([
+    ...synthesis.evidenceItemIds,
+    ...synthesis.judgmentIds,
+  ]);
+  const synthesisItem: UnderwritingSearchResult = {
+    ...common,
+    itemId: bundle.decision.id,
+    analysisType: "final_synthesis",
+    text: synthesis.text,
+    inputRefIds: [],
+    sourceRevisionIds: sourceRevisionIdsForEvidenceItems({
+      evidenceItemIds: synthesisEvidenceIds,
+      facts,
+      assumptions,
+      bundle,
+    }),
+    claimEdges: bundle.decision.claimEdges
+      .filter(({ dependencyItemId }) =>
+        synthesisDependencyIds.has(dependencyItemId)
+      )
+      .map((edge) => structuredClone(edge)),
+  };
+  return [...projectionItems, ...passageItems, synthesisItem];
+}
+
+function sourceRevisionIdsForEvidenceItems(input: {
+  evidenceItemIds: ReadonlySet<string>;
+  facts: Map<string, Fact>;
+  assumptions: Map<
+    string,
+    CandidateArtifactBundle["evidencePack"]["assumptions"][number]
+  >;
+  bundle: CandidateArtifactBundle;
+}): string[] {
+  const revisionIds = new Set<string>();
+  for (const evidenceItemId of input.evidenceItemIds) {
+    const fact = input.facts.get(evidenceItemId);
+    if (fact) {
+      revisionIds.add(fact.sourceRevisionId);
+      continue;
+    }
+    const assumption = input.assumptions.get(evidenceItemId);
+    if (!assumption) continue;
+    for (const revisionId of assumptionSearchLineage({
+      assumption,
+      facts: input.facts,
+      bundle: input.bundle,
+    }).sourceRevisionIds) {
+      revisionIds.add(revisionId);
+    }
+  }
+  return [...revisionIds].sort();
 }
 
 function assumptionSearchLineage(input: {

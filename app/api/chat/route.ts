@@ -11,7 +11,10 @@ import {
 import { getDataClient } from "../../../db/client";
 import { createRunsRepository } from "../../../db/repositories/runs";
 import { getUnderwritingRunsRepository } from "../../../db/repositories/underwriting-runs";
-import { getUnderwritingArtifactsRepository } from "../../../db/repositories/underwriting-artifacts";
+import {
+  getUnderwritingArtifactsRepository,
+  type CandidateArtifactBundle,
+} from "../../../db/repositories/underwriting-artifacts";
 import { getXTraceLineageRepository } from "../../../db/repositories/xtrace-lineage";
 import {
   createGroundedChatService,
@@ -23,12 +26,14 @@ import { createClaudeClient } from "../../../lib/claude/client";
 import { ChatRequestSchema } from "../../../lib/contracts/http";
 import {
   evidenceSourceText,
+  type CompanyAnalysis,
   type EvidenceSourceRef,
 } from "../../../lib/contracts/domain";
 import type { MarketEventV2 } from "../../../lib/contracts/source-evidence";
 import {
   SAMPLE_DECISION_RECORD_LABEL,
   SAMPLE_DECISION_RECORD_PREFIX,
+  WritableSourceRefV2Schema,
 } from "../../../lib/contracts/source-evidence";
 import {
   validateEvidenceSourceCatalog,
@@ -56,21 +61,44 @@ import {
   resolveReportEvidenceScope,
   type ResolvedReportEvidenceScope,
 } from "../../../lib/reports/evidence-scope";
-import { loadExactFinalizedChatScope } from "../../../lib/chat/finalized-scope";
-import { classifyFinalizedChatTopic } from "../../../lib/chat/finalized-topic";
-import { buildFinalizedChatProjection } from "../../../lib/chat/finalized-projection";
-import { renderFinalizedChatProjection } from "../../../lib/chat/finalized-renderer";
+import {
+  loadExactFinalizedChatScope,
+  type ReadyFinalizedChatScope,
+} from "../../../lib/chat/finalized-scope";
+import {
+  classifyFinalizedChatTopic,
+  classifyFinalizedChatTopicV2,
+} from "../../../lib/chat/finalized-topic";
+import {
+  buildFinalizedChatProjection,
+  buildFinalizedChatProjectionV2,
+  resolveFinalizedChatNamedLensTargetFromQuestion,
+  type FinalizedChatV2EvidenceItem,
+} from "../../../lib/chat/finalized-projection";
+import {
+  renderFinalizedChatProjection,
+  renderFinalizedChatProjectionV2,
+} from "../../../lib/chat/finalized-renderer";
 import {
   FinalizedChatEvidenceFrameSchema,
   FinalizedChatInsufficientResponseSchema,
+  FinalizedChatInsufficientResponseV2Schema,
+  FinalizedChatSourceRefSchema,
   type FinalizedChatArtifactRef,
+  type FinalizedChatArtifactRefV2,
   type FinalizedChatEvidenceFrame,
   type FinalizedChatIdentity,
   type FinalizedChatInsufficientReasonCode,
+  type FinalizedChatInsufficientReasonCodeV2,
+  type FinalizedChatNamedLensTarget,
+  type FinalizedChatSourceRef,
   type FinalizedChatTopic,
+  type FinalizedChatTopicV2,
 } from "../../../lib/contracts/finalized-chat";
 import type { AuthorizedRequestContext } from "../../../lib/auth/request-context";
 import type { CandidateRun } from "../../../lib/contracts/underwriting";
+import { UnderwritingPresentationIntegrityError } from
+  "../../../lib/underwriting/presentation-version";
 
 export const dynamic = "force-dynamic";
 
@@ -496,6 +524,285 @@ function finalizedInsufficient(input: {
   });
 }
 
+function finalizedInsufficientV2(input: {
+  reasonCode: FinalizedChatInsufficientReasonCodeV2;
+  answer: string;
+  topic: FinalizedChatTopicV2 | null;
+  requestedLensDisplayIdentity: string | null;
+  identity: FinalizedChatIdentity;
+  evidenceFrame: FinalizedChatEvidenceFrame;
+  missingArtifactRefs?: FinalizedChatArtifactRefV2[];
+}) {
+  return FinalizedChatInsufficientResponseV2Schema.parse({
+    schemaVersion: "finalized-chat-response-v2",
+    status: "insufficient",
+    topic: input.topic,
+    requestedLensDisplayIdentity: input.requestedLensDisplayIdentity,
+    answer: input.answer,
+    citations: [],
+    identity: input.identity,
+    evidenceFrame: input.evidenceFrame,
+    insufficientEvidence: true,
+    reasonCode: input.reasonCode,
+    missingArtifactRefs: input.missingArtifactRefs ?? [],
+  });
+}
+
+function currentNamedLensTargets(
+  bundle: CandidateArtifactBundle,
+): FinalizedChatNamedLensTarget[] {
+  const passages = bundle.namedLensPassages;
+  if (!passages) {
+    throw new UnderwritingPresentationIntegrityError(
+      "incomplete_current_identity",
+    );
+  }
+  return passages.map((passage) => {
+    const dispositions = bundle.namedLensDispositions?.filter(
+      (disposition) =>
+        disposition.judgmentId === passage.judgmentId
+        && disposition.frameworkCardId === passage.frameworkCardId,
+    ) ?? [];
+    const judgments = bundle.judgments.filter((judgment) =>
+      judgment.id === passage.judgmentId
+      && judgment.frameworkCardId === passage.frameworkCardId
+    );
+    if (
+      dispositions.length !== 1
+      || judgments.length !== 1
+      || !judgments[0]!.frameworkMetadata
+    ) {
+      throw new UnderwritingPresentationIntegrityError(
+        "incomplete_current_identity",
+      );
+    }
+    const components = judgments[0]!.frameworkMetadata!.components.filter(
+      ({ frameworkId }) =>
+        frameworkId === passage.premise.componentFrameworkId,
+    );
+    if (components.length !== 1) {
+      throw new UnderwritingPresentationIntegrityError(
+        "incomplete_current_identity",
+      );
+    }
+    const component = components[0]!;
+    return {
+      judgmentId: passage.judgmentId,
+      frameworkCardId: passage.frameworkCardId,
+      componentFrameworkId: component.frameworkId,
+      publicDisplayIdentity: component.attribution.display,
+      displayName: component.name,
+      attributionDisplay: component.attribution.display,
+    };
+  });
+}
+
+function currentFinalizedEvidenceItems(input: {
+  analysis: CompanyAnalysis;
+  bundle: CandidateArtifactBundle;
+}): FinalizedChatV2EvidenceItem[] {
+  const sources: EvidenceSourceRef[] = [
+    ...input.analysis.sources,
+    ...input.analysis.companyBrief.sourceLineage,
+  ];
+  const canonicalSources = new Map<string, FinalizedChatSourceRef>();
+  for (const source of sources) {
+    const writable = WritableSourceRefV2Schema.safeParse(source);
+    if (!writable.success) continue;
+    const canonical = writable.data;
+    const parsed = FinalizedChatSourceRefSchema.safeParse({
+      sourceId: canonical.id,
+      documentId: canonical.documentId,
+      sourceRevisionId: canonical.sourceRevisionId,
+      contentFingerprint: canonical.contentFingerprint,
+      canonicalSource: canonical,
+      text: canonical.text,
+    });
+    if (!parsed.success) continue;
+    const key = [
+      parsed.data.sourceId,
+      parsed.data.sourceRevisionId,
+      parsed.data.contentFingerprint,
+    ].join("\u0000");
+    canonicalSources.set(key, parsed.data);
+  }
+  const byRevision = new Map<string, FinalizedChatSourceRef[]>();
+  for (const source of canonicalSources.values()) {
+    byRevision.set(source.sourceRevisionId, [
+      ...(byRevision.get(source.sourceRevisionId) ?? []),
+      source,
+    ]);
+  }
+  const facts = input.bundle.evidencePack.facts.flatMap((fact) => {
+    const matches = byRevision.get(fact.sourceRevisionId) ?? [];
+    return matches.length === 1
+      ? [{
+        evidencePackItemId: fact.id,
+        classification: "fact" as const,
+        sourceRef: matches[0]!,
+      }]
+      : [];
+  });
+  const assumptions = input.bundle.evidencePack.assumptions.map(
+    (assumption) => ({
+      evidencePackItemId: assumption.id,
+      classification: "assumption" as const,
+      sourceRef: null,
+    }),
+  );
+  return [...facts, ...assumptions];
+}
+
+function answerCurrentFinalizedChatV2(input: {
+  context: AuthorizedRequestContext;
+  request: ReturnType<typeof ChatRequestSchema.parse>;
+  loaded: ReadyFinalizedChatScope;
+  identity: FinalizedChatIdentity;
+  evidenceFrame: FinalizedChatEvidenceFrame;
+}) {
+  const { loaded } = input;
+  const bundle = loaded.bundle;
+  const adapter = loaded.presentationAdapter;
+  if (
+    adapter?.kind !== "current"
+    || bundle === null
+    || loaded.candidate === null
+    || bundle.decisionCriticalEvidenceProjection === undefined
+    || bundle.namedLensDispositions === undefined
+    || bundle.namedLensPassages === undefined
+    || bundle.namedLensPresentation === undefined
+    || bundle.underwritingPresentationReportId === undefined
+    || bundle.versionSnapshot.presentationFingerprint === undefined
+    || bundle.versionSnapshot.criticalEvidenceProjectionFingerprint === undefined
+    || bundle.versionSnapshot.finalDispositionsFingerprint === undefined
+  ) {
+    throw new UnderwritingPresentationIntegrityError(
+      "incomplete_current_identity",
+    );
+  }
+
+  const classification = classifyFinalizedChatTopicV2(input.request.question);
+  if (classification.status === "insufficient") {
+    return jsonOk({
+      ...finalizedInsufficientV2({
+        reasonCode: classification.reasonCode,
+        answer: classification.reasonCode === "ambiguous_topic"
+          ? "Insufficient finalized evidence: ask one Named Lens question at a time."
+          : "Insufficient finalized evidence: this current report supports questions about why a saved Named Lens appears, its exact evidence, what would change its view, or why its formal-decision weight is zero.",
+        topic: null,
+        requestedLensDisplayIdentity: null,
+        identity: input.identity,
+        evidenceFrame: input.evidenceFrame,
+      }),
+      memoryStatus: "disabled" as const,
+      usedXTrace: false,
+      scope: finalizedScopePayload(
+        loaded.scope,
+        loaded.dealId,
+        loaded.analysis.companyName,
+      ),
+    });
+  }
+
+  const lensDisplayIdentities = currentNamedLensTargets(bundle);
+  const targetResolution = resolveFinalizedChatNamedLensTargetFromQuestion({
+    question: input.request.question,
+    lensDisplayIdentities,
+  });
+  if (targetResolution.status === "insufficient") {
+    return jsonOk({
+      ...finalizedInsufficientV2({
+        reasonCode: targetResolution.reasonCode,
+        answer: targetResolution.reasonCode === "lens_target_ambiguous"
+          ? "Insufficient finalized evidence: name exactly one saved Named Lens using its full displayed identity."
+          : "Insufficient finalized evidence: include the full displayed identity of one Named Lens saved in this report.",
+        topic: classification.topic,
+        requestedLensDisplayIdentity: null,
+        identity: input.identity,
+        evidenceFrame: input.evidenceFrame,
+      }),
+      memoryStatus: "disabled" as const,
+      usedXTrace: false,
+      scope: finalizedScopePayload(
+        loaded.scope,
+        loaded.dealId,
+        loaded.analysis.companyName,
+      ),
+    });
+  }
+
+  const built = buildFinalizedChatProjectionV2({
+    topic: classification.topic,
+    requestedLensDisplayIdentity:
+      targetResolution.target.publicDisplayIdentity,
+    identity: input.identity,
+    evidenceFrame: input.evidenceFrame,
+    presentationIdentity: {
+      adapterSchemaVersion: adapter.schemaVersion,
+      sourceCandidateRunId: bundle.sourceCandidateRunId,
+      presentationReportId: bundle.underwritingPresentationReportId,
+      presentationSchemaVersion: bundle.namedLensPresentation.schemaVersion,
+      presentationFingerprint:
+        bundle.versionSnapshot.presentationFingerprint,
+      criticalEvidenceProjectionFingerprint:
+        bundle.versionSnapshot.criticalEvidenceProjectionFingerprint,
+      finalDispositionsFingerprint:
+        bundle.versionSnapshot.finalDispositionsFingerprint,
+    },
+    decisionCriticalEvidenceProjection:
+      bundle.decisionCriticalEvidenceProjection,
+    dispositions: bundle.namedLensDispositions,
+    passages: bundle.namedLensPassages,
+    presentation: bundle.namedLensPresentation,
+    lensDisplayIdentities,
+    evidenceItems: currentFinalizedEvidenceItems({
+      analysis: loaded.analysis,
+      bundle,
+    }),
+  });
+  if (built.status === "insufficient") {
+    return jsonOk({
+      ...finalizedInsufficientV2({
+        reasonCode: built.reasonCode,
+        answer: `Insufficient finalized evidence: ${built.reasonCode}.`,
+        topic: built.topic,
+        requestedLensDisplayIdentity: built.requestedLensDisplayIdentity,
+        identity: built.identity,
+        evidenceFrame: built.evidenceFrame,
+        missingArtifactRefs: built.missingArtifactRefs,
+      }),
+      memoryStatus: "disabled" as const,
+      usedXTrace: false,
+      scope: finalizedScopePayload(
+        loaded.scope,
+        loaded.dealId,
+        loaded.analysis.companyName,
+      ),
+    });
+  }
+  return jsonOk({
+    ...renderFinalizedChatProjectionV2(built.projection),
+    memoryStatus: "disabled" as const,
+    usedXTrace: false,
+    scope: finalizedScopePayload(
+      loaded.scope,
+      loaded.dealId,
+      loaded.analysis.companyName,
+    ),
+  });
+}
+
+function presentationConflict(error: unknown): Response | null {
+  return error instanceof UnderwritingPresentationIntegrityError
+    ? jsonError(
+      "CONFLICT",
+      "Underwriting presentation identity is unavailable or inconsistent.",
+      409,
+      false,
+    )
+    : null;
+}
+
 function scopeFailureReason(
   reason: string,
 ): FinalizedChatInsufficientReasonCode {
@@ -507,7 +814,10 @@ function scopeFailureReason(
 export function resolveFinalizedRouteCandidateBinding(
   candidate: Pick<
     CandidateRun,
-    "id" | "rerunOfId" | "candidateAnalysisFingerprint"
+    | "id"
+    | "rerunOfId"
+    | "artifactSourceCandidateRunId"
+    | "candidateAnalysisFingerprint"
   > | null,
 ) {
   return candidate === null
@@ -515,6 +825,8 @@ export function resolveFinalizedRouteCandidateBinding(
     : {
         candidateRunId: candidate.id,
         rerunOfId: candidate.rerunOfId,
+        artifactSourceCandidateRunId:
+          candidate.artifactSourceCandidateRunId ?? null,
         candidateAnalysisFingerprint: candidate.candidateAnalysisFingerprint,
       };
 }
@@ -562,15 +874,22 @@ async function answerDurableFinalizedChat(input: {
   }
 
   const evidenceFrame = finalizedEvidenceFrame(resolvedScope);
-  const loaded = await loadExactFinalizedChatScope({
-    workspaceId: input.context.workspaceId,
-    scope: resolvedScope,
-    question: input.request.question,
-    dealId: input.request.dealId,
-    underwritingRuns,
-    artifacts: input.dependencies.underwritingArtifacts
-      ?? getUnderwritingArtifactsRepository(),
-  });
+  let loaded;
+  try {
+    loaded = await loadExactFinalizedChatScope({
+      workspaceId: input.context.workspaceId,
+      scope: resolvedScope,
+      question: input.request.question,
+      dealId: input.request.dealId,
+      underwritingRuns,
+      artifacts: input.dependencies.underwritingArtifacts
+        ?? getUnderwritingArtifactsRepository(),
+    });
+  } catch (error) {
+    const conflict = presentationConflict(error);
+    if (conflict) return conflict;
+    throw error;
+  }
   if (loaded.status === "insufficient_evidence") {
     return jsonOk({
       ...finalizedInsufficient({
@@ -595,6 +914,28 @@ async function answerDurableFinalizedChat(input: {
         dealId: loaded.dealId,
         candidateRunId,
       });
+  if (loaded.presentationAdapter?.kind === "current") {
+    if (identity === null) {
+      return jsonError(
+        "CONFLICT",
+        "Underwriting presentation identity is unavailable or inconsistent.",
+        409,
+      );
+    }
+    try {
+      return answerCurrentFinalizedChatV2({
+        context: input.context,
+        request: input.request,
+        loaded,
+        identity,
+        evidenceFrame,
+      });
+    } catch (error) {
+      const conflict = presentationConflict(error);
+      if (conflict) return conflict;
+      throw error;
+    }
+  }
   const classification = classifyFinalizedChatTopic(input.request.question);
   if (classification.status === "insufficient") {
     return jsonOk({

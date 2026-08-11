@@ -30,13 +30,19 @@ import { createFrameworkLensService } from "../../lib/underwriting/frameworks/se
 import { createSourceGroundedCandidateExecutor } from "../../lib/underwriting/orchestrator";
 import { createReferenceCatalogSnapshot } from "../../lib/underwriting/fingerprints";
 import { actionsForDealStatusAndDirection } from "../../lib/reports/action-policy";
-import type { CompanyAnalysis } from "../../lib/contracts/domain";
+import {
+  BeliefChangeAssessmentV1Schema,
+  CompanyAnalysisSchema,
+} from "../../lib/contracts/domain";
+import { buildOpportunityScoreBreakdown } from "../../lib/matching/scoring";
+import { evaluateBeliefRevisionHardGates } from "../../lib/matching/hard-gates";
 import type {
   ActionDraftV2,
   CandidateRun,
   FundPolicySnapshot,
 } from "../../lib/contracts/underwriting";
 import type { CandidateStageRuntime } from "../../lib/underwriting/candidate-stage-runtime";
+import { renderRecommendedNextMove } from "../../lib/reports/action-policy";
 
 const workspaceRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -492,6 +498,11 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
     resolveBenchmark: async () => null,
   });
   let providerCalls = 0;
+  const frameworkCatalog = {
+    catalogVersion: "deterministic-irregular-framework-catalog-v1",
+    catalogFingerprint: `sha256:${"c".repeat(64)}`,
+    corpusDigest: `sha256:${"d".repeat(64)}`,
+  } as const;
   const frameworkLenses = createFrameworkLensService({
     client: {
       async complete() {
@@ -512,6 +523,7 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
     grounding,
     router,
     frameworkLenses,
+    frameworkCatalog,
     execution: {
       providerModel: "synthetic-irregular-test",
       promptVersion: "framework-lens-v1",
@@ -536,20 +548,145 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
     "invested",
     "negative",
   );
-  const analysis = {
+  const priorInteraction = irregularBundle.interactions[0];
+  assert.ok(priorInteraction?.source);
+  assert.ok(priorInteraction.priorActions);
+  assert.ok(priorInteraction.source.eventAt);
+  const priorSource = {
+    ...priorInteraction.source,
+    eventAt: priorInteraction.occurredAt,
+  };
+  const pinnedSnapshot = await marketEvidenceSnapshots.get(
+    deal.workspaceId,
+    "belief_reversal_2026_08_01",
+  );
+  const marketEvent = pinnedSnapshot?.events.find(
+    ({ id }) => id === "event_irregular_incidents_v1",
+  );
+  assert.ok(marketEvent && "schemaVersion" in marketEvent);
+  assert.ok(marketEvent.eventAt);
+  const triggerSource = marketEvent.sources.find(
+    ({ id }) => id === "claim_irregular_real_systems_v1",
+  );
+  const counterSource = marketEvent.sources.find(
+    ({ id }) => id === "claim_irregular_harness_v1",
+  );
+  assert.ok(triggerSource);
+  assert.ok(counterSource);
+  const counterStatement = counterSource.text.normalizedStatement;
+  assert.ok(counterStatement);
+  const scoreBreakdown = buildOpportunityScoreBreakdown({
+    eventRelevance: 1,
+    dealRelevance: 1,
+    priorContextStrength: 0.98,
+    evidenceQuality: 0.98,
+  });
+  const priorAuthority = {
+    id: priorInteraction.id,
+    occurredAt: priorSource.eventAt,
+    sourceIds: [priorSource.id],
+    revisitConditions: priorInteraction.revisitConditions,
+    priorActions: priorInteraction.priorActions,
+    provenance: priorInteraction.provenance,
+    label: priorInteraction.label,
+  } as const;
+  const triggerEvent = {
+    id: marketEvent.id,
+    eventAt: marketEvent.eventAt,
+    sourceIds: marketEvent.sources.map(({ id }) => id),
+  };
+  const gateSources = [...marketEvent.sources, priorSource];
+  const revisitMapping = {
+    priorInteractionId: priorInteraction.id,
+    revisitConditionIndex: 0,
+    revisitConditionText: priorInteraction.revisitConditions[0],
+    triggerEventId: marketEvent.id,
+    citedSourceIds: [triggerSource.id],
+  };
+  const counterevidence = {
+    statement: counterStatement,
+    citedSourceIds: [counterSource.id],
+  };
+  const gates = evaluateBeliefRevisionHardGates({
+    priorInteraction: priorAuthority,
+    triggerEvent,
+    revisitMapping,
+    counterevidence,
+    sources: gateSources,
+    dealStatus: "invested",
+    direction: "negative",
+    proposedActions: canonicalActions,
+  });
+  const beliefAssessment = BeliefChangeAssessmentV1Schema.parse({
+    schemaVersion: "belief-change-assessment-v1",
+    dealStatus: "invested",
+    direction: "negative",
+    scoreBreakdown,
+    gateContext: {
+      priorInteraction: priorAuthority,
+      triggerEvent,
+      sources: gateSources,
+    },
+    gates,
+    actions: canonicalActions,
+  });
+  const sources = [...new Map([
+    ...irregularBundle.facts.flatMap(({ sources }) => sources),
+    priorSource,
+  ].map((source) => [source.id, source])).values()];
+  const analysis = CompanyAnalysisSchema.parse({
+    id: "analysis_irregular_seed_v1",
+    reportId: "report_irregular_v1",
+    runId: "00000000-0000-4000-8000-000000000001",
     dealId: deal.id,
     companyName: deal.companyName,
     dealStatus: "invested",
-    beliefAssessment: {
-      dealStatus: "invested",
-      direction: "negative",
-      actions: canonicalActions,
+    outcome: "belief_revised",
+    confidence: scoreBreakdown.confidence,
+    score: scoreBreakdown.finalScore,
+    verifiedSourceCount: sources.length,
+    investmentMemory: {
+      previousMeetingSummary: priorInteraction.summary,
+      decisionReason: priorInteraction.decisionReason,
+      concerns: priorInteraction.concerns,
+      revisitConditions: priorInteraction.revisitConditions,
+      lastEvaluatedAt: priorSource.eventAt,
+      memoryIds: [],
+      sourceIds: [priorSource.id],
+      fixtureIds: [priorSource.id],
+      priorActions: priorInteraction.priorActions,
     },
-    investmentMemory: { memoryIds: [] },
-    companyBrief: { structuredFields },
-    sources: [],
+    marketEvidence: {
+      relationship: "contradicts",
+      explanation:
+        "The verified incident contradicts the prior containment assumption.",
+      eventIds: [marketEvent.id],
+      events: [marketEvent],
+      sourceIds: marketEvent.sources.map(({ id }) => id),
+    },
+    implications: {
+      positive: marketEvent.positiveImplications,
+      negative: marketEvent.negativeImplications,
+    },
+    beliefAssessment,
+    recommendedNextMove: renderRecommendedNextMove(canonicalActions),
+    companyBrief: {
+      icSnapshot: [],
+      traction: [],
+      dealTerms: [],
+      risks: [],
+      decisionHistory: [{
+        occurredAt: priorSource.eventAt,
+        title: priorInteraction.label,
+        summary: priorInteraction.summary,
+        sourceIds: [priorSource.id],
+      }],
+      sourceLineage: sources,
+      structuredFields,
+    },
+    sources,
     createdAt: now().toISOString(),
-  } as unknown as CompanyAnalysis;
+  });
   const groundedSnapshot = await grounding.load({
     candidate,
     analysis,
@@ -657,6 +794,11 @@ test("actual Irregular seed evidence reaches one finalized core-only terminal ar
   ));
   assert.equal(payload.disagreements.length, 0);
   assert.equal(providerCalls, 0);
+  assert.deepEqual({
+    catalogVersion: payload.versionSnapshot.frameworkCatalogVersion,
+    catalogFingerprint: payload.versionSnapshot.frameworkCatalogFingerprint,
+    corpusDigest: payload.versionSnapshot.frameworkCorpusDigest,
+  }, frameworkCatalog);
   assert.equal(payload.decision.decision, null);
   assert.equal(payload.decision.decisionCeiling, null);
   assert.equal(payload.decision.confidence, "low");

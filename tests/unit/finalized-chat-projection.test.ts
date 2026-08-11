@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { CandidateArtifactBundle } from "../../db/repositories/underwriting-artifacts";
-import type { FinalizedChatIdentity } from "../../lib/contracts/finalized-chat";
+import type { CandidateFinalization } from
+  "../../db/repositories/underwriting-artifacts";
+import {
+  FinalizedChatSourceRefSchema,
+  type FinalizedChatIdentity,
+} from "../../lib/contracts/finalized-chat";
 import {
   BeliefChangeAssessmentV1Schema,
   CompanyAnalysisSchema,
@@ -19,9 +24,18 @@ import {
 } from "../../lib/reports/action-policy";
 import { buildFinalizedChatProjection } from "../../lib/chat/finalized-projection";
 import {
+  buildFinalizedChatProjectionV2,
+  resolveFinalizedChatNamedLensTargetFromQuestion,
+  type BuildFinalizedChatProjectionV2Input,
+} from "../../lib/chat/finalized-projection";
+import {
   exactSourceV2,
   marketEventV2,
 } from "../helpers/source-evidence-v2";
+import { createCurrentNamedLensFinalizationFixture } from
+  "../helpers/current-named-lens-finalization";
+import { withWithheldCurrentNamedLensArtifacts } from
+  "../helpers/current-named-lens-finalization";
 
 const WORKSPACE_ID = "workspace_finalized_chat";
 const REPORT_ID = "report_finalized_chat";
@@ -303,6 +317,7 @@ function bundleFixture(analysis: CompanyAnalysis): CandidateArtifactBundle {
   }];
   const bundle = {
     candidateRunId: CANDIDATE_RUN_ID,
+    sourceCandidateRunId: CANDIDATE_RUN_ID,
     workspaceId: WORKSPACE_ID,
     dealId: DEAL_ID,
     candidateAnalysisFingerprint: `sha256:${"8".repeat(64)}`,
@@ -555,7 +570,8 @@ test("a rerun alias remains the exact projection identity while binding its immu
   const analysis = analysisFixture();
   const sourceBundle = {
     ...bundleFixture(analysis),
-    candidateRunId: "candidate_finalized_chat_original",
+    candidateRunId: CANDIDATE_RUN_ID,
+    sourceCandidateRunId: "candidate_finalized_chat_original",
     candidateAnalysisFingerprint: "fp:alias-stable",
   };
   const result = project({
@@ -564,6 +580,7 @@ test("a rerun alias remains the exact projection identity while binding its immu
     candidateBinding: {
       candidateRunId: CANDIDATE_RUN_ID,
       rerunOfId: "candidate_finalized_chat_original",
+      artifactSourceCandidateRunId: "candidate_finalized_chat_original",
       candidateAnalysisFingerprint: "fp:alias-stable",
     },
   });
@@ -573,7 +590,7 @@ test("a rerun alias remains the exact projection identity while binding its immu
   assert.equal(result.projection.identity.candidateRunId, CANDIDATE_RUN_ID);
   assert.notEqual(
     result.projection.identity.candidateRunId,
-    sourceBundle.candidateRunId,
+    sourceBundle.sourceCandidateRunId,
   );
 
   const forged = project({
@@ -582,12 +599,28 @@ test("a rerun alias remains the exact projection identity while binding its immu
     candidateBinding: {
       candidateRunId: CANDIDATE_RUN_ID,
       rerunOfId: "candidate_wrong_original",
+      artifactSourceCandidateRunId: "candidate_wrong_original",
       candidateAnalysisFingerprint: "fp:alias-stable",
     },
   });
   assert.equal(forged.status, "insufficient");
   if (forged.status === "insufficient") {
     assert.equal(forged.reasonCode, "scope_identity_mismatch");
+  }
+
+  const refresh = project({
+    topic: "match_confidence",
+    bundle: sourceBundle,
+    candidateBinding: {
+      candidateRunId: CANDIDATE_RUN_ID,
+      rerunOfId: "candidate_finalized_chat_original",
+      artifactSourceCandidateRunId: null,
+      candidateAnalysisFingerprint: "fp:alias-stable",
+    },
+  });
+  assert.equal(refresh.status, "insufficient");
+  if (refresh.status === "insufficient") {
+    assert.equal(refresh.reasonCode, "scope_identity_mismatch");
   }
 });
 
@@ -899,4 +932,369 @@ test("missing-evidence projection fails closed when coverage lacks its finalized
   assert.equal(result.status, "insufficient");
   if (result.status !== "insufficient") return;
   assert.equal(result.reasonCode, "finalized_artifact_missing");
+});
+
+function finalizedV2Input(
+  topic:
+    | "named_lens_selection_reason"
+    | "named_lens_exact_evidence"
+    | "named_lens_view_change"
+    | "named_lens_formal_weight",
+  finalizationOverride?: CandidateFinalization,
+): BuildFinalizedChatProjectionV2Input {
+  const finalization = finalizationOverride
+    ?? createCurrentNamedLensFinalizationFixture().finalization;
+  const disposition = finalization.namedLensDispositions![0]!;
+  const passage = finalization.namedLensPassages![0] ?? null;
+  const judgment = finalization.judgments.find(({ id }) =>
+    id === disposition.judgmentId
+  );
+  assert.ok(judgment?.frameworkMetadata);
+  const component = passage === null
+    ? judgment.frameworkMetadata.components[0]
+    : judgment.frameworkMetadata.components.find(
+      ({ frameworkId }) => frameworkId === passage.premise.componentFrameworkId,
+    );
+  assert.ok(component);
+  const makeSourceRef = (itemId: "fact_1" | "counter_1") => {
+    const source = exactSourceV2(`source_${itemId}`, {
+      documentId: `document_${itemId}`,
+      sourceRevisionId: `revision_${itemId}`,
+      contentFingerprint: itemId === "fact_1" ? FP_A : FP_B,
+      text: {
+        status: "verified_exact",
+        verbatimExcerpt: itemId === "fact_1"
+          ? "Persisted customer demand supports further diligence."
+          : "Persisted customer counterevidence limits the conclusion.",
+        normalizedStatement: itemId === "fact_1"
+          ? "Saved demand evidence supports diligence."
+          : "Saved counterevidence limits the view.",
+      },
+    });
+    return FinalizedChatSourceRefSchema.parse({
+      sourceId: source.id,
+      documentId: source.documentId,
+      sourceRevisionId: source.sourceRevisionId!,
+      contentFingerprint: source.contentFingerprint!,
+      canonicalSource: source,
+      text: source.text,
+    });
+  };
+  const currentIdentity = {
+    workspaceId: "workspace_current",
+    reportId: finalization.underwritingPresentationReportId!,
+    runId: "run_current",
+    dealId: "deal_current",
+    candidateRunId: "candidate_current_alias",
+  } as const;
+  const lensDisplayIdentity = {
+    judgmentId: disposition.judgmentId!,
+    frameworkCardId: disposition.frameworkCardId,
+    componentFrameworkId: component.frameworkId,
+    publicDisplayIdentity: component.attribution.display,
+    displayName: component.name,
+    attributionDisplay: component.attribution.display,
+  };
+  return {
+    topic,
+    requestedLensDisplayIdentity: component.attribution.display,
+    identity: currentIdentity,
+    evidenceFrame: { state: "legacy_unbound" as const },
+    presentationIdentity: {
+      adapterSchemaVersion: "decision-first-named-lens-v1" as const,
+      sourceCandidateRunId: "candidate_current",
+      presentationReportId: finalization.underwritingPresentationReportId!,
+      presentationSchemaVersion: "decision-first-named-lens-v1" as const,
+      presentationFingerprint:
+        finalization.namedLensPresentation!.fingerprint,
+      criticalEvidenceProjectionFingerprint:
+        finalization.decisionCriticalEvidenceProjection!.fingerprint,
+      finalDispositionsFingerprint:
+        finalization.versionSnapshot.finalDispositionsFingerprint!,
+    },
+    decisionCriticalEvidenceProjection:
+      finalization.decisionCriticalEvidenceProjection!,
+    dispositions: finalization.namedLensDispositions!,
+    passages: finalization.namedLensPassages!,
+    presentation: finalization.namedLensPresentation!,
+    lensDisplayIdentities: [lensDisplayIdentity],
+    evidenceItems: [{
+      evidencePackItemId: "fact_1",
+      classification: "fact" as const,
+      sourceRef: makeSourceRef("fact_1"),
+    }, {
+      evidencePackItemId: "counter_1",
+      classification: "fact" as const,
+      sourceRef: makeSourceRef("counter_1"),
+    }],
+  };
+}
+
+test("V2 answers all four Named Lens questions only from saved dispositions and passages", () => {
+  const cases = [{
+    topic: "named_lens_selection_reason" as const,
+    expected: "new evidence that changed the fund's prior view",
+  }, {
+    topic: "named_lens_exact_evidence" as const,
+    expected: "Saved company evidence applies the framework.",
+  }, {
+    topic: "named_lens_view_change" as const,
+    expected: "A saved unknown defines the diligence boundary.",
+  }, {
+    topic: "named_lens_formal_weight" as const,
+    expected: "formal-decision weight 0",
+  }];
+
+  for (const item of cases) {
+    const result = buildFinalizedChatProjectionV2(
+      finalizedV2Input(item.topic),
+    );
+    assert.equal(result.status, "success", item.topic);
+    if (result.status !== "success") continue;
+    assert.equal(result.projection.topic, item.topic);
+    assert.ok(result.projection.claims.some(({ text }) =>
+      text.includes(item.expected)
+    ));
+    assert.ok(result.projection.claims.every(({ text }) =>
+      !/believes|recommends investing|hidden chain of thought|private reasoning/iu
+        .test(text)
+    ));
+    assert.ok(result.projection.claims.every(({ text }) =>
+      !/CHANGED_BELIEF_EVIDENCE|fact_1|selected_main|persisted disposition/iu
+        .test(text)
+    ));
+  }
+});
+
+test("V2 selection placement cites the exact disposition and selected position it renders", () => {
+  const result = buildFinalizedChatProjectionV2(
+    finalizedV2Input("named_lens_selection_reason"),
+  );
+  assert.equal(result.status, "success");
+  if (result.status !== "success") return;
+  const dispositionPaths = result.projection.claims[0]!.artifactRefs
+    .filter(({ artifactType }) => artifactType === "named_lens_disposition")
+    .map(({ fieldPath }) => fieldPath);
+  assert.deepEqual(new Set(dispositionPaths), new Set([
+    "disposition",
+    "selectedPosition",
+    "reasonCodes",
+    "selectionBasisEvidenceIds",
+  ]));
+});
+
+test("V2 premise provenance is the exact saved public-research identity, never a fabricated Source Revision", () => {
+  const input = finalizedV2Input("named_lens_exact_evidence");
+  const result = buildFinalizedChatProjectionV2(input);
+  assert.equal(result.status, "success");
+  if (result.status !== "success") return;
+  const premiseClaim = result.projection.claims.find(({ artifactRefs }) =>
+    artifactRefs.some(({ fieldPath }) => fieldPath === "premise.text")
+  );
+  assert.ok(premiseClaim);
+  assert.deepEqual(
+    new Set(premiseClaim.artifactRefs.map(({ fieldPath }) => fieldPath)),
+    new Set([
+      "premise.text",
+      "premise.componentFrameworkId",
+      "premise.componentVersion",
+      "premise.cardFieldRef",
+      "premise.publicSourceIds",
+      "premise.claimIds",
+      "premise.locator",
+      "premise.attributionScope",
+    ]),
+  );
+  assert.deepEqual(premiseClaim.sourceRefs, []);
+});
+
+test("V2 resolves an explicitly named Lens to exactly one saved public identity", () => {
+  const missing = finalizedV2Input("named_lens_selection_reason");
+  missing.requestedLensDisplayIdentity = "Unknown Lens";
+  const missingResult = buildFinalizedChatProjectionV2(missing);
+  assert.equal(missingResult.status, "insufficient");
+  if (missingResult.status === "insufficient") {
+    assert.equal(missingResult.reasonCode, "lens_target_missing");
+  }
+
+  const ambiguous = finalizedV2Input("named_lens_selection_reason");
+  ambiguous.lensDisplayIdentities.push({
+    ...ambiguous.lensDisplayIdentities[0]!,
+    judgmentId: "judgment_duplicate",
+    frameworkCardId: "framework_duplicate",
+  });
+  const ambiguousResult = buildFinalizedChatProjectionV2(ambiguous);
+  assert.equal(ambiguousResult.status, "insufficient");
+  if (ambiguousResult.status === "insufficient") {
+    assert.equal(ambiguousResult.reasonCode, "lens_target_ambiguous");
+  }
+});
+
+test("question target resolution accepts only one complete NFKC public display identity", () => {
+  const input = finalizedV2Input("named_lens_selection_reason");
+  const target = input.lensDisplayIdentities[0]!;
+  const matched = resolveFinalizedChatNamedLensTargetFromQuestion({
+    question:
+      `Why was ${target.publicDisplayIdentity.normalize("NFKC")} lens selected?`,
+    lensDisplayIdentities: input.lensDisplayIdentities,
+  });
+  assert.equal(matched.status, "matched");
+  if (matched.status === "matched") {
+    assert.deepEqual(matched.target, target);
+  }
+
+  const shortName = target.publicDisplayIdentity.split(/\s+/u)[0]!;
+  const missing = resolveFinalizedChatNamedLensTargetFromQuestion({
+    question: `Why was ${shortName} selected?`,
+    lensDisplayIdentities: input.lensDisplayIdentities,
+  });
+  if (shortName !== target.publicDisplayIdentity) {
+    assert.deepEqual(missing, {
+      status: "insufficient",
+      reasonCode: "lens_target_missing",
+      matchedTargets: [],
+    });
+  }
+
+  const ambiguous = resolveFinalizedChatNamedLensTargetFromQuestion({
+    question: `Why was ${target.publicDisplayIdentity} selected?`,
+    lensDisplayIdentities: [target, {
+      ...target,
+      judgmentId: "judgment_duplicate",
+      frameworkCardId: "framework_duplicate",
+    }],
+  });
+  assert.equal(ambiguous.status, "insufficient");
+  if (ambiguous.status === "insufficient") {
+    assert.equal(ambiguous.reasonCode, "lens_target_ambiguous");
+  }
+
+  const embeddedOnly = resolveFinalizedChatNamedLensTargetFromQuestion({
+    question: "Why was the Landmarks lens selected?",
+    lensDisplayIdentities: [{
+      ...target,
+      publicDisplayIdentity: "Marks",
+      attributionDisplay: "Marks",
+    }],
+  });
+  assert.equal(embeddedOnly.status, "insufficient");
+  if (embeddedOnly.status === "insufficient") {
+    assert.equal(embeddedOnly.reasonCode, "lens_target_missing");
+  }
+});
+
+test("V2 exact evidence cites Facts by Source Revision and Assumptions only by artifact", () => {
+  const input = finalizedV2Input("named_lens_exact_evidence");
+  const passage = input.passages[0]!;
+  passage.caseApplication.evidenceItemIds.unshift("assumption_1");
+  input.evidenceItems.push({
+    evidencePackItemId: "assumption_1",
+    classification: "assumption",
+    sourceRef: null,
+  });
+  const result = buildFinalizedChatProjectionV2(input);
+
+  assert.equal(result.status, "success");
+  if (result.status !== "success") return;
+  const allSourceRefs = result.projection.claims.flatMap(({ sourceRefs }) =>
+    sourceRefs
+  );
+  const allArtifactRefs = result.projection.claims.flatMap(({ artifactRefs }) =>
+    artifactRefs
+  );
+  assert.ok(allSourceRefs.some(({ sourceRevisionId }) =>
+    sourceRevisionId === "revision_fact_1"
+  ));
+  assert.ok(allArtifactRefs.some(({ artifactType, artifactId }) =>
+    artifactType === "evidence_pack_assumption"
+    && artifactId === "assumption_1"
+  ));
+  assert.ok(allSourceRefs.every(({ sourceRevisionId }) =>
+    sourceRevisionId !== "assumption_1"
+  ));
+
+  const caseClaim = result.projection.claims.find(({ artifactRefs }) =>
+    artifactRefs.some(({ fieldPath }) => fieldPath === "caseApplication.text")
+  );
+  assert.ok(caseClaim);
+  assert.ok(caseClaim.artifactRefs.some(({ artifactType, fieldPath }) =>
+    artifactType === "named_lens_passage_segment"
+    && fieldPath === "caseApplication.evidenceItemIds"
+  ));
+
+  const counterClaim = result.projection.claims.find(({ artifactRefs }) =>
+    artifactRefs.some(({ fieldPath }) => fieldPath === "countercase.text")
+  );
+  assert.ok(counterClaim);
+  assert.ok(counterClaim.artifactRefs.some(({ artifactType, fieldPath }) =>
+    artifactType === "named_lens_passage_segment"
+    && fieldPath === "countercase.evidenceItemIds"
+  ));
+});
+
+test("V2 output is independent of raw judgment conclusion, order, and disagreement mutations", () => {
+  const baselineInput = finalizedV2Input("named_lens_view_change");
+  const mutatedInput = structuredClone(baselineInput) as typeof baselineInput & {
+    rawJudgments?: unknown[];
+    rawDisagreements?: unknown[];
+  };
+  mutatedInput.rawJudgments = [{
+    conclusion: "negative",
+    strongestSupport: "Mutated raw support.",
+    strongestCounterargument: "Mutated raw counterargument.",
+  }];
+  mutatedInput.rawDisagreements = [{ explanation: "Mutated raw disagreement." }];
+
+  assert.deepEqual(
+    buildFinalizedChatProjectionV2(mutatedInput),
+    buildFinalizedChatProjectionV2(baselineInput),
+  );
+});
+
+test("V2 keeps partial withheld Lens bodies absent with a typed reason", () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const partial = withWithheldCurrentNamedLensArtifacts(
+    fixture.finalization,
+    fixture.persistedAttempts,
+  );
+  const input = finalizedV2Input("named_lens_selection_reason", partial);
+
+  const reason = buildFinalizedChatProjectionV2(input);
+  assert.equal(reason.status, "success");
+  if (reason.status === "success") {
+    assert.match(
+      reason.projection.claims.map(({ text }) => text).join("\n"),
+      /complete source-grounded passage is not available/u,
+    );
+    assert.doesNotMatch(
+      reason.projection.claims.map(({ text }) => text).join("\n"),
+      /PASSAGE_NOT_GENERATED|withheld/u,
+    );
+  }
+
+  input.topic = "named_lens_exact_evidence";
+  const body = buildFinalizedChatProjectionV2(input);
+  assert.equal(body.status, "insufficient");
+  if (body.status === "insufficient") {
+    assert.equal(body.reasonCode, "lens_artifact_unavailable");
+  }
+});
+
+test("V2 fails closed on cross-report presentation identity and nonzero advisory weight", () => {
+  const crossReport = finalizedV2Input("named_lens_formal_weight");
+  crossReport.presentationIdentity.presentationReportId = "report_foreign";
+  const crossReportResult = buildFinalizedChatProjectionV2(crossReport);
+  assert.equal(crossReportResult.status, "insufficient");
+  if (crossReportResult.status === "insufficient") {
+    assert.equal(crossReportResult.reasonCode, "presentation_integrity");
+  }
+
+  const forgedWeight = finalizedV2Input("named_lens_formal_weight");
+  (forgedWeight.passages[0]!.advisoryContract as { formalDecisionWeight: string })
+    .formalDecisionWeight = "1";
+  const forgedWeightResult = buildFinalizedChatProjectionV2(forgedWeight);
+  assert.equal(forgedWeightResult.status, "insufficient");
+  if (forgedWeightResult.status === "insufficient") {
+    assert.equal(forgedWeightResult.reasonCode, "presentation_integrity");
+  }
 });

@@ -348,8 +348,6 @@ export const FinalizedChatProjectionV1Schema =
 export type FinalizedChatProjectionV1 = z.infer<
   typeof FinalizedChatProjectionV1Schema
 >;
-export const FinalizedChatProjectionSchema = FinalizedChatProjectionV1Schema;
-export type FinalizedChatProjection = FinalizedChatProjectionV1;
 
 export function buildFinalizedChatProjectionFingerprint(raw: {
   topic: FinalizedChatTopic;
@@ -378,6 +376,307 @@ export function createFinalizedChatProjection(raw: {
     ...raw,
   });
 }
+
+export const FinalizedChatTopicV2Schema = z.enum([
+  "named_lens_selection_reason",
+  "named_lens_exact_evidence",
+  "named_lens_view_change",
+  "named_lens_formal_weight",
+]);
+export type FinalizedChatTopicV2 = z.infer<
+  typeof FinalizedChatTopicV2Schema
+>;
+
+export const FinalizedChatTextClassV2Schema = z.enum([
+  "persisted_artifact_text",
+  "framework_application_inference",
+]);
+export type FinalizedChatTextClassV2 = z.infer<
+  typeof FinalizedChatTextClassV2Schema
+>;
+
+export const FinalizedChatArtifactTypeV2Schema = z.enum([
+  "named_lens_disposition",
+  "named_lens_passage_segment",
+  "decision_critical_evidence_projection",
+  "underwriting_presentation",
+  "evidence_pack_fact",
+  "evidence_pack_assumption",
+]);
+export type FinalizedChatArtifactTypeV2 = z.infer<
+  typeof FinalizedChatArtifactTypeV2Schema
+>;
+
+const V2_ARTIFACT_FIELD_PATHS: Readonly<
+  Record<FinalizedChatArtifactTypeV2, RegExp>
+> = {
+  named_lens_disposition:
+    /^(?:disposition|reasonCodes|priorityTier|selectedPosition|selectionBasisEvidenceIds)$/u,
+  named_lens_passage_segment:
+    /^(?:premise\.(?:text|componentFrameworkId|componentVersion|cardFieldRef|publicSourceIds|claimIds|locator|attributionScope)|caseApplication\.(?:text|evidenceItemIds)|countercase\.(?:text|evidenceItemIds|evidenceRequestRefs)|unknownBoundary\.(?:text|judgmentUnknownRefs|judgmentLimitationRefs|evidenceRequestRefs)|conditionalConclusion\.text|advisoryContract\.formalDecisionWeight|selectionBasisEvidenceIds)$/u,
+  decision_critical_evidence_projection:
+    /^evidenceRefs(?:\[\d+\](?:\.(?:evidencePackItemId|classification|originRefs|reasonCodes|resolutionPath))?)?$/u,
+  underwriting_presentation:
+    /^(?:synthesis(?:\.text)?|segmentCitations|firstScreenProjectionRefs)$/u,
+  evidence_pack_fact: /^value$/u,
+  evidence_pack_assumption: /^value$/u,
+};
+
+export const FinalizedChatArtifactRefV2Schema = z.strictObject({
+  artifactType: FinalizedChatArtifactTypeV2Schema,
+  artifactId: IdSchema,
+  fieldPath: FieldPathSchema,
+}).superRefine((ref, context) => {
+  if (!V2_ARTIFACT_FIELD_PATHS[ref.artifactType].test(ref.fieldPath)) {
+    context.addIssue({
+      code: "custom",
+      path: ["fieldPath"],
+      message:
+        "Finalized Chat V2 references only reviewed persisted presentation fields",
+    });
+  }
+});
+export type FinalizedChatArtifactRefV2 = z.infer<
+  typeof FinalizedChatArtifactRefV2Schema
+>;
+
+export const FinalizedChatNamedLensTargetSchema = z.strictObject({
+  judgmentId: IdSchema,
+  frameworkCardId: IdSchema,
+  componentFrameworkId: IdSchema,
+  publicDisplayIdentity: NonEmptyTextSchema,
+  displayName: NonEmptyTextSchema,
+  attributionDisplay: NonEmptyTextSchema,
+});
+export type FinalizedChatNamedLensTarget = z.infer<
+  typeof FinalizedChatNamedLensTargetSchema
+>;
+
+export const FinalizedChatPresentationIdentityV2Schema = z.strictObject({
+  adapterSchemaVersion: z.literal("decision-first-named-lens-v1"),
+  sourceCandidateRunId: IdSchema,
+  presentationReportId: IdSchema,
+  presentationSchemaVersion: z.literal("decision-first-named-lens-v1"),
+  presentationFingerprint: FingerprintSchema,
+  criticalEvidenceProjectionFingerprint: FingerprintSchema,
+  finalDispositionsFingerprint: FingerprintSchema,
+});
+export type FinalizedChatPresentationIdentityV2 = z.infer<
+  typeof FinalizedChatPresentationIdentityV2Schema
+>;
+
+export const FinalizedChatClaimV2Schema = z.strictObject({
+  claimId: z.string().regex(/^finalized_chat_v2_claim_[0-9a-f]{64}$/u),
+  claimFingerprint: FingerprintSchema,
+  text: NonEmptyTextSchema,
+  textClass: FinalizedChatTextClassV2Schema,
+  target: FinalizedChatNamedLensTargetSchema,
+  artifactRefs: z.array(FinalizedChatArtifactRefV2Schema).min(1),
+  sourceRefs: z.array(FinalizedChatSourceRefSchema),
+}).superRefine((claim, context) => {
+  const artifactKeys = claim.artifactRefs.map(canonicalEvidenceJson);
+  if (new Set(artifactKeys).size !== artifactKeys.length) {
+    context.addIssue({ code: "custom", message: "Artifact refs must be unique" });
+  }
+  const sourceKeys = claim.sourceRefs.map(canonicalEvidenceJson);
+  if (new Set(sourceKeys).size !== sourceKeys.length) {
+    context.addIssue({ code: "custom", message: "Source refs must be unique" });
+  }
+  const sourceIds = claim.sourceRefs.map(({ sourceId }) => sourceId);
+  if (new Set(sourceIds).size !== sourceIds.length) {
+    context.addIssue({
+      code: "custom",
+      message: "A source ID can resolve to only one exact revision",
+    });
+  }
+  const escapedIdentity = claim.target.publicDisplayIdentity.replace(
+    /[.*+?^${}()|[\]\\]/gu,
+    "\\$&",
+  );
+  if (
+    new RegExp(`${escapedIdentity}[^.\\n]*(?:believes|recommends|would invest)`, "iu")
+      .test(claim.text)
+    || /\b(?:I would invest|hidden chain of thought|private reasoning)\b/iu
+      .test(claim.text)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["text"],
+      message:
+        "Named Lens text cannot impersonate a person or claim hidden reasoning",
+    });
+  }
+});
+export type FinalizedChatClaimV2 = z.infer<
+  typeof FinalizedChatClaimV2Schema
+>;
+
+export const FinalizedChatClaimIdentityInputV2Schema = z.strictObject({
+  identity: FinalizedChatIdentitySchema,
+  topic: FinalizedChatTopicV2Schema,
+  target: FinalizedChatNamedLensTargetSchema,
+  artifactRefs: z.array(FinalizedChatArtifactRefV2Schema).min(1),
+  sourceRefs: z.array(FinalizedChatSourceRefSchema),
+  textClass: FinalizedChatTextClassV2Schema,
+  text: NonEmptyTextSchema,
+});
+export type FinalizedChatClaimIdentityInputV2 = z.infer<
+  typeof FinalizedChatClaimIdentityInputV2Schema
+>;
+
+function sortedArtifactRefsV2(
+  refs: readonly FinalizedChatArtifactRefV2[],
+): FinalizedChatArtifactRefV2[] {
+  return [...refs].sort((left, right) =>
+    compareUtf8(canonicalEvidenceJson(left), canonicalEvidenceJson(right))
+  );
+}
+
+export function buildFinalizedChatClaimIdentityV2(
+  raw: FinalizedChatClaimIdentityInputV2,
+): { claimId: string; claimFingerprint: string } {
+  const input = FinalizedChatClaimIdentityInputV2Schema.parse(raw);
+  const claimFingerprint = sha256({
+    schemaVersion: "finalized-chat-claim-v2",
+    identity: input.identity,
+    topic: input.topic,
+    target: input.target,
+    artifactRefs: sortedArtifactRefsV2(input.artifactRefs),
+    sourceRefs: uniqueSourceRefs(input.sourceRefs),
+    textClass: input.textClass,
+    text: input.text,
+  });
+  return {
+    claimId:
+      `finalized_chat_v2_claim_${claimFingerprint.slice("sha256:".length)}`,
+    claimFingerprint,
+  };
+}
+
+export function createFinalizedChatClaimV2(
+  raw: FinalizedChatClaimIdentityInputV2,
+): FinalizedChatClaimV2 {
+  return FinalizedChatClaimV2Schema.parse({
+    ...buildFinalizedChatClaimIdentityV2(raw),
+    text: raw.text,
+    textClass: raw.textClass,
+    target: raw.target,
+    artifactRefs: raw.artifactRefs,
+    sourceRefs: raw.sourceRefs,
+  });
+}
+
+const FinalizedChatProjectionV2BaseSchema = z.strictObject({
+  schemaVersion: z.literal("finalized-chat-projection-v2"),
+  projectionFingerprint: FingerprintSchema,
+  topic: FinalizedChatTopicV2Schema,
+  identity: FinalizedChatIdentitySchema,
+  evidenceFrame: FinalizedChatEvidenceFrameSchema,
+  presentationIdentity: FinalizedChatPresentationIdentityV2Schema,
+  target: FinalizedChatNamedLensTargetSchema,
+  claims: z.array(FinalizedChatClaimV2Schema).min(1),
+});
+
+export const FinalizedChatProjectionV2Schema =
+  FinalizedChatProjectionV2BaseSchema.superRefine((projection, context) => {
+    if (
+      projection.presentationIdentity.presentationReportId
+        !== projection.identity.reportId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["presentationIdentity", "presentationReportId"],
+        message: "Finalized Chat V2 presentation must belong to the requested Report",
+      });
+    }
+    const claimIds = projection.claims.map(({ claimId }) => claimId);
+    if (new Set(claimIds).size !== claimIds.length) {
+      context.addIssue({ code: "custom", message: "Claim IDs must be unique" });
+    }
+    for (const [index, claim] of projection.claims.entries()) {
+      const expected = buildFinalizedChatClaimIdentityV2({
+        identity: projection.identity,
+        topic: projection.topic,
+        target: projection.target,
+        artifactRefs: claim.artifactRefs,
+        sourceRefs: claim.sourceRefs,
+        textClass: claim.textClass,
+        text: claim.text,
+      });
+      if (
+        canonicalEvidenceJson(claim.target)
+          !== canonicalEvidenceJson(projection.target)
+        || claim.claimId !== expected.claimId
+        || claim.claimFingerprint !== expected.claimFingerprint
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["claims", index, "claimId"],
+          message: "V2 claim identity must match its persisted projection inputs",
+        });
+      }
+    }
+    const expectedFingerprint = buildFinalizedChatProjectionV2Fingerprint({
+      topic: projection.topic,
+      identity: projection.identity,
+      evidenceFrame: projection.evidenceFrame,
+      presentationIdentity: projection.presentationIdentity,
+      target: projection.target,
+      claims: projection.claims,
+    });
+    if (projection.projectionFingerprint !== expectedFingerprint) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectionFingerprint"],
+        message: "V2 projection fingerprint does not match its finalized content",
+      });
+    }
+  });
+export type FinalizedChatProjectionV2 = z.infer<
+  typeof FinalizedChatProjectionV2Schema
+>;
+
+export function buildFinalizedChatProjectionV2Fingerprint(raw: {
+  topic: FinalizedChatTopicV2;
+  identity: FinalizedChatIdentity;
+  evidenceFrame: FinalizedChatEvidenceFrame;
+  presentationIdentity: FinalizedChatPresentationIdentityV2;
+  target: FinalizedChatNamedLensTarget;
+  claims: FinalizedChatClaimV2[];
+}): string {
+  return sha256({
+    schemaVersion: "finalized-chat-projection-v2",
+    topic: raw.topic,
+    identity: raw.identity,
+    evidenceFrame: raw.evidenceFrame,
+    presentationIdentity: raw.presentationIdentity,
+    target: raw.target,
+    claims: raw.claims,
+  });
+}
+
+export function createFinalizedChatProjectionV2(raw: {
+  topic: FinalizedChatTopicV2;
+  identity: FinalizedChatIdentity;
+  evidenceFrame: FinalizedChatEvidenceFrame;
+  presentationIdentity: FinalizedChatPresentationIdentityV2;
+  target: FinalizedChatNamedLensTarget;
+  claims: FinalizedChatClaimV2[];
+}): FinalizedChatProjectionV2 {
+  return FinalizedChatProjectionV2Schema.parse({
+    schemaVersion: "finalized-chat-projection-v2",
+    projectionFingerprint: buildFinalizedChatProjectionV2Fingerprint(raw),
+    ...raw,
+  });
+}
+
+export const FinalizedChatProjectionSchema = z.union([
+  FinalizedChatProjectionV1Schema,
+  FinalizedChatProjectionV2Schema,
+]);
+export type FinalizedChatProjection = z.infer<
+  typeof FinalizedChatProjectionSchema
+>;
 
 export const FinalizedChatInsufficientReasonCodeSchema = z.enum([
   "unsupported_topic",
@@ -494,9 +793,147 @@ export type FinalizedChatInsufficientResponse = z.infer<
   typeof FinalizedChatInsufficientResponseSchema
 >;
 
+export const FinalizedChatCitationV2Schema = z.union([
+  z.strictObject({
+    kind: z.literal("source_revision"),
+    sourceRef: FinalizedChatSourceRefSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("artifact"),
+    artifactRef: FinalizedChatArtifactRefV2Schema,
+  }),
+]);
+export type FinalizedChatCitationV2 = z.infer<
+  typeof FinalizedChatCitationV2Schema
+>;
+
+export const FinalizedChatInsufficientReasonCodeV2Schema = z.enum([
+  "unsupported_topic",
+  "ambiguous_topic",
+  "lens_target_missing",
+  "lens_target_ambiguous",
+  "lens_artifact_unavailable",
+  "presentation_integrity",
+  "source_lineage_incomplete",
+]);
+export type FinalizedChatInsufficientReasonCodeV2 = z.infer<
+  typeof FinalizedChatInsufficientReasonCodeV2Schema
+>;
+
+export const FinalizedChatProjectionSuccessV2Schema = z.strictObject({
+  status: z.literal("success"),
+  projection: FinalizedChatProjectionV2Schema,
+});
+
+export const FinalizedChatProjectionInsufficientV2Schema = z.strictObject({
+  status: z.literal("insufficient"),
+  topic: FinalizedChatTopicV2Schema.nullable(),
+  requestedLensDisplayIdentity: NonEmptyTextSchema.nullable(),
+  reasonCode: FinalizedChatInsufficientReasonCodeV2Schema,
+  missingArtifactRefs: z.array(FinalizedChatArtifactRefV2Schema),
+  identity: FinalizedChatIdentitySchema,
+  evidenceFrame: FinalizedChatEvidenceFrameSchema,
+});
+
+export const FinalizedChatProjectionBuildResultV2Schema = z.union([
+  FinalizedChatProjectionSuccessV2Schema,
+  FinalizedChatProjectionInsufficientV2Schema,
+]);
+export type FinalizedChatProjectionBuildResultV2 = z.infer<
+  typeof FinalizedChatProjectionBuildResultV2Schema
+>;
+
+export function uniqueFinalizedChatCitationsV2(
+  refs: readonly FinalizedChatCitationV2[],
+): FinalizedChatCitationV2[] {
+  const byIdentity = new Map<string, FinalizedChatCitationV2>();
+  for (const ref of refs) {
+    const parsed = FinalizedChatCitationV2Schema.parse(ref);
+    byIdentity.set(canonicalEvidenceJson(parsed), parsed);
+  }
+  return [...byIdentity.values()];
+}
+
+export const FinalizedChatSuccessResponseV2Schema = z.strictObject({
+  schemaVersion: z.literal("finalized-chat-response-v2"),
+  status: z.literal("success"),
+  topic: FinalizedChatTopicV2Schema,
+  target: FinalizedChatNamedLensTargetSchema,
+  answer: NonEmptyTextSchema,
+  citations: z.array(FinalizedChatCitationV2Schema),
+  identity: FinalizedChatIdentitySchema,
+  evidenceFrame: FinalizedChatEvidenceFrameSchema,
+  projection: FinalizedChatProjectionV2Schema,
+  insufficientEvidence: z.literal(false),
+}).superRefine((response, context) => {
+  if (
+    response.topic !== response.projection.topic
+    || canonicalEvidenceJson(response.target)
+      !== canonicalEvidenceJson(response.projection.target)
+    || canonicalEvidenceJson(response.identity)
+      !== canonicalEvidenceJson(response.projection.identity)
+    || canonicalEvidenceJson(response.evidenceFrame)
+      !== canonicalEvidenceJson(response.projection.evidenceFrame)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Rendered V2 response scope must equal its persisted projection scope",
+    });
+  }
+  const expected = uniqueFinalizedChatCitationsV2(
+    response.projection.claims.flatMap((claim) => [
+      ...claim.sourceRefs.map((sourceRef) => ({
+        kind: "source_revision" as const,
+        sourceRef,
+      })),
+      ...claim.artifactRefs.map((artifactRef) => ({
+        kind: "artifact" as const,
+        artifactRef,
+      })),
+    ]),
+  );
+  if (canonicalEvidenceJson(response.citations) !== canonicalEvidenceJson(expected)) {
+    context.addIssue({
+      code: "custom",
+      path: ["citations"],
+      message: "Rendered V2 citations must exactly equal projection references",
+    });
+  }
+});
+export type FinalizedChatSuccessResponseV2 = z.infer<
+  typeof FinalizedChatSuccessResponseV2Schema
+>;
+
+export const FinalizedChatInsufficientResponseV2Schema = z.strictObject({
+  schemaVersion: z.literal("finalized-chat-response-v2"),
+  status: z.literal("insufficient"),
+  topic: FinalizedChatTopicV2Schema.nullable(),
+  requestedLensDisplayIdentity: NonEmptyTextSchema.nullable(),
+  answer: NonEmptyTextSchema,
+  citations: z.tuple([]),
+  identity: FinalizedChatIdentitySchema,
+  evidenceFrame: FinalizedChatEvidenceFrameSchema,
+  insufficientEvidence: z.literal(true),
+  reasonCode: FinalizedChatInsufficientReasonCodeV2Schema,
+  missingArtifactRefs: z.array(FinalizedChatArtifactRefV2Schema),
+});
+export type FinalizedChatInsufficientResponseV2 = z.infer<
+  typeof FinalizedChatInsufficientResponseV2Schema
+>;
+
+export const FinalizedChatResponseV2Schema = z.union([
+  FinalizedChatSuccessResponseV2Schema,
+  FinalizedChatInsufficientResponseV2Schema,
+]);
+export type FinalizedChatResponseV2 = z.infer<
+  typeof FinalizedChatResponseV2Schema
+>;
+
 export const FinalizedChatResponseSchema = z.union([
   FinalizedChatSuccessResponseSchema,
   FinalizedChatInsufficientResponseSchema,
+  FinalizedChatSuccessResponseV2Schema,
+  FinalizedChatInsufficientResponseV2Schema,
 ]);
 export type FinalizedChatResponse = z.infer<typeof FinalizedChatResponseSchema>;
 

@@ -13,8 +13,12 @@ import {
 import { requirePermission } from "../../../../../../lib/api/safety";
 import {
   findCandidateForReportDeal,
-  toCandidateUnderwritingDetail,
+  toVersionedCandidateUnderwritingDetail,
 } from "../../../../../../lib/underwriting/read-model";
+import {
+  UnderwritingPresentationIntegrityError,
+  resolveUnderwritingPresentationAdapter,
+} from "../../../../../../lib/underwriting/presentation-version";
 import { isDurableWorkspaceMode } from "../../../../../../lib/auth/request-context";
 
 export const dynamic = "force-dynamic";
@@ -66,8 +70,30 @@ export async function GET(
         404,
       );
     }
-    return jsonOk(toCandidateUnderwritingDetail(bundle));
+    const adapter = resolveUnderwritingPresentationAdapter({
+      report: {
+        id: report.id,
+        workspaceId: report.workspaceId,
+        evidenceContext: report.evidenceContext,
+      },
+      requestedDealId: dealId,
+      candidate: {
+        id: candidate.id,
+        workspaceId: candidate.workspaceId,
+        dealId: candidate.dealId,
+        artifactSourceCandidateRunId:
+          candidate.artifactSourceCandidateRunId ?? null,
+      },
+      bundle,
+    });
+    return jsonOk(toVersionedCandidateUnderwritingDetail({
+      bundle,
+      adapter,
+    }));
   } catch (error) {
+    if (error instanceof UnderwritingPresentationIntegrityError) {
+      return jsonError("CONFLICT", error.message, 409);
+    }
     return errorResponse(error);
   }
 }

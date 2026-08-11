@@ -14,6 +14,8 @@ import type {
 import {
   loadExactFinalizedChatScope,
 } from "../../lib/chat/finalized-scope";
+import { UnderwritingPresentationIntegrityError } from
+  "../../lib/underwriting/presentation-version";
 import type { CompanyAnalysis } from "../../lib/contracts/domain";
 import type {
   CandidateRun,
@@ -22,6 +24,8 @@ import type {
 import type {
   ResolvedReportEvidenceScope,
 } from "../../lib/reports/evidence-scope";
+import { createCurrentNamedLensFinalizationFixture } from
+  "../helpers/current-named-lens-finalization";
 
 const RUN_ID = "00000000-0000-4000-8000-000000000011";
 const SHA_A = `sha256:${"a".repeat(64)}`;
@@ -51,6 +55,18 @@ const currentReportContext = {
   bindingFingerprint: SHA_D,
 };
 
+const liveRunContext = {
+  ...currentRunContext,
+  evidenceMode: "live" as const,
+  snapshotId: null,
+  snapshotFingerprint: null,
+};
+
+const liveReportContext = {
+  ...currentReportContext,
+  ...liveRunContext,
+};
+
 function analysis(input: {
   dealId: string;
   companyName: string;
@@ -76,6 +92,7 @@ function candidate(input: {
   status?: CandidateRun["status"];
   fingerprint?: string;
   rerunOfId?: string | null;
+  artifactSourceCandidateRunId?: string | null;
   finalizedAt?: string | null;
 }): CandidateRun {
   return {
@@ -85,6 +102,8 @@ function candidate(input: {
     dealId: input.dealId,
     status: input.status ?? "completed",
     candidateAnalysisFingerprint: input.fingerprint ?? `fp:${input.dealId}`,
+    artifactSourceCandidateRunId:
+      input.artifactSourceCandidateRunId ?? null,
     rerunOfId: input.rerunOfId ?? null,
     createdAt: "2026-08-01T12:00:00.000Z",
     finalizedAt: input.finalizedAt === undefined
@@ -112,7 +131,14 @@ function bundle(input: {
   dealId: string;
   workspaceId?: string;
   fingerprint?: string;
-  generation?: "current" | "legacy" | "partial";
+  sourceCandidateRunId?: string;
+  reportId?: string;
+  generation?:
+    | "pinned_legacy"
+    | "legacy_pre_passage"
+    | "current"
+    | "partial_current"
+    | "unknown";
   dealStatus?: CompanyAnalysis["dealStatus"];
 }): CandidateArtifactBundle {
   const currentIdentity = {
@@ -132,18 +158,91 @@ function bundle(input: {
     geography: "us" as const,
     benchmarkCompatibility: "exact" as const,
   };
-  const versionSnapshot = input.generation === "legacy"
-    ? {}
-    : input.generation === "partial"
-    ? { dealStatus: "passed" as const }
+  const workspaceId = input.workspaceId ?? "workspace_1";
+  const sourceCandidateRunId = input.sourceCandidateRunId
+    ?? input.candidateRunId;
+  const currentVersionSnapshot = {
+    ...currentIdentity,
+    schemaVersion: "framework-judgment-v1",
+    settingsFingerprint: "settings_current",
+    applicationCommit: "commit_current",
+    frameworkCatalogVersion: "framework-catalog-v1",
+    frameworkCatalogFingerprint: SHA_A,
+    frameworkCorpusDigest: SHA_B,
+    namedLensSelectionPolicyVersion: "named-lens-selection-v1" as const,
+    namedLensPassageSchemaVersion: "named-lens-passage-v1" as const,
+    namedLensGeneratorVersion: "named-lens-generator-v1",
+    underwritingPresentationSchemaVersion:
+      "decision-first-named-lens-v1" as const,
+    decisionTaxonomyVersion: "named-lens-decision-taxonomy-v1" as const,
+    decisionTaxonomyDigest: SHA_C,
+    criticalEvidenceProjectionFingerprint: SHA_D,
+    finalDispositionsFingerprint: SHA_A,
+    presentationFingerprint: SHA_B,
+    refreshNonce: null,
+  };
+  const generation = input.generation ?? "pinned_legacy";
+  const versionSnapshot = generation === "legacy_pre_passage"
+    ? {
+      ...currentIdentity,
+      schemaVersion: "framework-judgment-v1",
+      settingsFingerprint: "belief-reversal-task12-v1",
+      applicationCommit: "task12-local-e2e",
+    }
+    : generation === "partial_current"
+    ? {
+      ...currentIdentity,
+      schemaVersion: "framework-judgment-v1",
+      settingsFingerprint: "settings_current",
+      applicationCommit: "commit_current",
+      namedLensSelectionPolicyVersion: "named-lens-selection-v1" as const,
+    }
+    : generation === "unknown"
+    ? {
+      ...currentIdentity,
+      schemaVersion: "unknown",
+      settingsFingerprint: "unknown",
+      applicationCommit: "unknown",
+    }
+    : generation === "current"
+    ? currentVersionSnapshot
     : currentIdentity;
   return {
     candidateRunId: input.candidateRunId,
-    workspaceId: input.workspaceId ?? "workspace_1",
+    sourceCandidateRunId,
+    workspaceId,
     dealId: input.dealId,
     candidateAnalysisFingerprint: input.fingerprint ?? `fp:${input.dealId}`,
     versionSnapshot,
-  } as CandidateArtifactBundle;
+    ...(generation === "current"
+      ? {
+        decisionCriticalEvidenceProjection: {
+          workspaceId,
+          artifactSourceCandidateRunId: sourceCandidateRunId,
+          fingerprint: SHA_D,
+        },
+        namedLensCatalogConsiderations: [{
+          workspaceId,
+          artifactSourceCandidateRunId: sourceCandidateRunId,
+        }],
+        namedLensDispositions: [{
+          workspaceId,
+          artifactSourceCandidateRunId: sourceCandidateRunId,
+        }],
+        namedLensPassages: [{
+          workspaceId,
+          artifactSourceCandidateRunId: sourceCandidateRunId,
+        }],
+        underwritingPresentationReportId: input.reportId ?? "report_1",
+        namedLensPresentation: {
+          schemaVersion: "decision-first-named-lens-v1",
+          workspaceId,
+          artifactSourceCandidateRunId: sourceCandidateRunId,
+          fingerprint: SHA_B,
+        },
+      }
+      : {}),
+  } as unknown as CandidateArtifactBundle;
 }
 
 function resolvedScope(overrides: {
@@ -301,6 +400,7 @@ test("loads the exact report Deal and validates every scoped candidate through e
   assert.equal(result.analysis.companyName, "Ably");
   assert.equal(result.candidate?.id, "candidate_ably");
   assert.equal(result.bundle?.candidateRunId, "candidate_ably");
+  assert.equal(result.presentationAdapter?.kind, "legacy_pinned_23");
   assert.deepEqual(storage.candidateLookups, ["candidate_ably"]);
   assert.equal(storage.globalListCalls, 0);
 });
@@ -311,12 +411,14 @@ test("looks up a rerun alias by the exact scoped candidate ID and validates its 
     dealId: "deal_ably",
     fingerprint: "fp:ably-stable",
     rerunOfId: "candidate_original",
+    artifactSourceCandidateRunId: "candidate_original",
   });
   const storage = repositories({
     candidates: [alias],
     bundles: {
       candidate_rerun: bundle({
-        candidateRunId: "candidate_original",
+        candidateRunId: "candidate_rerun",
+        sourceCandidateRunId: "candidate_original",
         dealId: "deal_ably",
         fingerprint: "fp:ably-stable",
       }),
@@ -338,9 +440,47 @@ test("looks up a rerun alias by the exact scoped candidate ID and validates its 
   assert.equal(result.status, "ready");
   if (result.status !== "ready") return;
   assert.equal(result.candidate?.id, "candidate_rerun");
-  assert.equal(result.bundle?.candidateRunId, "candidate_original");
+  assert.equal(result.bundle?.candidateRunId, "candidate_rerun");
+  assert.equal(result.bundle?.sourceCandidateRunId, "candidate_original");
+  assert.equal(result.presentationAdapter?.kind, "legacy_pinned_23");
   assert.deepEqual(storage.candidateLookups, ["candidate_rerun"]);
   assert.equal(storage.globalListCalls, 0);
+});
+
+test("a refresh rerun cannot alias an earlier Candidate without an explicit artifact source", async () => {
+  const refresh = candidate({
+    id: "candidate_refresh",
+    dealId: "deal_ably",
+    fingerprint: "fp:ably-refresh",
+    rerunOfId: "candidate_original",
+    artifactSourceCandidateRunId: null,
+  });
+  const storage = repositories({
+    candidates: [refresh],
+    bundles: {
+      candidate_refresh: bundle({
+        candidateRunId: "candidate_refresh",
+        sourceCandidateRunId: "candidate_original",
+        dealId: "deal_ably",
+        fingerprint: "fp:ably-refresh",
+      }),
+    },
+  });
+  const result = await loadExactFinalizedChatScope({
+    workspaceId: "workspace_1",
+    scope: resolvedScope({
+      dealId: "deal_ably",
+      candidateRunIds: ["candidate_refresh"],
+    }),
+    question: "Why did we originally pass?",
+    underwritingRuns: storage.underwritingRuns,
+    artifacts: storage.artifacts,
+  });
+
+  assert.equal(result.status, "insufficient_evidence");
+  if (result.status === "insufficient_evidence") {
+    assert.equal(result.reason, "artifact_identity_mismatch");
+  }
 });
 
 test("resolves exactly one company name, Deal ID, or unique mentioned status without an explicit Deal", async () => {
@@ -598,6 +738,7 @@ test("allows terminal unavailable candidates only when no finalized bundle is re
   if (result.status === "ready") {
     assert.equal(result.candidate?.status, "unavailable");
     assert.equal(result.bundle, null);
+    assert.equal(result.presentationAdapter, null);
   }
 });
 
@@ -639,10 +780,11 @@ test("allows a terminal partial belief-revised candidate when its exact finalize
   if (result.status === "ready") {
     assert.equal(result.candidate?.status, "partial");
     assert.equal(result.bundle?.candidateRunId, partial.id);
+    assert.equal(result.presentationAdapter?.kind, "legacy_pinned_23");
   }
 });
 
-test("rejects absent, foreign, mismatched, and wrong-generation finalized artifacts", async () => {
+test("rejects absent, foreign, and mismatched finalized artifacts", async () => {
   const cases: Array<{
     label: string;
     value: CandidateArtifactBundle | null;
@@ -676,24 +818,6 @@ test("rejects absent, foreign, mismatched, and wrong-generation finalized artifa
         fingerprint: "fp:foreign",
       }),
       reason: "artifact_identity_mismatch",
-    },
-    {
-      label: "legacy artifact in current scope",
-      value: bundle({
-        candidateRunId: "candidate_ably",
-        dealId: "deal_ably",
-        generation: "legacy",
-      }),
-      reason: "artifact_generation_mismatch",
-    },
-    {
-      label: "partial generation identity",
-      value: bundle({
-        candidateRunId: "candidate_ably",
-        dealId: "deal_ably",
-        generation: "partial",
-      }),
-      reason: "artifact_generation_mismatch",
     },
   ];
   for (const item of cases) {
@@ -774,6 +898,45 @@ test("legacy report scope remains isolated from current artifacts", async () => 
     },
   });
 
+  await assert.rejects(
+    () => loadExactFinalizedChatScope({
+      workspaceId: "workspace_1",
+      scope: legacyScope,
+      question: "Why did we pass?",
+      underwritingRuns: storage.underwritingRuns,
+      artifacts: storage.artifacts,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof UnderwritingPresentationIntegrityError);
+      assert.equal(error.reason, "mixed_generation");
+      return true;
+    },
+  );
+});
+
+test("resolves the finite pre-passage adapter without using row absence", async () => {
+  const legacyScope = resolvedScope({
+    reportContext: { state: "legacy_unbound" },
+    runContext: { state: "legacy_unbound" },
+    candidateRunIds: ["candidate_ably"],
+    dealId: "deal_ably",
+    analyses: [analysis({
+      dealId: "deal_ably",
+      companyName: "Ably",
+      dealStatus: "passed",
+    })],
+  });
+  const storage = repositories({
+    candidates: [candidate({ id: "candidate_ably", dealId: "deal_ably" })],
+    bundles: {
+      candidate_ably: bundle({
+        candidateRunId: "candidate_ably",
+        dealId: "deal_ably",
+        generation: "legacy_pre_passage",
+      }),
+    },
+  });
+
   const result = await loadExactFinalizedChatScope({
     workspaceId: "workspace_1",
     scope: legacyScope,
@@ -782,10 +945,117 @@ test("legacy report scope remains isolated from current artifacts", async () => 
     artifacts: storage.artifacts,
   });
 
-  assert.equal(result.status, "insufficient_evidence");
-  if (result.status === "insufficient_evidence") {
-    assert.equal(result.reason, "artifact_generation_mismatch");
+  assert.equal(result.status, "ready");
+  if (result.status === "ready") {
+    assert.equal(result.presentationAdapter?.kind, "legacy_pre_passage_30");
   }
+});
+
+test("resolves a complete current artifact and rejects incomplete identity", async () => {
+  const { finalization } = createCurrentNamedLensFinalizationFixture();
+  const {
+    workerId: _workerId,
+    leaseToken: _leaseToken,
+    candidateRunId,
+    evidencePackBuildInputFingerprint: _evidencePackBuildInputFingerprint,
+    ...persistedArtifacts
+  } = structuredClone(finalization);
+  void _workerId;
+  void _leaseToken;
+  void _evidencePackBuildInputFingerprint;
+  const currentBundle = {
+    ...persistedArtifacts,
+    candidateRunId,
+    sourceCandidateRunId: candidateRunId,
+    workspaceId: finalization.evidencePack.workspaceId,
+    dealId: finalization.evidencePack.dealId,
+    claimEdges: [
+      ...finalization.judgments.flatMap(({ claimEdges }) =>
+        structuredClone(claimEdges)
+      ),
+      ...structuredClone(finalization.decision.claimEdges),
+    ],
+  } as CandidateArtifactBundle;
+  const workspaceId = currentBundle.workspaceId;
+  const reportId = currentBundle.underwritingPresentationReportId!;
+  const scope = resolvedScope({
+    reportContext: liveReportContext,
+    runContext: liveRunContext,
+    candidateRunIds: [candidateRunId],
+    dealId: currentBundle.dealId,
+    analyses: [analysis({
+      dealId: currentBundle.dealId,
+      companyName: "Current Company",
+      dealStatus: currentBundle.versionSnapshot.dealStatus!,
+      reportId,
+    })],
+  });
+  scope.report.id = reportId;
+  scope.report.workspaceId = workspaceId;
+  scope.run.workspaceId = workspaceId;
+  const exactCandidate = candidate({
+    id: candidateRunId,
+    dealId: currentBundle.dealId,
+    workspaceId,
+    fingerprint: currentBundle.candidateAnalysisFingerprint,
+  });
+  const currentBatch = batch({
+    workspaceId,
+    scanRunId: scope.run.id,
+  });
+  const storageFor = (storedBundle: CandidateArtifactBundle) => ({
+    underwritingRuns: {
+      async getBatchByScanRunId() {
+        return currentBatch;
+      },
+      async listCandidatesForBatch() {
+        return [exactCandidate];
+      },
+    } as Pick<
+      UnderwritingRunsRepository,
+      "getBatchByScanRunId" | "listCandidatesForBatch"
+    >,
+    artifacts: {
+      async getByCandidateRunId(request: {
+        workspaceId: string;
+        candidateRunId: string;
+      }) {
+        assert.deepEqual(request, { workspaceId, candidateRunId });
+        return storedBundle;
+      },
+    },
+  });
+  const currentStorage = storageFor(currentBundle);
+
+  const current = await loadExactFinalizedChatScope({
+    workspaceId,
+    scope,
+    question: "Why did we pass?",
+    underwritingRuns: currentStorage.underwritingRuns,
+    artifacts: currentStorage.artifacts,
+  });
+  assert.equal(current.status, "ready");
+  if (current.status === "ready") {
+    assert.equal(current.presentationAdapter?.kind, "current");
+  }
+
+  const incompleteBundle = structuredClone(currentBundle);
+  delete incompleteBundle.versionSnapshot.presentationFingerprint;
+  const incompleteStorage = storageFor(incompleteBundle);
+  await assert.rejects(
+    () => loadExactFinalizedChatScope({
+      workspaceId,
+      scope,
+      question: "Why did we pass?",
+      underwritingRuns: incompleteStorage.underwritingRuns,
+      artifacts: incompleteStorage.artifacts,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof UnderwritingPresentationIntegrityError);
+      assert.equal(error.reason, "incomplete_current_identity");
+      return true;
+    },
+  );
 });
 
 test("legacy report scope without underwriting stays usable only for its exact CompanyAnalysis", async () => {
@@ -815,6 +1085,7 @@ test("legacy report scope without underwriting stays usable only for its exact C
     assert.equal(result.dealId, "deal_ably");
     assert.equal(result.candidate, null);
     assert.equal(result.bundle, null);
+    assert.equal(result.presentationAdapter, null);
   }
   assert.deepEqual(storage.candidateLookups, []);
   assert.equal(storage.globalListCalls, 0);

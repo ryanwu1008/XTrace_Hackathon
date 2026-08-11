@@ -19,6 +19,7 @@ import {
 import {
   createMemoryUnderwritingArtifactsRepository,
   type CandidateArtifactBundle,
+  type CandidateFinalization,
 } from "../../db/repositories/underwriting-artifacts";
 import {
   createMemoryUnderwritingRunsRepository,
@@ -35,11 +36,18 @@ import {
 import {
   buildUnderwritingNarrative,
 } from "../../lib/underwriting/narrative";
+import { searchPersistedUnderwriting } from
+  "../../lib/underwriting/read-model";
 import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelligence-report";
+import {
+  createCurrentNamedLensFinalizationFixture,
+  withWithheldCurrentNamedLensArtifacts,
+} from "../helpers/current-named-lens-finalization";
 
 const WORKSPACE_ID = "workspace_read_api";
 const REPORT_ID = "report_read_api";
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
+const CURRENT_NAMED_LENS_RUN_ID = "22222222-2222-4222-8222-222222222222";
 const PUBLIC_JUDGMENT_LIMITATION = "Management-reported evidence.";
 const PRIVATE_LIMITATION_MARKERS = [
   "Private no-endorsement authoring notice.",
@@ -146,6 +154,7 @@ function finalizedBundle(input: {
   const decisionId = "decision_searchable";
   const bundle = {
     candidateRunId: input.candidateRunId,
+    sourceCandidateRunId: input.candidateRunId,
     workspaceId,
     dealId,
     candidateAnalysisFingerprint: `sha256:${"a".repeat(64)}`,
@@ -444,6 +453,15 @@ function finalizedBundle(input: {
           noPrivateReasoning: "Private reasoning notice.",
           experimentalOnly: "Private experimental notice.",
         },
+        decisionTaxonomyVersion: "named-lens-decision-taxonomy-v1",
+        decisionTaxonomyDigest: `sha256:${"8".repeat(64)}`,
+        decisionTaxonomyBindings: [{
+          frameworkId: "PT-01",
+          cardFieldRef: "decisionQuestions[0]",
+          questionText: "Private decision question?",
+          decisionQuestionCode: "customer_adoption",
+          evidenceDomainCodes: ["customer"],
+        }],
         formalDecisionWeight: "0",
         authorizationDigest: `sha256:${"9".repeat(64)}`,
       },
@@ -508,9 +526,9 @@ function finalizedBundle(input: {
       formulaVersions: ["formula-v1"],
       providerModel: "private-provider-model",
       promptVersion: "private-prompt-version",
-      schemaVersion: "schema-v1",
-      settingsFingerprint: "private-settings-fingerprint",
-      applicationCommit: "private-application-commit",
+      schemaVersion: "framework-judgment-v1",
+      settingsFingerprint: "belief-reversal-task12-v1",
+      applicationCommit: "task12-local-e2e",
     },
     claimEdges: [
       {
@@ -687,6 +705,204 @@ async function readRepositories(options: {
     candidate,
     candidates,
   };
+}
+
+function currentNamedLensBundle(input: {
+  requestedCandidateRunId?: string;
+  sourceCandidateRunId?: string;
+  finalization?: CandidateFinalization;
+} = {}): CandidateArtifactBundle {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const finalization = input.finalization ?? fixture.finalization;
+  const artifacts: Partial<CandidateFinalization> = structuredClone(
+    finalization,
+  );
+  delete artifacts.workerId;
+  delete artifacts.leaseToken;
+  delete artifacts.candidateRunId;
+  delete artifacts.evidencePackBuildInputFingerprint;
+  const sourceCandidateRunId = input.sourceCandidateRunId
+    ?? finalization.candidateRunId;
+  const requestedCandidateRunId = input.requestedCandidateRunId
+    ?? sourceCandidateRunId;
+  return {
+    ...artifacts,
+    candidateRunId: requestedCandidateRunId,
+    sourceCandidateRunId,
+    workspaceId: finalization.evidencePack.workspaceId,
+    dealId: finalization.evidencePack.dealId,
+    claimEdges: [
+      ...finalization.judgments.flatMap(({ claimEdges }) =>
+        structuredClone(claimEdges)
+      ),
+      ...structuredClone(finalization.decision.claimEdges),
+    ],
+  } as CandidateArtifactBundle;
+}
+
+function currentNamedLensRouteDependencies(input: {
+  bundle?: CandidateArtifactBundle;
+  reportId?: string;
+  presentationReportId?: string;
+  candidateArtifactSourceCandidateRunId?: string | null;
+} = {}): RouteDependencies {
+  const bundle = structuredClone(input.bundle ?? currentNamedLensBundle());
+  if (input.presentationReportId !== undefined) {
+    bundle.underwritingPresentationReportId = input.presentationReportId;
+  }
+  const reportId = input.reportId ?? "report_current";
+  const report = {
+    ...canonicalIntelligenceReportFixture({
+      id: reportId,
+      workspaceId: bundle.workspaceId,
+      runId: CURRENT_NAMED_LENS_RUN_ID,
+      createdAt: "2026-08-10T12:00:00.000Z",
+      marketSummary: "Current Named Lens report.",
+      dealIds: [bundle.dealId],
+    }),
+    analysisStatus: "completed" as const,
+    evidenceCoverage: {
+      acceptedPublicEvents: 1,
+      excludedPublicItems: 0,
+      truncatedPublicEvents: 0,
+      recalledDealCount: 1,
+      unavailableDealCount: 0,
+    },
+    counts: {
+      companyCount: 1,
+      beliefRevised: 1,
+      monitor: 0,
+      noMaterialChange: 0,
+      analysisUnavailable: 0,
+    },
+    priorityDealId: bundle.dealId,
+    evidenceContext: {
+      state: "current" as const,
+      schemaVersion: "run-evidence-context-v1" as const,
+      evidenceMode: "live" as const,
+      windowDays: 14 as const,
+      anchorAt: "2026-08-10T12:00:00.000Z",
+      windowStartAt: "2026-07-28T00:00:00.000Z",
+      windowEndAt: "2026-08-10T12:00:00.000Z",
+      windowTimezone: "America/Los_Angeles",
+      snapshotId: null,
+      snapshotFingerprint: null,
+      contextFingerprint: `sha256:${"1".repeat(64)}`,
+      displayLabel: "Live evidence through 2026-08-10",
+      eventCount: 1,
+      eventSetFingerprint: `sha256:${"2".repeat(64)}`,
+      bindingFingerprint: `sha256:${"3".repeat(64)}`,
+    },
+  };
+  const candidate: CandidateRun = {
+    id: bundle.candidateRunId,
+    batchId: "batch_current",
+    workspaceId: bundle.workspaceId,
+    dealId: bundle.dealId,
+    status: bundle.terminalStatus === "partial" ? "partial" : "completed",
+    candidateAnalysisFingerprint: bundle.candidateAnalysisFingerprint,
+    artifactSourceCandidateRunId:
+      input.candidateArtifactSourceCandidateRunId
+      ?? (bundle.candidateRunId === bundle.sourceCandidateRunId
+        ? null
+        : bundle.sourceCandidateRunId),
+    terminalReasonCodes: bundle.terminalReasonCodes ?? [],
+    rerunOfId: null,
+    createdAt: "2026-08-10T12:00:00.000Z",
+    finalizedAt: "2026-08-10T12:01:00.000Z",
+  };
+  return productDependencies({
+    async resolveRequestContext() {
+      return {
+        mode: "product",
+        principal: {
+          userId: "user_current",
+          email: "current@example.test",
+        },
+        workspaceId: bundle.workspaceId,
+        role: "associate",
+        permissions: {
+          readWorkspace: true,
+          readPrivateSources: true,
+          mutateSources: false,
+          managePolicy: false,
+          administerFrameworks: false,
+        },
+      };
+    },
+    intelligence: {
+      async getReport(workspaceId, requestedReportId) {
+        return workspaceId === bundle.workspaceId
+            && requestedReportId === reportId
+          ? structuredClone(report)
+          : null;
+      },
+    } as RouteDependencies["intelligence"],
+    underwritingRuns: {
+      async getBatchByScanRunId({ workspaceId, scanRunId }) {
+        return workspaceId === bundle.workspaceId
+            && scanRunId === CURRENT_NAMED_LENS_RUN_ID
+          ? {
+            id: "batch_current",
+            workspaceId,
+            scanRunId,
+            status: "completed",
+            batchInputFingerprint: `sha256:${"4".repeat(64)}`,
+            fundPolicySnapshotId: "fund_policy_current",
+            rerunOfId: null,
+            createdAt: "2026-08-10T12:00:00.000Z",
+          }
+          : null;
+      },
+      async listCandidatesForBatch({ workspaceId, batchId }) {
+        return workspaceId === bundle.workspaceId && batchId === "batch_current"
+          ? [structuredClone(candidate)]
+          : [];
+      },
+    } as RouteDependencies["underwritingRuns"],
+    underwritingArtifacts: {
+      async getByCandidateRunId({ workspaceId, candidateRunId }) {
+        return workspaceId === bundle.workspaceId
+            && candidateRunId === bundle.candidateRunId
+          ? structuredClone(bundle)
+          : null;
+      },
+    } as RouteDependencies["underwritingArtifacts"],
+  });
+}
+
+async function currentPersistedSearch(input: {
+  bundle: CandidateArtifactBundle;
+  query: string;
+}) {
+  const artifacts = createMemoryUnderwritingArtifactsRepository();
+  artifacts.commitPrepared(structuredClone(input.bundle));
+  return searchPersistedUnderwriting({
+    workspaceId: input.bundle.workspaceId,
+    query: input.query,
+    artifacts,
+    report: {
+      id: input.bundle.underwritingPresentationReportId!,
+      workspaceId: input.bundle.workspaceId,
+      evidenceContext: {
+        state: "current",
+        schemaVersion: "run-evidence-context-v1",
+        evidenceMode: "live",
+        windowDays: 14,
+        anchorAt: "2026-08-10T12:00:00.000Z",
+        windowStartAt: "2026-07-28T00:00:00.000Z",
+        windowEndAt: "2026-08-10T12:00:00.000Z",
+        windowTimezone: "America/Los_Angeles",
+        snapshotId: null,
+        snapshotFingerprint: null,
+        contextFingerprint: `sha256:${"5".repeat(64)}`,
+        displayLabel: "Live evidence through 2026-08-10",
+        eventCount: 1,
+        eventSetFingerprint: `sha256:${"6".repeat(64)}`,
+        bindingFingerprint: `sha256:${"7".repeat(64)}`,
+      },
+    },
+  });
 }
 
 test("public sandbox renders the complete persisted canonical named-advisory report", async () => {
@@ -1476,12 +1692,511 @@ test("candidate detail returns exact persisted replay lineage", async () => {
   );
   assert.equal(
     payload.data.versionSnapshot.settingsFingerprint,
-    "private-settings-fingerprint",
+    "belief-reversal-task12-v1",
   );
   assert.equal(
     payload.data.versionSnapshot.applicationCommit,
-    "private-application-commit",
+    "task12-local-e2e",
   );
+});
+
+test("current candidate detail projects only persisted Named Lens order, passages, and public identity", async () => {
+  const response = await getUnderwriting(
+    new Request(
+      "https://vsee.test/api/reports/report_current/underwriting/deal_current",
+    ),
+    params("report_current", "deal_current") as {
+      params: Promise<{ id: string; dealId: string }>;
+    },
+    currentNamedLensRouteDependencies(),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: Record<string, unknown> & {
+      presentationAdapter: {
+        kind: string;
+        schemaVersion: string;
+      };
+      sourceCandidateRunId: string;
+      namedLensPresentation: {
+        reportId: string;
+        schemaVersion: string;
+        fingerprint: string;
+        terminalStatus: string;
+        terminalReasonCodes: string[];
+        decisionCriticalEvidenceProjection: {
+          id: string;
+          fingerprint: string;
+          evidenceRefs: Array<{ evidencePackItemId: string }>;
+        };
+        dispositions: Array<{
+          judgmentId: string | null;
+          disposition: string;
+          selectedPosition: number | null;
+          reasonCodes: string[];
+        }>;
+        selectedPassages: Array<{
+          selectedPosition: number;
+          displayIdentity: {
+            judgmentId: string;
+            componentFrameworkId: string;
+            displayName: string;
+            attributionDisplay: string;
+          };
+          passage: {
+            judgmentId: string;
+            premise: { text: string; publicSourceIds: string[] };
+            caseApplication: { text: string };
+            countercase: { text: string };
+            unknownBoundary: { text: string };
+            conditionalConclusion: {
+              text: string;
+              advisoryPosture: string;
+            };
+            advisoryContract: { formalDecisionWeight: string };
+          };
+          publicPremiseSources: Array<{
+            sourceId: string;
+            title: string;
+            publisher: string;
+            url: string;
+          }>;
+        }>;
+        appendixPassages: unknown[];
+        withheldDispositions: unknown[];
+        synthesis: { branch: string; text: string };
+        firstScreenProjectionRefs: {
+          decisionId: string;
+          selectedJudgmentIds: string[];
+        };
+      };
+      auditAppendix: {
+        judgments: unknown[];
+      };
+      judgments: unknown[];
+    };
+  };
+
+  assert.deepEqual(payload.data.presentationAdapter, {
+    kind: "current",
+    schemaVersion: "decision-first-named-lens-v1",
+  });
+  assert.equal(payload.data.sourceCandidateRunId, "candidate_current");
+  assert.equal(payload.data.namedLensPresentation.reportId, "report_current");
+  assert.equal(
+    payload.data.namedLensPresentation.schemaVersion,
+    "decision-first-named-lens-v1",
+  );
+  assert.equal(payload.data.namedLensPresentation.terminalStatus, "completed");
+  assert.deepEqual(
+    payload.data.namedLensPresentation.terminalReasonCodes,
+    ["limited_framework_coverage"],
+  );
+  assert.deepEqual(
+    payload.data.namedLensPresentation.decisionCriticalEvidenceProjection
+      .evidenceRefs.map(({ evidencePackItemId }) => evidencePackItemId),
+    ["fact_1"],
+  );
+  assert.deepEqual(
+    payload.data.namedLensPresentation.dispositions.map((disposition) => ({
+      judgmentId: disposition.judgmentId,
+      disposition: disposition.disposition,
+      selectedPosition: disposition.selectedPosition,
+      reasonCodes: disposition.reasonCodes,
+    })),
+    [{
+      judgmentId: "judgment_advisory_1",
+      disposition: "selected_main",
+      selectedPosition: 1,
+      reasonCodes: ["CHANGED_BELIEF_EVIDENCE"],
+    }],
+  );
+  const selected = payload.data.namedLensPresentation.selectedPassages[0];
+  assert.ok(selected);
+  assert.equal(selected.selectedPosition, 1);
+  assert.deepEqual(selected.displayIdentity, {
+    judgmentId: "judgment_advisory_1",
+    componentFrameworkId: "OA2-01",
+    displayName: "Positioning Readiness and Scope",
+    attributionDisplay: "Based on April Dunford's 2026 public materials",
+  });
+  assert.equal(
+    selected.passage.premise.text,
+    "The public framework tests durable customer demand.",
+  );
+  assert.equal(
+    selected.passage.caseApplication.text,
+    "Saved company evidence applies the framework.",
+  );
+  assert.equal(
+    selected.passage.countercase.text,
+    "Saved counterevidence limits the conclusion.",
+  );
+  assert.equal(
+    selected.passage.unknownBoundary.text,
+    "A saved unknown defines the diligence boundary.",
+  );
+  assert.equal(
+    selected.passage.conditionalConclusion.text,
+    "The view remains conditional on resolving the saved unknown.",
+  );
+  assert.equal(selected.passage.advisoryContract.formalDecisionWeight, "0");
+  assert.deepEqual(selected.publicPremiseSources, [{
+    sourceId: "OA2-P1-DECISIONS-2026",
+    title: "Decisions to Make Before a Positioning Exercise",
+    publisher: "Positioning with April Dunford",
+    url:
+      "https://www.positioning.show/decisions-to-make-before-a-positioning-exercise",
+  }]);
+  assert.deepEqual(payload.data.namedLensPresentation.appendixPassages, []);
+  assert.deepEqual(payload.data.namedLensPresentation.withheldDispositions, []);
+  assert.deepEqual(payload.data.namedLensPresentation.synthesis, {
+    branch: "single_perspective",
+    text: "One bounded advisory reading informs diligence.",
+    judgmentIds: ["judgment_advisory_1"],
+    evidenceItemIds: ["fact_1"],
+  });
+  assert.deepEqual(
+    payload.data.namedLensPresentation.firstScreenProjectionRefs,
+    {
+      decisionId: "decision_current",
+      decisionEvidenceItemIds: ["fact_1"],
+      selectedJudgmentIds: ["judgment_advisory_1"],
+    },
+  );
+  assert.deepEqual(payload.data.judgments, []);
+  assert.ok(payload.data.auditAppendix.judgments.length > 0);
+  const serialized = JSON.stringify(payload.data);
+  assert.doesNotMatch(serialized, /rightsStatus|attributionNotes|packReview/);
+  assert.doesNotMatch(serialized, /openIssues|Private authoring/);
+});
+
+test("current main presentation is independent of raw judgment prose and order", async () => {
+  const original = currentNamedLensBundle();
+  const mutated = structuredClone(original);
+  mutated.judgments.reverse();
+  const advisory = mutated.judgments.find(({ id }) =>
+    id === "judgment_advisory_1"
+  );
+  assert.ok(advisory);
+  advisory.conclusion = "negative";
+  advisory.strongestSupport = "MUTATED RAW JUDGMENT SUPPORT";
+  advisory.strongestCounterargument = "MUTATED RAW JUDGMENT COUNTER";
+
+  const read = async (bundle: CandidateArtifactBundle) => {
+    const response = await getUnderwriting(
+      new Request(
+        "https://vsee.test/api/reports/report_current/underwriting/deal_current",
+      ),
+      params("report_current", "deal_current") as {
+        params: Promise<{ id: string; dealId: string }>;
+      },
+      currentNamedLensRouteDependencies({ bundle }),
+    );
+    assert.equal(response.status, 200);
+    const data = (await response.json() as {
+      data: { narrative: string; namedLensPresentation: unknown };
+    }).data;
+    const namedLensPresentation = data.namedLensPresentation;
+    assert.ok(namedLensPresentation);
+    return {
+      narrative: data.narrative,
+      namedLensPresentation,
+    };
+  };
+
+  mutated.narrative = "MUTATED RAW JUDGMENT SUPPORT";
+  const mutatedPresentation = await read(mutated);
+  const originalPresentation = await read(original);
+  assert.deepEqual(mutatedPresentation, originalPresentation);
+  assert.equal(
+    originalPresentation.narrative,
+    "One bounded advisory reading informs diligence.",
+  );
+  assert.doesNotMatch(
+    JSON.stringify(originalPresentation),
+    /Persisted customer demand support|Persisted customer counterevidence/,
+  );
+});
+
+test("current replay alias exposes requested and canonical Candidate identities", async () => {
+  const bundle = currentNamedLensBundle({
+    requestedCandidateRunId: "candidate_replay_alias",
+    sourceCandidateRunId: "candidate_current",
+  });
+  const response = await getUnderwriting(
+    new Request(
+      "https://vsee.test/api/reports/report_current/underwriting/deal_current",
+    ),
+    params("report_current", "deal_current") as {
+      params: Promise<{ id: string; dealId: string }>;
+    },
+    currentNamedLensRouteDependencies({ bundle }),
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: { candidateRunId: string; sourceCandidateRunId: string };
+  };
+  assert.equal(payload.data.candidateRunId, "candidate_replay_alias");
+  assert.equal(payload.data.sourceCandidateRunId, "candidate_current");
+});
+
+test("current partial detail keeps withheld Named Lens prose absent and typed", async () => {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const partial = withWithheldCurrentNamedLensArtifacts(
+    fixture.finalization,
+    fixture.persistedAttempts,
+  );
+  partial.underwritingPresentationReportId = "report_current";
+  const response = await getUnderwriting(
+    new Request(
+      "https://vsee.test/api/reports/report_current/underwriting/deal_current",
+    ),
+    params("report_current", "deal_current") as {
+      params: Promise<{ id: string; dealId: string }>;
+    },
+    currentNamedLensRouteDependencies({
+      bundle: currentNamedLensBundle({ finalization: partial }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: {
+      decision: { id: string };
+      namedLensPresentation: {
+        terminalStatus: string;
+        terminalReasonCodes: string[];
+        selectedPassages: unknown[];
+        appendixPassages: unknown[];
+        withheldDispositions: Array<{
+          disposition: string;
+          reasonCodes: string[];
+          passageFingerprint: null;
+        }>;
+        synthesis: { branch: string; judgmentIds: string[] };
+      };
+    };
+  };
+  assert.equal(payload.data.decision.id, "decision_current");
+  assert.equal(payload.data.namedLensPresentation.terminalStatus, "partial");
+  assert.deepEqual(
+    payload.data.namedLensPresentation.terminalReasonCodes,
+    ["named_lens_passage_attempts_exhausted"],
+  );
+  assert.deepEqual(payload.data.namedLensPresentation.selectedPassages, []);
+  assert.deepEqual(payload.data.namedLensPresentation.appendixPassages, []);
+  assert.deepEqual(
+    payload.data.namedLensPresentation.withheldDispositions.map(
+      ({ disposition, reasonCodes, passageFingerprint }) => ({
+        disposition,
+        reasonCodes,
+        passageFingerprint,
+      }),
+    ),
+    [{
+      disposition: "withheld",
+      reasonCodes: ["PASSAGE_NOT_GENERATED"],
+      passageFingerprint: null,
+    }],
+  );
+  assert.deepEqual(payload.data.namedLensPresentation.synthesis, {
+    branch: "zero_available",
+    text:
+      "Advisory passages remain withheld pending the deterministic presentation stage.",
+    judgmentIds: [],
+    evidenceItemIds: [],
+  });
+});
+
+test("current candidate detail maps report and fingerprint integrity failures to bounded 409", async () => {
+  const mutations: Array<{
+    name: string;
+    dependencies: () => RouteDependencies;
+  }> = [{
+    name: "cross-report presentation",
+    dependencies: () => currentNamedLensRouteDependencies({
+      presentationReportId: "report_other",
+    }),
+  }, {
+    name: "presentation fingerprint mismatch",
+    dependencies: () => {
+      const bundle = currentNamedLensBundle();
+      bundle.namedLensPresentation!.fingerprint =
+        `sha256:${"f".repeat(64)}`;
+      return currentNamedLensRouteDependencies({ bundle });
+    },
+  }];
+  for (const mutation of mutations) {
+    const response = await getUnderwriting(
+      new Request(
+        "https://vsee.test/api/reports/report_current/underwriting/deal_current",
+      ),
+      params("report_current", "deal_current") as {
+        params: Promise<{ id: string; dealId: string }>;
+      },
+      mutation.dependencies(),
+    );
+    assert.equal(response.status, 409, mutation.name);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: "CONFLICT",
+        message:
+          "Underwriting presentation identity is unavailable or inconsistent.",
+        retryable: false,
+      },
+    });
+  }
+});
+
+test("current candidate detail rejects a disposition physically linked to a different same-judgment passage", async () => {
+  const bundle = currentNamedLensBundle();
+  const original = bundle.namedLensPassages![0]!;
+  const forged = structuredClone(original);
+  forged.fingerprint = `sha256:${"8".repeat(64)}`;
+  forged.caseApplication.text =
+    "FORGED PASSAGE THAT WAS NEVER SELECTED BY THE SAVED DISPOSITION.";
+  bundle.namedLensPassages!.unshift(forged);
+  bundle.namedLensDispositions![0]!.passageFingerprint = forged.fingerprint;
+
+  const response = await getUnderwriting(
+    new Request(
+      "https://vsee.test/api/reports/report_current/underwriting/deal_current",
+    ),
+    params("report_current", "deal_current") as {
+      params: Promise<{ id: string; dealId: string }>;
+    },
+    currentNamedLensRouteDependencies({ bundle }),
+  );
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "CONFLICT",
+      message:
+        "Underwriting presentation identity is unavailable or inconsistent.",
+      retryable: false,
+    },
+  });
+});
+
+test("current candidate detail rejects an unreferenced unique passage outside the disposition graph", async () => {
+  const bundle = currentNamedLensBundle();
+  const unreferenced = structuredClone(bundle.namedLensPassages![0]!);
+  unreferenced.judgmentId = "judgment_unreferenced_unique";
+  unreferenced.fingerprint = `sha256:${"7".repeat(64)}`;
+  unreferenced.caseApplication.text =
+    "UNREFERENCED PASSAGE OUTSIDE THE SAVED DISPOSITION GRAPH.";
+  bundle.namedLensPassages!.push(unreferenced);
+
+  const response = await getUnderwriting(
+    new Request(
+      "https://vsee.test/api/reports/report_current/underwriting/deal_current",
+    ),
+    params("report_current", "deal_current") as {
+      params: Promise<{ id: string; dealId: string }>;
+    },
+    currentNamedLensRouteDependencies({ bundle }),
+  );
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "CONFLICT",
+      message:
+        "Underwriting presentation identity is unavailable or inconsistent.",
+      retryable: false,
+    },
+  });
+});
+
+test("current search is projected from persisted Named Lens passages instead of raw judgment prose", async () => {
+  const original = currentNamedLensBundle();
+  const mutated = structuredClone(original);
+  mutated.judgments.reverse();
+  const advisory = mutated.judgments.find(({ id }) =>
+    id === "judgment_advisory_1"
+  );
+  assert.ok(advisory);
+  advisory.conclusion = "negative";
+  advisory.strongestSupport = "MUTATED RAW JUDGMENT SUPPORT";
+  advisory.strongestCounterargument = "MUTATED RAW JUDGMENT COUNTER";
+
+  const originalResults = await currentPersistedSearch({
+    bundle: original,
+    query: "saved company evidence applies framework",
+  });
+  const mutatedResults = await currentPersistedSearch({
+    bundle: mutated,
+    query: "saved company evidence applies framework",
+  });
+  assert.equal(originalResults.length, 1);
+  assert.deepEqual(mutatedResults, originalResults);
+  assert.equal(originalResults[0].itemId, "judgment_advisory_1");
+  assert.match(
+    originalResults[0].text,
+    /Saved company evidence applies the framework\./,
+  );
+  assert.deepEqual(
+    await currentPersistedSearch({
+      bundle: mutated,
+      query: "mutated raw judgment support",
+    }),
+    [],
+  );
+});
+
+test("current search rejects a disposition physically linked to a different same-judgment passage", async () => {
+  const bundle = currentNamedLensBundle();
+  const forged = structuredClone(bundle.namedLensPassages![0]!);
+  forged.fingerprint = `sha256:${"8".repeat(64)}`;
+  forged.caseApplication.text =
+    "FORGED PASSAGE THAT WAS NEVER SELECTED BY THE SAVED DISPOSITION.";
+  bundle.namedLensPassages!.unshift(forged);
+  bundle.namedLensDispositions![0]!.passageFingerprint = forged.fingerprint;
+
+  await assert.rejects(
+    () => currentPersistedSearch({
+      bundle,
+      query: "forged passage never selected",
+    }),
+    {
+      name: "UnderwritingPresentationIntegrityError",
+      message:
+        "Underwriting presentation identity is unavailable or inconsistent.",
+    },
+  );
+});
+
+test("current search never indexes Named Lens authoring metadata", async () => {
+  const bundle = currentNamedLensBundle();
+  const advisory = bundle.judgments.find(({ id }) =>
+    id === "judgment_advisory_1"
+  );
+  assert.ok(advisory?.frameworkMetadata);
+  advisory.frameworkMetadata.packDescription =
+    "AUTHORING ONLY SECRET MARKER";
+  advisory.frameworkMetadata.packReview.openIssues = [
+    "AUTHORING REVIEW SECRET MARKER",
+  ];
+  advisory.frameworkMetadata.sources[0]!.attributionNotes =
+    "AUTHORING ATTRIBUTION SECRET MARKER";
+
+  for (const query of [
+    "authoring only secret marker",
+    "authoring review secret marker",
+    "authoring attribution secret marker",
+  ]) {
+    assert.deepEqual(await currentPersistedSearch({ bundle, query }), []);
+  }
+  const results = await currentPersistedSearch({
+    bundle,
+    query: "saved company evidence applies framework",
+  });
+  const serialized = JSON.stringify(results);
+  assert.doesNotMatch(serialized, /AUTHORING .* SECRET MARKER/);
+  assert.doesNotMatch(serialized, /packDescription|packReview|attributionNotes/);
 });
 
 test("candidate detail allowlists public advisory provenance without unpublished authoring bodies", async () => {
@@ -1977,9 +2692,19 @@ function deterministicAdvisoryClient(): ClaudeClient {
       const peterThiel =
         payload.card.experimentalAdvisory?.packId
           === "peter_thiel_public_frameworks_v0_1";
+      const advisory = payload.card.experimentalAdvisory;
+      const binding = advisory?.decisionTaxonomyBindings[0];
+      const component = advisory?.components.find(({ frameworkId }) =>
+        frameworkId === binding?.frameworkId
+      );
+      const sourceRef = component?.sourceRefs[0];
+      if (!advisory || !binding || !component || !sourceRef) {
+        throw new Error("Advisory fixture requires one grounded component.");
+      }
+      const conclusion = peterThiel ? "supportive" : "negative";
       return JSON.stringify({
         applicability: "applicable",
-        conclusion: peterThiel ? "supportive" : "negative",
+        conclusion,
         supportEvidenceItemIds: [factId],
         counterEvidenceItemIds: [assumptionId],
         unusedEvidenceItemIds: [],
@@ -1999,6 +2724,66 @@ function deterministicAdvisoryClient(): ClaudeClient {
           judgment: "medium",
         },
         frameworkRuleRefs: [payload.card.id],
+        counterevidenceBoundary: {
+          kind: "grounded_counterevidence",
+          evidenceRequestRefs: [],
+        },
+        passage: {
+          focus: {
+            componentFrameworkId: component.frameworkId,
+            componentVersion: component.version,
+            cardFieldRef: binding.cardFieldRef,
+            decisionQuestionCode: binding.decisionQuestionCode,
+            evidenceDomainCodes: [...binding.evidenceDomainCodes].sort(),
+          },
+          premise: {
+            text:
+              "The public framework defines one bounded decision question for this company.",
+            componentFrameworkId: component.frameworkId,
+            componentVersion: component.version,
+            cardFieldRef: binding.cardFieldRef,
+            publicSourceIds: [sourceRef.sourceId],
+            claimIds: [...sourceRef.claimIds].sort(),
+            locator: sourceRef.locator,
+            attributionScope: sourceRef.attributionScope,
+          },
+          caseApplication: {
+            text:
+              "The retained Fact applies the public framework to observed company evidence.",
+            evidenceItemIds: [factId],
+          },
+          countercase: {
+            text:
+              "The retained Assumption bounds confidence in the company-specific application.",
+            boundaryKind: "grounded_counterevidence",
+            evidenceItemIds: [assumptionId],
+            evidenceRequestRefs: [],
+          },
+          unknownBoundary: {
+            text:
+              "Independent customer confirmation would resolve the saved evidence boundary.",
+            judgmentUnknownRefs: [
+              "Independent customer confirmation remains outstanding.",
+            ],
+            judgmentLimitationRefs: [],
+            evidenceRequestRefs: [],
+          },
+          conditionalConclusion: {
+            text: peterThiel
+              ? "This public framework conditionally supports further diligence."
+              : "This public framework conditionally urges caution in further diligence.",
+            stance: conclusion,
+            advisoryPosture: peterThiel
+              ? "supports_further_diligence"
+              : "urges_caution",
+          },
+          advisoryContract: {
+            formalDecisionWeight: "0",
+            noEndorsement: true,
+            namedPersonImpersonation: false,
+            hiddenChainOfThought: false,
+          },
+        },
       });
     },
   };
@@ -2009,6 +2794,22 @@ function frameworkPromptPayload(request: ClaudeCompleteInput): {
     id: string;
     experimentalAdvisory?: {
       packId: string;
+      decisionTaxonomyBindings: Array<{
+        frameworkId: string;
+        cardFieldRef: string;
+        decisionQuestionCode: string;
+        evidenceDomainCodes: string[];
+      }>;
+      components: Array<{
+        frameworkId: string;
+        version: string;
+        sourceRefs: Array<{
+          sourceId: string;
+          claimIds: string[];
+          locator: { kind: string; value: string };
+          attributionScope: string;
+        }>;
+      }>;
     };
   };
   evidencePack: {
@@ -2025,6 +2826,22 @@ function frameworkPromptPayload(request: ClaudeCompleteInput): {
       id: string;
       experimentalAdvisory?: {
         packId: string;
+        decisionTaxonomyBindings: Array<{
+          frameworkId: string;
+          cardFieldRef: string;
+          decisionQuestionCode: string;
+          evidenceDomainCodes: string[];
+        }>;
+        components: Array<{
+          frameworkId: string;
+          version: string;
+          sourceRefs: Array<{
+            sourceId: string;
+            claimIds: string[];
+            locator: { kind: string; value: string };
+            attributionScope: string;
+          }>;
+        }>;
       };
     };
     evidencePack?: {
@@ -2036,6 +2853,22 @@ function frameworkPromptPayload(request: ClaudeCompleteInput): {
         id: string;
         experimentalAdvisory?: {
           packId: string;
+          decisionTaxonomyBindings: Array<{
+            frameworkId: string;
+            cardFieldRef: string;
+            decisionQuestionCode: string;
+            evidenceDomainCodes: string[];
+          }>;
+          components: Array<{
+            frameworkId: string;
+            version: string;
+            sourceRefs: Array<{
+              sourceId: string;
+              claimIds: string[];
+              locator: { kind: string; value: string };
+              attributionScope: string;
+            }>;
+          }>;
         };
       };
       evidencePack: {

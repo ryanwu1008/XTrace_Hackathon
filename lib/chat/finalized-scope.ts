@@ -17,6 +17,10 @@ import type {
 import type {
   ResolvedReportEvidenceScope,
 } from "../reports/evidence-scope";
+import {
+  resolveUnderwritingPresentationAdapter,
+  type UnderwritingPresentationAdapter,
+} from "../underwriting/presentation-version";
 
 type FinalizedScopeRunsReader = Pick<
   UnderwritingRunsRepository,
@@ -42,8 +46,7 @@ export type FinalizedChatScopeInsufficientReason =
   | "candidate_scope_mismatch"
   | "candidate_identity_mismatch"
   | "artifact_missing"
-  | "artifact_identity_mismatch"
-  | "artifact_generation_mismatch";
+  | "artifact_identity_mismatch";
 
 export interface ReadyFinalizedChatScope {
   status: "ready";
@@ -52,6 +55,7 @@ export interface ReadyFinalizedChatScope {
   analysis: CompanyAnalysis;
   candidate: CandidateRun | null;
   bundle: CandidateArtifactBundle | null;
+  presentationAdapter: UnderwritingPresentationAdapter | null;
 }
 
 export interface InsufficientFinalizedChatScope {
@@ -98,23 +102,7 @@ const REASON_MESSAGES: Record<
     "A completed candidate is missing its finalized artifacts.",
   artifact_identity_mismatch:
     "A finalized artifact bundle does not match its exact candidate identity.",
-  artifact_generation_mismatch:
-    "Current and legacy finalized artifacts cannot be mixed.",
 };
-
-const CURRENT_ARTIFACT_IDENTITY_FIELDS = [
-  "dealStatus",
-  "beliefDirection",
-  "canonicalActions",
-  "actionPolicyVersion",
-  "draftPolicyVersion",
-  "semanticContextAssumptionPolicyVersion",
-  "semanticContextMappingVersion",
-  "analysisMode",
-  "contextVersion",
-  "geography",
-  "benchmarkCompatibility",
-] as const;
 
 const STATUS_MENTIONS: ReadonlyArray<{
   status: CompanyAnalysis["dealStatus"];
@@ -215,7 +203,7 @@ export async function loadExactFinalizedChatScope(input: {
     if (scope.candidateRunIds.length !== 0) {
       return insufficient("batch_identity_mismatch", requestedDealId);
     }
-    return ready(scope, selectedAnalysis, null, null);
+    return ready(scope, selectedAnalysis, null, null, null);
   }
   const batchFailure = validateBatch(batch, scope, input.workspaceId);
   if (batchFailure) return insufficient(batchFailure, requestedDealId);
@@ -237,6 +225,10 @@ export async function loadExactFinalizedChatScope(input: {
   const bundleByRequestedCandidateId = new Map<
     string,
     CandidateArtifactBundle | null
+  >();
+  const adapterByRequestedCandidateId = new Map<
+    string,
+    UnderwritingPresentationAdapter | null
   >();
   for (const candidateRunId of scope.candidateRunIds) {
     const candidate = candidateById.get(candidateRunId)!;
@@ -260,13 +252,21 @@ export async function loadExactFinalizedChatScope(input: {
       if (identityFailure) {
         return insufficient(identityFailure, requestedDealId);
       }
-      const generationFailure = validateArtifactGeneration({
+      const adapter = resolveUnderwritingPresentationAdapter({
+        report: scope.report,
+        requestedDealId: candidate.dealId,
+        candidate: {
+          id: candidate.id,
+          workspaceId: candidate.workspaceId,
+          dealId: candidate.dealId,
+          artifactSourceCandidateRunId:
+            candidate.artifactSourceCandidateRunId ?? null,
+        },
         bundle: loaded,
-        currentScope: scope.run.evidenceContext.state === "current",
       });
-      if (generationFailure) {
-        return insufficient(generationFailure, requestedDealId);
-      }
+      adapterByRequestedCandidateId.set(candidateRunId, adapter);
+    } else {
+      adapterByRequestedCandidateId.set(candidateRunId, null);
     }
     bundleByRequestedCandidateId.set(candidateRunId, loaded);
   }
@@ -281,7 +281,16 @@ export async function loadExactFinalizedChatScope(input: {
   const selectedBundle = selectedCandidate
     ? bundleByRequestedCandidateId.get(selectedCandidate.id) ?? null
     : null;
-  return ready(scope, selectedAnalysis, selectedCandidate, selectedBundle);
+  const selectedAdapter = selectedCandidate
+    ? adapterByRequestedCandidateId.get(selectedCandidate.id) ?? null
+    : null;
+  return ready(
+    scope,
+    selectedAnalysis,
+    selectedCandidate,
+    selectedBundle,
+    selectedAdapter,
+  );
 }
 
 function ready(
@@ -289,6 +298,7 @@ function ready(
   analysis: CompanyAnalysis,
   candidate: CandidateRun | null,
   bundle: CandidateArtifactBundle | null,
+  presentationAdapter: UnderwritingPresentationAdapter | null,
 ): ReadyFinalizedChatScope {
   return {
     status: "ready",
@@ -297,6 +307,7 @@ function ready(
     analysis,
     candidate,
     bundle,
+    presentationAdapter,
   };
 }
 
@@ -461,11 +472,11 @@ function validateArtifactIdentity(input: {
   bundle: CandidateArtifactBundle;
   workspaceId: string;
 }): FinalizedChatScopeInsufficientReason | null {
-  const direct = input.bundle.candidateRunId === input.candidate.id;
-  const exactAlias = input.candidate.rerunOfId !== null
-    && input.candidate.rerunOfId === input.bundle.candidateRunId;
+  const expectedSourceCandidateRunId =
+    input.candidate.artifactSourceCandidateRunId ?? input.candidate.id;
   if (
-    (!direct && !exactAlias)
+    input.bundle.candidateRunId !== input.candidate.id
+    || input.bundle.sourceCandidateRunId !== expectedSourceCandidateRunId
     || input.bundle.workspaceId !== input.workspaceId
     || input.bundle.dealId !== input.candidate.dealId
     || input.bundle.dealId !== input.analysis.dealId
@@ -477,30 +488,6 @@ function validateArtifactIdentity(input: {
     )
   ) {
     return "artifact_identity_mismatch";
-  }
-  return null;
-}
-
-function validateArtifactGeneration(input: {
-  bundle: CandidateArtifactBundle;
-  currentScope: boolean;
-}): FinalizedChatScopeInsufficientReason | null {
-  const snapshot = input.bundle.versionSnapshot as unknown;
-  if (typeof snapshot !== "object" || snapshot === null) {
-    return "artifact_generation_mismatch";
-  }
-  const record = snapshot as Record<string, unknown>;
-  const presentCount = CURRENT_ARTIFACT_IDENTITY_FIELDS.filter((field) =>
-    record[field] !== undefined
-  ).length;
-  const generation = presentCount === 0
-    ? "legacy"
-    : presentCount === CURRENT_ARTIFACT_IDENTITY_FIELDS.length
-    ? "current"
-    : "partial";
-  if (generation === "partial") return "artifact_generation_mismatch";
-  if ((generation === "current") !== input.currentScope) {
-    return "artifact_generation_mismatch";
   }
   return null;
 }

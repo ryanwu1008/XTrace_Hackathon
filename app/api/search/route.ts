@@ -5,7 +5,7 @@ import { createRunsRepository } from "../../../db/repositories/runs";
 import { getIntelligenceRepository } from "../../../db/repositories/intelligence";
 import { getUnderwritingRunsRepository } from "../../../db/repositories/underwriting-runs";
 import { getUnderwritingArtifactsRepository } from "../../../db/repositories/underwriting-artifacts";
-import { errorResponse, jsonOk } from "../../../lib/api/response";
+import { errorResponse, jsonError, jsonOk } from "../../../lib/api/response";
 import {
   resolveRouteRequestContext,
   type RouteDependencies,
@@ -14,6 +14,8 @@ import { requirePermission } from "../../../lib/api/safety";
 import {
   searchPersistedUnderwriting,
 } from "../../../lib/underwriting/read-model";
+import { UnderwritingPresentationIntegrityError } from
+  "../../../lib/underwriting/presentation-version";
 import { isDurableWorkspaceMode } from "../../../lib/auth/request-context";
 import { resolveReportEvidenceScope } from "../../../lib/reports/evidence-scope";
 
@@ -70,6 +72,11 @@ export async function GET(
       query: parsed.query,
       artifacts: dependencies.underwritingArtifacts
         ?? getUnderwritingArtifactsRepository(),
+      report: {
+        id: scope.report.id,
+        workspaceId: scope.report.workspaceId,
+        evidenceContext: scope.report.evidenceContext,
+      },
       candidateRunIds: scope.candidateRunIds,
     });
     return jsonOk({
@@ -84,6 +91,9 @@ export async function GET(
       results,
     });
   } catch (error) {
+    if (error instanceof UnderwritingPresentationIntegrityError) {
+      return jsonError("CONFLICT", error.message, 409);
+    }
     return errorResponse(error);
   }
 }

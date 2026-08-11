@@ -698,7 +698,7 @@ test("PostgreSQL preflight blocks an unsafe v2 external edit before RPC and perm
   ).length, 1);
 });
 
-test("PostgreSQL finalized-artifact reads require completed non-alias candidates", async () => {
+test("PostgreSQL finalized-artifact reads include readable completed and partial canonical candidates", async () => {
   let requestedUrl = "";
   const repository = createSupabaseUnderwritingArtifactsRepository({
     url: "https://example.supabase.co",
@@ -714,7 +714,7 @@ test("PostgreSQL finalized-artifact reads require completed non-alias candidates
   }), []);
   const query = new URL(requestedUrl).searchParams;
   assert.equal(query.get("workspace_id"), `eq.${WORKSPACE_ID}`);
-  assert.equal(query.get("status"), "eq.completed");
+  assert.equal(query.get("status"), "in.(completed,partial)");
   assert.equal(
     query.get("artifact_source_candidate_run_id"),
     "is.null",
@@ -727,5 +727,5 @@ test("PostgreSQL finalized-artifact reads require completed non-alias candidates
   const directQuery = new URL(requestedUrl).searchParams;
   assert.equal(directQuery.get("workspace_id"), `eq.${WORKSPACE_ID}`);
   assert.equal(directQuery.get("id"), `eq.${CANDIDATE_RUN_ID}`);
-  assert.equal(directQuery.get("status"), "eq.completed");
+  assert.equal(directQuery.get("status"), "in.(completed,partial)");
 });
