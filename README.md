@@ -417,12 +417,14 @@ Deploy Web and Worker from the same committed source version after applying the
 same schema. They must use the same bundled underwriting seed/reference data
 and audited `research/framework-authoring` corpus, `ANTHROPIC_MODEL`, provider
 configuration, XTrace configuration, and source-version code. Keep
-`.openai/hosting.json` bound to the existing Sites project
-`appgprj_6a63b033ea0481918530ccddd4830672`; do not create a second Site.
-The validated Web `public_demo` may be deployed through that existing Sites
-project. Sites does not provide the long-running product Worker: product-mode
-manual scans require a separate Worker deployment whose health is confirmed
-before a run is queued.
+`.openai/hosting.json` bound to the owner-only private Staging Sites project
+`appgprj_6a714b15f3488191998e357436151354`. Do not bind this branch back to the
+existing public production project (`appgprj_6a63b033ea0481918530ccddd4830672`)
+or deploy a Web-only shell. The private Staging release requires an isolated,
+schema-compatible Supabase data plane plus a separately hosted long-running
+Worker built from the same source commit. Confirm Worker health before a scan
+can be queued. Production data, migrations, secrets, and the production-named
+`vsee-vc` Worker remain out of scope until separately reviewed and authorized.
 
 Known non-blocking limitations and production gates remain tracked in
 [`docs/technical-debt/2026-07-29-end-to-end-deferred-hardening.md`](docs/technical-debt/2026-07-29-end-to-end-deferred-hardening.md).
