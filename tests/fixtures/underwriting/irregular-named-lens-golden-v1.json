@@ -41,7 +41,8 @@
               "sourceBindings": [],
               "rationale": "The action exists only inside the permanently synthetic Sample decision record and is not a real fund instruction."
             }
-          ]
+          ],
+          "paragraphRef": "01.1"
         },
         {
           "paragraphIndex": 1,
@@ -61,7 +62,8 @@
               "classification": "unknown",
               "sourceBindings": []
             }
-          ]
+          ],
+          "paragraphRef": "01.2"
         },
         {
           "paragraphIndex": 2,
@@ -72,7 +74,8 @@
               "sourceBindings": [],
               "rationale": "This is the premise of the permanently labeled Sample decision record, not a real interaction or investment history."
             }
-          ]
+          ],
+          "paragraphRef": "01.3"
         }
       ]
     },
@@ -104,7 +107,8 @@
               "sourceBindings": [],
               "rationale": "Both the prior thesis and revisit condition belong only to the permanently synthetic Sample decision record."
             }
-          ]
+          ],
+          "paragraphRef": "02.1"
         },
         {
           "paragraphIndex": 1,
@@ -124,7 +128,8 @@
               "classification": "unknown",
               "sourceBindings": []
             }
-          ]
+          ],
+          "paragraphRef": "02.2"
         },
         {
           "paragraphIndex": 2,
@@ -145,7 +150,8 @@
                 }
               ]
             }
-          ]
+          ],
+          "paragraphRef": "02.3"
         }
       ]
     },
@@ -190,7 +196,8 @@
                 }
               ]
             }
-          ]
+          ],
+          "paragraphRef": "03.1"
         },
         {
           "paragraphIndex": 1,
@@ -200,7 +207,8 @@
               "classification": "unknown",
               "sourceBindings": []
             }
-          ]
+          ],
+          "paragraphRef": "03.2"
         }
       ]
     },
@@ -238,7 +246,8 @@
               "classification": "unknown",
               "sourceBindings": []
             }
-          ]
+          ],
+          "paragraphRef": "04.1"
         },
         {
           "paragraphIndex": 1,
@@ -258,7 +267,8 @@
               "classification": "unknown",
               "sourceBindings": []
             }
-          ]
+          ],
+          "paragraphRef": "04.2"
         }
       ]
     },
@@ -309,7 +319,8 @@
               "classification": "unknown",
               "sourceBindings": []
             }
-          ]
+          ],
+          "paragraphRef": "05.1"
         },
         {
           "paragraphIndex": 1,
@@ -338,7 +349,8 @@
               "sourceBindings": [],
               "rationale": "The outcomes create a transparent downside, central, and upside illustration rather than a company forecast."
             }
-          ]
+          ],
+          "paragraphRef": "05.2"
         },
         {
           "paragraphIndex": 2,
@@ -358,7 +370,8 @@
               "classification": "unknown",
               "sourceBindings": []
             }
-          ]
+          ],
+          "paragraphRef": "05.3"
         }
       ]
     },
@@ -387,7 +400,7 @@
           "lens": "Scott Kupor — Follow-on Reunderwrite",
           "frameworkBasis": "Pro-Rata and Fresh-Evidence Reunderwrite",
           "premise": "The Scott Kupor follow-on lens treats prior ownership as context, not as a reason to invest again. A reserve decision should be made against today's price, current evidence, ownership value, concentration, fund reserves, and the opportunity cost of supporting another portfolio company.",
-          "caseApplication": "For Irregular, that discipline means the original check cannot carry the new decision because a central operating assumption has changed. The historical financing and reported valuation show that the company attracted capital, but they do not answer whether a fresh investor would accept the present security risk or whether the fund is being compensated for it.",
+          "caseApplication": "For Irregular, the synthetic sample's original check cannot carry the new decision because a central operating assumption has changed. The historical financing and reported valuation show that the company attracted capital, but they do not answer whether a fresh investor would accept the present security risk or whether the fund is being compensated for it.",
           "countercase": "The countercase is that declining to participate can destroy information rights, ownership, and future access at the moment when the category may be gaining importance. Existing investors may also have better incident visibility than outsiders. Those considerations create option value, but they do not convert an ownership right into an obligation or make the previous price relevant by itself.",
           "evidenceRequest": "Before a reserve decision, diligence needs the proposed round price and preferences, the fully diluted capitalization table, current ownership, the capital required to maintain it, remaining reserves, concentration limits, financing alternatives, and management's milestones since the last investment. The committee also needs a comparison with the strongest unfunded opportunities in the portfolio.",
           "conditionalPosture": "This lens would reconsider participation only if Irregular clears the incident review, the new terms preserve an attractive risk-adjusted return, and reserve use beats credible alternatives. Until those conditions are met, pausing the follow-on is disciplined reunderwriting rather than an adverse judgment on the company's survival or the category's importance.",
@@ -450,7 +463,7 @@
               "url": "https://www.penguinrandomhouse.com/books/234730/zero-to-one-by-peter-thiel-with-blake-masters/9780804139304/"
             },
             {
-              "label": "Peter Thiel CS183 Class Nine Distribution Notes",
+              "label": "Peter Thiel Stanford Distribution Lecture Notes",
               "url": "https://blakemasters.tumblr.com/post/22405055017/peter-thiels-cs183-startup-class-9-notes-essay"
             }
           ]
@@ -484,7 +497,8 @@
               "classification": "unknown",
               "sourceBindings": []
             }
-          ]
+          ],
+          "paragraphRef": "07.1"
         },
         {
           "paragraphIndex": 1,
@@ -500,7 +514,8 @@
               "sourceBindings": [],
               "rationale": "The assumption preserves the product's draft-only safety boundary without representing any communication as sent or published."
             }
-          ]
+          ],
+          "paragraphRef": "07.2"
         }
       ]
     }
@@ -557,7 +572,7 @@
         "url": "https://www.penguinrandomhouse.com/books/234730/zero-to-one-by-peter-thiel-with-blake-masters/9780804139304/"
       },
       {
-        "label": "Peter Thiel CS183 Class Nine Distribution Notes",
+        "label": "Peter Thiel Stanford Distribution Lecture Notes",
         "url": "https://blakemasters.tumblr.com/post/22405055017/peter-thiels-cs183-startup-class-9-notes-essay"
       }
     ],

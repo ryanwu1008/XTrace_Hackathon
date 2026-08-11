@@ -24,6 +24,7 @@ type TypedClaim = {
 
 type AdjacentClaimGroup = {
   paragraphIndex: number;
+  paragraphRef: string;
   claims: TypedClaim[];
 };
 
@@ -145,8 +146,42 @@ function pushParagraph(lines: string[], value: string): void {
   lines.push(value, "");
 }
 
+type NumericOccurrence = {
+  token: string;
+  index: number;
+  context: string;
+};
+
+function visibleNumericOccurrences(text: string): NumericOccurrence[] {
+  const urlRanges: Array<{ start: number; end: number }> = [];
+  for (const match of text.matchAll(/https:\/\/\S+/g)) {
+    const start = match.index;
+    urlRanges.push({ start, end: start + match[0].length });
+  }
+
+  const occurrences: NumericOccurrence[] = [];
+  for (const match of text.matchAll(
+    /(?<![A-Za-z0-9])\$?\d+(?:\.\d+)?(?:%|x)?(?![A-Za-z0-9])/g,
+  )) {
+    const index = match.index;
+    if (urlRanges.some(({ start, end }) => index >= start && index < end)) {
+      continue;
+    }
+    const contextStart = text.lastIndexOf("\n\n", index - 1) + 2;
+    const contextEndCandidate = text.indexOf("\n\n", index);
+    const contextEnd = contextEndCandidate === -1 ? text.length : contextEndCandidate;
+    occurrences.push({
+      token: match[0],
+      index,
+      context: text.slice(contextStart, contextEnd),
+    });
+  }
+  return occurrences;
+}
+
 export function renderCanonicalMemo(memo: GoldenMemo): string {
   const lines = [memo.artifactLabel, "", memo.title, ""];
+  lines.push(`Company — ${memo.companyName}`, "");
   pushParagraph(lines, memo.editorialNotice);
 
   for (const section of memo.sections) {
@@ -155,10 +190,11 @@ export function renderCanonicalMemo(memo: GoldenMemo): string {
     if (section.title === "Named Lens Readings") {
       assert.ok(section.disclosure);
       assert.ok(section.passages);
-      assert.ok(section.synthesis);
+      assert.notEqual(section.synthesis, undefined);
       pushParagraph(lines, section.disclosure);
       for (const passage of section.passages) {
         lines.push(passage.lens, "");
+        lines.push(`Framework basis — ${passage.frameworkBasis}`, "");
         for (const segment of [
           passage.premise,
           passage.caseApplication,
@@ -173,7 +209,7 @@ export function renderCanonicalMemo(memo: GoldenMemo): string {
         }
       }
       lines.push("Synthesis", "");
-      pushParagraph(lines, section.synthesis);
+      pushParagraph(lines, section.synthesis ?? "");
       continue;
     }
 
@@ -184,6 +220,11 @@ export function renderCanonicalMemo(memo: GoldenMemo): string {
         candidate.paragraphIndex === paragraphIndex
       );
       assert.ok(group, `${section.title} paragraph ${paragraphIndex} lacks adjacent claims`);
+      assert.equal(
+        group.paragraphRef,
+        `${section.number}.${paragraphIndex + 1}`,
+        `${section.title} paragraph ${paragraphIndex} has a stale claim binding`,
+      );
       lines.push("Evidence standing", "");
       for (const claim of group.claims) {
         for (const line of claimLines(claim)) {
@@ -288,6 +329,7 @@ test("the TXT is the exact canonical rendering of every JSON field shown to read
   missingParagraph.sections[2].adjacentClaims?.splice(0, 1);
   for (const group of missingParagraph.sections[2].adjacentClaims ?? []) {
     group.paragraphIndex -= 1;
+    group.paragraphRef = `03.${group.paragraphIndex + 1}`;
   }
   assert.notEqual(renderCanonicalMemo(missingParagraph), text);
 
@@ -295,9 +337,18 @@ test("the TXT is the exact canonical rendering of every JSON field shown to read
   replacedSection.sections[3].paragraphs[0] = "Replacement prose.";
   assert.notEqual(renderCanonicalMemo(replacedSection), text);
 
+  const changedCompany = structuredClone(memo);
+  changedCompany.companyName = "Replacement Company";
+  assert.notEqual(renderCanonicalMemo(changedCompany), text);
+
+  const changedFrameworkBasis = structuredClone(memo);
+  changedFrameworkBasis.sections[5].passages![0].frameworkBasis =
+    "Replacement framework basis";
+  assert.notEqual(renderCanonicalMemo(changedFrameworkBasis), text);
+
   const missingSynthesis = structuredClone(memo);
   missingSynthesis.sections[5].synthesis = "";
-  assert.throws(() => renderCanonicalMemo(missingSynthesis));
+  assert.notEqual(renderCanonicalMemo(missingSynthesis), text);
 
   const missingAppendix = structuredClone(memo);
   missingAppendix.appendix.paragraphs = [];
@@ -338,9 +389,22 @@ test("decision-first reasons carry adjacent typed evidence instead of Appendix-o
       const group: AdjacentClaimGroup | undefined =
         section.adjacentClaims?.[paragraphIndex];
       assert.equal(group?.paragraphIndex, paragraphIndex);
+      assert.equal(group?.paragraphRef, `${section.number}.${paragraphIndex + 1}`);
       assert.ok(group && group.claims.length > 0);
       for (const claim of group.claims) {
         assertTypedClaim(claim);
+        if (claim.classification === "fact") {
+          for (const binding of claim.sourceBindings) {
+            assert.ok(wordCount(binding.label) >= 3);
+            assert.match(binding.url, /^https:\/\//);
+            assert.ok(
+              memo.appendix.publicSources.some((registered) =>
+                registered.label === binding.label && registered.url === binding.url
+              ),
+              `adjacent fact source is absent from Appendix registry: ${binding.label}`,
+            );
+          }
+        }
       }
 
       const paragraphAt = text.indexOf(paragraph);
@@ -409,7 +473,7 @@ test("Named Lens readings are complete, exactly bound prose within the word budg
   assert.ok(passageWords + wordCount(section.synthesis) <= 1_600);
 });
 
-test("all visible numbers are typed and MOIC or IRR outputs are calculations", () => {
+test("every visible number occurrence has typed local context", () => {
   const { memo, text } = loadGolden();
   const claims = allTypedClaims(memo);
   assert.ok(claims.length >= 20);
@@ -421,17 +485,100 @@ test("all visible numbers are typed and MOIC or IRR outputs are calculations", (
   assert.equal(returnsClaim?.classification, "calculation");
   assert.ok(returnsClaim?.derivedFrom && returnsClaim.derivedFrom.length >= 2);
 
-  const withoutUrls = text.replace(/https:\/\/\S+/g, "");
-  const visibleNumbers = new Set(
-    withoutUrls.match(/(?<![A-Za-z0-9])\$?\d+(?:\.\d+)?(?:%|x)?(?![A-Za-z0-9])/g) ?? [],
+  const exemptions = new Map(
+    memo.appendix.numericExemptions.map(({ token, reason }) => [token, reason]),
   );
-  const exemptions = new Set(memo.appendix.numericExemptions.map(({ token }) => token));
-  for (const token of visibleNumbers) {
-    const typed = claims.some(({ statement }) => statement.includes(token));
-    assert.ok(typed || exemptions.has(token), `visible number lacks a typed claim: ${token}`);
+  const sectionsByParagraph = new Map<string, TypedClaim[]>();
+  for (const section of memo.sections) {
+    for (const [index, paragraph] of section.paragraphs.entries()) {
+      const group = section.adjacentClaims?.find(({ paragraphIndex }) =>
+        paragraphIndex === index
+      );
+      sectionsByParagraph.set(paragraph, group?.claims ?? []);
+    }
+  }
+
+  const occurrences = visibleNumericOccurrences(text);
+  assert.ok(occurrences.length >= 30);
+  for (const occurrence of occurrences) {
+    const paragraphClaims = sectionsByParagraph.get(occurrence.context);
+    const typedParagraph = paragraphClaims?.some(({ statement }) =>
+      statement.includes(occurrence.token)
+    ) ?? false;
+    const claimContext = claims.some((claim) =>
+      occurrence.context.startsWith(
+        `${claim.classification.toUpperCase()} — ${claim.statement}`,
+      )
+      && claim.statement.includes(occurrence.token)
+    );
+    const calculationInputContext = claims.some((claim) =>
+      claim.classification === "calculation"
+      && claim.derivedFrom?.some((input) =>
+        occurrence.context ===
+          `CALCULATION — ${claim.statement}\nDerived from — `
+            + claim.derivedFrom!.join("; ")
+        && input.includes(occurrence.token)
+      )
+    );
+    const headingOrExemption = exemptions.has(occurrence.token)
+      && (
+        /^\d{2} [A-Z]/.test(occurrence.context)
+        || occurrence.context.split("\n").includes(
+          `${occurrence.token} — ${exemptions.get(occurrence.token)}`,
+        )
+      );
+    assert.ok(
+      typedParagraph || claimContext || calculationInputContext || headingOrExemption,
+      `numeric occurrence at ${occurrence.index} lacks typed local context: `
+        + `${occurrence.token} in ${JSON.stringify(occurrence.context)}`,
+    );
   }
   for (const exemption of memo.appendix.numericExemptions) {
     assert.ok(exemption.reason.length >= 20);
+  }
+});
+
+test("every sample-dependent main-body surface carries a local synthetic label", () => {
+  const { memo } = loadGolden();
+  const mainBodySurfaces = [
+    memo.editorialNotice,
+    ...memo.sections.flatMap((section) => [
+      ...section.paragraphs,
+      ...(section.adjacentClaims?.flatMap(({ claims }) =>
+        claims.flatMap((claim) => [
+          claim.statement,
+          claim.rationale ?? "",
+          ...(claim.derivedFrom ?? []),
+        ])
+      ) ?? []),
+      section.disclosure ?? "",
+      section.synthesis ?? "",
+      ...(section.passages?.flatMap((passage) => [
+        passage.premise,
+        passage.caseApplication,
+        passage.countercase,
+        passage.evidenceRequest,
+        passage.conditionalPosture,
+      ]) ?? []),
+    ]),
+  ].filter(Boolean);
+  const dependsOnSample =
+    /\b(?:prior thesis|prior record|prior action|sample investment record|sample revisit condition|original check|those synthetic inputs|synthetic fund)\b/i;
+
+  for (const surface of mainBodySurfaces.filter((value) =>
+    dependsOnSample.test(value)
+  )) {
+    assert.match(
+      surface,
+      /\b(?:synthetic|sample|Assumption:|Calculation:)\b/i,
+      `sample-dependent prose lacks a local label: ${surface}`,
+    );
+  }
+
+  for (const claim of memo.appendix.typedClaims) {
+    if (claim.classification === "assumption") {
+      assert.match(claim.statement, /^Assumption:/);
+    }
   }
 });
 

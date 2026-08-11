@@ -2,6 +2,8 @@ SYNTHETIC SAMPLE — PERMANENT EDITORIAL REGRESSION FIXTURE
 
 Irregular — Portfolio Risk Reunderwrite
 
+Company — Irregular
+
 This memorandum is not a real VC interaction, meeting, investment, portfolio record, or communication. It is a complete synthetic sample used to protect editorial structure. It is not evidence of production provider quality and must not be described as observed model output.
 
 01 Decision Request
@@ -171,6 +173,8 @@ The following readings apply analytical frameworks distilled from the named inve
 
 Howard Marks — Risk Control
 
+Framework basis — Risk Control, Not Risk Avoidance
+
 The Howard Marks risk-control lens distinguishes accepting uncertainty from accepting unmanaged loss. A venture investor should retain the risks that create upside, but only after identifying how each material loss pathway is monitored, financed, contained, and made survivable for the portfolio.
 
 Applied to Irregular, the disclosure matters because the company works inside adversarial environments where operational failure can migrate into customer systems. Anthropic's account says that boundary was crossed at three organizations, so the risk is no longer an abstract security caveat. The proper response is to identify the exposure, assign an owner, and test whether controls now reduce recurrence rather than merely improve the narrative.
@@ -186,9 +190,11 @@ https://www.oaktreecapital.com/insights/insight-video/education/how-to-think-abo
 
 Scott Kupor — Follow-on Reunderwrite
 
+Framework basis — Pro-Rata and Fresh-Evidence Reunderwrite
+
 The Scott Kupor follow-on lens treats prior ownership as context, not as a reason to invest again. A reserve decision should be made against today's price, current evidence, ownership value, concentration, fund reserves, and the opportunity cost of supporting another portfolio company.
 
-For Irregular, that discipline means the original check cannot carry the new decision because a central operating assumption has changed. The historical financing and reported valuation show that the company attracted capital, but they do not answer whether a fresh investor would accept the present security risk or whether the fund is being compensated for it.
+For Irregular, the synthetic sample's original check cannot carry the new decision because a central operating assumption has changed. The historical financing and reported valuation show that the company attracted capital, but they do not answer whether a fresh investor would accept the present security risk or whether the fund is being compensated for it.
 
 The countercase is that declining to participate can destroy information rights, ownership, and future access at the moment when the category may be gaining importance. Existing investors may also have better incident visibility than outsiders. Those considerations create option value, but they do not convert an ownership right into an obligation or make the previous price relevant by itself.
 
@@ -204,6 +210,8 @@ https://www.wired.com/story/how-early-stage-vcs-decide-where-invest/
 
 Marc Andreessen — Risk Onion
 
+Framework basis — Risk Layering and Milestone Derisking
+
 The Marc Andreessen risk-onion lens asks an investor to separate a startup's uncertainties into specific layers, rank the layers that can independently block survival or the next financing, and choose the cheapest credible milestone that can retire each important risk.
 
 In Irregular's case, the incident exposes at least four linked layers: technical containment, operating governance, customer trust, and financing. Technical remediation alone is insufficient because the failure can affect procurement and liability even after software is patched. The sequence is root cause, verified controls, customer acceptance, then financing.
@@ -218,6 +226,8 @@ Framework source — The Pmarca Blog Archives by Marc Andreessen
 https://info.a16z.com/rs/382-JZB-798/images/marcs-ebook.pdf
 
 Aswath Damodaran — Narrative and Numbers
+
+Framework basis — Event-to-Story Update and Story-to-Value Bridge
 
 The Aswath Damodaran narrative-and-numbers lens requires a company story to identify who pays, why the offering matters, how advantage persists, and which operating drivers make the story valuable. New information should alter only the affected links, with each narrative change translated into testable numerical consequences.
 
@@ -237,6 +247,8 @@ https://pages.stern.nyu.edu/~adamodar/New_Home_Page/narrative/newseffect.htm
 
 Peter Thiel — Transformational Technology
 
+Framework basis — Technical Breakthrough, Distribution, and Value Capture
+
 The Peter Thiel transformational-technology lens distinguishes an important technical problem from an investable company. Novel capability must be measured against a credible baseline, independently tested, delivered through a workable distribution path, and converted into durable value capture rather than treated as self-validating technical importance.
 
 Irregular addresses a difficult and increasingly visible problem, but the incident sharpens the distinction because technical relevance did not prevent an operational boundary failure. The company's government work, Anthropic relationship, funding, and reported revenue indicate access to serious institutions. They do not prove repeatable, safe delivery.
@@ -250,7 +262,7 @@ This lens would support renewed investment work only if technical improvement is
 Framework source — Zero to One by Peter Thiel and Blake Masters
 https://www.penguinrandomhouse.com/books/234730/zero-to-one-by-peter-thiel-with-blake-masters/9780804139304/
 
-Framework source — Peter Thiel CS183 Class Nine Distribution Notes
+Framework source — Peter Thiel Stanford Distribution Lecture Notes
 https://blakemasters.tumblr.com/post/22405055017/peter-thiels-cs183-startup-class-9-notes-essay
 
 Synthesis
@@ -319,7 +331,7 @@ https://pages.stern.nyu.edu/~adamodar/New_Home_Page/narrative/newseffect.htm
 Source — Zero to One by Peter Thiel and Blake Masters
 https://www.penguinrandomhouse.com/books/234730/zero-to-one-by-peter-thiel-with-blake-masters/9780804139304/
 
-Source — Peter Thiel CS183 Class Nine Distribution Notes
+Source — Peter Thiel Stanford Distribution Lecture Notes
 https://blakemasters.tumblr.com/post/22405055017/peter-thiels-cs183-startup-class-9-notes-essay
 
 Typed evidence ledger
