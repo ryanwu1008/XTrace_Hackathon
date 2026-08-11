@@ -19,7 +19,12 @@ type CurrentUnderwritingDetail = Extract<
 
 const SAMPLE_DECISION_RECORD_BADGE =
   "Sample decision record · synthetic demo history" as const;
-const SYNTHETIC_PROVIDER_BADGE = "SYNTHETIC / SAMPLE PROVIDER OUTPUT" as const;
+const DETERMINISTIC_FIXTURE_OUTPUT_BADGE =
+  "Deterministic fixture output · synthetic test generation" as const;
+const DETERMINISTIC_FIXTURE_PROVIDER_MODELS = new Set([
+  "deterministic-e2e-observer-v1",
+  "synthetic-test",
+]);
 
 export function isCurrentUnderwritingDetail(
   detail: unknown,
@@ -51,13 +56,11 @@ export function PassageUnderwritingDetailPanel({
   const hasSampleDecisionAuthority = hasCanonicalSampleDecisionAuthority(
     analysis,
   );
-  const sampleBadges = [
+  const syntheticDisclosureBadges = [
     ...(hasSampleDecisionAuthority ? [SAMPLE_DECISION_RECORD_BADGE] : []),
     ...(hasSampleResearchAuthority ? [SAMPLE_RESEARCH_SCREENING_BADGE] : []),
-    ...(!hasSampleDecisionAuthority
-        && !hasSampleResearchAuthority
-        && isSyntheticProvider(detail)
-      ? [SYNTHETIC_PROVIDER_BADGE]
+    ...(hasDeterministicFixtureOutput(detail)
+      ? [DETERMINISTIC_FIXTURE_OUTPUT_BADGE]
       : []),
   ];
   const persistedFormalResult = detail.decision.decision
@@ -160,7 +163,8 @@ export function PassageUnderwritingDetailPanel({
           </p>
           <p className="underwriting-draft-notice">
             DRAFT ONLY · decision support; no message is sent or published.
-            {sampleBadges.length > 0 && ` · ${sampleBadges.join(" · ")}`}
+            {syntheticDisclosureBadges.length > 0
+              && ` · ${syntheticDisclosureBadges.join(" · ")}`}
           </p>
         </div>
       </MemoSection>
@@ -211,7 +215,10 @@ export function PassageUnderwritingDetailPanel({
         <p>Formal decision: {formalResult}. Confidence: {humanize(detail.decision.confidence)}.</p>
       </MemoSection>
 
-      <AuditAppendix detail={detail} sampleBadges={sampleBadges} />
+      <AuditAppendix
+        detail={detail}
+        syntheticDisclosureBadges={syntheticDisclosureBadges}
+      />
     </main>
   );
 }
@@ -254,10 +261,10 @@ function Passage({
 
 function AuditAppendix({
   detail,
-  sampleBadges,
+  syntheticDisclosureBadges,
 }: {
   detail: CurrentUnderwritingDetail;
-  sampleBadges: readonly string[];
+  syntheticDisclosureBadges: readonly string[];
 }) {
   const namedLens = detail.namedLensPresentation;
   return (
@@ -265,8 +272,8 @@ function AuditAppendix({
       <summary>Audit Appendix</summary>
       <div>
         <h2>Audit Appendix</h2>
-        <p>DRAFT ONLY. {sampleBadges.length > 0
-          ? `${sampleBadges.join(" · ")}.`
+        <p>DRAFT ONLY. {syntheticDisclosureBadges.length > 0
+          ? `${syntheticDisclosureBadges.join(" · ")}.`
           : "Persisted candidate artifacts only."}</p>
         <h3>Additional Named Lens perspectives</h3>
         {namedLens.appendixPassages.map((selected) => <Passage key={selected.passage.fingerprint} selected={selected} />)}
@@ -622,8 +629,12 @@ function isPersistedSourceRevision(
     && detail.evidencePack.sourceRevisionIds.includes(revisionId);
 }
 
-function isSyntheticProvider(detail: CurrentUnderwritingDetail): boolean {
-  return /synthetic|sample/i.test(detail.versionSnapshot.providerModel);
+function hasDeterministicFixtureOutput(
+  detail: CurrentUnderwritingDetail,
+): boolean {
+  return DETERMINISTIC_FIXTURE_PROVIDER_MODELS.has(
+    detail.versionSnapshot.providerModel,
+  );
 }
 
 function hasCanonicalSampleDecisionAuthority(

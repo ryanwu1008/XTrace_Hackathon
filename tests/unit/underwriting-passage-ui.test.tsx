@@ -40,6 +40,30 @@ function readAppCss(name: "underwriting-memo.css" | "vsee.css"): string {
   return readFileSync(new URL(`../../app/${name}`, import.meta.url), "utf8");
 }
 
+function cssAtRuleBlocks(css: string, atRule: string): string[] {
+  const blocks: string[] = [];
+  let cursor = 0;
+  while (cursor < css.length) {
+    const atRuleIndex = css.indexOf(`${atRule}{`, cursor);
+    if (atRuleIndex < 0) break;
+    const openingBrace = atRuleIndex + atRule.length;
+    let depth = 0;
+    let closingBrace = -1;
+    for (let index = openingBrace; index < css.length; index += 1) {
+      if (css[index] === "{") depth += 1;
+      if (css[index] === "}") depth -= 1;
+      if (depth === 0) {
+        closingBrace = index;
+        break;
+      }
+    }
+    assert.ok(closingBrace > openingBrace, `${atRule} must have balanced braces`);
+    blocks.push(css.slice(openingBrace + 1, closingBrace));
+    cursor = closingBrace + 1;
+  }
+  return blocks;
+}
+
 test("current memo is a semantic single-column editorial reading experience", () => {
   const html = renderCurrentMemo();
   const css = readAppCss("underwriting-memo.css");
@@ -51,7 +75,6 @@ test("current memo is a semantic single-column editorial reading experience", ()
   assert.match(html, /<details[^>]*class="underwriting-audit-appendix"/);
   assert.match(html, /<summary[^>]*>Audit Appendix/);
   assert.match(html, /DRAFT ONLY/);
-  assert.match(html, /SAMPLE|SYNTHETIC/);
   assert.doesNotMatch(html, /<table[^>]*class="vsee-framework-synthesis-table"/);
   assert.match(css, /font-size:17px;line-height:1\.68/);
   assert.match(css, /@media\(max-width:600px\)[\s\S]*font-size:16px/);
@@ -83,21 +106,45 @@ test("current memo is a semantic single-column editorial reading experience", ()
   );
 });
 
-test("current memo overrides the mobile shell cascade at 16px while retaining metadata exceptions", () => {
+test("rendered memo targets stay readable through the shell's 680px breakpoint", () => {
+  const html = renderCurrentMemo();
   const memoCss = readAppCss("underwriting-memo.css");
   const shellCss = readAppCss("vsee.css");
+  const memoTabletBlocks = cssAtRuleBlocks(
+    memoCss,
+    "@media(max-width:680px)",
+  );
+  const shellMobileBlocks = cssAtRuleBlocks(
+    shellCss,
+    "@media(max-width:680px)",
+  );
 
+  assert.match(html, /<main[^>]*class="underwriting-memo"/);
+  assert.match(html, /<p/);
+  assert.match(html, /<li/);
+  assert.match(
+    html,
+    /class="underwriting-passage-sources"[\s\S]*?<a[^>]*href="https:\/\//,
+  );
   assert.match(
     shellCss,
     /\.vsee-shell :where\(p,li\)\{[^}]*font-size:var\(--vsee-type-body\)!important/,
   );
+  assert.ok(
+    shellMobileBlocks.some((block) =>
+      /\.vsee-shell\{--vsee-type-body:15px/.test(block)
+    ),
+    "the shell must expose the 15px cascade that this contract overrides",
+  );
+  assert.equal(memoTabletBlocks.length, 1);
+  const memoTabletContract = memoTabletBlocks[0]!;
   assert.match(
-    shellCss,
-    /@media\(max-width:680px\)\{[\s\S]*?\.vsee-shell\{--vsee-type-body:15px/,
+    memoTabletContract,
+    /\.vsee-shell \.underwriting-memo :where\(p,li\):not\(\.underwriting-status,\.underwriting-draft-notice\)\{[^}]*font-size:16px!important/,
   );
   assert.match(
-    memoCss,
-    /@media\(max-width:600px\)\{[\s\S]*?\.vsee-shell \.underwriting-memo :where\(p,li\):not\(\.underwriting-status,\.underwriting-draft-notice\)\{[^}]*font-size:16px!important/,
+    memoTabletContract,
+    /\.underwriting-passage-sources a,\.underwriting-decision-reason-sources a\{[^}]*min-width:44px;[^}]*min-height:44px/,
   );
   assert.match(
     memoCss,

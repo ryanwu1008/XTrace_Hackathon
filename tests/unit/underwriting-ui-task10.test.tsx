@@ -626,6 +626,80 @@ test("current memo labels exact Sample decision record lineage independently of 
   );
 });
 
+test("current memo permanently labels exact deterministic fixture providers", () => {
+  for (const providerModel of [
+    "deterministic-e2e-observer-v1",
+    "synthetic-test",
+  ]) {
+    const html = renderToStaticMarkup(<UnderwritingDetailPanel
+      companyName="Current Lens Co"
+      analysis={analysisFixture()}
+      detail={currentDetailFixture({ providerModel })}
+      drafts={[]}
+      canSaveDrafts={false}
+      onEditDraft={() => {}}
+    />);
+    const firstScreen = html.slice(0, html.indexOf("What Changed"));
+    const appendix = html.slice(html.indexOf("Audit Appendix"));
+
+    assert.match(
+      firstScreen,
+      /Deterministic fixture output · synthetic test generation/,
+    );
+    assert.match(
+      appendix,
+      /Deterministic fixture output · synthetic test generation/,
+    );
+  }
+});
+
+test("typed Sample decision authority and deterministic output render as independent disclosures", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={{
+      ...analysisFixture(),
+      sources: [sampleDecisionSource()],
+    }}
+    detail={currentDetailFixture({
+      providerModel: "deterministic-e2e-observer-v1",
+    })}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  const firstScreen = html.slice(0, html.indexOf("What Changed"));
+  const appendix = html.slice(html.indexOf("Audit Appendix"));
+
+  for (const region of [firstScreen, appendix]) {
+    const sampleIndex = region.indexOf(
+      "Sample decision record · synthetic demo history",
+    );
+    const outputIndex = region.indexOf(
+      "Deterministic fixture output · synthetic test generation",
+    );
+    assert.ok(sampleIndex >= 0, "typed Sample decision authority must be visible");
+    assert.ok(outputIndex > sampleIndex, "typed authority must precede fixture output");
+  }
+});
+
+test("provider names that merely contain sample or synthetic do not gain fixture authority", () => {
+  for (const providerModel of [
+    "sample-production-v1",
+    "synthetic-production-v1",
+  ]) {
+    const html = renderToStaticMarkup(<UnderwritingDetailPanel
+      companyName="Current Lens Co"
+      analysis={analysisFixture()}
+      detail={currentDetailFixture({ providerModel })}
+      drafts={[]}
+      canSaveDrafts={false}
+      onEditDraft={() => {}}
+    />);
+
+    assert.doesNotMatch(html, /fixture output|PROVIDER OUTPUT/i);
+  }
+});
+
 test("current first screen uses its saved projection references across facts and assumptions", () => {
   const detail = currentDetailFixture();
   if (!isCurrentUnderwritingDetail(detail)) throw new Error("Expected current detail.");
