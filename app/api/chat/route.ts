@@ -659,7 +659,7 @@ function answerCurrentFinalizedChatV2(input: {
   loaded: ReadyFinalizedChatScope;
   identity: FinalizedChatIdentity;
   evidenceFrame: FinalizedChatEvidenceFrame;
-}) {
+}): Response | null {
   const { loaded } = input;
   const bundle = loaded.bundle;
   const adapter = loaded.presentationAdapter;
@@ -683,6 +683,14 @@ function answerCurrentFinalizedChatV2(input: {
 
   const classification = classifyFinalizedChatTopicV2(input.request.question);
   if (classification.status === "insufficient") {
+    // V2 adds Named Lens questions to current reports; it does not remove the
+    // canonical finalized-report topics. An unambiguous non-V2 question falls
+    // through to the V1 classifier and projection below. A question that
+    // matches multiple V2 topics remains fail closed here.
+    if (
+      classification.reasonCode === "unsupported_topic"
+      && classifyFinalizedChatTopic(input.request.question).status === "matched"
+    ) return null;
     return jsonOk({
       ...finalizedInsufficientV2({
         reasonCode: classification.reasonCode,
@@ -923,13 +931,14 @@ async function answerDurableFinalizedChat(input: {
       );
     }
     try {
-      return answerCurrentFinalizedChatV2({
+      const currentResponse = answerCurrentFinalizedChatV2({
         context: input.context,
         request: input.request,
         loaded,
         identity,
         evidenceFrame,
       });
+      if (currentResponse !== null) return currentResponse;
     } catch (error) {
       const conflict = presentationConflict(error);
       if (conflict) return conflict;

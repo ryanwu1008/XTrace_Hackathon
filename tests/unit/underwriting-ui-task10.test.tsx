@@ -555,10 +555,93 @@ test("current decision-first memo renders persisted prose before audit with one 
   assert.match(html, /A saved unknown defines the diligence boundary\./);
   assert.match(html, /The view remains conditional on resolving the saved unknown\./);
   assert.equal((html.match(/formal decision weight zero/g) ?? []).length, 1);
+  assert.match(
+    html,
+    /VSee application of a public-source framework; not the named person(?:&#x27;|')s opinion on this company; no endorsement; formal decision weight zero\./,
+  );
+  assert.match(
+    html,
+    /Based on April Dunford(?:&#x27;|')s 2026 public materials/,
+  );
   assert.match(html, /<details[^>]*><summary>Audit Appendix/);
   assert.doesNotMatch(html, /vsee-framework-synthesis-table/);
   assert.doesNotMatch(html, /AnalystPanelSynthesis/);
   assert.doesNotMatch(html, /<button[^>]*>\s*(?:SEND|PUBLISH)/i);
+});
+
+test("current memo keeps one synthesis and translates machine fields out of the reading flow", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={currentDetailFixture()}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  const mainMemo = html.slice(0, html.indexOf("Audit Appendix"));
+
+  assert.equal(
+    (mainMemo.match(/One bounded advisory reading informs diligence\./g) ?? [])
+      .length,
+    1,
+  );
+  assert.doesNotMatch(mainMemo, /Underwriting Status · Unavailable/);
+  assert.doesNotMatch(mainMemo, /Confidence: Low/);
+  assert.doesNotMatch(mainMemo, /Pause Follow On · Portfolio · High/);
+  assert.doesNotMatch(
+    mainMemo,
+    />[^<]*(?:decision_current|candidate_current|judgment_advisory_1|internal_only)[^<]*</,
+  );
+});
+
+test("current Recommendation and Next Steps renders decision-relevant diligence and collapsed persisted drafts", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={currentDetailFixture()}
+    drafts={[draftFixture()]}
+    canSaveDrafts={true}
+    onEditDraft={() => {}}
+  />);
+  const start = html.indexOf("Recommendation and Next Steps");
+  const end = html.indexOf("Audit Appendix");
+  const section = html.slice(start, end);
+
+  assert.match(section, /Decision-relevant diligence/);
+  assert.match(section, /Latest ARR/);
+  assert.match(section, /Could lower the current decision ceiling/);
+  assert.match(section, /Action drafts/);
+  assert.match(section, /DRAFT ONLY — NOT SENT OR PUBLISHED/);
+  assert.match(
+    section,
+    /<details[^>]*class="underwriting-action-draft"[^>]*><summary[^>]*aria-label="Read full Internal Underwriting Memo draft"[^>]*>Read Internal Underwriting Memo draft<\/summary>/,
+  );
+  assert.match(
+    section,
+    /<pre[^>]*class="underwriting-action-draft-body">INTERNAL UNDERWRITING ACTION MEMO — DRAFT ONLY\nPause follow-on pending risk review\.<\/pre>/,
+  );
+  assert.match(section, /aria-label="Edit Internal Underwriting Memo draft"/);
+  assert.doesNotMatch(section, /draft_1|candidate_1|pause_follow_on|internal_only/);
+  assert.doesNotMatch(section, /<button[^>]*>\s*(?:SEND|PUBLISH)/i);
+});
+
+test("current read-only memo exposes draft bodies without an edit or delivery control", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={currentDetailFixture()}
+    drafts={[draftFixture()]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  const start = html.indexOf("Recommendation and Next Steps");
+  const end = html.indexOf("Audit Appendix");
+  const section = html.slice(start, end);
+
+  assert.match(section, /Draft editing is disabled in this read-only view/);
+  assert.match(section, /Read Internal Underwriting Memo draft/);
+  assert.doesNotMatch(section, /aria-label="Edit Internal Underwriting Memo draft"/);
+  assert.doesNotMatch(section, /<button[^>]*>\s*(?:SEND|PUBLISH)/i);
 });
 
 test("current memo preserves the authoritative sample-research label and raw lineage in its audit", () => {
@@ -853,12 +936,6 @@ test("current first screen fails closed when its persisted projection is not exa
         "decision_other";
     },
   }, {
-    name: "zero references",
-    mutate(detail) {
-      detail.namedLensPresentation.firstScreenProjectionRefs
-        .decisionEvidenceItemIds = [];
-    },
-  }, {
     name: "only one reference",
     mutate(detail) {
       detail.namedLensPresentation.firstScreenProjectionRefs
@@ -912,6 +989,33 @@ test("current first screen fails closed when its persisted projection is not exa
       );
     });
   }
+});
+
+test("an unavailable formal decision with no projected reasons explains the evidence ceiling", () => {
+  const detail = currentDetailFixture();
+  if (!isCurrentUnderwritingDetail(detail)) throw new Error("Expected current detail.");
+  detail.namedLensPresentation.firstScreenProjectionRefs
+    .decisionEvidenceItemIds = [];
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={detail}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  const firstScreen = html.slice(0, html.indexOf("What Changed"));
+
+  assert.match(firstScreen, /data-evidence-state="decision-ceiling"/);
+  assert.match(
+    firstScreen,
+    /A formal investment decision is not supportable yet because required underwriting evidence is incomplete\./,
+  );
+  assert.match(
+    firstScreen,
+    /This is an evidence ceiling, not a negative investment conclusion\./,
+  );
+  assert.doesNotMatch(firstScreen, /integrity/i);
 });
 
 test("current Named Lens body enforces the complete saved passage schema and plain-text contract", async (context) => {
@@ -1082,6 +1186,7 @@ test("new-run summary presents all queue statuses and a sixth priority without s
     companyNames={Object.fromEntries(
       statuses.map((_, index) => [`deal_${index + 1}`, `Company ${index + 1}`]),
     )}
+    executionMessage="The scan ended Partial. Persisted terminal results remain available, but one or more scan stages did not complete."
     onOpenCandidate={() => {}}
   />);
 
@@ -1094,6 +1199,8 @@ test("new-run summary presents all queue statuses and a sixth priority without s
     "Deep Underwriting",
     "Investor Framework Perspectives",
     "Company 6",
+    "The scan ended Partial",
+    "Persisted terminal results remain available",
   ]) {
     assert.match(html, new RegExp(copy));
   }
@@ -1101,6 +1208,42 @@ test("new-run summary presents all queue statuses and a sixth priority without s
     html,
     /Top[ -]?5|Selected for Top|rank cutoff|not selected|sixth.*reject/i,
   );
+});
+
+test("an underwriting integrity error withholds the untrusted queue and candidate controls", () => {
+  const html = renderToStaticMarkup(<UnderwritingSummaryPanel
+    batch={{
+      batchId: "batch_untrusted",
+      status: "partial",
+      queue: [{
+        batchId: "batch_untrusted",
+        dealId: "deal_untrusted",
+        priorityRank: 1,
+        status: "completed",
+        candidateRunId: "candidate_untrusted",
+        decision: "Advance",
+      }],
+      underwritingStatusCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        partial: 0,
+        failed: 0,
+      },
+    }}
+    companyNames={{ deal_untrusted: "Untrusted Candidate" }}
+    executionMessage="Deep Underwriting integrity error. Review System activity and rerun the scan."
+    integrityBlocked
+    onOpenCandidate={() => {
+      throw new Error("Integrity-blocked candidate must not be openable.");
+    }}
+  />);
+
+  assert.match(html, /Deep Underwriting integrity error/);
+  assert.match(html, /Review System activity and rerun the scan/);
+  assert.match(html, /queue and candidate details are withheld/i);
+  assert.doesNotMatch(html, /Untrusted Candidate|deal_untrusted/);
+  assert.doesNotMatch(html, /OPEN DETAIL|Open underwriting/);
 });
 
 test("keeps the exact 3 by 17 scenario matrix in audit while the main memo consolidates missing inputs", () => {

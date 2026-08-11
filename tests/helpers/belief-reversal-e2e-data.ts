@@ -66,7 +66,7 @@ const EXPECTED_COUNTS = Object.freeze({
   workspaceDocuments: 79,
   activeAssignments: 85,
   legacyEvidence: 19,
-  canonicalEvidence: 62,
+  canonicalEvidence: 66,
   sampleInteractions: 23,
   sampleResearchScreeningDocuments: 7,
   researchCandidates: 7,
@@ -327,7 +327,7 @@ export async function seedAndVerifyBeliefReversalE2EData(input: {
     deals: 11,
     sourceRevisions: 66,
     assignments: 66,
-    canonicalEvidence: 62,
+    canonicalEvidence: 66,
     sampleInteractions: 4,
     researchCandidates: 7,
     researchSourceAssignments: 25,
@@ -362,9 +362,9 @@ export function assertBeliefReversalDurableSeedState(
   state: BeliefReversalDurableSeedState,
 ): void {
   assertExactObject(state.counts, EXPECTED_COUNTS, "durable seed counts");
-  if (state.counts.legacyEvidence + state.counts.canonicalEvidence !== 81) {
+  if (state.counts.legacyEvidence + state.counts.canonicalEvidence !== 85) {
     throw new Error(
-      "Belief-reversal E2E requires exactly 81 evidence rows (19 legacy + 62 canonical).",
+      "Belief-reversal E2E requires exactly 85 evidence rows (19 legacy + 66 canonical).",
     );
   }
   if (

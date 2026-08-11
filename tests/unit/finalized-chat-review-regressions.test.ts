@@ -100,7 +100,7 @@ function inputFor(input: {
         : [],
     },
     conditionalConclusion: {
-      text: "The view remains conditional on resolving the saved unknown.",
+      text: Array.from({ length: 152 }, () => "conditional").join(" "),
       stance: "supportive" as const,
       advisoryPosture: "supports_further_diligence" as const,
     },
@@ -111,7 +111,7 @@ function inputFor(input: {
       hiddenChainOfThought: false as const,
     },
     selectionBasisEvidenceIds,
-    wordCount: 45,
+    wordCount: 180,
     generatorVersion: "named-lens-generator-v1" as const,
     fingerprint: sha("1"),
   };

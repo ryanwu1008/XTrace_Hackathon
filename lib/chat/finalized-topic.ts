@@ -20,6 +20,7 @@ const TOPIC_PATTERNS: Readonly<Record<FinalizedChatTopic, RegExp[]>> = {
     /\bsample\s+fund\s+pass(?:ed)?\b/iu,
   ],
   belief_change: [
+    /\bwhat\s+changed\b/iu,
     /\b(?:which|what)\s+(?:new\s+)?evidence\b[^?]*\bchang(?:e|ed|es|ing)\b/iu,
     /\bchang(?:e|ed|es|ing)\b[^?]*\b(?:that|the|our|prior)\s+belief\b/iu,
     /\bbelief\s+change\b/iu,

@@ -4,7 +4,10 @@ import {
   getXTraceLineageRepository,
   type XTraceLineageRepository,
 } from "../../db/repositories/xtrace-lineage";
-import type { ExactXTraceParentUnit } from "./exact-parent-planner";
+import {
+  projectExactXTraceParentV2RetrievalPayload,
+  type ExactXTraceParentUnit,
+} from "./exact-parent-planner";
 import {
   evidenceSourceText,
   type DealMemoryBundle,
@@ -528,7 +531,7 @@ function serializeExactParent(parent: ExactXTraceParentUnit): string {
       sourceRevisionId: parent.sourceRevisionId,
       fingerprint: parent.parentFingerprint,
     },
-    retrievalPayload: parent.bundle,
+    retrievalPayload: projectExactXTraceParentV2RetrievalPayload(parent),
   });
 }
 

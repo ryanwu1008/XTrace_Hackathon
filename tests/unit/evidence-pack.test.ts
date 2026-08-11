@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMemoryEvidencePacksRepository } from "../../db/repositories/evidence-packs";
+import {
+  createMemoryEvidencePacksRepository,
+  type SourceEvidenceInput,
+} from "../../db/repositories/evidence-packs";
 import * as evidencePackRepositories from "../../db/repositories/evidence-packs";
 import { createMemorySourceRegistry } from "../../db/repositories/source-registry";
 import { WritableSourceRefV2Schema } from "../../lib/contracts/source-evidence";
+import { buildSampleDecisionSourceRef } from
+  "../../lib/belief-reversal/sample-decision-source";
 import type {
   FundPolicySnapshot,
   ResolvedUnderwritingContext,
 } from "../../lib/contracts/underwriting";
-import { createEvidencePackBuilder } from "../../lib/underwriting/evidence/builder";
+import {
+  createEvidencePackBuilder,
+  createEvidencePackInputFingerprint,
+} from "../../lib/underwriting/evidence/builder";
+import { projectUnderwritingEvidence } from
+  "../../lib/underwriting/evidence/semantic-projector";
 import {
   createContextRouter,
   type CriticalEvidenceProfile,
@@ -89,6 +99,88 @@ const referenceInputs = {
     definitionFingerprint: `sha256:${"b".repeat(64)}`,
   },
 };
+
+test("Evidence Pack input fingerprint canonicalizes exact XTrace parent binding order", () => {
+  const parentBindings = [{
+    kind: "source" as const,
+    memoryId: "memory_1",
+    sourceRevisionId: "revision_1",
+    sourceId: "source_management",
+    fixtureId: null,
+  }, {
+    kind: "fixture" as const,
+    memoryId: "memory_2",
+    sourceRevisionId: "revision_2",
+    sourceId: null,
+    fixtureId: "fixture_2",
+  }];
+  const base = {
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    asOfDate: "2026-07-29",
+    sourceRevisionSnapshots: [{
+      id: "revision_1",
+      workspaceId: "workspace_1",
+      sourceId: "source_management",
+      revision: 1,
+      contentHash: "sha256:management",
+      objectKey: "private/management.md",
+      objectVersion: "1",
+      contentType: "text/markdown",
+      extractorId: "plain_text_v1",
+      extractorVersion: "1",
+      extractedAt: "2026-07-29T10:00:00.000Z",
+      supersedesRevisionId: null,
+      createdAt: "2026-07-29T10:00:00.000Z",
+    }, {
+      id: "revision_2",
+      workspaceId: "workspace_1",
+      sourceId: "source_fixture_2",
+      revision: 1,
+      contentHash: "sha256:fixture",
+      objectKey: "private/fixture.json",
+      objectVersion: "1",
+      contentType: "application/json",
+      extractorId: "json_v1",
+      extractorVersion: "1",
+      extractedAt: "2026-07-29T10:00:00.000Z",
+      supersedesRevisionId: null,
+      createdAt: "2026-07-29T10:00:00.000Z",
+    }],
+    context,
+    fundPolicy: referenceInputs.fundPolicy,
+    benchmark: null,
+    profile,
+    materialityRules: [],
+    facts: [],
+    assumptions: [],
+    conflicts: [],
+  };
+  const fingerprintFor = (
+    bindings: typeof parentBindings,
+  ) => createEvidencePackInputFingerprint({
+    ...base,
+    xtraceLineage: {
+      memoryIds: ["memory_1", "memory_2"],
+      sourceRevisionIds: ["revision_1", "revision_2"],
+      sourceIds: ["source_management"],
+      fixtureIds: ["fixture_2"],
+      parentBindings: bindings,
+      capturedAt: "2026-07-29T10:09:00.000Z",
+    },
+  });
+  assert.equal(
+    fingerprintFor(parentBindings),
+    fingerprintFor([...parentBindings].reverse()),
+  );
+  assert.notEqual(
+    fingerprintFor(parentBindings),
+    fingerprintFor([{
+      ...parentBindings[0],
+      sourceRevisionId: "revision_2",
+    }, parentBindings[1]]),
+  );
+});
 
 async function setup() {
   const sourceRegistry = createMemorySourceRegistry();
@@ -219,6 +311,53 @@ async function setup() {
     now: () => new Date("2026-07-29T10:10:00.000Z"),
   });
   return { repository, builder, sourceRegistry };
+}
+
+function acceptedPublicClaim(input: {
+  id: string;
+  sourceId: string;
+  sourceRevisionId: string;
+  normalizedStatement: string;
+  verbatimExcerpt: string;
+}): SourceEvidenceInput {
+  return {
+    id: input.id,
+    workspaceId: "workspace_1",
+    dealId: "deal_1",
+    sourceId: input.sourceId,
+    sourceRevisionId: input.sourceRevisionId,
+    provenanceOrigin: "public_source",
+    field: "public_claim",
+    value: input.normalizedStatement,
+    unit: null,
+    currency: null,
+    periodStart: null,
+    periodEnd: null,
+    publishedAt: "2026-07-29T09:00:00.000Z",
+    eventAt: null,
+    retrievedAt: "2026-07-29T10:00:00.000Z",
+    locator: {
+      kind: "web_snapshot",
+      url: `https://example.test/${input.id}`,
+      excerpt: input.verbatimExcerpt,
+    },
+    sourceRole: "independent_third_party",
+    assertionStatus: "reported",
+    verificationMethod: "reviewed_public_snapshot_v1",
+    freshness: "current",
+    acceptedForGate: true,
+    sourceRef: WritableSourceRefV2Schema.parse(exactSourceV2(input.id, {
+      documentId: input.sourceId,
+      sourceRevisionId: input.sourceRevisionId,
+      canonicalUrl: `https://example.test/${input.id}`,
+      text: {
+        status: "verified_exact",
+        verbatimExcerpt: input.verbatimExcerpt,
+        normalizedStatement: input.normalizedStatement,
+      },
+    })),
+    semanticFields: [],
+  };
 }
 
 test("builds one immutable pack without resolving a material ARR conflict in favor of either source", async () => {
@@ -396,7 +535,93 @@ test("sample research screening evidence stays a non-gating exact source-documen
   );
 });
 
-test("public claim prose is never a Fact while reviewed semantic facts and security assumptions are projected", async () => {
+test("an exact Sample decision record persists once as a synthetic non-gating source fact and stays workspace/Deal isolated", async () => {
+  const repository = createMemoryEvidencePacksRepository();
+  const sourceRef = buildSampleDecisionSourceRef({
+    id: "fixture_irregular_invested_v1",
+    documentId: "source_fixture_irregular_invested_v1",
+    sourceRevisionId:
+      "source_revision_source_fixture_irregular_invested_v1_1",
+    contentFingerprint: `sha256:${"a".repeat(64)}`,
+    occurredAt: "2026-01-15T17:00:00.000Z",
+    retrievedAt: "2026-08-01T00:00:00.000Z",
+    summary: "The sample portfolio review recorded a bounded risk posture.",
+    decisionReason: "The sample record retained the prior action.",
+    concerns: ["Containment durability was unverified."],
+    revisitConditions: ["A verified real-system incident occurs."],
+  });
+  const input = {
+    id: sourceRef.id,
+    workspaceId: "workspace_one",
+    dealId: "deal_irregular_v1",
+    sourceId: sourceRef.documentId!,
+    sourceRevisionId: sourceRef.sourceRevisionId!,
+    provenanceOrigin: "demo_fixture" as const,
+    field: "sample_decision_context",
+    value: sourceRef.text.status === "normalized_only"
+      ? sourceRef.text.normalizedStatement
+      : "",
+    unit: null,
+    currency: null,
+    periodStart: null,
+    periodEnd: null,
+    publishedAt: null,
+    eventAt: "2026-01-15T17:00:00.000Z",
+    retrievedAt: "2026-08-01T00:00:00.000Z",
+    locator: {
+      kind: "text_range" as const,
+      start: 0,
+      end: 1,
+      excerpt: "Sample decision record.",
+    },
+    sourceRole: "management" as const,
+    assertionStatus: "reported" as const,
+    verificationMethod: "synthetic_sample_decision_record_v1",
+    freshness: "current" as const,
+    acceptedForGate: false,
+    sourceRef,
+  };
+
+  await repository.putSourceEvidence([input]);
+  await repository.putSourceEvidence([structuredClone(input)]);
+  assert.deepEqual(await repository.listSourceEvidence({
+    workspaceId: input.workspaceId,
+    dealId: input.dealId,
+    sourceRevisionIds: [input.sourceRevisionId],
+  }), [input]);
+  assert.deepEqual(await repository.listSourceEvidence({
+    workspaceId: input.workspaceId,
+    dealId: "deal_foreign",
+    sourceRevisionIds: [input.sourceRevisionId],
+  }), []);
+  assert.deepEqual(await repository.listSourceEvidence({
+    workspaceId: "workspace_foreign",
+    dealId: input.dealId,
+    sourceRevisionIds: [input.sourceRevisionId],
+  }), []);
+
+  for (const invalid of [{
+    ...input,
+    acceptedForGate: true,
+  }, {
+    ...input,
+    field: "public_claim",
+  }, {
+    ...input,
+    provenanceOrigin: "public_source" as const,
+  }, {
+    ...input,
+    sourceRevisionId: "source_revision_foreign",
+  }]) {
+    const other = createMemoryEvidencePacksRepository();
+    await assert.rejects(
+      other.putSourceEvidence([invalid]),
+      /sample|synthetic|identity|policy/i,
+    );
+  }
+});
+
+test("an accepted canonical public claim keeps one normalized revision bridge alongside reviewed semantic projections", async () => {
   const { repository, builder, sourceRegistry } = await setup();
   const claimId = "claim_semantic_projection";
   const claimText =
@@ -521,7 +746,21 @@ test("public claim prose is never a Fact while reviewed semantic facts and secur
     ...referenceInputs,
   });
 
-  assert.equal(pack.facts.some(({ id }) => id === claimId), false);
+  assert.deepEqual(pack.facts.filter(({ id }) => id === claimId).map(({
+    field,
+    value,
+    sourceRevisionId,
+    acceptedForGate,
+  }) => ({ field, value, sourceRevisionId, acceptedForGate })), [{
+    field: "public_claim",
+    value: claimText,
+    sourceRevisionId: "revision_semantic_projection",
+    acceptedForGate: true,
+  }]);
+  assert.notEqual(
+    pack.facts.find(({ id }) => id === claimId)?.value,
+    "The company was valued at $120m in a historical financing.",
+  );
   assert.deepEqual(pack.facts.filter(({ id }) =>
     id === "semantic-field-111111111111111111111111"
   ).map(({ field, value, sourceRevisionId }) => ({
@@ -554,7 +793,133 @@ test("public claim prose is never a Fact while reviewed semantic facts and secur
   ]) {
     assert.equal(pack.facts.some(({ id }) => id === omittedId), false);
   }
-  assert.equal(pack.facts.some(({ value }) => value.includes("120")), false);
+  assert.equal(
+    pack.facts.some(({ id, value }) =>
+      id !== claimId && value.includes("120")
+    ),
+    false,
+  );
+});
+
+test("an accepted canonical public claim without semantic fields keeps one stable normalized revision bridge", () => {
+  const claim = acceptedPublicClaim({
+    id: "claim_bridge_only",
+    sourceId: "source_bridge_only",
+    sourceRevisionId: "revision_bridge_only",
+    normalizedStatement:
+      "The reviewed announcement reports a bounded customer deployment.",
+    verbatimExcerpt: "reports a bounded customer deployment",
+  });
+
+  const first = projectUnderwritingEvidence([claim]);
+  const replay = projectUnderwritingEvidence([structuredClone(claim)]);
+
+  assert.deepEqual(replay, first);
+  assert.deepEqual(first.facts.map(({ id, field, value, sourceRevisionId }) => ({
+    id,
+    field,
+    value,
+    sourceRevisionId,
+  })), [{
+    id: "claim_bridge_only",
+    field: "public_claim",
+    value:
+      "The reviewed announcement reports a bounded customer deployment.",
+    sourceRevisionId: "revision_bridge_only",
+  }]);
+  assert.equal(new Set(first.facts.map(({ id }) => id)).size, first.facts.length);
+  assert.notEqual(first.facts[0]!.value, "reports a bounded customer deployment");
+});
+
+test("public-claim revision bridges reject non-gate and non-public authorities and fail closed across exact lineage", () => {
+  const nonGate = acceptedPublicClaim({
+    id: "claim_non_gate",
+    sourceId: "source_non_gate",
+    sourceRevisionId: "revision_non_gate",
+    normalizedStatement: "A reviewed claim that is not gate eligible.",
+    verbatimExcerpt: "not gate eligible",
+  });
+  nonGate.acceptedForGate = false;
+  const sample = acceptedPublicClaim({
+    id: "claim_sample",
+    sourceId: "source_sample",
+    sourceRevisionId: "revision_sample",
+    normalizedStatement: "Sample decision record. Synthetic context only.",
+    verbatimExcerpt: "Synthetic context only",
+  });
+  sample.sourceRef = {
+    ...sample.sourceRef!,
+    provenance: "demo_fixture",
+    title: "Sample decision record",
+    canonicalUrl: null,
+    publisher: null,
+    providerId: "sample-fixture",
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    text: {
+      status: "normalized_only",
+      normalizedStatement: sample.value,
+    },
+  } as SourceEvidenceInput["sourceRef"];
+  const inference = acceptedPublicClaim({
+    id: "claim_inference",
+    sourceId: "source_inference",
+    sourceRevisionId: "revision_inference",
+    normalizedStatement: "A model-generated inference.",
+    verbatimExcerpt: "model-generated inference",
+  });
+  inference.sourceRef = {
+    ...inference.sourceRef!,
+    provenance: "model_inference",
+    sourceClass: "model_output",
+    sourceAuthority: "not_applicable",
+    evidenceRole: "context",
+    text: {
+      status: "model_inference",
+      normalizedStatement: inference.value,
+      model: {
+        provider: "fixture",
+        model: "fixture-v1",
+        generatedAt: "2026-07-29T10:00:00.000Z",
+        inputFingerprint: `sha256:${"b".repeat(64)}`,
+      },
+    },
+  } as SourceEvidenceInput["sourceRef"];
+
+  assert.deepEqual(
+    projectUnderwritingEvidence([nonGate, sample, inference]).facts,
+    [],
+  );
+
+  for (const [label, mutate] of [
+    ["document", (claim: SourceEvidenceInput) => {
+      claim.sourceRef = {
+        ...claim.sourceRef!,
+        documentId: "source_foreign",
+      } as SourceEvidenceInput["sourceRef"];
+    }],
+    ["revision", (claim: SourceEvidenceInput) => {
+      claim.sourceRef = {
+        ...claim.sourceRef!,
+        sourceRevisionId: "revision_foreign",
+      } as SourceEvidenceInput["sourceRef"];
+    }],
+  ] as const) {
+    const claim = acceptedPublicClaim({
+      id: `claim_cross_${label}`,
+      sourceId: `source_cross_${label}`,
+      sourceRevisionId: `revision_cross_${label}`,
+      normalizedStatement: `Reviewed ${label} claim.`,
+      verbatimExcerpt: `Reviewed ${label}`,
+    });
+    mutate(claim);
+    assert.throws(
+      () => projectUnderwritingEvidence([claim]),
+      /public claim|lineage|revision|source/i,
+      label,
+    );
+  }
 });
 
 test("public semantic facts fail closed when their source IDs do not resolve to the exact claim revision", async () => {

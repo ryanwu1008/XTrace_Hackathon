@@ -23,6 +23,8 @@ import { canonicalIntelligenceReportFixture } from "../helpers/canonical-intelli
 import { createCurrentNamedLensFinalizationFixture } from
   "../helpers/current-named-lens-finalization";
 import { exactSourceV2 } from "../helpers/source-evidence-v2";
+import { LEGACY_PINNED_23_IDENTITIES } from
+  "../../lib/underwriting/presentation-version";
 
 const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
 
@@ -294,9 +296,11 @@ function adaptCurrentFixtureToLegacy(
     fixture.run.evidenceContext = { state: "legacy_unbound" };
     return;
   }
-  bundle.versionSnapshot.schemaVersion = "framework-judgment-v1";
-  bundle.versionSnapshot.settingsFingerprint = "legacy-pinned-settings";
-  bundle.versionSnapshot.applicationCommit = "legacy-pinned-commit";
+  const legacyIdentity = LEGACY_PINNED_23_IDENTITIES[0];
+  bundle.versionSnapshot.schemaVersion = legacyIdentity.schemaVersion;
+  bundle.versionSnapshot.settingsFingerprint =
+    legacyIdentity.settingsFingerprint;
+  bundle.versionSnapshot.applicationCommit = legacyIdentity.applicationCommit;
   const runContext = {
     state: "current" as const,
     schemaVersion: "run-evidence-context-v1" as const,
@@ -570,6 +574,182 @@ test("current adapter routes all four exact Named Lens questions through immutab
   } finally {
     globalThis.fetch = previousFetch;
   }
+});
+
+test("current adapter preserves canonical finalized-report Chat V1 topics", async () => {
+  const fixture = currentNamedLensRouteFixture();
+  const response = await POST(currentChatRequest({
+    question: "What evidence is still missing?",
+    reportId: fixture.reportId,
+    runId: fixture.runId,
+    dealId: fixture.bundle.dealId,
+  }), undefined, fixture.dependencies);
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: {
+      schemaVersion: string;
+      status: string;
+      topic: string | null;
+      projection?: { schemaVersion: string };
+      insufficientEvidence: boolean;
+    };
+  };
+  assert.equal(payload.data.schemaVersion, "finalized-chat-response-v1");
+  assert.equal(payload.data.status, "success");
+  assert.equal(payload.data.topic, "missing_evidence");
+  assert.equal(
+    payload.data.projection?.schemaVersion,
+    "finalized-chat-projection-v1",
+  );
+  assert.equal(payload.data.insufficientEvidence, false);
+});
+
+test("current adapter treats the scoped browser question 'What changed' as belief change", async () => {
+  const fixture = currentNamedLensRouteFixture();
+  const response = await POST(currentChatRequest({
+    question: "What changed for Irregular?",
+    reportId: fixture.reportId,
+    runId: fixture.runId,
+    dealId: fixture.bundle.dealId,
+  }), undefined, fixture.dependencies);
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: {
+      schemaVersion: string;
+      status: string;
+      topic: string | null;
+      reasonCode?: string;
+      insufficientEvidence: boolean;
+      scope: {
+        reportId: string;
+        runId: string;
+        dealId: string | null;
+      };
+    };
+  };
+  assert.equal(payload.data.schemaVersion, "finalized-chat-response-v1");
+  assert.equal(payload.data.status, "insufficient");
+  assert.equal(payload.data.topic, "belief_change");
+  assert.equal(payload.data.insufficientEvidence, true);
+  assert.equal(payload.data.reasonCode, "finalized_artifact_missing");
+  assert.equal(payload.data.scope.reportId, fixture.reportId);
+  assert.equal(payload.data.scope.runId, fixture.runId);
+  assert.equal(payload.data.scope.dealId, fixture.bundle.dealId);
+});
+
+test("current framework-disagreement Chat reads the persisted presentation, never raw disagreements", async () => {
+  const fixture = currentNamedLensRouteFixture();
+  const request = () => currentChatRequest({
+    question: "Where do the investor frameworks disagree?",
+    reportId: fixture.reportId,
+    runId: fixture.runId,
+    dealId: fixture.bundle.dealId,
+  });
+  const first = await POST(request(), undefined, fixture.dependencies);
+  assert.equal(first.status, 200);
+  const baseline = await first.json() as {
+    data: {
+      schemaVersion: string;
+      status: string;
+      topic: string | null;
+      projection?: {
+        claims: Array<{
+          text: string;
+          artifactRefs: Array<{
+            artifactType: string;
+            artifactId: string;
+            fieldPath: string;
+          }>;
+        }>;
+      };
+    };
+  };
+  assert.equal(baseline.data.schemaVersion, "finalized-chat-response-v1");
+  assert.equal(baseline.data.status, "success");
+  assert.equal(baseline.data.topic, "framework_disagreement");
+  assert.ok(baseline.data.projection?.claims.some(({ text }) =>
+    text === fixture.bundle.namedLensPresentation?.synthesis.text
+  ));
+
+  fixture.bundle.disagreements = fixture.bundle.disagreements.map(
+    (disagreement) => ({
+      ...disagreement,
+      explanation: "Forged raw disagreement must never reach current Chat.",
+    }),
+  );
+  const second = await POST(request(), undefined, fixture.dependencies);
+  assert.equal(second.status, 200);
+  const afterRawMutation = await second.json() as typeof baseline;
+  assert.deepEqual(afterRawMutation.data, baseline.data);
+  assert.ok(afterRawMutation.data.projection?.claims.every(({ text }) =>
+    !text.includes("Forged raw disagreement")
+  ));
+  assert.ok(afterRawMutation.data.projection?.claims.some(({ artifactRefs }) =>
+    artifactRefs.some(({ artifactType }) =>
+      artifactType === "framework_disagreement"
+    )
+  ));
+  assert.ok(afterRawMutation.data.projection?.claims.some(({ artifactRefs }) =>
+    artifactRefs.some((ref) =>
+      ref.artifactType === "framework_disagreement"
+      && ref.artifactId
+        === fixture.bundle.namedLensPresentation?.fingerprint
+      && ref.fieldPath
+        === "namedLensPresentation.synthesis.text"
+    )
+  ));
+});
+
+test("current adapter keeps ambiguous Named Lens questions fail closed", async () => {
+  const fixture = currentNamedLensRouteFixture();
+  const displayIdentity = fixture.component.attribution.display;
+  const response = await POST(currentChatRequest({
+    question:
+      `Why was the ${displayIdentity} Lens selected and which exact evidence did the ${displayIdentity} Lens use?`,
+    reportId: fixture.reportId,
+    runId: fixture.runId,
+    dealId: fixture.bundle.dealId,
+  }), undefined, fixture.dependencies);
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: {
+      schemaVersion: string;
+      status: string;
+      reasonCode: string;
+      insufficientEvidence: boolean;
+    };
+  };
+  assert.equal(payload.data.schemaVersion, "finalized-chat-response-v2");
+  assert.equal(payload.data.status, "insufficient");
+  assert.equal(payload.data.reasonCode, "ambiguous_topic");
+  assert.equal(payload.data.insufficientEvidence, true);
+});
+
+test("current adapter returns typed V2 insufficiency when neither classifier matches", async () => {
+  const fixture = currentNamedLensRouteFixture();
+  const response = await POST(currentChatRequest({
+    question: "Tell me everything about this company.",
+    reportId: fixture.reportId,
+    runId: fixture.runId,
+    dealId: fixture.bundle.dealId,
+  }), undefined, fixture.dependencies);
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: {
+      schemaVersion: string;
+      status: string;
+      reasonCode: string;
+      insufficientEvidence: boolean;
+    };
+  };
+  assert.equal(payload.data.schemaVersion, "finalized-chat-response-v2");
+  assert.equal(payload.data.status, "insufficient");
+  assert.equal(payload.data.reasonCode, "unsupported_topic");
+  assert.equal(payload.data.insufficientEvidence, true);
 });
 
 test("current partial candidate remains readable without fabricated withheld prose", async () => {

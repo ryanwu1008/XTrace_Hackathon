@@ -64,6 +64,7 @@ const ADVISORY_SYSTEM_PROMPT = [
   "Write VSee's third-person application of the supplied public framework; never imitate or speak as a named person.",
   "Return a bounded advisoryPosture only; do not output a formal decision, decision ceiling, veto, or typed action.",
   "Bind every passage segment to exact supplied Card fields, public-source refs, and judgment evidence partitions.",
+  "Write the five passage segments as 180 to 260 English words in total.",
   "Paraphrase public material; do not invent or output a quotation.",
 ].join(" ");
 
@@ -90,7 +91,7 @@ export async function runClaudeFrameworkLens(input: {
   const advisory = isExperimentalAdvisoryFrameworkCard(input.card);
   const prompt = JSON.stringify({
     task: advisory
-      ? "Evaluate this complete research pack as one independent composite advisory lens. In this one response, return the grounded judgment fields plus one complete five-segment passage candidate. Partition every Evidence Pack Fact and Assumption ID into support, counter, or unused. Select exactly one supplied component decision-question focus, including its exact component ID/version, Card field, decision-question code, and evidence-domain codes. Bind passage evidence only to the judgment partitions. Do not return selection-basis metadata or a relevance score. Cite only the exact composite Card ID in frameworkRuleRefs."
+      ? "Evaluate this complete research pack as one independent composite advisory lens. In this one response, return the grounded judgment fields plus one complete five-segment passage candidate whose five segment bodies total 180 to 260 English words. Partition every Evidence Pack Fact and Assumption ID into support, counter, or unused. Select exactly one supplied component decision-question focus, including its exact component ID/version, Card field, decision-question code, and evidence-domain codes. Bind passage evidence only to the judgment partitions. Do not return selection-basis metadata or a relevance score. Cite only the exact composite Card ID in frameworkRuleRefs."
       : "Evaluate this card independently. Partition every allowed input ID into support, counter, or unused. Cite the exact card ID in frameworkRuleRefs.",
     card: input.card,
     evidencePack: input.pack,

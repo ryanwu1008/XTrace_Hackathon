@@ -35,6 +35,14 @@ export function renderSampleDecisionStatement(
   ].join(" ");
 }
 
+function canonicalTimestamp(value: string, label: string): string {
+  const instant = new Date(value);
+  if (!Number.isFinite(instant.getTime())) {
+    throw new Error(`${label} must be an ISO date-time.`);
+  }
+  return instant.toISOString();
+}
+
 export function buildSampleDecisionSourceRef(
   input: SampleDecisionSourceInput,
 ): WritableSourceRefV2 {
@@ -48,11 +56,14 @@ export function buildSampleDecisionSourceRef(
     documentId: input.documentId,
     publisher: "Internal Deal Registry",
     providerId: "deal-registry",
-    eventAt: input.occurredAt,
+    eventAt: canonicalTimestamp(input.occurredAt, "A Sample decision time"),
     eventAtPrecision: "timestamp",
     publishedAt: null,
     publishedAtPrecision: null,
-    retrievedAt: input.retrievedAt,
+    retrievedAt: canonicalTimestamp(
+      input.retrievedAt,
+      "A Sample decision retrieval time",
+    ),
     retrievedAtPrecision: "timestamp",
     updatedAt: null,
     updatedAtPrecision: null,

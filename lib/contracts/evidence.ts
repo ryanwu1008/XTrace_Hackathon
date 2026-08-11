@@ -34,6 +34,7 @@ export const ProvenanceOriginSchema = z.enum([
   "management",
   "uploaded_document",
   "public_source",
+  "demo_fixture",
   "benchmark",
   "recommended_policy",
   "user_custom",
@@ -118,6 +119,7 @@ export const FactSchema = z.strictObject({
     "management",
     "uploaded_document",
     "public_source",
+    "demo_fixture",
   ]),
   field: z.string().min(1),
   value: z.string().min(1),
@@ -153,6 +155,28 @@ export const FactSchema = z.strictObject({
     context.addIssue({
       code: "custom",
       message: "Fact period end cannot precede its start",
+    });
+  }
+  if (
+    fact.provenanceOrigin === "demo_fixture"
+    && (
+      fact.field !== "sample_decision_context"
+      || !fact.value.startsWith("Sample decision record. ")
+      || fact.acceptedForGate
+      || fact.unit !== null
+      || fact.currency !== null
+      || fact.periodStart !== null
+      || fact.periodEnd !== null
+      || fact.publishedAt !== null
+      || fact.sourceRole !== "management"
+      || fact.assertionStatus !== "reported"
+      || fact.verificationMethod !== "synthetic_sample_decision_record_v1"
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "A synthetic Sample decision Fact must remain permanently labeled, non-gating, and context-only",
     });
   }
 });

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+} from "../../lib/belief-reversal/pinned-thirty-deal-snapshot";
+import {
   UnderwritingPresentationIntegrityError,
   resolveUnderwritingPresentationAdapter,
   type UnderwritingPresentationIdentityInput,
@@ -143,19 +146,37 @@ test("resolves only the exact approved pinned snapshot as legacy-pinned-23-v1", 
     schemaVersion: "legacy-pinned-23-v1",
   });
 
-  const wrongSnapshot = pinned23Input();
-  if (wrongSnapshot.report.evidenceContext?.state === "current") {
-    wrongSnapshot.report.evidenceContext.snapshotId = "unreviewed_snapshot";
+  for (const [field, value] of [
+    ["schemaVersion", "unreviewed-schema"],
+    ["settingsFingerprint", "unreviewed-settings"],
+    ["applicationCommit", "unreviewed-commit"],
+  ] as const) {
+    const wrongExecution = pinned23Input();
+    wrongExecution.bundle.versionSnapshot[field] = value;
+    expectIntegrityError(
+      () => resolveUnderwritingPresentationAdapter(wrongExecution),
+      "unsupported_identity",
+    );
   }
-  wrongSnapshot.bundle.versionSnapshot = {
-    schemaVersion: "unreviewed",
-    settingsFingerprint: "unreviewed",
-    applicationCommit: "unreviewed",
-  };
-  expectIntegrityError(
-    () => resolveUnderwritingPresentationAdapter(wrongSnapshot),
-    "unsupported_identity",
-  );
+
+  for (const snapshotId of [
+    PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+    "unreviewed_snapshot",
+  ]) {
+    const wrongSnapshot = pinned23Input();
+    if (wrongSnapshot.report.evidenceContext?.state === "current") {
+      wrongSnapshot.report.evidenceContext.snapshotId = snapshotId;
+    }
+    wrongSnapshot.bundle.versionSnapshot = {
+      schemaVersion: "unreviewed",
+      settingsFingerprint: "unreviewed",
+      applicationCommit: "unreviewed",
+    };
+    expectIntegrityError(
+      () => resolveUnderwritingPresentationAdapter(wrongSnapshot),
+      "unsupported_identity",
+    );
+  }
 });
 
 test("resolves only the finite reviewed pre-passage tuple", () => {
@@ -220,6 +241,45 @@ test("resolves a complete current replay alias to decision-first-named-lens-v1",
   canonical.candidate.artifactSourceCandidateRunId = null;
   canonical.bundle.candidateRunId = "candidate_current";
   assert.equal(resolveUnderwritingPresentationAdapter(canonical).kind, "current");
+});
+
+test("the new pinned-30 identity uses current presentation only with a complete current artifact identity", () => {
+  const currentPinned = currentInput();
+  if (currentPinned.report.evidenceContext?.state !== "current") {
+    throw new Error("Current presentation fixture lost its evidence context.");
+  }
+  currentPinned.report.evidenceContext.evidenceMode = "pinned";
+  currentPinned.report.evidenceContext.snapshotId =
+    PINNED_THIRTY_DEAL_SNAPSHOT_ID;
+  currentPinned.report.evidenceContext.snapshotFingerprint = sha("a");
+  assert.deepEqual(resolveUnderwritingPresentationAdapter(currentPinned), {
+    kind: "current",
+    schemaVersion: "decision-first-named-lens-v1",
+  });
+
+  const legacyTupleOnPinnedThirty = legacyPrePassageInput();
+  legacyTupleOnPinnedThirty.report.evidenceContext = structuredClone(
+    currentPinned.report.evidenceContext,
+  );
+  expectIntegrityError(
+    () => resolveUnderwritingPresentationAdapter(legacyTupleOnPinnedThirty),
+    "mixed_generation",
+  );
+
+  legacyTupleOnPinnedThirty.bundle.versionSnapshot
+    .underwritingPresentationSchemaVersion = "decision-first-named-lens-v1";
+  expectIntegrityError(
+    () => resolveUnderwritingPresentationAdapter(legacyTupleOnPinnedThirty),
+    "mixed_generation",
+  );
+
+  const currentOnPinnedTwentyThree = currentInput();
+  currentOnPinnedTwentyThree.report.evidenceContext =
+    pinned23Input().report.evidenceContext;
+  expectIntegrityError(
+    () => resolveUnderwritingPresentationAdapter(currentOnPinnedTwentyThree),
+    "mixed_generation",
+  );
 });
 
 test("validates current semantic fingerprints with formal judgment identity", () => {

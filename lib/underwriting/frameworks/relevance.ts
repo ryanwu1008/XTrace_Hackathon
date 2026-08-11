@@ -462,24 +462,21 @@ export function buildNamedLensSynthesis(input: {
     if (pair) {
       branch = "principal_disagreement";
       text = [
-        "The persisted conditional conclusions establish a principal disagreement.",
+        "The two strongest framework readings ultimately point to materially different conclusions.",
         pair[0].conditionalConclusion.text,
         pair[1].conditionalConclusion.text,
-        evidenceItemIds.length > 0
-          ? `Deciding evidence IDs: ${evidenceItemIds.join(", ")}.`
-          : "The persisted passages identify no deciding evidence ID.",
       ].join(" ");
     } else if (stances.size === 1) {
       branch = "bounded_alignment";
       text = [
-        "The persisted conditional conclusions show bounded alignment without a principal disagreement.",
+        "The strongest framework readings converge on a similar but bounded conclusion.",
         ordered[0]!.conditionalConclusion.text,
         ordered[1]!.conditionalConclusion.text,
       ].join(" ");
     } else {
       branch = "different_emphasis";
       text = [
-        "The persisted conditional conclusions place different emphasis without a principal disagreement.",
+        "The strongest framework readings emphasize different risks without directly conflicting.",
         ordered[0]!.conditionalConclusion.text,
         ordered[1]!.conditionalConclusion.text,
       ].join(" ");

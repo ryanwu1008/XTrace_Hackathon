@@ -212,6 +212,19 @@ export function createEvidencePackInputFingerprint(input: {
       ),
       sourceIds: uniqueSorted(input.xtraceLineage.sourceIds),
       fixtureIds: uniqueSorted(input.xtraceLineage.fixtureIds),
+      ...(input.xtraceLineage.parentBindings === undefined
+        ? {}
+        : {
+            parentBindings: [...input.xtraceLineage.parentBindings].sort(
+              (left, right) =>
+                compareUtf8(left.memoryId, right.memoryId)
+                || compareUtf8(
+                  left.sourceRevisionId,
+                  right.sourceRevisionId,
+                )
+                || compareUtf8(left.kind, right.kind),
+            ),
+          }),
     },
     context: input.context,
     fundPolicy: input.fundPolicy,

@@ -23,7 +23,10 @@ import { SAMPLE_DEAL_PROFILES } from "./deal-profiles";
 import type { ChatMemoryStatus } from "../lib/chat/service";
 import type { ConfirmUpload } from "../lib/contracts/http";
 import type { EvidenceSourceRef } from "../lib/contracts/domain";
-import type { FinalizedChatSourceRef } from "../lib/contracts/finalized-chat";
+import type {
+  FinalizedChatCitationV2,
+  FinalizedChatSourceRef,
+} from "../lib/contracts/finalized-chat";
 import type { MarketEventV2 } from "../lib/contracts/source-evidence";
 import type {
   ReportEvidenceContext,
@@ -140,6 +143,7 @@ interface LegacyUiSource {
 }
 
 type Source = EvidenceSourceRef | LegacyUiSource | FinalizedChatSourceRef;
+type ChatCitation = Source | FinalizedChatCitationV2;
 
 type MarketEvent = MarketEventV2;
 
@@ -178,7 +182,7 @@ interface ImportPreviewItem {
 interface ChatMessage {
   role: "user" | "assistant";
   text: string;
-  citations?: Source[];
+  citations?: ChatCitation[];
   memoryStatus?: ChatMemoryStatus;
 }
 
@@ -321,6 +325,41 @@ export function canRunPinnedDemo(
   deploymentMode: UiSession["deploymentMode"],
 ): boolean {
   return deploymentMode === "public_sandbox";
+}
+
+const PINNED_THIRTY_DEAL_DEMO_SNAPSHOT_ID =
+  "belief_reversal_pinned_30_2026_08_10_v1" as const;
+
+export function buildPinnedThirtyDealDemoEvidenceRequest():
+  RunEvidenceRequestV1 {
+  return {
+    schemaVersion: "run-evidence-request-v1",
+    evidenceMode: "pinned",
+    snapshotId: PINNED_THIRTY_DEAL_DEMO_SNAPSHOT_ID,
+  };
+}
+
+export function PinnedThirtyDealDemoButton(props: {
+  busy: boolean;
+  disabled: boolean;
+  onRun(request: RunEvidenceRequestV1): void | Promise<void>;
+}) {
+  const label = props.busy
+    ? "QUEUING PINNED 30-DEAL DEMO…"
+    : "RUN PINNED 30-DEAL DEMO · AUG 1, 2026";
+  return (
+    <button
+      className="vsee-run"
+      onClick={() => void props.onRun(
+        buildPinnedThirtyDealDemoEvidenceRequest(),
+      )}
+      disabled={props.disabled}
+      aria-label={`${label}. Immutable evidence anchor: Aug 1, 2026.`}
+      title="Immutable evidence anchor: Aug 1, 2026"
+    >
+      {label} <span>→</span>
+    </button>
+  );
 }
 
 const nav: Array<{ view: View; label: string; icon: string }> = [
@@ -559,13 +598,19 @@ export default function Home() {
           );
           const structuredImageFallbacks =
             report.evidenceCoverage.structuredImageFallbackDealCount ?? 0;
-          setNotice(structuredImageFallbacks > 0
+          const terminalUnderwritingMessage =
+            report.underwritingExecution?.state === "integrity_error"
+              ? `${report.underwritingExecution.message ?? "Deep Underwriting integrity error."} The queue and candidate details are withheld; review System activity and rerun the scan.`
+              : report.underwritingExecution?.state === "partial"
+              ? `${report.underwritingExecution.message ?? "The scan ended Partial."} Review System activity before relying on incomplete stages.`
+              : null;
+          setNotice(terminalUnderwritingMessage ?? (structuredImageFallbacks > 0
             ? `Scan partially complete. ${structuredImageFallbacks} image-only ${
               structuredImageFallbacks === 1 ? "Deal uses" : "Deals use"
             } canonical structured evidence without XTrace memory IDs.`
             : report.priorityDealId
             ? "Scan complete. The highest-priority company analysis is ready."
-            : "Scan complete. No investment belief changed at medium or high confidence; the full report is ready.");
+            : "Scan complete. No investment belief changed at medium or high confidence; the full report is ready."));
           return;
         }
 
@@ -882,7 +927,7 @@ export default function Home() {
       });
       const answer = await api<{
         answer: string;
-        citations: Source[];
+        citations: ChatCitation[];
         memoryStatus: ChatMemoryStatus;
         insufficientEvidence: boolean;
         scope: ChatResolvedScope | null;
@@ -995,17 +1040,11 @@ export default function Home() {
               {busy === "scan" ? "QUEUING…" : "WAKE AGENT & SCAN MARKET"} <span>→</span>
             </button>
             {canRunPinnedDemo(uiSession.deploymentMode) && (
-              <button
-                className="vsee-run"
-                onClick={() => void runScan({
-                  schemaVersion: "run-evidence-request-v1",
-                  evidenceMode: "pinned",
-                  snapshotId: "belief_reversal_2026_08_01",
-                })}
+              <PinnedThirtyDealDemoButton
+                busy={busy === "scan"}
                 disabled={busy === "scan" || !scanReady}
-              >
-                RUN PINNED DEMO REPLAY <span>→</span>
-              </button>
+                onRun={runScan}
+              />
             )}
           </div>
         </header>
@@ -1921,7 +1960,14 @@ export function ChatView({
               </strong>
             )}
             <p>{message.text}</p>
-            {!!message.citations?.length && <footer>{message.citations.map((source) => <SourceLink source={source} key={sourceKey(source)} />)}</footer>}
+            {!!message.citations?.length && (
+              <footer>{message.citations.map((citation, index) => (
+                <ChatCitationLink
+                  citation={citation}
+                  key={`${sourceKey(citation)}:${index}`}
+                />
+              ))}</footer>
+            )}
           </article>
         ))}
       </div>
@@ -2053,7 +2099,36 @@ function SourceLink({ source }: { source: Source }) {
   );
 }
 
-function sourceKey(source: Source): string {
+function ChatCitationLink({ citation }: { citation: ChatCitation }) {
+  if ("kind" in citation) {
+    if (citation.kind === "source_revision") {
+      return <SourceLink source={citation.sourceRef} />;
+    }
+    return (
+      <span>
+        Persisted finalized report evidence · No external link
+      </span>
+    );
+  }
+  return <SourceLink source={citation} />;
+}
+
+function sourceKey(source: ChatCitation): string {
+  if ("kind" in source) {
+    return source.kind === "source_revision"
+      ? JSON.stringify([
+          source.kind,
+          source.sourceRef.sourceId,
+          source.sourceRef.sourceRevisionId,
+          source.sourceRef.contentFingerprint,
+        ])
+      : JSON.stringify([
+          source.kind,
+          source.artifactRef.artifactType,
+          source.artifactRef.artifactId,
+          source.artifactRef.fieldPath,
+        ]);
+  }
   return "sourceId" in source
     ? `${source.sourceId}:${source.sourceRevisionId}`
     : source.id;

@@ -14,11 +14,12 @@ import {
 import {
   DECISION_TAXONOMY_VERSION,
   DecisionTaxonomyBindingSchema,
-} from "../underwriting/frameworks/decision-taxonomy";
+} from "../underwriting/frameworks/decision-taxonomy-contract";
 import {
   actionsForDealStatusAndDirection,
   beliefActionListsEqual,
 } from "../reports/action-policy";
+import { compareUtf8 } from "../format/canonical-order";
 
 const IdSchema = z.string().min(1).refine(
   (value) => value.trim() === value,
@@ -652,12 +653,75 @@ export const CandidateCheckpointSchema = z.strictObject({
   savedAt: IsoDateTimeSchema,
 });
 
+export const XTraceParentBindingSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("source"),
+    memoryId: IdSchema,
+    sourceRevisionId: IdSchema,
+    sourceId: IdSchema,
+    fixtureId: z.null(),
+  }),
+  z.strictObject({
+    kind: z.literal("fixture"),
+    memoryId: IdSchema,
+    sourceRevisionId: IdSchema,
+    sourceId: z.null(),
+    fixtureId: IdSchema,
+  }),
+]);
+
 export const XTraceLineageSnapshotSchema = z.strictObject({
   memoryIds: z.array(IdSchema),
   sourceRevisionIds: z.array(IdSchema),
   sourceIds: z.array(IdSchema),
   fixtureIds: z.array(IdSchema),
+  parentBindings: z.array(XTraceParentBindingSchema).optional(),
   capturedAt: IsoDateTimeSchema,
+}).superRefine((lineage, context) => {
+  if (lineage.parentBindings === undefined) return;
+  const bindings = lineage.parentBindings;
+  const sortedBindings = [...bindings].sort((left, right) =>
+    compareUtf8(left.memoryId, right.memoryId)
+    || compareUtf8(left.sourceRevisionId, right.sourceRevisionId)
+    || compareUtf8(left.kind, right.kind)
+  );
+  const equalStrings = (left: readonly string[], right: readonly string[]) =>
+    left.length === right.length
+    && left.every((value, index) => value === right[index]);
+  const sortedUnique = (values: readonly string[]) =>
+    [...new Set(values)].sort(compareUtf8);
+  const memoryIds = bindings.map(({ memoryId }) => memoryId);
+  const revisionIds = bindings.map(({ sourceRevisionId }) => sourceRevisionId);
+  const sourceIds = bindings.flatMap((binding) =>
+    binding.kind === "source" ? [binding.sourceId] : []
+  );
+  const fixtureIds = bindings.flatMap((binding) =>
+    binding.kind === "fixture" ? [binding.fixtureId] : []
+  );
+  if (
+    !bindings.every((binding, index) => binding === sortedBindings[index])
+    || new Set(memoryIds).size !== memoryIds.length
+    || !equalStrings(
+      sortedUnique(memoryIds),
+      sortedUnique(lineage.memoryIds),
+    )
+    || !equalStrings(
+      sortedUnique(revisionIds),
+      sortedUnique(lineage.sourceRevisionIds),
+    )
+    || !equalStrings(sortedUnique(sourceIds), sortedUnique(lineage.sourceIds))
+    || !equalStrings(
+      sortedUnique(fixtureIds),
+      sortedUnique(lineage.fixtureIds),
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["parentBindings"],
+      message:
+        "Current XTrace parent bindings must be unique, deterministic, and exactly cover every persisted lineage identity",
+    });
+  }
 });
 
 export const MissingEvidenceItemSchema = z.strictObject({
@@ -970,6 +1034,9 @@ export type CandidateRun = z.infer<typeof CandidateRunSchema>;
 export type CandidateCheckpoint = z.infer<typeof CandidateCheckpointSchema>;
 export type CandidateProviderAttempt = z.infer<
   typeof CandidateProviderAttemptSchema
+>;
+export type XTraceParentBinding = z.infer<
+  typeof XTraceParentBindingSchema
 >;
 export type XTraceLineageSnapshot = z.infer<
   typeof XTraceLineageSnapshotSchema

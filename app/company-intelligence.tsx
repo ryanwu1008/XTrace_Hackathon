@@ -27,6 +27,8 @@ import {
   SAMPLE_RESEARCH_SCREENING_BADGE,
 } from "../lib/belief-reversal/sample-research-screening-authority";
 import { SourceRevisionLink } from "./source-revision-link";
+import type { CurrentUnderwritingExecution } from
+  "../lib/reports/current-underwriting-integrity";
 
 export interface IntelligenceReportView {
   id: string;
@@ -53,6 +55,7 @@ export interface IntelligenceReportView {
   priorityDealId: string | null;
   companyAnalyses: CompanyAnalysis[];
   evidenceContext?: ReportEvidenceContext;
+  underwritingExecution?: CurrentUnderwritingExecution;
 }
 
 type BriefTab =

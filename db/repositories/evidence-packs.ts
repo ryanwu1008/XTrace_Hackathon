@@ -11,6 +11,7 @@ import {
   isRetryableTransportStatus,
 } from "../../lib/api/errors";
 import {
+  SAMPLE_DECISION_RECORD_LABEL,
   WritableSourceRefV2Schema,
   sourceTextForRetrieval,
   type WritableSourceRefV2,
@@ -403,9 +404,43 @@ function validateSourceEvidenceInput(
         `${SAMPLE_RESEARCH_SCREENING_RECORD_LABEL}.`,
       )
       && candidate.acceptedForGate === false;
+    const isSampleDecisionRecord =
+      sourceRef.provenance === "demo_fixture"
+      && sourceRef.title === SAMPLE_DECISION_RECORD_LABEL
+      && sourceRef.canonicalUrl === null
+      && sourceRef.publisher === "Internal Deal Registry"
+      && sourceRef.providerId === "deal-registry"
+      && sourceRef.entityKeys.length === 0
+      && sourceRef.sourceClass === "internal_decision_record"
+      && sourceRef.sourceAuthority === "primary"
+      && sourceRef.evidenceRole === "context"
+      && sourceRef.locator?.kind === "json_pointer"
+      && sourceRef.locator.pointer === "/priorDecision"
+      && sourceRef.text.status === "normalized_only"
+      && sourceRef.text.normalizedStatement.startsWith(
+        `${SAMPLE_DECISION_RECORD_LABEL}. `,
+      )
+      && candidate.provenanceOrigin === "demo_fixture"
+      && candidate.field === "sample_decision_context"
+      && candidate.acceptedForGate === false
+      && candidate.unit === null
+      && candidate.currency === null
+      && candidate.periodStart === null
+      && candidate.periodEnd === null
+      && candidate.publishedAt === null
+      && candidate.eventAt === sourceRef.eventAt
+      && candidate.retrievedAt === sourceRef.retrievedAt
+      && candidate.sourceRole === "management"
+      && candidate.assertionStatus === "reported"
+      && candidate.verificationMethod
+        === "synthetic_sample_decision_record_v1";
     if (
       sourceRef.id !== candidate.id
-      || (!isCanonicalPublicSource && !isSampleResearchScreeningRecord)
+      || (
+        !isCanonicalPublicSource
+        && !isSampleResearchScreeningRecord
+        && !isSampleDecisionRecord
+      )
       || sourceRef.documentId !== candidate.sourceId
       || sourceRef.sourceRevisionId !== candidate.sourceRevisionId
       || sourceTextForRetrieval(sourceRef) !== candidate.value

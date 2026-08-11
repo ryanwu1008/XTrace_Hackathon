@@ -66,6 +66,7 @@ import { reportEvidenceContextFromBinding } from "../lib/contracts/evidence-cont
 import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from "../lib/contracts/evidence-context";
 import { SAMPLE_RESEARCH_SCREENING_RECORD_LABEL } from "../lib/contracts/research-candidate";
 import type { MarketScanResult } from "../lib/market/types";
+import { assertPinnedThirtyDealUniverse } from "../lib/belief-reversal/pinned-thirty-deal-snapshot";
 
 type RunsRepository = ReturnType<typeof createRunsRepository>;
 
@@ -214,6 +215,10 @@ export async function processClaimedRun(
       });
       bundles = selectedUniverse.bundles;
       eligibleDeals = selectedUniverse.deals;
+      assertPinnedThirtyDealUniverse({
+        snapshotId: claimedRun.evidenceContext.snapshotId,
+        deals: eligibleDeals,
+      });
       eligibleSnapshotFingerprint =
         eligibleDealSnapshotFingerprint(eligibleDeals);
       boundDealUniverse = await dependencies.dealRegistry.bindRunDealUniverse({

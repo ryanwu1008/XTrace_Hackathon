@@ -8,8 +8,12 @@ import {
 } from "../../lib/matching/context";
 import { createClaudeMatchingReasoner } from "../../lib/matching/claude-reasoner";
 import { createClaudeReasoner } from "../../lib/claude/service";
-import { WritableMarketEventV2Schema } from "../../lib/contracts/source-evidence";
+import {
+  sourceTextForRetrieval,
+  WritableMarketEventV2Schema,
+} from "../../lib/contracts/source-evidence";
 import { refingerprintMarketEvent } from "../../lib/market/identity";
+import { buildSampleDecisionSourceRef } from "../../lib/belief-reversal/sample-decision-source";
 import {
   exactSourceV2,
   marketEventV2,
@@ -107,6 +111,67 @@ test("structured matching context preserves source and synthetic-fixture lineage
   assert.equal(fixtureSource?.eventAtPrecision, "timestamp");
   assert.equal(fixtureSource?.publishedAt, null);
   assert.equal(fixtureSource?.publishedAtPrecision, null);
+});
+
+test("Sample decision source timestamps canonicalize one exact Fact and interaction authority", () => {
+  const sourceInput = {
+    id: "fixture_henry_passed_v1",
+    documentId: "source_fixture_henry_passed_v1",
+    sourceRevisionId: "source_revision_source_fixture_henry_passed_v1_1",
+    contentFingerprint:
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    retrievedAt: "2026-08-01T00:00:00+00:00",
+    summary: "Sample internal pass note.",
+    decisionReason: "Commercial proof was limited.",
+    concerns: ["Workflow benefit was not quantified."],
+    revisitConditions: ["Verify material workflow compression."],
+  };
+  const factSource = buildSampleDecisionSourceRef({
+    ...sourceInput,
+    occurredAt: "2026-06-10T10:00:00-07:00",
+  });
+  const interactionSource = buildSampleDecisionSourceRef({
+    ...sourceInput,
+    occurredAt: "2026-06-10T17:00:00.000Z",
+  });
+  assert.equal(factSource.eventAt, "2026-06-10T17:00:00.000Z");
+  assert.equal(factSource.retrievedAt, "2026-08-01T00:00:00.000Z");
+  assert.deepEqual(factSource, interactionSource);
+
+  const exactBundle: DealMemoryBundle = {
+    dealId: "deal_henry_ai_v1",
+    companyName: "Henry AI",
+    status: "passed",
+    facts: [{
+      text: sourceTextForRetrieval(factSource),
+      sources: [factSource],
+    }],
+    interactions: [{
+      id: factSource.id,
+      occurredAt: factSource.eventAt!,
+      summary: sourceInput.summary,
+      decisionReason: sourceInput.decisionReason,
+      concerns: [...sourceInput.concerns],
+      revisitConditions: [...sourceInput.revisitConditions],
+      priorActions: [{
+        kind: "no_new_action",
+        scope: "deal",
+        priority: "standard",
+        visibility: "internal_only",
+      }],
+      actionPolicyVersion: "belief-action-policy-v1",
+      interactionSchemaVersion: "sample-decision-interaction-v1",
+      provenance: "demo_fixture",
+      label: "Sample decision record",
+      source: interactionSource,
+    }],
+  };
+  assert.equal(
+    buildMatchingSources([exactBundle], []).filter(({ id }) =>
+      id === factSource.id
+    ).length,
+    1,
+  );
 });
 
 test("Claude matching reasoner parses JSON and rejects Deals outside the candidate set", async () => {

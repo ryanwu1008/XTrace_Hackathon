@@ -552,7 +552,7 @@ function currentPayload(candidateRunId = "candidate_named_lens") {
       evidenceRequestRefs: [],
     },
     conditionalConclusion: {
-      text: "The view remains conditional on resolving the saved unknown.",
+      text: Array.from({ length: 153 }, () => "conditional").join(" "),
       stance: index % 2 === 0 ? "supportive" : "negative",
       advisoryPosture: index % 2 === 0
         ? "supports_further_diligence"
@@ -565,7 +565,7 @@ function currentPayload(candidateRunId = "candidate_named_lens") {
       hiddenChainOfThought: false,
     },
     selectionBasisEvidenceIds: ["fact_support"],
-    wordCount: 45,
+    wordCount: 180,
     generatorVersion: "named-lens-generator-v1",
     fingerprint: sha(String(index + 1)),
     }),
@@ -626,7 +626,7 @@ function currentPayload(candidateRunId = "candidate_named_lens") {
     })),
     firstScreenProjectionRefs: {
       decisionId: "decision_named_lens",
-      decisionEvidenceItemIds: [],
+      decisionEvidenceItemIds: ["fact_support"],
       selectedJudgmentIds: passages.map(({ judgmentId }) => judgmentId),
     },
     fingerprint: sha("f"),
@@ -746,6 +746,24 @@ function refreshSemanticPins(
   value.versionSnapshot.presentationFingerprint =
     semanticFingerprints.presentationFingerprint;
   return value;
+}
+
+function setFirstPassageWordCount(
+  value: ReturnType<typeof currentPayload>,
+  actualWordCount: number,
+  persistedWordCount = actualWordCount,
+): ReturnType<typeof currentPayload> {
+  const passage = value.namedLensPassages[0]!;
+  passage.premise.text = "premise";
+  passage.caseApplication.text = "case";
+  passage.countercase.text = "countercase";
+  passage.unknownBoundary.text = "unknown";
+  passage.conditionalConclusion.text = Array.from(
+    { length: actualWordCount - 4 },
+    () => "conclusion",
+  ).join(" ");
+  passage.wordCount = persistedWordCount;
+  return refreshSemanticPins(value);
 }
 
 function typedAbstentionPayload(
@@ -926,6 +944,8 @@ function projectionUnavailablePayload(
     evidenceItemIds: [],
   };
   value.namedLensPresentation.segmentCitations = [];
+  value.namedLensPresentation.firstScreenProjectionRefs
+    .decisionEvidenceItemIds = [];
   value.namedLensPresentation.firstScreenProjectionRefs.selectedJudgmentIds =
     [];
   value.terminalStatus = "partial";
@@ -1143,6 +1163,40 @@ test(
     success(postgres.run("createdb", [database]), "database creation");
     try {
       runMigrations(postgres, database);
+      assert.equal(psql(postgres, database, [
+        "select public.named_lens_first_screen_projection_ids_0028(",
+        sqlJson({
+          evidenceRefs: [
+            {
+              evidencePackItemId: "fact_e",
+              originRefs: [{ kind: "market_event", id: "event_1" }],
+            },
+            {
+              evidencePackItemId: "fact_b",
+              originRefs: [{
+                kind: "source_revision",
+                id: "revision_shared",
+              }],
+            },
+            {
+              evidencePackItemId: "fact_d",
+              originRefs: [{ kind: "fired_rule", id: "rule_2" }],
+            },
+            {
+              evidencePackItemId: "fact_a",
+              originRefs: [
+                { kind: "fired_rule", id: "rule_1" },
+                { kind: "source_revision", id: "revision_shared" },
+              ],
+            },
+            {
+              evidencePackItemId: "fact_c",
+              originRefs: [{ kind: "blocking_evidence", id: "block_1" }],
+            },
+          ],
+        }),
+        ")",
+      ].join(" ")), '["fact_a", "fact_c", "fact_d"]');
       const tables = psql(postgres, database, [
         "select string_agg(tablename, ',' order by tablename)",
         "from pg_catalog.pg_tables",
@@ -1344,6 +1398,144 @@ test(
         /monotonic/iu,
         "duplicate reserve identity",
       );
+    } finally {
+      postgres.run("dropdb", ["--if-exists", database]);
+    }
+  },
+);
+
+test(
+  "0028 recomputes the five Named Lens segments and enforces the 180 to 260 word boundary",
+  { skip: postgres17SkipReason },
+  () => {
+    assert.equal(postgres.state, "verified");
+    if (postgres.state !== "verified") return;
+    const database = makeDisposableDatabaseName("named_lens_word_count");
+    success(postgres.run("createdb", [database]), "database creation");
+    try {
+      runMigrations(postgres, database);
+      fixtureSetup(postgres, database);
+      const cases: ReadonlyArray<{
+        name: string;
+        actualWordCount: number;
+        persistedWordCount: number;
+        accepted: boolean;
+        surroundFirstWordWithWhitespace?: boolean;
+        useNonBreakingSpace?: boolean;
+      }> = [
+        {
+          name: "179 actual and persisted words",
+          actualWordCount: 179,
+          persistedWordCount: 179,
+          accepted: false,
+        },
+        {
+          name: "180 actual and persisted words",
+          actualWordCount: 180,
+          persistedWordCount: 180,
+          accepted: true,
+        },
+        {
+          name: "260 actual and persisted words",
+          actualWordCount: 260,
+          persistedWordCount: 260,
+          accepted: true,
+        },
+        {
+          name: "261 actual and persisted words",
+          actualWordCount: 261,
+          persistedWordCount: 261,
+          accepted: false,
+        },
+        {
+          name: "180 actual words declared as 181",
+          actualWordCount: 180,
+          persistedWordCount: 181,
+          accepted: false,
+        },
+        {
+          name: "180 words separated and surrounded by Unicode whitespace",
+          actualWordCount: 180,
+          persistedWordCount: 180,
+          accepted: true,
+          surroundFirstWordWithWhitespace: true,
+        },
+        {
+          name: "180 words separated once by a non-breaking space",
+          actualWordCount: 180,
+          persistedWordCount: 180,
+          accepted: true,
+          useNonBreakingSpace: true,
+        },
+      ];
+
+      cases.forEach((wordCountCase, index) => {
+        const candidateRunId = `candidate_word_count_${index + 1}`;
+        const workerId = `worker_word_count_${index + 1}`;
+        const leaseToken = `lease_word_count_${index + 1}`;
+        insertCandidate(postgres, database, {
+          batchId: `batch_word_count_${index + 1}`,
+          candidateRunId,
+          workerId,
+          leaseToken,
+          batchFingerprint: indexedSha(index + 700),
+        });
+        const payload = setFirstPassageWordCount(
+          forCandidate(currentPayload(), {
+            candidateRunId,
+            workerId,
+            leaseToken,
+            fingerprint: indexedSha(index + 800),
+          }),
+          wordCountCase.actualWordCount,
+          wordCountCase.persistedWordCount,
+        );
+        if (wordCountCase.surroundFirstWordWithWhitespace) {
+          payload.namedLensPassages[0]!.premise.text = "\tpremise\n";
+          refreshSemanticPins(payload);
+        }
+        if (wordCountCase.useNonBreakingSpace) {
+          payload.namedLensPassages[0]!.conditionalConclusion.text =
+            payload.namedLensPassages[0]!.conditionalConclusion.text.replace(
+              " ",
+              "\u00a0",
+            );
+          refreshSemanticPins(payload);
+        }
+        reserveAndSettleAttempts(postgres, database, payload);
+        const result = postgres.run("psql", [
+          "--no-password",
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-d",
+          database,
+          "-c",
+          [
+            "begin",
+            "set role service_role",
+            `select public.finalize_or_reuse_candidate_underwriting(${sqlJson(payload)})`,
+            "rollback",
+          ].join("; "),
+        ]);
+        if (wordCountCase.accepted) {
+          assert.equal(
+            result.status,
+            0,
+            `${wordCountCase.name} should be accepted: ${result.stderr}`,
+          );
+        } else {
+          assert.notEqual(
+            result.status,
+            0,
+            `${wordCountCase.name} unexpectedly succeeded.`,
+          );
+          assert.match(
+            result.stderr,
+            /word count.*180.*260/iu,
+            wordCountCase.name,
+          );
+        }
+      });
     } finally {
       postgres.run("dropdb", ["--if-exists", database]);
     }
@@ -2054,6 +2246,30 @@ test(
               .decisionCriticalEvidenceProjectionFingerprint = sha("0");
           },
           error: /projection.*fingerprint|decision-critical/iu,
+        },
+        {
+          name: "arbitrary empty first-screen projection subset",
+          mutate: (payload) => {
+            payload.namedLensPresentation.firstScreenProjectionRefs
+              .decisionEvidenceItemIds = [];
+          },
+          error: /presentation.*authoritative|first-screen|projection/iu,
+        },
+        {
+          name: "duplicate first-screen projection evidence",
+          mutate: (payload) => {
+            payload.namedLensPresentation.firstScreenProjectionRefs
+              .decisionEvidenceItemIds = ["fact_support", "fact_support"];
+          },
+          error: /presentation.*authoritative|first-screen|projection/iu,
+        },
+        {
+          name: "foreign first-screen projection evidence",
+          mutate: (payload) => {
+            payload.namedLensPresentation.firstScreenProjectionRefs
+              .decisionEvidenceItemIds = ["fact_counter"];
+          },
+          error: /presentation.*authoritative|first-screen|projection/iu,
         },
       ];
       for (const mutation of mutations) {

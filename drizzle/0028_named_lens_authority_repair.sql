@@ -353,6 +353,148 @@ grant execute on function
   public.named_lens_typed_abstention_0028(jsonb, jsonb)
 to vsee_underwriting_owner;
 
+create or replace function public.named_lens_first_screen_projection_ids_0028(
+  p_projection jsonb
+)
+returns jsonb
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare
+  reference_value jsonb;
+  reference_source_revision_ids text[];
+  selected_ids text[] := array[]::text[];
+  selected_source_revision_ids text[] := array[]::text[];
+begin
+  if jsonb_typeof(p_projection -> 'evidenceRefs') is distinct from 'array'
+  then
+    raise exception 'Named Lens first-screen projection must contain evidence refs';
+  end if;
+
+  for reference_value in
+    select evidence.value
+    from jsonb_array_elements(p_projection -> 'evidenceRefs') evidence(value)
+    order by (
+      select min(case origin.value ->> 'kind'
+        when 'blocking_evidence' then 0
+        when 'fired_rule' then 1
+        when 'valuation_evaluation' then 2
+        when 'return_calculation' then 2
+        when 'calculation' then 2
+        when 'scenario_input' then 2
+        when 'revisit_gate' then 3
+        when 'counterevidence_gate' then 4
+        when 'action_delta_gate' then 5
+        when 'market_event' then 6
+        when 'chronology_gate' then 7
+        when 'prior_record' then 8
+        when 'xtrace_memory' then 9
+        when 'source_revision' then 9
+        else 2147483647
+      end)
+      from jsonb_array_elements(evidence.value -> 'originRefs') origin(value)
+    ), evidence.value ->> 'evidencePackItemId' collate "C"
+  loop
+    select coalesce(
+      array_agg(origin.value ->> 'id' order by origin.value ->> 'id' collate "C"),
+      array[]::text[]
+    ) into reference_source_revision_ids
+    from jsonb_array_elements(reference_value -> 'originRefs') origin(value)
+    where origin.value ->> 'kind' = 'source_revision';
+
+    if reference_source_revision_ids && selected_source_revision_ids then
+      continue;
+    end if;
+    selected_ids := array_append(
+      selected_ids, reference_value ->> 'evidencePackItemId'
+    );
+    selected_source_revision_ids := array_cat(
+      selected_source_revision_ids, reference_source_revision_ids
+    );
+    exit when cardinality(selected_ids) = 3;
+  end loop;
+
+  return (
+    select coalesce(jsonb_agg(item_id order by item_id collate "C"), '[]'::jsonb)
+    from unnest(selected_ids) item_id
+  );
+end;
+$$;
+alter function public.named_lens_first_screen_projection_ids_0028(jsonb)
+  owner to vsee_underwriting_owner;
+revoke all on function
+  public.named_lens_first_screen_projection_ids_0028(jsonb)
+from public, anon, authenticated, service_role;
+grant execute on function
+  public.named_lens_first_screen_projection_ids_0028(jsonb)
+to vsee_underwriting_owner;
+
+create or replace function public.named_lens_presentation_authoritative_0028(
+  p_presentation jsonb,
+  p_passages jsonb,
+  p_dispositions jsonb,
+  p_decision jsonb,
+  p_projection jsonb,
+  p_evidence_pack jsonb,
+  p_workspace_id text,
+  p_candidate_run_id text
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare
+  expected_first_screen_ids jsonb;
+  compatibility_decision jsonb;
+begin
+  expected_first_screen_ids :=
+    public.named_lens_first_screen_projection_ids_0028(p_projection);
+  if p_presentation #> '{firstScreenProjectionRefs,decisionEvidenceItemIds}'
+      is distinct from expected_first_screen_ids
+  then
+    return false;
+  end if;
+
+  -- The 0027 validator still derives first-screen evidence only from direct
+  -- DecisionResult Fact/Assumption refs. Preserve all of its identity,
+  -- selection, synthesis, and citation checks while supplying the exact
+  -- projection-derived set as a validation-only DecisionResult authority.
+  compatibility_decision := jsonb_set(
+    p_decision,
+    '{blockingEvidenceItemIds}',
+    expected_first_screen_ids,
+    true
+  );
+  return public.named_lens_presentation_authoritative_0027(
+    p_presentation,
+    p_passages,
+    p_dispositions,
+    compatibility_decision,
+    p_evidence_pack,
+    p_workspace_id,
+    p_candidate_run_id
+  );
+exception when others then
+  return false;
+end;
+$$;
+alter function public.named_lens_presentation_authoritative_0028(
+  jsonb, jsonb, jsonb, jsonb, jsonb, jsonb, text, text
+) owner to vsee_underwriting_owner;
+revoke all on function
+  public.named_lens_presentation_authoritative_0028(
+    jsonb, jsonb, jsonb, jsonb, jsonb, jsonb, text, text
+  )
+from public, anon, authenticated, service_role;
+grant execute on function
+  public.named_lens_presentation_authoritative_0028(
+    jsonb, jsonb, jsonb, jsonb, jsonb, jsonb, text, text
+  )
+to vsee_underwriting_owner;
+
 create or replace function public.assert_named_lens_presentation_finalization_0028(
   p_payload jsonb,
   p_workspace_id text,
@@ -988,6 +1130,42 @@ begin
 
   if exists (
     select 1
+    from pg_catalog.jsonb_array_elements(passages) passage
+    cross join lateral (
+      select coalesce(pg_catalog.sum(
+        pg_catalog.regexp_count(
+          pg_catalog.translate(
+            segment.text,
+            U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF',
+            pg_catalog.repeat(' ', 25)
+          ),
+          '[^ ]+'
+        )
+      ), 0::bigint)::integer as actual_word_count
+      from (values
+        (passage #>> '{premise,text}'),
+        (passage #>> '{caseApplication,text}'),
+        (passage #>> '{countercase,text}'),
+        (passage #>> '{unknownBoundary,text}'),
+        (passage #>> '{conditionalConclusion,text}')
+      ) segment(text)
+    ) counted
+    where counted.actual_word_count not between 180 and 260
+      or case
+        when pg_catalog.jsonb_typeof(passage -> 'wordCount')
+            is distinct from 'number'
+          or passage ->> 'wordCount' !~ '^[0-9]+$'
+          then true
+        else (passage ->> 'wordCount')::numeric
+          <> counted.actual_word_count
+      end
+  ) then
+    raise exception
+      'Named Lens passage word count must exactly match five segments and remain between 180 and 260 words';
+  end if;
+
+  if exists (
+    select 1
     from jsonb_array_elements(attempt_refs) reference
     where jsonb_typeof(reference) is distinct from 'object'
       or jsonb_typeof(reference -> 'judgmentOrCatalogCandidateId')
@@ -1141,9 +1319,9 @@ begin
     raise exception
       'Underwriting presentation report identity is not authoritative';
   end if;
-  if public.named_lens_presentation_authoritative_0027(
+  if public.named_lens_presentation_authoritative_0028(
     presentation, passages, dispositions, p_payload -> 'decision',
-    evidence_pack, p_workspace_id, p_candidate_run_id
+    projection, evidence_pack, p_workspace_id, p_candidate_run_id
   ) is distinct from true
   then
     raise exception

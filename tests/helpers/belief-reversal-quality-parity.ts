@@ -1,8 +1,32 @@
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  DecisionCriticalEvidenceProjectionSchema,
+  NamedLensProviderAttemptRefSchema,
+  NamedLensProviderAttemptSchema,
+} from "../../lib/contracts/named-lens";
+import {
+  FrameworkJudgmentSchema,
+} from "../../lib/contracts/underwriting";
+import { createCanonicalFingerprint } from
+  "../../lib/underwriting/fingerprints";
+import {
+  createDecisionCriticalEvidenceProjectionFingerprint,
+} from "../../lib/underwriting/named-lens-presentation";
+import {
+  validateNamedLensFinalization,
+  type CurrentCandidateArtifactBundle,
+} from "../../db/repositories/underwriting-artifacts";
+import {
   SYNTHETIC_FRAMEWORK_PACK,
 } from "../../seed/underwriting/framework-pack-v1";
+import {
+  APPROVED_PINNED_DEMO_SNAPSHOT_ID,
+} from "../../lib/contracts/evidence-context";
+import {
+  PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+  loadPinnedThirtyDealSnapshotPackage,
+} from "../../lib/belief-reversal/pinned-thirty-deal-snapshot";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -80,6 +104,13 @@ const EXTERNAL_DRAFT_MARKERS: Record<string, (body: string) => boolean> = {
     ),
 };
 
+const RUN_BOUND_FINGERPRINT_ALIAS_PREFIX = "\u0000run-fingerprint\u0000";
+const PINNED_THIRTY_SCREENING_DEAL_IDS = new Set(
+  loadPinnedThirtyDealSnapshotPackage().screeningDeals.map(({ dealId }) =>
+    dealId
+  ),
+);
+
 export class BeliefReversalQualityParityError extends Error {
   constructor(message: string) {
     super(message);
@@ -120,11 +151,12 @@ export function assertBeliefReversalQualityParity(
 ): void {
   const live = requireRecord(liveInput, "live pass");
   const pinned = requireRecord(pinnedInput, "pinned baseline");
+  const pinnedContract = pinnedBaselineContract(pinned);
   const pinnedPass = validateCompletePass(
     pinned,
     "pinned baseline",
-    23,
-    "legacy_pinned_top_five",
+    pinnedContract.expectedAnalysisCount,
+    pinnedContract.underwritingMode,
   );
   const livePass = validateCompletePass(
     live,
@@ -135,11 +167,33 @@ export function assertBeliefReversalQualityParity(
 
   const pinnedDeals = new Set(pinnedPass.analysisByDeal.keys());
   const liveDeals = new Set(livePass.analysisByDeal.keys());
+  assertExactPinnedThirtyScreeningDeals(livePass, "live pass");
+  if (pinnedContract.kind === "current_30") {
+    assertExactPinnedThirtyScreeningDeals(pinnedPass, "pinned baseline");
+  }
   if ([...pinnedDeals].some((dealId) => !liveDeals.has(dealId))) {
     fail("live pass must preserve all 23 pinned CompanyAnalysis Deal identities");
   }
-  if ([...liveDeals].filter((dealId) => !pinnedDeals.has(dealId)).length !== 7) {
-    fail("live pass must add exactly seven screened Deal analyses");
+  const addedLiveDeals = [...liveDeals].filter((dealId) => !pinnedDeals.has(dealId));
+  if (
+    (pinnedContract.kind === "legacy_23" && addedLiveDeals.length !== 7)
+    || (pinnedContract.kind === "current_30" && addedLiveDeals.length !== 0)
+  ) {
+    fail(
+      pinnedContract.kind === "legacy_23"
+        ? "live pass must add exactly seven screened Deal analyses"
+        : "live pass and pinned-30 baseline must use the same 30-Deal universe",
+    );
+  }
+
+  const qualityComparisonDeals = new Set(
+    [...pinnedPass.analysisByDeal.keys()].filter((dealId) =>
+      pinnedContract.kind === "legacy_23"
+      || !PINNED_THIRTY_SCREENING_DEAL_IDS.has(dealId)
+    ),
+  );
+  if (qualityComparisonDeals.size !== 23) {
+    fail("quality parity requires the exact 23 non-screening Deal identities");
   }
 
   const commonUnderwritingDeals = new Set(
@@ -149,12 +203,12 @@ export function assertBeliefReversalQualityParity(
   );
   const liveProjection = projectSharedQuality(
     livePass,
-    pinnedDeals,
+    qualityComparisonDeals,
     commonUnderwritingDeals,
   );
   const pinnedProjection = projectSharedQuality(
     pinnedPass,
-    pinnedDeals,
+    qualityComparisonDeals,
     commonUnderwritingDeals,
   );
   if (isDeepStrictEqual(liveProjection, pinnedProjection)) return;
@@ -166,6 +220,56 @@ export function assertBeliefReversalQualityParity(
       + `live=${summarize(difference?.left ?? projectionSummary(liveProjection))} `
       + `pinned=${summarize(difference?.right ?? projectionSummary(pinnedProjection))}`,
   );
+}
+
+function assertExactPinnedThirtyScreeningDeals(
+  pass: ValidatedPass,
+  label: string,
+): void {
+  if (PINNED_THIRTY_SCREENING_DEAL_IDS.size !== 7) {
+    fail("the reviewed pinned-30 package must define exactly seven screening Deals");
+  }
+  for (const dealId of PINNED_THIRTY_SCREENING_DEAL_IDS) {
+    const analysis = pass.analysisByDeal.get(dealId);
+    if (!analysis || analysis.dealStatus !== "screening") {
+      fail(
+        `${label} must retain reviewed screening Deal ${dealId} with screening status`,
+      );
+    }
+  }
+}
+
+function pinnedBaselineContract(pass: UnknownRecord): {
+  kind: "legacy_23" | "current_30";
+  expectedAnalysisCount: 23 | 30;
+  underwritingMode: "legacy_pinned_top_five" | "all_belief_revised";
+} {
+  const report = requireRecord(pass.report, "pinned baseline.report");
+  const evidenceContext = requireRecord(
+    report.evidenceContext,
+    "pinned baseline.report.evidenceContext",
+  );
+  if (
+    evidenceContext.state !== "current"
+    || evidenceContext.evidenceMode !== "pinned"
+  ) {
+    fail("pinned baseline must use a current pinned evidence context");
+  }
+  if (evidenceContext.snapshotId === APPROVED_PINNED_DEMO_SNAPSHOT_ID) {
+    return {
+      kind: "legacy_23",
+      expectedAnalysisCount: 23,
+      underwritingMode: "legacy_pinned_top_five",
+    };
+  }
+  if (evidenceContext.snapshotId === PINNED_THIRTY_DEAL_SNAPSHOT_ID) {
+    return {
+      kind: "current_30",
+      expectedAnalysisCount: 30,
+      underwritingMode: "all_belief_revised",
+    };
+  }
+  fail("pinned baseline uses an unreviewed snapshot identity");
 }
 
 function validateCompletePass(
@@ -846,6 +950,44 @@ function validateArtifact(
   requireString(artifact.narrative, `${path}.narrative`);
   requireArray(artifact.claimEdges, `${path}.claimEdges`);
 
+  if (artifact.decisionCriticalEvidenceProjection !== undefined) {
+    const projectionResult = DecisionCriticalEvidenceProjectionSchema.safeParse(
+      artifact.decisionCriticalEvidenceProjection,
+    );
+    if (!projectionResult.success) {
+      fail(`${path}.decisionCriticalEvidenceProjection is not a valid projection`);
+    }
+    const projection = projectionResult.data;
+    if (
+      projection.workspaceId !== artifact.workspaceId
+      || projection.artifactSourceCandidateRunId !== identity.candidateRunId
+    ) {
+      fail(
+        `${path}.decisionCriticalEvidenceProjection is not linked to its artifact`,
+      );
+    }
+    const parsedJudgments = judgments.map((value, index) => {
+      const result = FrameworkJudgmentSchema.safeParse(value);
+      if (!result.success) {
+        fail(`${path}.judgments[${index}] is not a valid framework judgment`);
+      }
+      return result.data;
+    });
+    const expectedFingerprint =
+      createDecisionCriticalEvidenceProjectionFingerprint(
+        projection.evidenceRefs,
+        parsedJudgments,
+      );
+    if (projection.fingerprint !== expectedFingerprint) {
+      fail(
+        `${path}.decisionCriticalEvidenceProjection fingerprint does not `
+          + "match its original run-bound projection",
+      );
+    }
+  }
+  validateNamedLensAttemptLedgerBinding(artifact, path, identity);
+  validatePersistedNamedLensFinalizationAuthority(artifact, path, identity);
+
   const drafts = requireArray(artifact.actionDrafts, `${path}.actionDrafts`);
   if (drafts.length === 0) fail(`${path} requires at least one action draft`);
   const expectedFormats = expectedActionDraftFormats(actionKinds);
@@ -898,6 +1040,111 @@ function expectedActionDraftFormats(
     return new Set(["internal_memo", "founder_email", "diligence_request"]);
   }
   return new Set(["internal_memo"]);
+}
+
+function validateNamedLensAttemptLedgerBinding(
+  artifact: UnknownRecord,
+  path: string,
+  identity: { dealId: string; candidateRunId: string },
+): void {
+  const hasRefs = artifact.namedLensAttemptRefs !== undefined;
+  const hasLedger = artifact.namedLensProviderAttempts !== undefined;
+  if (!hasRefs && !hasLedger) return;
+  if (!hasRefs || !hasLedger) {
+    fail(`${path} requires both Named Lens attempt refs and its provider ledger`);
+  }
+  const refs = requireArray(
+    artifact.namedLensAttemptRefs,
+    `${path}.namedLensAttemptRefs`,
+  ).map((value, index) => {
+    const result = NamedLensProviderAttemptRefSchema.safeParse(value);
+    if (!result.success) {
+      fail(`${path}.namedLensAttemptRefs[${index}] is invalid`);
+    }
+    return result.data;
+  });
+  const attempts = requireArray(
+    artifact.namedLensProviderAttempts,
+    `${path}.namedLensProviderAttempts`,
+  ).map((value, index) => {
+    const result = NamedLensProviderAttemptSchema.safeParse(value);
+    if (!result.success) {
+      fail(`${path}.namedLensProviderAttempts[${index}] is invalid`);
+    }
+    if (
+      result.data.workspaceId !== artifact.workspaceId
+      || result.data.artifactSourceCandidateRunId !== identity.candidateRunId
+      || result.data.status === "reserved"
+    ) {
+      fail(
+        `${path}.namedLensProviderAttempts[${index}] is foreign or unsettled`,
+      );
+    }
+    return result.data;
+  });
+  const identityKey = (value: {
+    judgmentOrCatalogCandidateId: string;
+    logicalPassageId: string;
+    attemptNumber: number;
+    attemptFingerprint: string;
+  }) => [
+    value.judgmentOrCatalogCandidateId,
+    value.logicalPassageId,
+    String(value.attemptNumber),
+    value.attemptFingerprint,
+  ].join("\u0000");
+  const refKeys = refs.map(identityKey);
+  const ledgerKeys = attempts.map(identityKey);
+  if (
+    new Set(refKeys).size !== refKeys.length
+    || new Set(ledgerKeys).size !== ledgerKeys.length
+    || refKeys.length !== ledgerKeys.length
+    || refKeys.some((key) => !ledgerKeys.includes(key))
+    || ledgerKeys.some((key) => !refKeys.includes(key))
+  ) {
+    fail(
+      `${path} Named Lens attempt refs must exactly match the settled `
+        + "candidate-local provider ledger",
+    );
+  }
+}
+
+function validatePersistedNamedLensFinalizationAuthority(
+  artifact: UnknownRecord,
+  path: string,
+  identity: { dealId: string; candidateRunId: string },
+): void {
+  if (artifact.underwritingPresentationReportId === undefined) return;
+  const current = artifact as unknown as CurrentCandidateArtifactBundle;
+  try {
+    validateNamedLensFinalization({
+      workspaceId: requireString(artifact.workspaceId, `${path}.workspaceId`),
+      candidateRunId: identity.candidateRunId,
+      catalogConsiderations: current.namedLensCatalogConsiderations,
+      decisionCriticalEvidenceProjection:
+        current.decisionCriticalEvidenceProjection,
+      attemptRefs: current.namedLensAttemptRefs,
+      persistedAttempts: current.namedLensProviderAttempts,
+      dispositions: current.namedLensDispositions,
+      passages: current.namedLensPassages,
+      underwritingPresentationReportId: requireString(
+        artifact.underwritingPresentationReportId,
+        `${path}.underwritingPresentationReportId`,
+      ),
+      presentation: current.namedLensPresentation,
+      terminalStatus: current.terminalStatus,
+      terminalReasonCodes: current.terminalReasonCodes,
+      generatorVersion: current.versionSnapshot.namedLensGeneratorVersion!,
+      evidencePack: current.evidencePack,
+      judgments: current.judgments,
+      decision: current.decision,
+    });
+  } catch (error) {
+    fail(
+      `${path} current Named Lens finalization failed its same-run authority `
+        + `validation: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
 }
 
 function validateScenarioSet(
@@ -1051,10 +1298,37 @@ function buildIdentityAliases(pass: UnknownRecord): ReadonlyMap<string, string> 
   requireArray(report.companyAnalyses, "pass.report.companyAnalyses")
     .forEach((value, index) => {
       const item = requireRecord(value, `pass.report.companyAnalyses[${index}]`);
+      const dealId = requireString(
+        item.dealId,
+        `pass.report.companyAnalyses[${index}].dealId`,
+      );
       aliases.add(
         requireString(item.id, `pass.report.companyAnalyses[${index}].id`),
-        `analysis:${requireString(item.dealId, `pass.report.companyAnalyses[${index}].dealId`)}`,
+        `analysis:${dealId}`,
       );
+      const marketEvidence = isRecord(item.marketEvidence)
+        ? item.marketEvidence
+        : null;
+      const events = marketEvidence && Array.isArray(marketEvidence.events)
+        ? marketEvidence.events
+        : [];
+      events.forEach((eventValue, eventIndex) => {
+        const event = requireRecord(
+          eventValue,
+          `pass.report.companyAnalyses[${index}].marketEvidence.events[${eventIndex}]`,
+        );
+        if (typeof event.triggerSourceId !== "string") return;
+        aliases.add(
+          requireString(
+            event.id,
+            `pass.report.companyAnalyses[${index}].marketEvidence.events[${eventIndex}].id`,
+          ),
+          `market-event:${requireString(
+            event.triggerSourceId,
+            `pass.report.companyAnalyses[${index}].marketEvidence.events[${eventIndex}].triggerSourceId`,
+          )}`,
+        );
+      });
     });
   const batch = requireRecord(pass.batch, "pass.batch");
   aliases.add(requireString(batch.id, "pass.batch.id"), "batch");
@@ -1140,6 +1414,157 @@ function collectArtifactAliases(
       `judgment:${dealId}:${frameworkCardId}`,
     );
   });
+  const semanticCandidateById = new Map(frameworkCardIdByJudgmentId);
+  if (Array.isArray(artifact.namedLensCatalogConsiderations)) {
+    artifact.namedLensCatalogConsiderations.forEach((value, index) => {
+      const consideration = requireRecord(
+        value,
+        `${path}.namedLensCatalogConsiderations[${index}]`,
+      );
+      const candidateId = requireString(
+        consideration.judgmentOrCatalogCandidateId,
+        `${path}.namedLensCatalogConsiderations[${index}].judgmentOrCatalogCandidateId`,
+      );
+      const cardIdentity = `${requireString(
+        consideration.frameworkCardId,
+        `${path}.namedLensCatalogConsiderations[${index}].frameworkCardId`,
+      )}@${requireString(
+        consideration.frameworkVersion,
+        `${path}.namedLensCatalogConsiderations[${index}].frameworkVersion`,
+      )}`;
+      semanticCandidateById.set(candidateId, cardIdentity);
+    });
+  }
+  if (Array.isArray(artifact.namedLensAttemptRefs)) {
+    artifact.namedLensAttemptRefs.forEach((value, index) => {
+      const attempt = requireRecord(
+        value,
+        `${path}.namedLensAttemptRefs[${index}]`,
+      );
+      const candidateId = requireString(
+        attempt.judgmentOrCatalogCandidateId,
+        `${path}.namedLensAttemptRefs[${index}].judgmentOrCatalogCandidateId`,
+      );
+      const candidateIdentity = semanticCandidateById.get(candidateId);
+      if (!candidateIdentity) {
+        fail(`${path}.namedLensAttemptRefs[${index}] has no catalog identity`);
+      }
+      aliases.addRunFingerprint(
+        requireString(
+          attempt.attemptFingerprint,
+          `${path}.namedLensAttemptRefs[${index}].attemptFingerprint`,
+        ),
+        `named-lens-attempt:${dealId}:${candidateIdentity}:#${requireFiniteNumber(
+          attempt.attemptNumber,
+          `${path}.namedLensAttemptRefs[${index}].attemptNumber`,
+        )}`,
+      );
+    });
+  }
+  if (isRecord(artifact.decisionCriticalEvidenceProjection)) {
+    aliases.addRunFingerprint(
+      requireString(
+        artifact.decisionCriticalEvidenceProjection.fingerprint,
+        `${path}.decisionCriticalEvidenceProjection.fingerprint`,
+      ),
+      `decision-critical-projection-fingerprint:${dealId}`,
+    );
+  }
+  if (typeof artifact.underwritingPresentationReportId === "string") {
+    requireArray(
+      artifact.namedLensCatalogConsiderations,
+      `${path}.namedLensCatalogConsiderations`,
+    ).forEach((value, index) => {
+      const consideration = requireRecord(
+        value,
+        `${path}.namedLensCatalogConsiderations[${index}]`,
+      );
+      const candidateId = requireString(
+        consideration.judgmentOrCatalogCandidateId,
+        `${path}.namedLensCatalogConsiderations[${index}].judgmentOrCatalogCandidateId`,
+      );
+      const candidateIdentity = semanticCandidateById.get(candidateId);
+      if (!candidateIdentity) {
+        fail(`${path}.namedLensCatalogConsiderations[${index}] has no identity`);
+      }
+      aliases.addRunFingerprint(
+        requireString(
+          consideration.fingerprint,
+          `${path}.namedLensCatalogConsiderations[${index}].fingerprint`,
+        ),
+        `named-lens-catalog:${dealId}:${candidateIdentity}`,
+      );
+    });
+    requireArray(
+      artifact.namedLensDispositions,
+      `${path}.namedLensDispositions`,
+    ).forEach((value, index) => {
+      const disposition = requireRecord(
+        value,
+        `${path}.namedLensDispositions[${index}]`,
+      );
+      const candidateId = requireString(
+        disposition.judgmentOrCatalogCandidateId,
+        `${path}.namedLensDispositions[${index}].judgmentOrCatalogCandidateId`,
+      );
+      const candidateIdentity = semanticCandidateById.get(candidateId);
+      if (!candidateIdentity) {
+        fail(`${path}.namedLensDispositions[${index}] has no identity`);
+      }
+      aliases.addRunFingerprint(
+        requireString(
+          disposition.fingerprint,
+          `${path}.namedLensDispositions[${index}].fingerprint`,
+        ),
+        `named-lens-disposition:${dealId}:${candidateIdentity}`,
+      );
+    });
+    requireArray(
+      artifact.namedLensPassages,
+      `${path}.namedLensPassages`,
+    ).forEach((value, index) => {
+      const passage = requireRecord(
+        value,
+        `${path}.namedLensPassages[${index}]`,
+      );
+      const cardIdentity = `${requireString(
+        passage.frameworkCardId,
+        `${path}.namedLensPassages[${index}].frameworkCardId`,
+      )}@${requireString(
+        passage.frameworkVersion,
+        `${path}.namedLensPassages[${index}].frameworkVersion`,
+      )}`;
+      aliases.addRunFingerprint(
+        requireString(
+          passage.fingerprint,
+          `${path}.namedLensPassages[${index}].fingerprint`,
+        ),
+        `named-lens-passage:${dealId}:${cardIdentity}`,
+      );
+    });
+    const presentation = requireRecord(
+      artifact.namedLensPresentation,
+      `${path}.namedLensPresentation`,
+    );
+    aliases.addRunFingerprint(
+      requireString(
+        presentation.fingerprint,
+        `${path}.namedLensPresentation.fingerprint`,
+      ),
+      `named-lens-presentation:${dealId}`,
+    );
+    const versionSnapshot = requireRecord(
+      artifact.versionSnapshot,
+      `${path}.versionSnapshot`,
+    );
+    aliases.addRunFingerprint(
+      requireString(
+        versionSnapshot.finalDispositionsFingerprint,
+        `${path}.versionSnapshot.finalDispositionsFingerprint`,
+      ),
+      `named-lens-final-dispositions:${dealId}`,
+    );
+  }
   requireArray(artifact.disagreements, `${path}.disagreements`)
     .forEach((value, index) => {
       const disagreement = requireRecord(value, `${path}.disagreements[${index}]`);
@@ -1217,9 +1642,92 @@ function normalize(
   for (const key of Object.keys(record).sort()) {
     const child = record[key];
     if (child === undefined || shouldOmit(record, path, key)) continue;
+    if (
+      typeof child === "string"
+      && isRunBoundNamedLensFingerprintField(path, key)
+    ) {
+      const fingerprintAlias = aliases.get(
+        `${RUN_BOUND_FINGERPRINT_ALIAS_PREFIX}${child}`,
+      );
+      if (fingerprintAlias !== undefined) {
+        result[key] = fingerprintAlias;
+        continue;
+      }
+    }
     result[key] = normalize(child, `${path}.${key}`, aliases);
   }
+  if (path.endsWith(".decisionCriticalEvidenceProjection")) {
+    result.semanticSignature = createCanonicalFingerprint({
+      kind: "belief-reversal-quality-parity-critical-evidence-v1",
+      evidenceRefs: result.evidenceRefs,
+    });
+  }
+  if (
+    path.endsWith(".artifact")
+    && Array.isArray(result.namedLensAttemptRefs)
+  ) {
+    const versions = isRecord(result.versionSnapshot)
+      ? result.versionSnapshot
+      : {};
+    result.namedLensAttemptSemanticSignature = createCanonicalFingerprint({
+      kind: "belief-reversal-quality-parity-named-lens-attempts-v1",
+      execution: {
+        providerModel: versions.providerModel,
+        promptVersion: versions.promptVersion,
+        schemaVersion: versions.schemaVersion,
+        settingsFingerprint: versions.settingsFingerprint,
+        applicationCommit: versions.applicationCommit,
+        namedLensPassageSchemaVersion:
+          versions.namedLensPassageSchemaVersion,
+        namedLensGeneratorVersion: versions.namedLensGeneratorVersion,
+      },
+      input: {
+        evidencePack: result.evidencePack,
+        context: result.context,
+        calculations: result.calculations,
+      },
+      catalogConsiderations: result.namedLensCatalogConsiderations,
+      attemptRefs: result.namedLensAttemptRefs,
+      providerAttempts: semanticProviderAttempts(
+        result.namedLensProviderAttempts,
+      ),
+      dispositions: result.namedLensDispositions,
+      passages: result.namedLensPassages,
+      presentation: result.namedLensPresentation,
+    });
+  }
   return result;
+}
+
+function semanticProviderAttempts(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((entry) => {
+    if (!isRecord(entry)) return entry;
+    const { telemetry: omittedTelemetry, ...semantic } = entry;
+    void omittedTelemetry;
+    return semantic;
+  });
+}
+
+function isRunBoundNamedLensFingerprintField(
+  path: string,
+  key: string,
+): boolean {
+  if (path.includes(".namedLens")) {
+    return key === "fingerprint"
+      || key === "attemptFingerprint"
+      || key === "passageFingerprint"
+      || key === "decisionCriticalEvidenceProjectionFingerprint";
+  }
+  if (path.endsWith(".decisionCriticalEvidenceProjection")) {
+    return key === "fingerprint";
+  }
+  return path.endsWith(".versionSnapshot")
+    && [
+      "criticalEvidenceProjectionFingerprint",
+      "finalDispositionsFingerprint",
+      "presentationFingerprint",
+    ].includes(key);
 }
 
 function normalizeString(
@@ -1273,6 +1781,13 @@ function shouldOmit(record: UnknownRecord, path: string, key: string): boolean {
   ) return true;
   if (key === "priorityRank") return true;
   if (key === "displayLabel" && path.includes("evidenceContext")) return true;
+  // This raw fingerprint intentionally binds the original run-scoped event
+  // identities and is verified independently above. Cross-run parity compares
+  // a second fingerprint derived from the normalized evidence semantics.
+  if (
+    key === "fingerprint"
+    && path.endsWith(".decisionCriticalEvidenceProjection")
+  ) return true;
   return key === "fingerprint" && record.analysisType === "framework_judgment";
 }
 
@@ -1291,6 +1806,10 @@ class AliasMap {
     }
     this.values.set(original, alias);
     this.originals.set(alias, original);
+  }
+
+  addRunFingerprint(original: string, alias: string): void {
+    this.add(`${RUN_BOUND_FINGERPRINT_ALIAS_PREFIX}${original}`, alias);
   }
 }
 

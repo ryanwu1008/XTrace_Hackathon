@@ -218,7 +218,10 @@ function passage(): NamedLensPassageCandidate {
       evidenceRequestRefs: [],
     },
     conditionalConclusion: {
-      text: "The framework supports further diligence if independent cohorts confirm durability.",
+      text: [
+        "The framework supports further diligence if independent cohorts confirm durability.",
+        Array.from({ length: 140 }, () => "context").join(" "),
+      ].join(" "),
       stance: "supportive",
       advisoryPosture: "supports_further_diligence",
     },
@@ -229,6 +232,20 @@ function passage(): NamedLensPassageCandidate {
       hiddenChainOfThought: false,
     },
   };
+}
+
+function passageWithExactWordCount(wordCount: number): NamedLensPassageCandidate {
+  if (wordCount < 5) throw new Error("A five-segment passage needs five words.");
+  const value = passage();
+  value.premise.text = "Premise";
+  value.caseApplication.text = "Evidence";
+  value.countercase.text = "Countercase";
+  value.unknownBoundary.text = "Unknown";
+  value.conditionalConclusion.text = Array.from(
+    { length: wordCount - 4 },
+    () => "conditional",
+  ).join(" ");
+  return value;
 }
 
 function grounded(candidatePassage: unknown, savedJudgment = judgment) {
@@ -611,13 +628,25 @@ test("fails closed on quotation markers while exempting lexical apostrophes", ()
   }
 });
 
-test("computes the exact five-segment Unicode-whitespace word count and withholds over 260 words", () => {
-  const over = passage();
-  over.caseApplication.text = Array.from({ length: 260 }, () => "word").join("\u00a0");
-  const result = grounded(over);
-  assert.equal(result.status, "withheld");
-  if ("reasonCode" in result) {
-    assert.equal(result.reasonCode, "passage_word_limit_exceeded");
+test("accepts 180 and 260 words while withholding 179 and 261 words", () => {
+  const below = grounded(passageWithExactWordCount(179));
+  assert.equal(below.status, "withheld");
+  if ("reasonCode" in below) {
+    assert.equal(below.reasonCode, "passage_word_minimum_not_met");
+  }
+
+  for (const wordCount of [180, 260]) {
+    const result = grounded(passageWithExactWordCount(wordCount));
+    assert.equal(result.status, "validated", String(wordCount));
+    if (result.status === "validated") {
+      assert.equal(result.groundedCandidate.wordCount, wordCount);
+    }
+  }
+
+  const above = grounded(passageWithExactWordCount(261));
+  assert.equal(above.status, "withheld");
+  if ("reasonCode" in above) {
+    assert.equal(above.reasonCode, "passage_word_limit_exceeded");
   }
 });
 

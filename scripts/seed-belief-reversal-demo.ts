@@ -25,6 +25,10 @@ import {
   type ResearchCandidatesRepository,
 } from "../db/repositories/research-candidates";
 import { loadBeliefReversalManifest } from "../lib/belief-reversal/manifest";
+import {
+  buildPinnedThirtyDealSnapshotRequest,
+  PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+} from "../lib/belief-reversal/pinned-thirty-deal-snapshot";
 import { buildSampleDecisionSourceRef } from "../lib/belief-reversal/sample-decision-source";
 import {
   buildBeliefReversalResearchPublicSourceRef,
@@ -446,6 +450,22 @@ export async function runBeliefReversalDemoSeed(
   ) {
     throw new Error("Pinned snapshot does not match the parsed manifest evidence window.");
   }
+  const pinnedThirtySnapshot = await dependencies.marketEvidenceSnapshots.create(
+    buildPinnedThirtyDealSnapshotRequest({
+      workspaceId: WORKSPACE_ID,
+      events: pinnedSnapshot.events,
+    }),
+  );
+  if (
+    pinnedThirtySnapshot.id !== PINNED_THIRTY_DEAL_SNAPSHOT_ID
+    || pinnedThirtySnapshot.displayLabel !== pinnedSnapshot.displayLabel
+    || pinnedThirtySnapshot.anchorAt !== pinnedThirtySnapshot.windowEndAt
+    || pinnedThirtySnapshot.snapshotFingerprint === pinnedSnapshot.snapshotFingerprint
+  ) {
+    throw new Error(
+      "Pinned-30 snapshot does not preserve its independent immutable evidence identity.",
+    );
+  }
 
   return {
     created,
@@ -708,14 +728,59 @@ function buildSeedPlan(
       concerns: sampleInteraction.concerns,
       revisitConditions: sampleInteraction.revisitConditions,
     });
+    const sampleDecisionStatement = sampleSourceRef.text.status
+      === "normalized_only"
+      ? sampleSourceRef.text.normalizedStatement
+      : (() => {
+        throw new Error(
+          `Sample decision record ${sampleInteraction.id} lost its permanent synthetic label.`,
+        );
+      })();
+    const sampleEvidence: SourceEvidenceInput = {
+      id: sampleSourceRef.id,
+      workspaceId: WORKSPACE_ID,
+      dealId: selectedCase.dealId,
+      sourceId: sampleSource.document.id,
+      sourceRevisionId: sampleSource.revision.id,
+      provenanceOrigin: "demo_fixture",
+      field: "sample_decision_context",
+      value: sampleDecisionStatement,
+      unit: null,
+      currency: null,
+      periodStart: null,
+      periodEnd: null,
+      publishedAt: null,
+      eventAt: sampleSourceRef.eventAt,
+      retrievedAt: sampleSourceRef.retrievedAt!,
+      locator: {
+        kind: "text_range",
+        start: 0,
+        end: sampleDecisionStatement.length,
+        excerpt: sampleDecisionStatement,
+      },
+      sourceRole: "management",
+      assertionStatus: "reported",
+      verificationMethod: "synthetic_sample_decision_record_v1",
+      freshness: "current",
+      acceptedForGate: false,
+      sourceRef: sampleSourceRef,
+    };
+    memoryLineage.evidence[sampleEvidence.id] = {
+      workspaceId: WORKSPACE_ID,
+      dealId: selectedCase.dealId,
+      sourceId: sampleDocumentId,
+      sourceRevisionId: sampleSource.revision.id,
+    };
     const memoryBundle = DealMemoryBundleSchema.parse({
       dealId: selectedCase.dealId,
       companyName,
       status,
-      facts: evidence.map((item) => ({
+      facts: [...evidence, sampleEvidence].map((item) => ({
         text: item.value,
         sources: [item.sourceRef!],
-        semanticFields: item.semanticFields,
+        ...(item.semanticFields === undefined
+          ? {}
+          : { semanticFields: item.semanticFields }),
       })),
       interactions: [{
         id: sampleInteraction.id,
@@ -749,7 +814,7 @@ function buildSeedPlan(
         status,
       },
       sources: [...publicSources, sampleSource],
-      evidence,
+      evidence: [...evidence, sampleEvidence],
       sampleInteraction,
       memoryBundle,
       memoryLineage,
@@ -759,11 +824,11 @@ function buildSeedPlan(
   const sources = cases.flatMap((item) => item.sources);
   if (
     cases.length !== 4
-    || cases.flatMap((item) => item.evidence).length !== 37
+    || cases.flatMap((item) => item.evidence).length !== 41
     || sources.length !== 41
     || new Set(sources.map((source) => source.document.id)).size !== 41
   ) {
-    throw new Error("The approved belief-reversal seed plan must remain 4/37/4.");
+    throw new Error("The approved belief-reversal seed plan must remain 4/41/4.");
   }
   return { cases, sources };
 }

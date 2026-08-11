@@ -5,6 +5,10 @@ import type { CandidateArtifactBundle } from "../../db/repositories/underwriting
 import type { SourceRevision } from "../../db/repositories/source-registry";
 import { loadBeliefReversalManifest } from "../../lib/belief-reversal/manifest";
 import {
+  PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+  loadPinnedThirtyDealSnapshotPackage,
+} from "../../lib/belief-reversal/pinned-thirty-deal-snapshot";
+import {
   ActionDraftV2Schema,
 } from "../../lib/contracts/underwriting";
 import {
@@ -18,22 +22,41 @@ import {
 } from "../../lib/contracts/domain";
 import { SourceRevisionSchema } from "../../lib/contracts/evidence";
 import {
+  FinalizedChatSourceRefSchema,
   FinalizedChatSuccessResponseSchema,
+  FinalizedChatSuccessResponseV2Schema,
   FinalizedChatTopicSchema,
+  FinalizedChatTopicV2Schema,
+  type FinalizedChatNamedLensTarget,
+  type FinalizedChatSourceRef,
   type FinalizedChatSuccessResponse,
+  type FinalizedChatSuccessResponseV2,
   type FinalizedChatTopic,
+  type FinalizedChatTopicV2,
 } from "../../lib/contracts/finalized-chat";
 import { CurrentReportEvidenceContextV1Schema } from "../../lib/contracts/evidence-context";
+import { WritableSourceRefV2Schema } from "../../lib/contracts/source-evidence";
+import { NamedLensPassageSchema } from "../../lib/contracts/named-lens";
 import {
   actionsForDealStatusAndDirection,
   beliefActionListsEqual,
 } from "../../lib/reports/action-policy";
-import { buildFinalizedChatProjection } from "../../lib/chat/finalized-projection";
-import { renderFinalizedChatProjection } from "../../lib/chat/finalized-renderer";
 import {
-  toCandidateUnderwritingDetail,
+  buildFinalizedChatProjection,
+  buildFinalizedChatProjectionV2,
+  type FinalizedChatV2EvidenceItem,
+} from "../../lib/chat/finalized-projection";
+import {
+  renderFinalizedChatProjection,
+  renderFinalizedChatProjectionV2,
+} from "../../lib/chat/finalized-renderer";
+import {
   toPublicActionDraft,
+  toVersionedCandidateUnderwritingDetail,
 } from "../../lib/underwriting/read-model";
+import {
+  selectFirstScreenDecisionEvidenceIds,
+} from "../../lib/underwriting/named-lens-presentation";
 import type {
   CurrentColdExpectedOutcomes,
 } from "./belief-reversal-e2e-pipeline";
@@ -47,6 +70,18 @@ const REVIEWED_PINNED_EVIDENCE_WINDOW = Object.freeze({
   windowEndAt: new Date(reviewedEvidenceWindow.endAt).toISOString(),
   windowTimezone: reviewedEvidenceWindow.timezone,
   displayLabel: reviewedEvidenceWindow.displayLabel,
+});
+const pinnedThirtyPackage = loadPinnedThirtyDealSnapshotPackage();
+const REVIEWED_PINNED_THIRTY_EVIDENCE_WINDOW = Object.freeze({
+  anchorAt: new Date(pinnedThirtyPackage.snapshot.anchorAt).toISOString(),
+  windowStartAt: new Date(
+    pinnedThirtyPackage.snapshot.windowStartAt,
+  ).toISOString(),
+  windowEndAt: new Date(
+    pinnedThirtyPackage.snapshot.windowEndAt,
+  ).toISOString(),
+  windowTimezone: pinnedThirtyPackage.snapshot.windowTimezone,
+  displayLabel: pinnedThirtyPackage.snapshot.displayLabel,
 });
 
 const RankingRowSchema = z.strictObject({
@@ -382,6 +417,9 @@ export interface BeliefReversalReportsAndChatVerification {
   }>;
   resolvedSourceRevisionIds: string[];
   chatTopics: FinalizedChatTopic[];
+  namedLensChatTopics: FinalizedChatTopicV2[];
+  namedLensChatDealIds: Array<keyof typeof REVIEWED_CASES>;
+  namedLensChatPairCount: number;
   chatQueryCount: number;
   hushInvestedActionVerified: true;
   hushResearchActionCrosswalkVerified: true;
@@ -555,15 +593,15 @@ const CurrentColdAnalysisSchema = z.object({
     evidenceBindingFingerprint: FingerprintSchema,
     priorMemory: z.object({
       kind: z.enum(["investment", "screening"]),
-    }),
+    }).passthrough(),
     outcome: z.enum([
       "belief_revised",
       "monitor",
       "no_material_change",
       "analysis_unavailable",
     ]),
-  }),
-});
+  }).passthrough(),
+}).passthrough();
 
 const CurrentColdReportSchema = z.object({
   id: IdSchema,
@@ -634,11 +672,17 @@ export function verifyBeliefReversalCurrentColdReport(
     fail("current cold queue must contain every and only belief revision");
   }
   const report = CurrentColdReportSchema.parse(unwrapped);
-  if (
-    report.evidenceContext.evidenceMode !== "live"
-    || report.evidenceContext.snapshotId !== null
-    || report.evidenceContext.snapshotFingerprint !== null
-  ) fail("current cold report is not bound to live evidence");
+  const liveEvidence = report.evidenceContext.evidenceMode === "live"
+    && report.evidenceContext.snapshotId === null
+    && report.evidenceContext.snapshotFingerprint === null;
+  const reviewedPinnedThirty = report.evidenceContext.evidenceMode === "pinned"
+    && report.evidenceContext.snapshotId === PINNED_THIRTY_DEAL_SNAPSHOT_ID
+    && report.evidenceContext.snapshotFingerprint !== null;
+  if (!liveEvidence && !reviewedPinnedThirty) {
+    fail(
+      "current cold report is not bound to live evidence or the exact reviewed pinned-30 snapshot",
+    );
+  }
   if (report.companyAnalyses.length !== 30) {
     fail("current cold report must contain exactly 30 CompanyAnalyses");
   }
@@ -1090,18 +1134,69 @@ function validateArtifact(input: {
     )
   ) fail(`Evidence Pack source lineage is incomplete for ${input.analysis.dealId}`);
   const judgmentIds = new Set(artifact.judgments.map(({ id }) => id));
-  if (artifact.judgments.some((judgment) =>
-    (judgment.applicability === "applicable"
-      && (judgment.strongestSupport === null
-        || judgment.strongestCounterargument === null))
-    || (judgment.applicability !== "applicable"
-      && judgment.unknowns.length === 0)
-  )) fail(`Framework opinion is incomplete for ${input.analysis.dealId}`);
+  validateFrameworkOpinionPresentation(input.raw, input.analysis.dealId);
   if (artifact.disagreements.some((disagreement) =>
     !judgmentIds.has(disagreement.leftJudgmentId)
     || !judgmentIds.has(disagreement.rightJudgmentId)
   )) fail(`Framework disagreement does not resolve for ${input.analysis.dealId}`);
   return input.raw;
+}
+
+export function validateFrameworkOpinionPresentation(
+  artifact: CandidateArtifactBundle,
+  dealId: string,
+): void {
+  const judgmentsById = new Map(
+    artifact.judgments.map((judgment) => [judgment.id, judgment]),
+  );
+  for (const judgment of artifact.judgments) {
+    if (judgment.conclusion === "abstain") {
+      if (judgment.unknowns.length === 0) {
+        fail(`Framework abstention has no explicit boundary for ${dealId}`);
+      }
+      continue;
+    }
+    if (
+      (judgment.applicability === "applicable"
+        && (judgment.strongestSupport === null
+          || judgment.strongestCounterargument === null))
+      || (judgment.applicability !== "applicable"
+        && judgment.unknowns.length === 0)
+    ) fail(`Framework opinion is incomplete for ${dealId}`);
+  }
+
+  const dispositions = artifact.namedLensDispositions ?? [];
+  const passages = artifact.namedLensPassages ?? [];
+  const passageByFingerprint = new Map(
+    passages.map((passage) => [passage.fingerprint, passage]),
+  );
+  const publishable = dispositions.filter(({ disposition }) =>
+    disposition === "selected_main" || disposition === "appendix_only"
+  );
+  for (const disposition of publishable) {
+    const judgment = disposition.judgmentId === null
+      ? null
+      : judgmentsById.get(disposition.judgmentId);
+    if (!judgment || judgment.conclusion === "abstain") {
+      fail(`An abstained framework cannot be rendered as a publishable reading for ${dealId}`);
+    }
+    const passage = disposition.passageFingerprint === null
+      ? null
+      : passageByFingerprint.get(disposition.passageFingerprint);
+    if (
+      !passage
+      || passage.judgmentId !== judgment.id
+      || !NamedLensPassageSchema.safeParse(passage).success
+    ) {
+      fail(`A publishable Named Lens passage is incomplete for ${dealId}`);
+    }
+  }
+  const abstainedIds = new Set(artifact.judgments
+    .filter(({ conclusion }) => conclusion === "abstain")
+    .map(({ id }) => id));
+  if (passages.some(({ judgmentId }) => abstainedIds.has(judgmentId))) {
+    fail(`An abstained framework cannot be rendered as a publishable reading for ${dealId}`);
+  }
 }
 
 function sortedById<T extends { id: string }>(values: readonly T[]): T[] {
@@ -1261,25 +1356,230 @@ function collectRevisionExpectations(
   }
 }
 
-function finalizedResponseFromRoute(raw: unknown): {
+function finalizedChatRouteSummary(raw: unknown): Record<string, unknown> {
+  const value = unwrapData(raw);
+  const record = typeof value === "object" && value !== null
+    ? value as Record<string, unknown>
+    : {};
+  const projection = typeof record.projection === "object"
+      && record.projection !== null
+    ? record.projection as Record<string, unknown>
+    : {};
+  const presentationIdentity = typeof projection.presentationIdentity ===
+      "object" && projection.presentationIdentity !== null
+    ? projection.presentationIdentity as Record<string, unknown>
+    : {};
+  const identity = typeof record.identity === "object" && record.identity !== null
+    ? record.identity as Record<string, unknown>
+    : {};
+  return {
+    keys: Object.keys(record).sort(utf8Compare),
+    schemaVersion: record.schemaVersion ?? null,
+    status: record.status ?? null,
+    topic: record.topic ?? null,
+    reasonCode: record.reasonCode ?? null,
+    insufficientEvidence: record.insufficientEvidence ?? null,
+    identity: {
+      reportId: identity.reportId ?? null,
+      runId: identity.runId ?? null,
+      dealId: identity.dealId ?? null,
+      candidateRunId: identity.candidateRunId ?? null,
+    },
+    projectionSchemaVersion: projection.schemaVersion ?? null,
+    presentationAdapterSchemaVersion:
+      presentationIdentity.adapterSchemaVersion ?? null,
+    presentationReportId: presentationIdentity.presentationReportId ?? null,
+  };
+}
+
+function finalizedResponseFromRoute(raw: unknown, label: string): {
   route: z.infer<typeof ChatRouteShapeSchema>;
   response: FinalizedChatSuccessResponse;
 } {
-  const value = unwrapData(raw);
-  const route = ChatRouteShapeSchema.parse(value);
-  const record = value as Record<string, unknown>;
-  const response = FinalizedChatSuccessResponseSchema.parse({
-    schemaVersion: record.schemaVersion,
-    status: record.status,
-    topic: record.topic,
-    answer: record.answer,
-    citations: record.citations,
-    identity: record.identity,
-    evidenceFrame: record.evidenceFrame,
-    projection: record.projection,
-    insufficientEvidence: record.insufficientEvidence,
+  try {
+    const value = unwrapData(raw);
+    const route = ChatRouteShapeSchema.parse(value);
+    const record = value as Record<string, unknown>;
+    const response = FinalizedChatSuccessResponseSchema.parse({
+      schemaVersion: record.schemaVersion,
+      status: record.status,
+      topic: record.topic,
+      answer: record.answer,
+      citations: record.citations,
+      identity: record.identity,
+      evidenceFrame: record.evidenceFrame,
+      projection: record.projection,
+      insufficientEvidence: record.insufficientEvidence,
+    });
+    return { route, response };
+  } catch {
+    fail(
+      `${label} is not a finalized Chat V1 success: ${JSON.stringify(
+        finalizedChatRouteSummary(raw),
+      )}`,
+    );
+  }
+}
+
+function finalizedResponseV2FromRoute(raw: unknown, label: string): {
+  route: z.infer<typeof ChatRouteShapeSchema>;
+  response: FinalizedChatSuccessResponseV2;
+} {
+  try {
+    const value = unwrapData(raw);
+    const route = ChatRouteShapeSchema.parse(value);
+    const record = value as Record<string, unknown>;
+    const response = FinalizedChatSuccessResponseV2Schema.parse({
+      schemaVersion: record.schemaVersion,
+      status: record.status,
+      topic: record.topic,
+      target: record.target,
+      answer: record.answer,
+      citations: record.citations,
+      identity: record.identity,
+      evidenceFrame: record.evidenceFrame,
+      projection: record.projection,
+      insufficientEvidence: record.insufficientEvidence,
+    });
+    return { route, response };
+  } catch {
+    fail(
+      `${label} is not a finalized Chat V2 success: ${JSON.stringify(
+        finalizedChatRouteSummary(raw),
+      )}`,
+    );
+  }
+}
+
+function currentNamedLensTargetsForVerifier(
+  bundle: CandidateArtifactBundle,
+  dealId: string,
+): FinalizedChatNamedLensTarget[] {
+  const passages = bundle.namedLensPassages;
+  if (!passages) fail(`Current Named Lens passages are missing for ${dealId}`);
+  const targets = passages.map((passage) => {
+    const dispositions = bundle.namedLensDispositions?.filter(
+      (disposition) =>
+        disposition.judgmentId === passage.judgmentId
+        && disposition.frameworkCardId === passage.frameworkCardId,
+    ) ?? [];
+    const judgments = bundle.judgments.filter((judgment) =>
+      judgment.id === passage.judgmentId
+      && judgment.frameworkCardId === passage.frameworkCardId
+    );
+    const components = judgments[0]?.frameworkMetadata?.components.filter(
+      ({ frameworkId }) =>
+        frameworkId === passage.premise.componentFrameworkId,
+    ) ?? [];
+    if (dispositions.length !== 1 || judgments.length !== 1 || components.length !== 1) {
+      fail(`Current Named Lens target identity is incomplete for ${dealId}`);
+    }
+    const component = components[0]!;
+    return {
+      judgmentId: passage.judgmentId,
+      frameworkCardId: passage.frameworkCardId,
+      componentFrameworkId: component.frameworkId,
+      publicDisplayIdentity: component.attribution.display,
+      displayName: component.name,
+      attributionDisplay: component.attribution.display,
+    };
   });
-  return { route, response };
+  if (
+    new Set(targets.map(({ publicDisplayIdentity }) => publicDisplayIdentity))
+      .size !== targets.length
+  ) fail(`Current Named Lens display identities are ambiguous for ${dealId}`);
+  return targets;
+}
+
+function selectedCurrentNamedLensTarget(
+  bundle: CandidateArtifactBundle,
+  dealId: string,
+): FinalizedChatNamedLensTarget {
+  const selected = [...(bundle.namedLensDispositions ?? [])]
+    .filter(({ disposition }) => disposition === "selected_main")
+    .sort((left, right) =>
+      (left.selectedPosition ?? Number.MAX_SAFE_INTEGER)
+        - (right.selectedPosition ?? Number.MAX_SAFE_INTEGER)
+    )[0];
+  if (!selected?.judgmentId) {
+    fail(`Current report has no selected Named Lens target for ${dealId}`);
+  }
+  const target = currentNamedLensTargetsForVerifier(bundle, dealId).find(
+    (candidate) =>
+      candidate.judgmentId === selected.judgmentId
+      && candidate.frameworkCardId === selected.frameworkCardId,
+  );
+  if (!target) fail(`Selected Named Lens target does not resolve for ${dealId}`);
+  return target;
+}
+
+function currentFinalizedEvidenceItemsForVerifier(input: {
+  analysis: SelectedAnalysis;
+  bundle: CandidateArtifactBundle;
+}): FinalizedChatV2EvidenceItem[] {
+  const canonicalSources = new Map<string, FinalizedChatSourceRef>();
+  for (const source of [
+    ...input.analysis.sources,
+    ...input.analysis.companyBrief.sourceLineage,
+  ]) {
+    const writable = WritableSourceRefV2Schema.safeParse(source);
+    if (!writable.success) continue;
+    const canonical = writable.data;
+    const parsed = FinalizedChatSourceRefSchema.safeParse({
+      sourceId: canonical.id,
+      documentId: canonical.documentId,
+      sourceRevisionId: canonical.sourceRevisionId,
+      contentFingerprint: canonical.contentFingerprint,
+      canonicalSource: canonical,
+      text: canonical.text,
+    });
+    if (!parsed.success) continue;
+    canonicalSources.set([
+      parsed.data.sourceId,
+      parsed.data.sourceRevisionId,
+      parsed.data.contentFingerprint,
+    ].join("\u0000"), parsed.data);
+  }
+  const byRevision = new Map<string, FinalizedChatSourceRef[]>();
+  for (const source of canonicalSources.values()) {
+    byRevision.set(source.sourceRevisionId, [
+      ...(byRevision.get(source.sourceRevisionId) ?? []),
+      source,
+    ]);
+  }
+  return [
+    ...input.bundle.evidencePack.facts.flatMap((fact) => {
+      const matches = byRevision.get(fact.sourceRevisionId) ?? [];
+      return matches.length === 1
+        ? [{
+          evidencePackItemId: fact.id,
+          classification: "fact" as const,
+          sourceRef: matches[0]!,
+        }]
+        : [];
+    }),
+    ...input.bundle.evidencePack.assumptions.map((assumption) => ({
+      evidencePackItemId: assumption.id,
+      classification: "assumption" as const,
+      sourceRef: null,
+    })),
+  ];
+}
+
+function finalizedNamedLensQuestion(
+  topic: FinalizedChatTopicV2,
+  displayIdentity: string,
+): string {
+  switch (topic) {
+    case "named_lens_selection_reason":
+      return `Why was the ${displayIdentity} Lens selected?`;
+    case "named_lens_exact_evidence":
+      return `Which exact evidence did the ${displayIdentity} Lens use?`;
+    case "named_lens_view_change":
+      return `What would change the ${displayIdentity} Lens view?`;
+    case "named_lens_formal_weight":
+      return `Why does the ${displayIdentity} Lens have zero formal decision weight?`;
+  }
 }
 
 function artifactIds(input: {
@@ -1306,6 +1606,9 @@ function artifactIds(input: {
     ...input.bundle.disagreements.map(({ id }) => id),
     input.bundle.valuation.id,
     input.bundle.decision.id,
+    ...(input.bundle.namedLensPresentation === undefined
+      ? []
+      : [input.bundle.namedLensPresentation.fingerprint]),
     ...input.bundle.actionDrafts.map(({ id }) => id),
     ...(input.bundle.versionSnapshot.actionPolicyVersion === undefined
       ? []
@@ -1324,25 +1627,45 @@ export async function verifyBeliefReversalReportsAndChat(
   const before = BeliefReversalIsolationCountersSchema.parse(
     await input.readIsolationCounters(),
   );
-  const report = ReportSchema.parse(unwrapData(await input.readReport()));
+  const reportValue = unwrapData(await input.readReport());
+  const reportRecord = asVerifierRecord(reportValue);
+  const evidenceContext = CurrentReportEvidenceContextV1Schema.parse(
+    reportRecord?.evidenceContext,
+  );
+  const legacyPinned = evidenceContext.evidenceMode === "pinned"
+    && evidenceContext.snapshotId === "belief_reversal_2026_08_01";
+  const currentPinnedThirty = evidenceContext.evidenceMode === "pinned"
+    && evidenceContext.snapshotId === PINNED_THIRTY_DEAL_SNAPSHOT_ID;
+  if (!legacyPinned && !currentPinnedThirty) {
+    fail("Report uses an unreviewed pinned snapshot identity");
+  }
+  const report = currentPinnedThirty
+    ? CurrentColdReportSchema.parse(reportValue)
+    : ReportSchema.parse(reportValue);
+  if (currentPinnedThirty) {
+    verifyBeliefReversalCurrentColdReport(reportValue);
+  }
   if (
     report.id !== input.reportId
     || report.workspaceId !== input.workspaceId
     || report.runId !== input.runId
     || report.evidenceContext.evidenceMode !== "pinned"
-    || report.evidenceContext.snapshotId !== "belief_reversal_2026_08_01"
+    || report.evidenceContext.snapshotId !== evidenceContext.snapshotId
     || report.evidenceContext.eventCount !== 4
   ) fail("Report is not the exact reviewed pinned report/run scope");
+  const expectedEvidenceWindow = currentPinnedThirty
+    ? REVIEWED_PINNED_THIRTY_EVIDENCE_WINDOW
+    : REVIEWED_PINNED_EVIDENCE_WINDOW;
   if (
-    report.evidenceContext.anchorAt !== REVIEWED_PINNED_EVIDENCE_WINDOW.anchorAt
+    report.evidenceContext.anchorAt !== expectedEvidenceWindow.anchorAt
     || report.evidenceContext.windowStartAt
-      !== REVIEWED_PINNED_EVIDENCE_WINDOW.windowStartAt
+      !== expectedEvidenceWindow.windowStartAt
     || report.evidenceContext.windowEndAt
-      !== REVIEWED_PINNED_EVIDENCE_WINDOW.windowEndAt
+      !== expectedEvidenceWindow.windowEndAt
     || report.evidenceContext.windowTimezone
-      !== REVIEWED_PINNED_EVIDENCE_WINDOW.windowTimezone
+      !== expectedEvidenceWindow.windowTimezone
     || report.evidenceContext.displayLabel
-      !== REVIEWED_PINNED_EVIDENCE_WINDOW.displayLabel
+      !== expectedEvidenceWindow.displayLabel
     || report.evidenceContext.anchorAt !== report.evidenceContext.windowEndAt
   ) {
     fail(
@@ -1353,7 +1676,7 @@ export async function verifyBeliefReversalReportsAndChat(
           windowEndAt: report.evidenceContext.windowEndAt,
           windowTimezone: report.evidenceContext.windowTimezone,
           displayLabel: report.evidenceContext.displayLabel,
-        })} expected=${JSON.stringify(REVIEWED_PINNED_EVIDENCE_WINDOW)}`,
+        })} expected=${JSON.stringify(expectedEvidenceWindow)}`,
     );
   }
 
@@ -1382,19 +1705,26 @@ export async function verifyBeliefReversalReportsAndChat(
     fail("Pinned Deep Underwriting queue must contain four historical admissions");
   }
   const rowsByDeal = new Map(selectedRows.map((row) => [row.dealId, row]));
-  const legacy = report.underwritingBatch.legacyPinnedPriorityOrder;
-  const legacyByDeal = new Map(legacy.entries.map((entry) => [entry.dealId, entry]));
-  if (
-    legacy.entries.length !== 23
-    || legacyByDeal.size !== 23
-    || selectedRows.some((row) => {
-      const historical = legacyByDeal.get(row.dealId);
-      return !historical
-        || historical.batchId !== report.underwritingBatch.batchId
-        || historical.historicalAdmissionStatus !== "historically_admitted"
-        || historical.historicalPriorityOrder !== row.priorityRank;
-    })
-  ) fail("Pinned legacy priority adapter does not preserve the 23-analysis artifact");
+  if (legacyPinned) {
+    const legacyReport = report as z.infer<typeof ReportSchema>;
+    const legacy = legacyReport.underwritingBatch.legacyPinnedPriorityOrder;
+    const legacyByDeal = new Map(
+      legacy.entries.map((entry) => [entry.dealId, entry]),
+    );
+    if (
+      legacy.entries.length !== 23
+      || legacyByDeal.size !== 23
+      || selectedRows.some((row) => {
+        const historical = legacyByDeal.get(row.dealId);
+        return !historical
+          || historical.batchId !== report.underwritingBatch.batchId
+          || historical.historicalAdmissionStatus !== "historically_admitted"
+          || historical.historicalPriorityOrder !== row.priorityRank;
+      })
+    ) {
+      fail("Pinned legacy priority adapter does not preserve the 23-analysis artifact");
+    }
+  }
   const revisions = new Map<string, RevisionExpectation>();
   collectRevisionExpectations(report, "report", revisions);
   const bundlesByDeal = new Map<string, CandidateArtifactBundle>();
@@ -1424,8 +1754,41 @@ export async function verifyBeliefReversalReportsAndChat(
       runId: input.runId,
       dealId: analysis.dealId,
     }));
-    if (!isDeepStrictEqual(detail, toCandidateUnderwritingDetail(finalizedBundle))) {
+    const expectedDetail = toVersionedCandidateUnderwritingDetail({
+      bundle: finalizedBundle,
+      adapter: currentPinnedThirty
+        ? {
+          kind: "current",
+          schemaVersion: "decision-first-named-lens-v1",
+        }
+        : {
+          kind: "legacy_pinned_23",
+          schemaVersion: "legacy-pinned-23-v1",
+        },
+    });
+    if (!isDeepStrictEqual(detail, expectedDetail)) {
       fail(`Underwriting DTO is not the public projection for ${analysis.dealId}`);
+    }
+    if (currentPinnedThirty) {
+      const projection = finalizedBundle.decisionCriticalEvidenceProjection;
+      const presentation = finalizedBundle.namedLensPresentation;
+      if (!projection || !presentation) {
+        fail(`Current first-screen evidence projection is missing for ${analysis.dealId}`);
+      }
+      const expectedFirstScreenIds =
+        selectFirstScreenDecisionEvidenceIds(projection.evidenceRefs);
+      if (
+        expectedFirstScreenIds.length < 2
+        || expectedFirstScreenIds.length > 3
+        || !isDeepStrictEqual(
+          presentation.firstScreenProjectionRefs.decisionEvidenceItemIds,
+          expectedFirstScreenIds,
+        )
+      ) {
+        fail(
+          `Current first-screen evidence is not the exact two-or-three-item decision-critical projection for ${analysis.dealId}`,
+        );
+      }
     }
     validateDrafts({
       raw: await input.readActionDrafts({
@@ -1462,6 +1825,7 @@ export async function verifyBeliefReversalReportsAndChat(
         runId: input.runId,
         dealId: query.dealId,
       }),
+      `${query.topic}/${query.dealId}`,
     );
     if (
       response.topic !== query.topic
@@ -1568,6 +1932,166 @@ export async function verifyBeliefReversalReportsAndChat(
     || !irregularInvestedActionVerified
   ) fail("Finalized Chat coverage is incomplete");
 
+  const namedLensChatTopics = new Set<FinalizedChatTopicV2>();
+  const namedLensChatDealIds = new Set<keyof typeof REVIEWED_CASES>();
+  let namedLensChatPairCount = 0;
+  if (currentPinnedThirty) {
+    const topics = FinalizedChatTopicV2Schema.options;
+    if (topics.length !== rankedAnalyses.length) {
+      fail("Current Named Lens Chat coverage cannot map one topic to each reviewed Deal");
+    }
+    for (const [index, topic] of topics.entries()) {
+      const analysis = rankedAnalyses[index]!;
+      const dealId = analysis.dealId as keyof typeof REVIEWED_CASES;
+      const selection = rowsByDeal.get(dealId)!;
+      const bundle = bundlesByDeal.get(dealId)!;
+      const target = selectedCurrentNamedLensTarget(bundle, dealId);
+      const question = finalizedNamedLensQuestion(
+        topic,
+        target.publicDisplayIdentity,
+      );
+      const { route, response } = finalizedResponseV2FromRoute(
+        await input.askFinalizedChat({
+          question,
+          reportId: input.reportId,
+          runId: input.runId,
+          dealId,
+        }),
+        `${topic}/${dealId}`,
+      );
+      if (
+        response.topic !== topic
+        || !isDeepStrictEqual(response.target, target)
+        || response.identity.workspaceId !== input.workspaceId
+        || response.identity.reportId !== input.reportId
+        || response.identity.runId !== input.runId
+        || response.identity.dealId !== dealId
+        || response.identity.candidateRunId !== selection.candidateRunId
+        || route.scope.reportId !== input.reportId
+        || route.scope.runId !== input.runId
+        || route.scope.dealId !== dealId
+        || route.scope.companyName !== analysis.companyName
+        || !isDeepStrictEqual(route.scope.evidenceContext, report.evidenceContext)
+        || response.evidenceFrame.state !== "current"
+        || response.evidenceFrame.evidenceMode !== "pinned"
+        || response.evidenceFrame.snapshotId !== report.evidenceContext.snapshotId
+        || response.evidenceFrame.snapshotFingerprint
+          !== report.evidenceContext.snapshotFingerprint
+        || response.evidenceFrame.contextFingerprint
+          !== report.evidenceContext.contextFingerprint
+        || response.evidenceFrame.eventSetFingerprint
+          !== report.evidenceContext.eventSetFingerprint
+        || response.evidenceFrame.bindingFingerprint
+          !== report.evidenceContext.bindingFingerprint
+      ) fail(`Finalized Chat V2 scope mismatch for ${topic}/${dealId}`);
+
+      const presentation = bundle.namedLensPresentation;
+      const projection = bundle.decisionCriticalEvidenceProjection;
+      const dispositions = bundle.namedLensDispositions;
+      const passages = bundle.namedLensPassages;
+      const presentationReportId = bundle.underwritingPresentationReportId;
+      const presentationFingerprint =
+        bundle.versionSnapshot.presentationFingerprint;
+      const projectionFingerprint =
+        bundle.versionSnapshot.criticalEvidenceProjectionFingerprint;
+      const dispositionsFingerprint =
+        bundle.versionSnapshot.finalDispositionsFingerprint;
+      if (
+        presentation === undefined
+        || projection === undefined
+        || dispositions === undefined
+        || passages === undefined
+        || presentationReportId === undefined
+        || presentationFingerprint === undefined
+        || projectionFingerprint === undefined
+        || dispositionsFingerprint === undefined
+      ) fail(`Current Named Lens presentation is incomplete for ${dealId}`);
+      const expectedBuild = buildFinalizedChatProjectionV2({
+        topic,
+        requestedLensDisplayIdentity: target.publicDisplayIdentity,
+        identity: {
+          workspaceId: input.workspaceId,
+          reportId: input.reportId,
+          runId: input.runId,
+          dealId,
+          candidateRunId: selection.candidateRunId,
+        },
+        evidenceFrame: {
+          state: "current",
+          evidenceMode: "pinned",
+          contextFingerprint: report.evidenceContext.contextFingerprint,
+          eventSetFingerprint: report.evidenceContext.eventSetFingerprint,
+          bindingFingerprint: report.evidenceContext.bindingFingerprint,
+          snapshotId: report.evidenceContext.snapshotId,
+          snapshotFingerprint: report.evidenceContext.snapshotFingerprint,
+        },
+        presentationIdentity: {
+          adapterSchemaVersion: "decision-first-named-lens-v1",
+          sourceCandidateRunId: bundle.sourceCandidateRunId,
+          presentationReportId,
+          presentationSchemaVersion: presentation.schemaVersion,
+          presentationFingerprint,
+          criticalEvidenceProjectionFingerprint: projectionFingerprint,
+          finalDispositionsFingerprint: dispositionsFingerprint,
+        },
+        decisionCriticalEvidenceProjection: projection,
+        dispositions,
+        passages,
+        presentation,
+        lensDisplayIdentities: currentNamedLensTargetsForVerifier(bundle, dealId),
+        evidenceItems: currentFinalizedEvidenceItemsForVerifier({
+          analysis,
+          bundle,
+        }),
+      });
+      if (expectedBuild.status !== "success") {
+        fail(`Independent Named Lens projection failed for ${topic}/${dealId}`);
+      }
+      const expectedResponse = renderFinalizedChatProjectionV2(
+        expectedBuild.projection,
+      );
+      if (!isDeepStrictEqual(response, expectedResponse)) {
+        fail(`Finalized Chat V2 is not the canonical saved presentation for ${topic}/${dealId}`);
+      }
+      const scoped = new Map<string, RevisionExpectation>();
+      collectRevisionExpectations(analysis, "chat-v2-analysis", scoped);
+      collectRevisionExpectations(bundle, "chat-v2-bundle", scoped);
+      if (response.citations.some((citation) =>
+        citation.kind === "source_revision"
+        && !scoped.has(citation.sourceRef.sourceRevisionId)
+      )) fail(`Finalized Chat V2 source escaped Deal scope for ${dealId}`);
+      if (
+        topic === "named_lens_formal_weight"
+        && !response.projection.claims.some(({ text, artifactRefs }) =>
+          /formal-decision weight 0/u.test(text)
+          && artifactRefs.some(({ artifactType, fieldPath }) =>
+            artifactType === "named_lens_passage_segment"
+            && fieldPath === "advisoryContract.formalDecisionWeight"
+          )
+        )
+      ) fail(`Finalized Chat V2 did not preserve zero formal weight for ${dealId}`);
+      collectRevisionExpectations(
+        response,
+        `chat-v2:${topic}:${dealId}`,
+        revisions,
+      );
+      namedLensChatTopics.add(topic);
+      namedLensChatDealIds.add(dealId);
+      namedLensChatPairCount += 1;
+    }
+    if (
+      namedLensChatTopics.size !== FinalizedChatTopicV2Schema.options.length
+      || FinalizedChatTopicV2Schema.options.some((topic) =>
+        !namedLensChatTopics.has(topic)
+      )
+      || namedLensChatDealIds.size !== selectedAnalyses.length
+      || namedLensChatPairCount !== 4
+      || selectedAnalyses.some(({ dealId }) =>
+        !namedLensChatDealIds.has(dealId as keyof typeof REVIEWED_CASES)
+      )
+    ) fail("Current Named Lens Chat does not cover four topics across four Deals");
+  }
+
   if (revisions.size === 0) fail("No source revision lineage was collected");
   const resolvedSourceRevisionIds = [...revisions.keys()].sort(utf8Compare);
   for (const sourceRevisionId of resolvedSourceRevisionIds) {
@@ -1589,14 +2113,16 @@ export async function verifyBeliefReversalReportsAndChat(
   const after = BeliefReversalIsolationCountersSchema.parse(
     await input.readIsolationCounters(),
   );
+  const chatQueryCount = FINALIZED_CHAT_E2E_QUERIES.length
+    + namedLensChatTopics.size;
   const expectedAfter: BeliefReversalIsolationCounters = {
     ...before,
     route: {
       ...before.route,
       rateLimitCalls:
-        before.route.rateLimitCalls + FINALIZED_CHAT_E2E_QUERIES.length,
+        before.route.rateLimitCalls + chatQueryCount,
       rateLimitDbRequests:
-        before.route.rateLimitDbRequests + FINALIZED_CHAT_E2E_QUERIES.length,
+        before.route.rateLimitDbRequests + chatQueryCount,
     },
   };
   if (
@@ -1611,7 +2137,10 @@ export async function verifyBeliefReversalReportsAndChat(
     ranking,
     resolvedSourceRevisionIds,
     chatTopics: [...chatTopics],
-    chatQueryCount: FINALIZED_CHAT_E2E_QUERIES.length,
+    namedLensChatTopics: [...namedLensChatTopics],
+    namedLensChatDealIds: [...namedLensChatDealIds],
+    namedLensChatPairCount,
+    chatQueryCount,
     hushInvestedActionVerified: true,
     hushResearchActionCrosswalkVerified: true,
     irregularInvestedActionVerified: true,

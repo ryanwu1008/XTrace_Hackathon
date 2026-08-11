@@ -7,6 +7,9 @@ import {
 import {
   SYNTHETIC_FRAMEWORK_PACK,
 } from "../../seed/underwriting/framework-pack-v1";
+import {
+  createDecisionCriticalEvidenceProjectionFingerprint,
+} from "../../lib/underwriting/named-lens-presentation";
 
 const SCENARIO_FIELDS = [
   "revenue_path",
@@ -28,6 +31,8 @@ const SCENARIO_FIELDS = [
   "probability",
 ] as const;
 
+const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
+
 const FORMAL_CASES = [{
   dealId: "deal_henry_ai_v1",
   direction: "positive",
@@ -46,8 +51,16 @@ const FORMAL_CASES = [{
   action: "pause_follow_on",
 }] as const;
 
-const SCREENING_CASES = Array.from({ length: 7 }, (_, index) => ({
-  dealId: `deal_live_screened_${index + 1}`,
+const SCREENING_CASES = [
+  "deal_cascade_v1",
+  "deal_centralize_v1",
+  "deal_chipagents_v1",
+  "deal_cordant_v1",
+  "deal_empirical_security_v1",
+  "deal_freight_hero_v1",
+  "deal_sent_v1",
+].map((dealId, index) => ({
+  dealId,
   direction: index % 2 === 0 ? "positive" as const : "negative" as const,
 }));
 
@@ -140,13 +153,13 @@ function screeningAnalysis(dealId: string, index: number) {
   const score = Number((0.49 - index * 0.01).toFixed(2));
   return {
     ...base,
-    dealStatus: "watchlist" as const,
+    dealStatus: "screening" as const,
     outcome: "monitor" as const,
     confidence: "low" as const,
     score,
     beliefAssessment: {
       schemaVersion: "belief-change-assessment-v1",
-      dealStatus: "watchlist" as const,
+      dealStatus: "screening" as const,
       direction,
       scoreBreakdown: {
         finalScore: score,
@@ -333,7 +346,13 @@ function artifact(
       strongestCounterargument: "Retention remains unknown.",
       unknowns: ["Retention"],
       limitations: ["Public evidence only"],
-      confidence: "medium",
+      confidence: {
+        sourceReliability: "medium",
+        evidenceStrength: "medium",
+        evidenceCoverage: "medium",
+        applicability: "medium",
+        judgment: "medium",
+      },
       claimEdges: [{
         claimItemId: id,
         dependencyItemId: factId,
@@ -428,11 +447,12 @@ function artifact(
   };
 }
 
-function evidenceContext(mode: "live" | "pinned") {
+function evidenceContext(mode: "live" | "pinned" | "pinned_30") {
+  const pinned = mode !== "live";
   return {
     state: "current",
     schemaVersion: "run-evidence-context-v1",
-    evidenceMode: mode,
+    evidenceMode: pinned ? "pinned" : "live",
     windowDays: 14,
     anchorAt: mode === "live"
       ? "2026-08-03T20:00:00.000Z"
@@ -444,15 +464,19 @@ function evidenceContext(mode: "live" | "pinned") {
       ? "2026-08-03T20:00:00.000Z"
       : "2026-08-02T06:59:59.000Z",
     windowTimezone: "America/Los_Angeles",
-    snapshotId: mode === "pinned" ? "belief_reversal_2026_08_01" : null,
-    snapshotFingerprint: mode === "pinned" ? `sha256:${"d".repeat(64)}` : null,
-    contextFingerprint: mode === "pinned"
+    snapshotId: mode === "pinned"
+      ? "belief_reversal_2026_08_01"
+      : mode === "pinned_30"
+      ? "belief_reversal_pinned_30_2026_08_10_v1"
+      : null,
+    snapshotFingerprint: pinned ? `sha256:${"d".repeat(64)}` : null,
+    contextFingerprint: pinned
       ? `sha256:${"e".repeat(64)}`
       : `sha256:${"f".repeat(64)}`,
-    bindingFingerprint: mode === "pinned"
+    bindingFingerprint: pinned
       ? `sha256:${"1".repeat(64)}`
       : `sha256:${"2".repeat(64)}`,
-    displayLabel: mode === "pinned"
+    displayLabel: pinned
       ? "Demo evidence snapshot as of 2026-08-01"
       : "Live evidence window",
     eventCount: 4,
@@ -460,7 +484,7 @@ function evidenceContext(mode: "live" | "pinned") {
   };
 }
 
-function buildPass(mode: "live" | "pinned" = "pinned") {
+function buildPass(mode: "live" | "pinned" | "pinned_30" = "pinned") {
   const runId = "00000000-0000-4000-8000-000000000001";
   const baselineAnalyses = Array.from({ length: 23 }, (_, index) =>
     analysis(
@@ -468,7 +492,7 @@ function buildPass(mode: "live" | "pinned" = "pinned") {
       index,
     )
   );
-  const analyses = mode === "live"
+  const analyses = mode !== "pinned"
     ? [
       ...baselineAnalyses,
       ...SCREENING_CASES.map(({ dealId }, index) =>
@@ -597,6 +621,176 @@ function buildPass(mode: "live" | "pinned" = "pinned") {
     })),
     semanticFingerprint: `sha256:${"6".repeat(64)}`,
   };
+}
+
+function attachRunScopedMarketOrigin(input: {
+  pass: ReturnType<typeof buildPass>;
+  dealId: string;
+  eventId: string;
+  triggerSourceId: string;
+}) {
+  const analysis = input.pass.report.companyAnalyses.find(
+    ({ dealId }) => dealId === input.dealId,
+  )! as unknown as Record<string, unknown>;
+  analysis.marketEvidence = {
+    eventIds: [input.eventId],
+    events: [{
+      id: input.eventId,
+      triggerSourceId: input.triggerSourceId,
+    }],
+  };
+  const reviewed = input.pass.artifacts.find(
+    ({ dealId }) => dealId === input.dealId,
+  )! as unknown as Record<string, unknown>;
+  const evidenceRefs = [{
+    evidencePackItemId: `fact_${input.dealId}_round`,
+    classification: "fact" as const,
+    originRefs: [{
+      kind: "market_event" as const,
+      id: input.eventId,
+    }, {
+      kind: "source_revision" as const,
+      id: `revision_${input.dealId}`,
+    }],
+    reasonCodes: ["CHANGED_BELIEF_EVIDENCE"],
+    resolutionPath: ["market_event", "evidence_pack_fact"],
+  }];
+  reviewed.decisionCriticalEvidenceProjection = {
+    id: `decision-critical-projection:${String(reviewed.candidateRunId)}`,
+    workspaceId: reviewed.workspaceId,
+    artifactSourceCandidateRunId: reviewed.candidateRunId,
+    fingerprint: createDecisionCriticalEvidenceProjectionFingerprint(
+      evidenceRefs,
+    ),
+    evidenceRefs,
+  };
+}
+
+type FixtureCriticalEvidenceProjection = {
+  fingerprint: string;
+  evidenceRefs: Parameters<
+    typeof createDecisionCriticalEvidenceProjectionFingerprint
+  >[0];
+};
+
+function criticalEvidenceProjection(
+  pass: ReturnType<typeof buildPass>,
+  dealId: string,
+): FixtureCriticalEvidenceProjection {
+  const reviewed = pass.artifacts.find((artifact) => artifact.dealId === dealId)!;
+  return (reviewed as unknown as {
+    decisionCriticalEvidenceProjection: FixtureCriticalEvidenceProjection;
+  }).decisionCriticalEvidenceProjection;
+}
+
+function refreshCriticalEvidenceProjectionFingerprint(
+  pass: ReturnType<typeof buildPass>,
+  dealId: string,
+): void {
+  const projection = criticalEvidenceProjection(pass, dealId);
+  projection.fingerprint = createDecisionCriticalEvidenceProjectionFingerprint(
+    projection.evidenceRefs,
+  );
+}
+
+function attachRunScopedNamedLensAttempt(input: {
+  pass: ReturnType<typeof buildPass>;
+  dealId: string;
+  runDigit: string;
+}): void {
+  const reviewed = input.pass.artifacts.find(
+    ({ dealId }) => dealId === input.dealId,
+  )! as unknown as Record<string, unknown>;
+  const judgments = reviewed.judgments as Array<Record<string, unknown>>;
+  const judgment = judgments[0]!;
+  const judgmentId = String(judgment.id);
+  const frameworkCardId = String(judgment.frameworkCardId);
+  const frameworkVersion = String(judgment.frameworkVersion);
+  const candidateRunId = String(reviewed.candidateRunId);
+  const workspaceId = String(reviewed.workspaceId);
+  const logicalPassageId =
+    `${judgmentId}@named-lens-passage-v1@named-lens-generator-v1`;
+  const attemptFingerprint = sha(input.runDigit);
+  const passageFingerprint = sha("c");
+  const projectionFingerprint = sha("e");
+  const dispositionFingerprint = sha("1");
+  const catalogFingerprint = sha("3");
+  const presentationFingerprint = sha("5");
+  const finalDispositionsFingerprint = sha("7");
+
+  reviewed.namedLensCatalogConsiderations = [{
+    workspaceId,
+    artifactSourceCandidateRunId: candidateRunId,
+    judgmentOrCatalogCandidateId: judgmentId,
+    judgmentId,
+    frameworkCardId,
+    frameworkVersion,
+    initialDisposition: "judgment_eligible",
+    reasonCodes: ["AUTHORIZED_CANDIDATE"],
+    fingerprint: catalogFingerprint,
+  }];
+  reviewed.namedLensAttemptRefs = [{
+    judgmentOrCatalogCandidateId: judgmentId,
+    logicalPassageId,
+    attemptNumber: 1,
+    attemptFingerprint,
+  }];
+  reviewed.namedLensProviderAttempts = [{
+    workspaceId,
+    artifactSourceCandidateRunId: candidateRunId,
+    judgmentOrCatalogCandidateId: judgmentId,
+    logicalPassageId,
+    attemptNumber: 1,
+    attemptFingerprint,
+    status: "completed",
+    telemetry: {
+      inputTokens: 100,
+      outputTokens: 200,
+      costUsd: null,
+      costUsdPricingVersion: null,
+      costUsdUnavailableReason: "provider_cost_unavailable",
+      latencyMs: 10,
+    },
+    failureReason: null,
+  }];
+  reviewed.namedLensDispositions = [{
+    workspaceId,
+    artifactSourceCandidateRunId: candidateRunId,
+    judgmentOrCatalogCandidateId: judgmentId,
+    judgmentId,
+    frameworkCardId,
+    frameworkVersion,
+    disposition: "selected_main",
+    reasonCodes: ["DECISION_RELEVANT"],
+    passageFingerprint,
+    decisionCriticalEvidenceProjectionFingerprint: projectionFingerprint,
+    fingerprint: dispositionFingerprint,
+  }];
+  reviewed.namedLensPassages = [{
+    workspaceId,
+    artifactSourceCandidateRunId: candidateRunId,
+    judgmentId,
+    frameworkCardId,
+    frameworkVersion,
+    decisionQuestionCode: "QUESTION_01",
+    text: "The persisted evidence supports a bounded advisory reading.",
+    fingerprint: passageFingerprint,
+  }];
+  reviewed.namedLensPresentation = {
+    workspaceId,
+    artifactSourceCandidateRunId: candidateRunId,
+    synthesis: {
+      branch: "single_perspective",
+      text: "One evidence-grounded perspective is available.",
+    },
+    fingerprint: presentationFingerprint,
+  };
+  const versionSnapshot = reviewed.versionSnapshot as Record<string, unknown>;
+  versionSnapshot.namedLensPassageSchemaVersion = "named-lens-passage-v1";
+  versionSnapshot.namedLensGeneratorVersion = "named-lens-generator-v1";
+  versionSnapshot.finalDispositionsFingerprint =
+    finalDispositionsFingerprint;
+  versionSnapshot.presentationFingerprint = presentationFingerprint;
 }
 
 type BuiltPass = ReturnType<typeof buildPass>;
@@ -797,6 +991,66 @@ test("quality parity accepts a complete 30-analysis live pass over the immutable
   );
 });
 
+test("quality parity accepts the exact current pinned-30 baseline without treating seven screening Deals as legacy omissions", () => {
+  assert.doesNotThrow(() =>
+    assertBeliefReversalQualityParity(buildPass("live"), buildPass("pinned_30"))
+  );
+});
+
+test("quality parity retains an original baseline Deal even when its historical status is screening", () => {
+  const live = buildPass("live");
+  const pinned = buildPass("pinned_30");
+  const originalDealId = "deal_original_1";
+  for (const pass of [live, pinned]) {
+    const original = pass.report.companyAnalyses.find(
+      ({ dealId }) => dealId === originalDealId,
+    );
+    assert.ok(original);
+    original.dealStatus = "screening";
+  }
+  assert.doesNotThrow(() => assertBeliefReversalQualityParity(live, pinned));
+});
+
+test("quality parity rejects a current universe that replaces one reviewed screening Deal", () => {
+  const live = buildPass("live");
+  const pinned = buildPass("pinned_30");
+  for (const pass of [live, pinned]) {
+    const analysis = pass.report.companyAnalyses.find(
+      ({ dealId }) => dealId === "deal_cascade_v1",
+    );
+    const selection = pass.selections.find(
+      ({ dealId }) => dealId === "deal_cascade_v1",
+    );
+    assert.ok(analysis);
+    assert.ok(selection);
+    analysis.dealId = "deal_unreviewed_screening_v1";
+    selection.dealId = "deal_unreviewed_screening_v1";
+  }
+  assert.throws(
+    () => assertBeliefReversalQualityParity(live, pinned),
+    /must retain reviewed screening Deal deal_cascade_v1/u,
+  );
+});
+
+test("quality parity rejects a reviewed screening Deal whose status changes", () => {
+  const live = buildPass("live");
+  const pinned = buildPass("pinned_30");
+  for (const pass of [live, pinned]) {
+    const analysis = pass.report.companyAnalyses.find(
+      ({ dealId }) => dealId === "deal_cascade_v1",
+    );
+    assert.ok(analysis);
+    analysis.dealStatus = "watchlist";
+    if (analysis.beliefAssessment) {
+      analysis.beliefAssessment.dealStatus = "watchlist";
+    }
+  }
+  assert.throws(
+    () => assertBeliefReversalQualityParity(live, pinned),
+    /must retain reviewed screening Deal deal_cascade_v1 with screening status/u,
+  );
+});
+
 test("quality parity accepts an explicit unavailable valuation without invented calculations", () => {
   const live = buildPass("live");
   const pinned = buildPass("pinned");
@@ -944,6 +1198,243 @@ test("quality parity excludes only expected run identity, lifecycle timestamps, 
   assert.doesNotThrow(() =>
     assertBeliefReversalQualityParity(live, baseline)
   );
+});
+
+test("quality parity aliases a run-scoped MarketEvent origin only through its stable trigger source", () => {
+  const live = buildPass("live");
+  const pinned = buildPass("pinned");
+  const dealId = FORMAL_CASES[0].dealId;
+  attachRunScopedMarketOrigin({
+    pass: live,
+    dealId,
+    eventId: "market_284a1b524d6cd30f2e75def4",
+    triggerSourceId: `source_${dealId}`,
+  });
+  attachRunScopedMarketOrigin({
+    pass: pinned,
+    dealId,
+    eventId: "event_henry_series_a_v1",
+    triggerSourceId: `source_${dealId}`,
+  });
+
+  assert.doesNotThrow(() => assertBeliefReversalQualityParity(live, pinned));
+
+  const foreign = buildPass("live");
+  attachRunScopedMarketOrigin({
+    pass: foreign,
+    dealId,
+    eventId: "market_284a1b524d6cd30f2e75def4",
+    triggerSourceId: "source_foreign_event",
+  });
+  assert.throws(
+    () => assertBeliefReversalQualityParity(foreign, pinned),
+    /marketEvidence|market_event|originRefs|triggerSourceId/u,
+  );
+});
+
+test("quality parity verifies the original critical-evidence fingerprint before semantic comparison", () => {
+  const live = buildPass("live");
+  const pinned = buildPass("pinned");
+  const dealId = FORMAL_CASES[0].dealId;
+  attachRunScopedMarketOrigin({
+    pass: live,
+    dealId,
+    eventId: "market_284a1b524d6cd30f2e75def4",
+    triggerSourceId: `source_${dealId}`,
+  });
+  attachRunScopedMarketOrigin({
+    pass: pinned,
+    dealId,
+    eventId: "event_henry_series_a_v1",
+    triggerSourceId: `source_${dealId}`,
+  });
+  criticalEvidenceProjection(live, dealId).fingerprint =
+    `sha256:${"f".repeat(64)}`;
+
+  assert.throws(
+    () => assertBeliefReversalQualityParity(live, pinned),
+    /fingerprint does not match its original run-bound projection/u,
+  );
+});
+
+test("quality parity rejects non-event critical-evidence semantic drift", () => {
+  const mutations: Array<{
+    name: string;
+    mutate: (
+      reference: FixtureCriticalEvidenceProjection["evidenceRefs"][number],
+    ) => void;
+  }> = [{
+    name: "source-revision evidence changes",
+    mutate: (reference) => {
+      reference.originRefs[1] = {
+        kind: "source_revision",
+        id: "revision_semantically_different",
+      };
+    },
+  }, {
+    name: "reason code changes",
+    mutate: (reference) => {
+      reference.reasonCodes = ["COUNTEREVIDENCE_REVIEW_REQUIRED"];
+    },
+  }, {
+    name: "resolution path changes",
+    mutate: (reference) => {
+      reference.resolutionPath = ["market_event", "different_projection_path"];
+    },
+  }];
+
+  for (const { name, mutate } of mutations) {
+    const live = buildPass("live");
+    const pinned = buildPass("pinned");
+    const dealId = FORMAL_CASES[0].dealId;
+    attachRunScopedMarketOrigin({
+      pass: live,
+      dealId,
+      eventId: "market_284a1b524d6cd30f2e75def4",
+      triggerSourceId: `source_${dealId}`,
+    });
+    attachRunScopedMarketOrigin({
+      pass: pinned,
+      dealId,
+      eventId: "event_henry_series_a_v1",
+      triggerSourceId: `source_${dealId}`,
+    });
+    mutate(criticalEvidenceProjection(live, dealId).evidenceRefs[0]!);
+    refreshCriticalEvidenceProjectionFingerprint(live, dealId);
+
+    assert.throws(
+      () => assertBeliefReversalQualityParity(live, pinned),
+      /decisionCriticalEvidenceProjection/u,
+      name,
+    );
+  }
+});
+
+test("quality parity aliases raw Named Lens attempts only after exact ledger binding", () => {
+  const live = buildPass("live");
+  const pinned = buildPass("pinned");
+  const dealId = FORMAL_CASES[0].dealId;
+  attachRunScopedNamedLensAttempt({ pass: live, dealId, runDigit: "a" });
+  attachRunScopedNamedLensAttempt({ pass: pinned, dealId, runDigit: "b" });
+
+  assert.doesNotThrow(() => assertBeliefReversalQualityParity(live, pinned));
+
+  const corruptions: Array<{
+    name: string;
+    mutate: (artifact: Record<string, unknown>) => void;
+  }> = [{
+    name: "substituted ref fingerprint",
+    mutate: (artifact) => {
+      const refs = artifact.namedLensAttemptRefs as Array<Record<string, unknown>>;
+      refs[0]!.attemptFingerprint = sha("9");
+    },
+  }, {
+    name: "foreign candidate ledger row",
+    mutate: (artifact) => {
+      const attempts = artifact.namedLensProviderAttempts as Array<
+        Record<string, unknown>
+      >;
+      attempts[0]!.artifactSourceCandidateRunId = "candidate_foreign";
+    },
+  }, {
+    name: "missing attempt ref",
+    mutate: (artifact) => {
+      const refs = artifact.namedLensAttemptRefs as unknown[];
+      refs.pop();
+    },
+  }];
+  for (const { name, mutate } of corruptions) {
+    const corrupted = buildPass("live");
+    attachRunScopedNamedLensAttempt({
+      pass: corrupted,
+      dealId,
+      runDigit: "a",
+    });
+    mutate(corrupted.artifacts[0] as unknown as Record<string, unknown>);
+    assert.throws(
+      () => assertBeliefReversalQualityParity(corrupted, pinned),
+      /Named Lens attempt|foreign or unsettled/u,
+      name,
+    );
+  }
+});
+
+test("quality parity preserves persisted Named Lens execution and content semantics", () => {
+  const mutations: Array<{
+    name: string;
+    mutate: (artifact: Record<string, unknown>) => void;
+  }> = [{
+    name: "provider model",
+    mutate: (artifact) => {
+      (artifact.versionSnapshot as Record<string, unknown>).providerModel =
+        "different-provider/different-model";
+    },
+  }, {
+    name: "prompt version",
+    mutate: (artifact) => {
+      (artifact.versionSnapshot as Record<string, unknown>).promptVersion =
+        "different-prompt";
+    },
+  }, {
+    name: "schema version",
+    mutate: (artifact) => {
+      (artifact.versionSnapshot as Record<string, unknown>).schemaVersion =
+        "different-schema";
+    },
+  }, {
+    name: "settings fingerprint",
+    mutate: (artifact) => {
+      (artifact.versionSnapshot as Record<string, unknown>).settingsFingerprint =
+        sha("0");
+    },
+  }, {
+    name: "provider input",
+    mutate: (artifact) => {
+      const pack = artifact.evidencePack as {
+        facts: Array<Record<string, unknown>>;
+      };
+      pack.facts[0]!.value = "semantically different evidence";
+    },
+  }, {
+    name: "eligible catalog",
+    mutate: (artifact) => {
+      const catalog = artifact.namedLensCatalogConsiderations as Array<
+        Record<string, unknown>
+      >;
+      catalog[0]!.reasonCodes = ["DIFFERENT_ELIGIBILITY_BASIS"];
+    },
+  }, {
+    name: "disposition",
+    mutate: (artifact) => {
+      const dispositions = artifact.namedLensDispositions as Array<
+        Record<string, unknown>
+      >;
+      dispositions[0]!.reasonCodes = ["DIFFERENT_PLACEMENT_BASIS"];
+    },
+  }, {
+    name: "passage",
+    mutate: (artifact) => {
+      const passages = artifact.namedLensPassages as Array<
+        Record<string, unknown>
+      >;
+      passages[0]!.text = "A materially different persisted passage.";
+    },
+  }];
+
+  for (const { name, mutate } of mutations) {
+    const live = buildPass("live");
+    const pinned = buildPass("pinned");
+    const dealId = FORMAL_CASES[0].dealId;
+    attachRunScopedNamedLensAttempt({ pass: live, dealId, runDigit: "a" });
+    attachRunScopedNamedLensAttempt({ pass: pinned, dealId, runDigit: "b" });
+    mutate(live.artifacts[0] as unknown as Record<string, unknown>);
+
+    assert.throws(
+      () => assertBeliefReversalQualityParity(live, pinned),
+      /quality parity mismatch/u,
+      name,
+    );
+  }
 });
 
 test("quality parity rejects incomplete report and underwriting section counts", () => {

@@ -18,6 +18,9 @@ import {
 } from "../../contracts/underwriting";
 import {
   GroundedNamedLensPassageCandidateSchema,
+  NAMED_LENS_PASSAGE_MAX_WORDS,
+  NAMED_LENS_PASSAGE_MIN_WORDS,
+  namedLensPassageBodyWordCount,
 } from "../../contracts/named-lens";
 import { createCanonicalFingerprint } from "../fingerprints";
 import {
@@ -59,6 +62,7 @@ export const NamedLensPassageReasonCodeSchema = z.enum([
   "unsafe_passage_action",
   "unsafe_passage_voice",
   "unsafe_passage_quote",
+  "passage_word_minimum_not_met",
   "passage_word_limit_exceeded",
 ]);
 
@@ -253,11 +257,11 @@ export function groundNamedLensPassage(input: {
     return withheld("unsafe_passage_quote", authorizedFocus);
   }
 
-  const wordCount = texts.reduce(
-    (total, text) => total + englishWordCount(text),
-    0,
-  );
-  if (wordCount > 260) {
+  const wordCount = namedLensPassageBodyWordCount(passage);
+  if (wordCount < NAMED_LENS_PASSAGE_MIN_WORDS) {
+    return withheld("passage_word_minimum_not_met", authorizedFocus);
+  }
+  if (wordCount > NAMED_LENS_PASSAGE_MAX_WORDS) {
     return withheld("passage_word_limit_exceeded", authorizedFocus);
   }
 
@@ -580,11 +584,6 @@ function passageTexts(passage: NamedLensPassageCandidate): string[] {
     passage.unknownBoundary.text,
     passage.conditionalConclusion.text,
   ];
-}
-
-/** English words are non-empty tokens separated by Unicode whitespace. */
-function englishWordCount(value: string): number {
-  return value.trim().split(/\s+/u).filter(Boolean).length;
 }
 
 function questionIndexFor(cardFieldRef: string): number | null {

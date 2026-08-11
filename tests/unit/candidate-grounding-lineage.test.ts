@@ -266,6 +266,13 @@ test("current candidate grounding resolves exact XTrace children against the act
     activeParentFingerprint: deal.activeSourceRevisionFingerprint,
   });
   assert.deepEqual(snapshot.xtraceLineage.sourceRevisionIds, ["revision_1"]);
+  assert.deepEqual(snapshot.xtraceLineage.parentBindings, [{
+    kind: "source",
+    memoryId: "memory_1",
+    sourceRevisionId: "revision_1",
+    sourceId: "source_document_1",
+    fixtureId: null,
+  }]);
 });
 
 test("exact Sample decision children retain fixture lineage without impersonating a source document", async () => {
@@ -294,6 +301,13 @@ test("exact Sample decision children retain fixture lineage without impersonatin
     sourceRevisionIds: ["revision_1"],
     sourceIds: [],
     fixtureIds: ["fixture_1"],
+    parentBindings: [{
+      kind: "fixture",
+      memoryId: "memory_1",
+      sourceRevisionId: "revision_1",
+      sourceId: null,
+      fixtureId: "fixture_1",
+    }],
     capturedAt: "2026-07-29T12:00:00.000Z",
   });
 });

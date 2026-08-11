@@ -177,7 +177,7 @@ function currentArtifacts(count = 4) {
       evidenceRequestRefs: [],
     },
     conditionalConclusion: {
-      text: "The view remains conditional on resolving the saved unknown.",
+      text: Array.from({ length: 155 }, () => "conditional").join(" "),
       stance: judgment.conclusion,
       advisoryPosture: judgment.conclusion === "negative"
         ? "urges_caution"
@@ -190,7 +190,7 @@ function currentArtifacts(count = 4) {
       hiddenChainOfThought: false,
     },
     selectionBasisEvidenceIds: [`fact_${index + 1}`],
-    wordCount: 45,
+    wordCount: 180,
     generatorVersion: "named-lens-generator-v1",
     fingerprint: sha(String(index + 1)),
   } satisfies NamedLensPassage));
@@ -312,7 +312,8 @@ function currentArtifacts(count = 4) {
     segmentCitations,
     firstScreenProjectionRefs: {
       decisionId: "decision_1",
-      decisionEvidenceItemIds: ["fact_1"],
+      decisionEvidenceItemIds: ["fact_1", "fact_2", "fact_3"]
+        .slice(0, Math.min(3, count)),
       selectedJudgmentIds: passages.map(({ judgmentId }) => judgmentId),
     },
     fingerprint: sha("9"),
@@ -382,6 +383,53 @@ test("requires settled persisted attempt rows that exactly cover provider execut
       },
     })),
   }), /completed attempt|publishable|passage/i);
+});
+
+test("accepts first-screen Pack items resolved by the exact projection when the DecisionResult uses typed authority refs", () => {
+  const valid = currentArtifacts();
+  valid.decision.firedRules = [{
+    ruleId: "decision.minimum_model_input.v1",
+    inputRefs: [
+      `evidence_pack:${valid.evidencePack.id}`,
+      "field:arr",
+      "field:burn",
+    ],
+    result: "pass",
+    appliedCeiling: null,
+    veto: false,
+  }];
+
+  assert.doesNotThrow(() => validateNamedLensFinalization(valid));
+});
+
+test("rejects a fingerprint-valid first-screen subset that is not the deterministic projection selection", () => {
+  const valid = currentArtifacts();
+  const {
+    fingerprint: omittedPresentationFingerprint,
+    ...presentationPayload
+  } = {
+    ...valid.presentation,
+    firstScreenProjectionRefs: {
+      ...valid.presentation.firstScreenProjectionRefs,
+      decisionEvidenceItemIds: [],
+    },
+  };
+  void omittedPresentationFingerprint;
+  const presentation = {
+    ...presentationPayload,
+    fingerprint: createNamedLensSemanticFingerprints({
+      evidenceRefs: valid.decisionCriticalEvidenceProjection.evidenceRefs,
+      dispositions: valid.dispositions,
+      passages: valid.passages,
+      presentation: presentationPayload,
+      formalJudgments: valid.judgments,
+    }).presentationFingerprint,
+  };
+
+  assert.throws(
+    () => validateNamedLensFinalization({ ...valid, presentation }),
+    /first-screen|presentation refs/i,
+  );
 });
 
 test("requires explicit limited coverage for fewer applicable catalogs", () => {

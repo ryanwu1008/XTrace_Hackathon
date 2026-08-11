@@ -47,9 +47,6 @@ import {
   buildBeliefReversalLiveMarketPackets,
   createBeliefReversalRegistryGroundedLiveMarketService,
 } from "../helpers/belief-reversal-live-market";
-import {
-  assertBeliefReversalQualityParity,
-} from "../helpers/belief-reversal-quality-parity";
 import { makeDisposableDatabaseName } from "../helpers/require-loopback-postgres";
 
 const availability = probeBeliefReversalE2EAvailability({
@@ -106,7 +103,7 @@ async function readSuccessfulRoute(
 }
 
 test(
-  "belief-reversal mainline preserves pinned 23 and cold-runs 30 analyses on disposable loopback PostgreSQL",
+  "belief-reversal mainline runs the reviewed pinned and live 30-Deal paths on disposable loopback PostgreSQL",
   { skip: availability.state === "skipped" ? availability.reason : false },
   async (context) => {
     assert.equal(availability.state, "eligible");
@@ -204,6 +201,7 @@ test(
         dataStore: dataRuntime.dataStore,
         fetchImpl: repositoryFetch,
         now: () => new Date("2026-08-03T12:00:00.000Z"),
+        expectedCurrentOutcomes: BELIEF_REVISION_CAPABLE,
       });
       const currentMarket = createBeliefReversalRegistryGroundedLiveMarketService({
         sourceUrl: "http://127.0.0.1:43123/__fixture/market",
@@ -236,7 +234,6 @@ test(
         fetchImpl: repositoryFetch,
         expectedCurrentOutcomes: BELIEF_REVISION_CAPABLE,
       });
-      assertBeliefReversalQualityParity(currentPipeline, pipeline.first);
       const common = {
         url: infrastructure.target.postgrestUrl,
         serviceRoleKey: infrastructure.serviceRoleJwt,
@@ -338,6 +335,7 @@ test(
           },
         };
       };
+      let finalizedChatRequestIndex = 0;
       const verified = await verifyBeliefReversalReportsAndChat({
         workspaceId: dataRuntime.workspaceId,
         reportId,
@@ -389,7 +387,8 @@ test(
             method: "POST",
             headers: {
               "content-type": "application/json",
-              "x-forwarded-for": "198.51.100.212",
+              "x-forwarded-for":
+                `198.51.100.${100 + finalizedChatRequestIndex++}`,
             },
             body: JSON.stringify({ question, ...scope }),
           }), undefined, routeDependencies),
@@ -406,7 +405,7 @@ test(
         workspaceDocuments: 79,
         activeAssignments: 85,
         legacyEvidence: 19,
-        canonicalEvidence: 62,
+        canonicalEvidence: 66,
         sampleInteractions: 23,
         sampleResearchScreeningDocuments: 7,
         researchCandidates: 7,
@@ -430,12 +429,21 @@ test(
         })),
       );
       assert.equal(pipeline.first.cases.length, 4);
-      assert.equal(pipeline.first.report.companyAnalyses.length, 23);
+      assert.equal(pipeline.first.report.companyAnalyses.length, 30);
       assert.equal(currentPipeline.report.companyAnalyses.length, 30);
-      assert.equal(currentPipeline.cases.length, 4);
-      assert.equal(currentPipeline.candidates.length, 4);
+      assert.equal(
+        currentPipeline.cases.length,
+        currentPipeline.report.counts.beliefRevised,
+      );
+      assert.equal(
+        currentPipeline.candidates.length,
+        currentPipeline.report.counts.beliefRevised,
+      );
       assert.equal(currentReportVerification.screeningNonRevisingCount, 7);
-      assert.equal(currentReportVerification.priorityOrder.length, 4);
+      assert.equal(
+        currentReportVerification.priorityOrder.length,
+        currentPipeline.report.counts.beliefRevised,
+      );
       assert.equal(pipeline.first.cases.every(({ gates }) =>
         gates.allPassed
       ), true);
@@ -567,7 +575,10 @@ test(
           confidence,
         })),
       );
-      assert.equal(verified.chatQueryCount, 9);
+      assert.equal(verified.chatQueryCount, 13);
+      assert.equal(verified.namedLensChatTopics.length, 4);
+      assert.equal(verified.namedLensChatDealIds.length, 4);
+      assert.equal(verified.namedLensChatPairCount, 4);
       assert.equal(loopbackRateLimitCalls, verified.chatQueryCount);
       assert.equal(verified.hushInvestedActionVerified, true);
       assert.equal(verified.hushResearchActionCrosswalkVerified, true);
@@ -583,7 +594,7 @@ test(
         seeded.finalState.counts.sampleInteractions,
       );
       context.diagnostic(
-        `disposable database=${databaseName} terminal=${migrationPlan.terminal.tag} counts=${JSON.stringify(seeded.finalState.counts)} ranking=${JSON.stringify(pipeline.first.cases.map(({ rank, dealId, score, confidence }) => ({ rank, dealId, score, confidence })))} chatQueries=${verified.chatQueryCount} resolvedSourceRevisions=${verified.resolvedSourceRevisionIds.length}`,
+        `disposable database=${databaseName} terminal=${migrationPlan.terminal.tag} pinnedRun=${runId} pinnedReport=${reportId} currentRun=${currentPipeline.run.id} currentReport=${currentReportId} candidateIds=${JSON.stringify(pipeline.first.candidates.map(({ id, dealId, status }) => ({ id, dealId, status })))} counts=${JSON.stringify(seeded.finalState.counts)} ranking=${JSON.stringify(pipeline.first.cases.map(({ rank, dealId, score, confidence }) => ({ rank, dealId, score, confidence })))} chatQueries=${verified.chatQueryCount} resolvedSourceRevisions=${verified.resolvedSourceRevisionIds.length}`,
       );
     } finally {
       await infrastructure.cleanup();

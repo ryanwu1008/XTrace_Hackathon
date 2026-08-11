@@ -56,6 +56,26 @@ export interface UnderwritingAnalysisContext {
   >;
 }
 
+export function buildUnderwritingDialogCloseHandlers({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose(): void;
+}) {
+  const requestClose = () => {
+    if (open) onClose();
+  };
+
+  return {
+    onCancel(event: { preventDefault(): void }) {
+      event.preventDefault();
+      requestClose();
+    },
+    onClose: requestClose,
+  };
+}
+
 export function UnderwritingDetailDialog({
   open,
   companyName,
@@ -78,6 +98,10 @@ export function UnderwritingDetailDialog({
   onEditDraft(draft: PublicActionDraft): void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeHandlers = buildUnderwritingDialogCloseHandlers({
+    open,
+    onClose,
+  });
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -91,7 +115,7 @@ export function UnderwritingDetailDialog({
       className="vsee-underwriting-dialog"
       ref={dialogRef}
       aria-labelledby="underwriting-detail-title"
-      onClose={onClose}
+      {...closeHandlers}
     >
       <div className="vsee-underwriting-dialog-card">
         <header>
@@ -145,6 +169,9 @@ export function UnderwritingDetailPanel({
       companyName={companyName}
       analysis={analysis}
       detail={detail}
+      drafts={drafts}
+      canSaveDrafts={canSaveDrafts}
+      onEditDraft={onEditDraft}
     />;
   }
   return <LegacyUnderwritingDetailPanel

@@ -4,7 +4,7 @@ import { compareUtf8 } from "../format/canonical-order";
 import {
   DecisionQuestionCodeSchema,
   EvidenceDomainCodeSchema,
-} from "../underwriting/frameworks/decision-taxonomy";
+} from "../underwriting/frameworks/decision-taxonomy-contract";
 import { ResearchSourceLocatorSchema } from
   "../underwriting/frameworks/research-schemas";
 
@@ -16,6 +16,8 @@ export const UNDERWRITING_PRESENTATION_SCHEMA_VERSION =
   "decision-first-named-lens-v1" as const;
 export const NAMED_LENS_GENERATOR_VERSION =
   "named-lens-generator-v1" as const;
+export const NAMED_LENS_PASSAGE_MIN_WORDS = 180;
+export const NAMED_LENS_PASSAGE_MAX_WORDS = 260;
 
 export const Sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
@@ -301,6 +303,45 @@ export const NamedLensAdvisoryContractSchema = z.strictObject({
   hiddenChainOfThought: z.literal(false),
 });
 
+interface NamedLensPassageBody {
+  premise: { text: string };
+  caseApplication: { text: string };
+  countercase: { text: string };
+  unknownBoundary: { text: string };
+  conditionalConclusion: { text: string };
+}
+
+/** Counts the five reader-facing passage segments using Unicode whitespace. */
+export function namedLensPassageBodyWordCount(
+  passage: NamedLensPassageBody,
+): number {
+  return [
+    passage.premise.text,
+    passage.caseApplication.text,
+    passage.countercase.text,
+    passage.unknownBoundary.text,
+    passage.conditionalConclusion.text,
+  ].reduce(
+    (total, text) =>
+      total + text.trim().split(/\s+/u).filter(Boolean).length,
+    0,
+  );
+}
+
+function requireExactCurrentPassageWordCount(
+  value: NamedLensPassageBody & { wordCount: number },
+  context: z.core.$RefinementCtx,
+): void {
+  if (value.wordCount !== namedLensPassageBodyWordCount(value)) {
+    context.addIssue({
+      code: "custom",
+      path: ["wordCount"],
+      message:
+        "Named Lens word count must exactly equal the five persisted passage segments.",
+    });
+  }
+}
+
 export const GroundedNamedLensPassageCandidateSchema = z.strictObject({
   schemaVersion: z.literal(NAMED_LENS_PASSAGE_SCHEMA_VERSION),
   workspaceId: z.string().min(1),
@@ -315,7 +356,9 @@ export const GroundedNamedLensPassageCandidateSchema = z.strictObject({
   unknownBoundary: UnknownBoundarySegmentSchema,
   conditionalConclusion: ConditionalConclusionSegmentSchema,
   advisoryContract: NamedLensAdvisoryContractSchema,
-  wordCount: z.number().int().min(1).max(260),
+  wordCount: z.number().int()
+    .min(NAMED_LENS_PASSAGE_MIN_WORDS)
+    .max(NAMED_LENS_PASSAGE_MAX_WORDS),
   generatorVersion: z.literal(NAMED_LENS_GENERATOR_VERSION),
   groundingFingerprint: Sha256Schema,
 }).superRefine((value, context) => {
@@ -329,6 +372,7 @@ export const GroundedNamedLensPassageCandidateSchema = z.strictObject({
       message: "Grounded Named Lens focus must exactly match its premise Card binding.",
     });
   }
+  requireExactCurrentPassageWordCount(value, context);
 });
 
 export const NamedLensPassageSchema = z.strictObject({
@@ -347,7 +391,9 @@ export const NamedLensPassageSchema = z.strictObject({
   conditionalConclusion: ConditionalConclusionSegmentSchema,
   advisoryContract: NamedLensAdvisoryContractSchema,
   selectionBasisEvidenceIds: z.array(z.string().min(1)),
-  wordCount: z.number().int().min(1).max(260),
+  wordCount: z.number().int()
+    .min(NAMED_LENS_PASSAGE_MIN_WORDS)
+    .max(NAMED_LENS_PASSAGE_MAX_WORDS),
   generatorVersion: z.literal(NAMED_LENS_GENERATOR_VERSION),
   fingerprint: Sha256Schema,
 }).superRefine((value, context) => {
@@ -361,6 +407,7 @@ export const NamedLensPassageSchema = z.strictObject({
     context,
     "Named Lens selection-basis evidence IDs",
   );
+  requireExactCurrentPassageWordCount(value, context);
 });
 
 const NamedLensDispositionBaseSchema = z.strictObject({

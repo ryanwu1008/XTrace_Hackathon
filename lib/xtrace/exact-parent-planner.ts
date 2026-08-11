@@ -5,7 +5,11 @@ import type {
   ExactSourceMemoryBundle,
 } from "../../db/repositories/deal-registry";
 import type { SourceRegistry } from "../../db/repositories/source-registry";
-import { canonicalEvidenceJson } from "../contracts/source-evidence";
+import {
+  canonicalEvidenceJson,
+  SAMPLE_DECISION_RECORD_LABEL,
+  sourceTextForRetrieval,
+} from "../contracts/source-evidence";
 import {
   SAMPLE_RESEARCH_SCREENING_RECORD_LABEL,
 } from "../contracts/research-candidate";
@@ -20,6 +24,22 @@ export interface ExactXTraceParentUnit extends ExactSourceMemoryBundle {
   parentKind: ExactXTraceParentKind;
   parentFingerprint: string;
   payloadFingerprint: string;
+}
+
+/**
+ * The v2 provider payload predates the non-gating Sample decision Fact bridge.
+ * Keep the complete registry bundle for Evidence Pack lineage, while omitting
+ * that duplicate bridge from the immutable XTrace wire payload.
+ */
+export function projectExactXTraceParentV2RetrievalPayload(
+  parent: Pick<ExactXTraceParentUnit, "parentKind" | "bundle">,
+): ExactSourceMemoryBundle["bundle"] {
+  return parent.parentKind === "sample_decision_record"
+    ? {
+        ...structuredClone(parent.bundle),
+        facts: [],
+      }
+    : structuredClone(parent.bundle);
 }
 
 export function createExactParentPlanner(dependencies: {
@@ -98,13 +118,19 @@ export function createExactXTraceParentUnit(
     || !/^(?:sha256:)?[0-9a-f]{64}$/.test(revision.contentHash)
   ) throw new Error("An XTrace parent has inconsistent source revision authority.");
   assertExactBundle(exact);
-  const payload = canonicalEvidenceJson(exact.bundle);
+  const parentKind = classifyParent(exact);
+  const payload = canonicalEvidenceJson(
+    projectExactXTraceParentV2RetrievalPayload({
+      parentKind,
+      bundle: exact.bundle,
+    }),
+  );
   if (Buffer.byteLength(payload, "utf8") > 128_000) {
     throw new Error("An XTrace parent retrieval payload exceeds its bounded contract.");
   }
   return {
     ...structuredClone(exact),
-    parentKind: classifyParent(exact),
+    parentKind,
     parentFingerprint: revision.contentHash.startsWith("sha256:")
       ? revision.contentHash
       : `sha256:${revision.contentHash}`,
@@ -149,19 +175,59 @@ function classifyParent(exact: ExactSourceMemoryBundle): ExactXTraceParentKind {
   );
   if (sampleInteractions.length > 0) {
     if (
-      exact.bundle.facts.length !== 0
+      exact.bundle.facts.length > 1
       || exact.bundle.interactions.length !== 1
       || sampleInteractions.length !== 1
-    ) throw new Error("A Sample XTrace parent must own exactly one interaction.");
+    ) {
+      throw new Error(
+        "A Sample XTrace parent must own exactly one interaction and at most one non-gating context bridge.",
+      );
+    }
     const sample = sampleInteractions[0];
+    const sampleSource = sample.source;
+    const fact = exact.bundle.facts[0];
+    const factSource = fact?.sources[0];
     if (
       sample.provenance !== "demo_fixture"
-      || sample.label !== "Sample decision record"
+      || sample.label !== SAMPLE_DECISION_RECORD_LABEL
       || !sample.actionPolicyVersion
       || !sample.interactionSchemaVersion
       || !sample.priorActions?.length
+      || !sampleSource
+      || !("schemaVersion" in sampleSource)
+      || sampleSource.provenance !== "demo_fixture"
+      || sampleSource.title !== SAMPLE_DECISION_RECORD_LABEL
+      || sampleSource.sourceClass !== "internal_decision_record"
+      || sampleSource.sourceAuthority !== "primary"
+      || sampleSource.evidenceRole !== "context"
+      || sampleSource.documentId !== exact.sourceId
+      || sampleSource.sourceRevisionId !== exact.sourceRevisionId
+      || sampleSource.text.status !== "normalized_only"
+      || !sourceTextForRetrieval(sampleSource).startsWith(
+        `${SAMPLE_DECISION_RECORD_LABEL}. `,
+      )
+      || (fact !== undefined && (
+        fact.sources.length !== 1
+        || !factSource
+        || !("schemaVersion" in factSource)
+        || factSource.provenance !== "demo_fixture"
+        || factSource.title !== SAMPLE_DECISION_RECORD_LABEL
+        || factSource.sourceClass !== "internal_decision_record"
+        || factSource.sourceAuthority !== "primary"
+        || factSource.evidenceRole !== "context"
+        || factSource.documentId !== exact.sourceId
+        || factSource.sourceRevisionId !== exact.sourceRevisionId
+        || factSource.text.status !== "normalized_only"
+        || !fact.text.startsWith(`${SAMPLE_DECISION_RECORD_LABEL}. `)
+        || sourceTextForRetrieval(factSource) !== fact.text
+        || sourceTextForRetrieval(factSource)
+          !== sourceTextForRetrieval(sampleSource)
+      ))
       || "expectedOutcome" in sample
       || "expectedOutcomes" in sample
+      || /expectedOutcome|expectedOutcomes/u.test(canonicalEvidenceJson(
+        fact ?? sample,
+      ))
     ) throw new Error("A Sample XTrace parent lost its permanent typed marker.");
     return "sample_decision_record";
   }

@@ -1,4 +1,6 @@
+import { getDataClient } from "../../../../db/client";
 import { getIntelligenceRepository } from "../../../../db/repositories/intelligence";
+import { createRunsRepository } from "../../../../db/repositories/runs";
 import { getUnderwritingArtifactsRepository } from "../../../../db/repositories/underwriting-artifacts";
 import { getUnderwritingRunsRepository } from "../../../../db/repositories/underwriting-runs";
 import { errorResponse, jsonError, jsonOk } from "../../../../lib/api/response";
@@ -13,7 +15,7 @@ import {
 } from "../../../../lib/underwriting/read-model";
 import { isDurableWorkspaceMode } from "../../../../lib/auth/request-context";
 import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from "../../../../lib/contracts/evidence-context";
-import { assertCurrentReportUnderwritingIntegrity } from "../../../../lib/reports/current-underwriting-integrity";
+import { buildCurrentUnderwritingExecution } from "../../../../lib/reports/current-underwriting-integrity";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +47,12 @@ export async function GET(
       ? APPROVED_PINNED_DEMO_SNAPSHOT_ID
       : null;
     const durableWorkspace = isDurableWorkspaceMode(requestContext.mode);
+    const owningRun = durableWorkspace
+      ? await (dependencies.runs ?? createRunsRepository(getDataClient())).get(
+        requestContext.workspaceId,
+        report.runId,
+      )
+      : null;
     const underwritingBatch = durableWorkspace
       ? await buildUnderwritingBatchSummary({
         workspaceId: requestContext.workspaceId,
@@ -57,20 +65,26 @@ export async function GET(
       })
       : null;
     const publicReport = toPublicReport(report, { underwritingBatch });
-    if (
+    const underwritingExecution = (
       durableWorkspace
       &&
       report.evidenceContext?.state === "current"
       && legacyPinnedSnapshotId === null
-    ) {
-      assertCurrentReportUnderwritingIntegrity({
+    )
+      ? buildCurrentUnderwritingExecution({
+        reportRunId: report.runId,
+        run: owningRun,
         companyAnalyses: publicReport.companyAnalyses,
         underwritingBatch,
-      });
-    }
+      })
+      : null;
     return jsonOk({
       ...publicReport,
-      ...(underwritingBatch ? { underwritingBatch } : {}),
+      ...(underwritingBatch
+          && underwritingExecution?.state !== "integrity_error"
+        ? { underwritingBatch }
+        : {}),
+      ...(underwritingExecution ? { underwritingExecution } : {}),
     });
   } catch (error) {
     return errorResponse(error);

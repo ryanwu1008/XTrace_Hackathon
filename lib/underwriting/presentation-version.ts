@@ -1,6 +1,8 @@
 import type { ReportEvidenceContext } from "../contracts/evidence-context";
 import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from
   "../contracts/evidence-context";
+import { PINNED_THIRTY_DEAL_SNAPSHOT_ID } from
+  "../belief-reversal/pinned-thirty-deal-snapshot";
 import type { FrameworkJudgment } from "../contracts/underwriting";
 import type {
   DecisionCriticalEvidenceProjection,
@@ -22,6 +24,12 @@ export const LEGACY_PRE_PASSAGE_30_PRESENTATION_SCHEMA_VERSION =
   "legacy-pre-passage-30-v1" as const;
 export const CURRENT_UNDERWRITING_PRESENTATION_SCHEMA_VERSION =
   "decision-first-named-lens-v1" as const;
+
+export const LEGACY_PINNED_23_IDENTITIES = [{
+  schemaVersion: "framework-judgment-v1",
+  settingsFingerprint: "belief-reversal-task12-v1",
+  applicationCommit: "task12-local-e2e",
+}] as const;
 
 export const LEGACY_PRE_PASSAGE_IDENTITIES = [{
   schemaVersion: "framework-judgment-v1",
@@ -51,7 +59,8 @@ export type UnderwritingPresentationIntegrityReason =
   | "missing_current_presentation"
   | "cross_report_presentation"
   | "current_fingerprint_mismatch"
-  | "current_artifact_ownership_mismatch";
+  | "current_artifact_ownership_mismatch"
+  | "report_underwriting_integrity";
 
 export class UnderwritingPresentationIntegrityError extends Error {
   readonly reason: UnderwritingPresentationIntegrityReason;
@@ -179,6 +188,16 @@ export function resolveUnderwritingPresentationAdapter(
     && input.report.evidenceContext.evidenceMode === "pinned"
     && input.report.evidenceContext.snapshotId
       === APPROVED_PINNED_DEMO_SNAPSHOT_ID;
+  const currentPinnedThirty = input.report.evidenceContext?.state === "current"
+    && input.report.evidenceContext.evidenceMode === "pinned"
+    && input.report.evidenceContext.snapshotId
+      === PINNED_THIRTY_DEAL_SNAPSHOT_ID;
+  const legacyPinnedTwentyThree = LEGACY_PINNED_23_IDENTITIES.some(
+    (identity) =>
+      version.schemaVersion === identity.schemaVersion
+      && version.settingsFingerprint === identity.settingsFingerprint
+      && version.applicationCommit === identity.applicationCommit,
+  );
   const legacyPrePassage = LEGACY_PRE_PASSAGE_IDENTITIES.some((identity) =>
     version.schemaVersion === identity.schemaVersion
     && version.settingsFingerprint === identity.settingsFingerprint
@@ -188,6 +207,7 @@ export function resolveUnderwritingPresentationAdapter(
 
   if (approvedPinned) {
     if (hasCurrentIdentity) throw integrity("mixed_generation");
+    if (!legacyPinnedTwentyThree) throw integrity("unsupported_identity");
     return {
       kind: "legacy_pinned_23",
       schemaVersion: LEGACY_PINNED_23_PRESENTATION_SCHEMA_VERSION,
@@ -195,6 +215,7 @@ export function resolveUnderwritingPresentationAdapter(
   }
 
   if (legacyPrePassage) {
+    if (currentPinnedThirty) throw integrity("mixed_generation");
     if (hasCurrentIdentity) throw integrity("mixed_generation");
     return {
       kind: "legacy_pre_passage_30",

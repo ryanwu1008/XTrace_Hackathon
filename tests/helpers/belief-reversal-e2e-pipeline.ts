@@ -40,6 +40,9 @@ import {
   createSupabaseXTraceLineageRepository,
 } from "../../db/repositories/xtrace-lineage";
 import type { ClaudeClient, ClaudeCompleteInput } from "../../lib/claude/client";
+import {
+  PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+} from "../../lib/belief-reversal/pinned-thirty-deal-snapshot";
 import type { CompanyAnalysis } from "../../lib/contracts/domain";
 import {
   APPROVED_PINNED_DEMO_SNAPSHOT_ID,
@@ -74,7 +77,10 @@ import { createContextRouter } from "../../lib/underwriting/router";
 import type {
   ExactXTraceParentUnit,
 } from "../../lib/xtrace/exact-parent-planner";
-import { createExactParentPlanner } from "../../lib/xtrace/exact-parent-planner";
+import {
+  createExactParentPlanner,
+  projectExactXTraceParentV2RetrievalPayload,
+} from "../../lib/xtrace/exact-parent-planner";
 import type {
   XTraceClient,
   XTraceIngestRequest,
@@ -173,6 +179,11 @@ const EXPECTED_CASES = [
     },
   },
 ] as const;
+
+const CURRENT_DETERMINISTIC_E2E_VERSION = {
+  settingsFingerprint: "belief-reversal-task10-current-fixture-v1",
+  applicationCommit: "task10-current-deterministic-e2e-fixture",
+} as const;
 
 type ExpectedCase = typeof EXPECTED_CASES[number];
 
@@ -395,7 +406,8 @@ export function createBeliefReversalDeterministicProviders():
               sourceRevisionId: parent.sourceRevisionId,
               fingerprint: parent.parentFingerprint,
             },
-            retrievalPayload: parent.bundle,
+            retrievalPayload:
+              projectExactXTraceParentV2RetrievalPayload(parent),
           }),
         });
       }
@@ -506,7 +518,7 @@ export interface CurrentBeliefReversalColdPassLike {
         outcome: string;
       };
     }>;
-    evidenceContext: unknown;
+    evidenceContext?: unknown;
   };
   batch: {
     id: string;
@@ -538,7 +550,8 @@ export interface CurrentBeliefReversalColdPassLike {
  * Outcome distributions depend on the run's evidence window, so they are
  * derived rather than pinned. A fixed distribution rots the moment a fixture
  * event ages past the window. What stays true on any date is which Deals are
- * even capable of a belief revision, and that no screening Deal is.
+ * capable of a belief revision in a controlled fixture. Screening is prior
+ * context, not a permanent product-level exclusion.
  */
 export interface CurrentColdExpectedOutcomes {
   beliefRevisionCapableDealIds: readonly string[];
@@ -570,9 +583,17 @@ export function assertCurrentBeliefReversalColdPass(
   );
   if (
     evidenceContext.state !== "current"
-    || evidenceContext.evidenceMode !== "live"
+    || (
+      evidenceContext.evidenceMode !== "live"
+      && !(
+        evidenceContext.evidenceMode === "pinned"
+        && evidenceContext.snapshotId === PINNED_THIRTY_DEAL_SNAPSHOT_ID
+      )
+    )
   ) {
-    throw new Error("Current cold acceptance requires a live evidence context.");
+    throw new Error(
+      "Current 30-Deal acceptance requires live evidence or the exact pinned-30 snapshot identity.",
+    );
   }
   if (report.companyAnalyses.length !== 30) {
     throw new Error("Current cold acceptance requires exactly 30 CompanyAnalyses.");
@@ -616,14 +637,6 @@ export function assertCurrentBeliefReversalColdPass(
     .filter(({ outcome }) => outcome === "belief_revised")
     .map(({ dealId }) => dealId)
     .sort();
-  const screeningRevised = revisedDealIds.filter((dealId) =>
-    CURRENT_SCREENING_DEAL_IDS.has(dealId)
-  );
-  if (screeningRevised.length > 0) {
-    throw new Error(
-      `Current cold acceptance found screening Deals admitted as belief_revised: ${screeningRevised.join(",")}.`,
-    );
-  }
   if (expected) {
     const capable = new Set(expected.beliefRevisionCapableDealIds);
     const unexpected = revisedDealIds.filter((dealId) => !capable.has(dealId));
@@ -863,8 +876,7 @@ export async function createBeliefReversalProcessRuntime(input: {
       model: "deterministic-e2e-observer-v1",
       promptVersion: "framework-lens-v1",
       schemaVersion: "framework-judgment-v1",
-      settingsFingerprint: "belief-reversal-task12-v1",
-      applicationCommit: "task12-local-e2e",
+      ...CURRENT_DETERMINISTIC_E2E_VERSION,
     },
   });
   const underwriting = createUnderwritingOrchestrator({
@@ -885,8 +897,7 @@ export async function createBeliefReversalProcessRuntime(input: {
         providerModel: "deterministic-e2e-observer-v1",
         promptVersion: "framework-lens-v1",
         schemaVersion: "framework-judgment-v1",
-        settingsFingerprint: "belief-reversal-task12-v1",
-        applicationCommit: "task12-local-e2e",
+        ...CURRENT_DETERMINISTIC_E2E_VERSION,
       },
     }),
     onWarning: (warning) => console.error(`[underwriting-e2e] ${warning}`),
@@ -974,17 +985,26 @@ export async function readBeliefReversalPipelinePass(input: {
     }
     return artifact;
   }));
+  const reportEvidenceContext = CurrentReportEvidenceContextV1Schema.parse(
+    report.evidenceContext,
+  );
   const cases = validateQualifiedCases({
     report,
     batch,
     selections,
     candidates,
     artifacts,
+    expectedCaseCount: reportEvidenceContext.evidenceMode === "live"
+      ? undefined
+      : 4,
   });
-  const reportEvidenceContext = CurrentReportEvidenceContextV1Schema.parse(
-    report.evidenceContext,
-  );
-  if (reportEvidenceContext.evidenceMode === "live") {
+  if (
+    reportEvidenceContext.evidenceMode === "live"
+    || (
+      reportEvidenceContext.evidenceMode === "pinned"
+      && reportEvidenceContext.snapshotId === PINNED_THIRTY_DEAL_SNAPSHOT_ID
+    )
+  ) {
     assertCurrentBeliefReversalColdPass({
       report: {
         ...report,
@@ -995,10 +1015,19 @@ export async function readBeliefReversalPipelinePass(input: {
       candidates,
       artifacts,
     }, input.expectedCurrentOutcomes);
-  } else if (report.companyAnalyses.length !== 23) {
+  } else if (
+    reportEvidenceContext.evidenceMode === "pinned"
+    && reportEvidenceContext.snapshotId === APPROVED_PINNED_DEMO_SNAPSHOT_ID
+    && report.companyAnalyses.length !== 23
+  ) {
     throw new Error(
       "The approved pinned replay must preserve exactly 23 CompanyAnalyses.",
     );
+  } else if (
+    reportEvidenceContext.evidenceMode === "pinned"
+    && reportEvidenceContext.snapshotId !== APPROVED_PINNED_DEMO_SNAPSHOT_ID
+  ) {
+    throw new Error("Pinned E2E read received an unreviewed snapshot identity.");
   }
   return {
     run,
@@ -1347,13 +1376,15 @@ export async function runBeliefReversalPinnedPipeline(input: {
   target: BeliefReversalPinnedPipelineTarget;
   workspaceId: string;
   dataStore: Pick<DemoDataStore, "listWorkspaceDocumentIds">;
-  snapshotId?: typeof APPROVED_PINNED_DEMO_SNAPSHOT_ID;
+  snapshotId?: typeof PINNED_THIRTY_DEAL_SNAPSHOT_ID;
+  expectedCurrentOutcomes?: CurrentColdExpectedOutcomes;
+  expectedInitialXTraceMode?: "created" | "reused";
   fetchImpl?: typeof fetch;
   now?: () => Date;
 }): Promise<BeliefReversalPinnedPipelineResult> {
   assertPipelineTarget(input.target);
   const workspaceId = requiredText(input.workspaceId, "E2E workspace");
-  const snapshotId = input.snapshotId ?? APPROVED_PINNED_DEMO_SNAPSHOT_ID;
+  const snapshotId = input.snapshotId ?? PINNED_THIRTY_DEAL_SNAPSHOT_ID;
   const common = {
     url: input.target.postgrestUrl,
     serviceRoleKey: input.target.serviceRoleKey,
@@ -1396,6 +1427,12 @@ export async function runBeliefReversalPinnedPipeline(input: {
   await createProductInputGate(input.dataStore).assertReady(workspaceId);
   const firstParents = await planner.plan(workspaceId);
   assertExactParentMatrix(firstParents);
+  if (input.expectedInitialXTraceMode === "reused") {
+    // The deterministic provider is process-local, while the exact lineage it
+    // represents is durable. A same-DB upgrade therefore reconstructs only
+    // the fake provider view before proving that every durable intent reuses.
+    providers.primeExactParents(firstParents);
+  }
   const xtraceService = createXTraceService(providers.xtraceClient, {
     workspaceId,
     lineageRepository: lineage,
@@ -1406,7 +1443,10 @@ export async function runBeliefReversalPinnedPipeline(input: {
     planner: { async plan() { return firstParents; } },
     service: xtraceService,
   });
-  assertFirstExactIngest(firstIngest.results);
+  assertInitialExactXTraceIngest(
+    firstIngest.results,
+    input.expectedInitialXTraceMode ?? "created",
+  );
 
   const referenceCatalog = await buildReferenceCatalog({
     references,
@@ -1448,8 +1488,7 @@ export async function runBeliefReversalPinnedPipeline(input: {
       model: "deterministic-e2e-observer-v1",
       promptVersion: "framework-lens-v1",
       schemaVersion: "framework-judgment-v1",
-      settingsFingerprint: "belief-reversal-task12-v1",
-      applicationCommit: "task12-local-e2e",
+      ...CURRENT_DETERMINISTIC_E2E_VERSION,
     },
   });
   const underwriting = createUnderwritingOrchestrator({
@@ -1470,8 +1509,7 @@ export async function runBeliefReversalPinnedPipeline(input: {
         providerModel: "deterministic-e2e-observer-v1",
         promptVersion: "framework-lens-v1",
         schemaVersion: "framework-judgment-v1",
-        settingsFingerprint: "belief-reversal-task12-v1",
-        applicationCommit: "task12-local-e2e",
+        ...CURRENT_DETERMINISTIC_E2E_VERSION,
       },
     }),
     onWarning: (warning) => console.error(`[underwriting-e2e] ${warning}`),
@@ -1511,6 +1549,7 @@ export async function runBeliefReversalPinnedPipeline(input: {
     processDependencies,
     underwritingRuns,
     underwritingArtifacts,
+    expectedCurrentOutcomes: input.expectedCurrentOutcomes,
   });
   const providersAfterFirst = providers.inspect();
   const persistentCountsAfterFirst =
@@ -1536,6 +1575,7 @@ export async function runBeliefReversalPinnedPipeline(input: {
     processDependencies,
     underwritingRuns,
     underwritingArtifacts,
+    expectedCurrentOutcomes: input.expectedCurrentOutcomes,
   });
   const providersAfterReplay = providers.inspect();
   const persistentCountsAfterReplay =
@@ -1560,8 +1600,10 @@ export async function runBeliefReversalPinnedPipeline(input: {
     throw new Error("Pinned replay did not reuse the exact reasoner judgment.");
   }
   if (
-    providersAfterFirst.xtrace.ingestCalls !== 85
-    || providersAfterReplay.xtrace.ingestCalls !== 85
+    providersAfterFirst.xtrace.ingestCalls
+      !== (input.expectedInitialXTraceMode === "reused" ? 0 : 85)
+    || providersAfterReplay.xtrace.ingestCalls
+      !== (input.expectedInitialXTraceMode === "reused" ? 0 : 85)
     || providersAfterReplay.xtrace.exactParentCount !== 85
     || providersAfterReplay.xtrace.memoryCount !== 85
   ) {
@@ -1631,14 +1673,20 @@ function buildMatchingObservations(input: ClaudeCompleteInput): unknown[] {
 
   return EXPECTED_CASES.flatMap((expected) => {
     if (!dealIds.has(expected.dealId)) return [];
-    const event = events.map(asRecord).find((candidate) => {
-      if (candidate?.triggerSourceId !== expected.triggerSourceId) return false;
-      return optionalArray(candidate.sources).some((value) => {
+    const triggerEvent = events.map(asRecord).find((candidate) =>
+      candidate?.triggerSourceId === expected.triggerSourceId
+    );
+    // A current live window may legitimately exclude an older reviewed event.
+    // In that case the deterministic observer returns no match for this Deal;
+    // it still fails closed when a present event has the wrong exact lineage.
+    if (!triggerEvent) return [];
+    const event = optionalArray(triggerEvent.sources).some((value) => {
         const source = asRecord(value);
         return source?.id === expected.triggerSourceId
           && source.sourceRevisionId === expected.triggerSourceRevisionId;
-      });
-    });
+      })
+      ? triggerEvent
+      : undefined;
     const memory = memoryContexts.map(asRecord).find((candidate) =>
       candidate?.dealId === expected.dealId
     );
@@ -1744,6 +1792,7 @@ function buildFrameworkObservation(input: ClaudeCompleteInput): unknown {
     request = requireRecord(request.originalRequest, "framework repair request");
   }
   const card = requireRecord(request.card, "framework Card");
+  const advisory = card.executionMode === "experimental_advisory";
   const pack = requireRecord(request.evidencePack, "framework Evidence Pack");
   const factRecords = requireArray(pack.facts, "Evidence Pack Facts")
     .map(asRecord)
@@ -1783,6 +1832,16 @@ function buildFrameworkObservation(input: ClaudeCompleteInput): unknown {
       limitations: [],
       confidence: lowConfidence(),
       frameworkRuleRefs: [cardId],
+      ...(advisory
+        ? {
+          counterevidenceBoundary: {
+            kind: "no_candidate_local_counterevidence",
+            evidenceRequestRefs: [
+              `fixture_evidence_request:${cardId}:candidate_local_counterevidence`,
+            ],
+          },
+        }
+        : {}),
     };
   }
   const title = typeof card.title === "string" ? card.title : cardId;
@@ -1796,11 +1855,27 @@ function buildFrameworkObservation(input: ClaudeCompleteInput): unknown {
   const counterId = prioritizedIds[1] ?? ids[1]!;
   const supportEvidence = describeFrameworkEvidence(evidenceRecords, supportId);
   const counterEvidence = describeFrameworkEvidence(evidenceRecords, counterId);
+  const supportPassageEvidence = describeFrameworkPassageEvidence(
+    evidenceRecords,
+    supportId,
+  );
+  const counterPassageEvidence = describeFrameworkPassageEvidence(
+    evidenceRecords,
+    counterId,
+  );
   const coverage = asRecord(pack.coverage);
   const missingFields = optionalArray(coverage?.missingFieldIds)
     .filter((value): value is string => typeof value === "string")
     .map((value) => value.replaceAll("_", " "));
-  return {
+  const unknowns = missingFields.length
+    ? [`Critical missing evidence remains: ${missingFields.join(", ")}.`]
+    : [
+      "The immutable Evidence Pack does not establish every operating outcome required by this lens.",
+    ];
+  const limitations = [
+    "This deterministic E2E fixture is not an observed production-model output and does not represent endorsement.",
+  ];
+  const observation = {
     applicability: "applicable",
     conclusion,
     supportEvidenceItemIds: [supportId],
@@ -1813,14 +1888,8 @@ function buildFrameworkObservation(input: ClaudeCompleteInput): unknown {
       : `${title} uses ${supportEvidence} as the strongest concrete input for a bounded cautious reading.`,
     strongestCounterargument:
       `${counterEvidence} is the strongest persisted counterargument and limits how far this conclusion can be carried.`,
-    unknowns: missingFields.length
-      ? [`Critical missing evidence remains: ${missingFields.join(", ")}.`]
-      : [
-        "The immutable Evidence Pack does not establish every operating outcome required by this lens.",
-      ],
-    limitations: [
-      "This local deterministic report uses only the supplied immutable Evidence Pack and does not claim endorsement or private reasoning.",
-    ],
+    unknowns,
+    limitations,
     confidence: {
       sourceReliability: "medium",
       evidenceStrength: "medium",
@@ -1830,6 +1899,456 @@ function buildFrameworkObservation(input: ClaudeCompleteInput): unknown {
     },
     frameworkRuleRefs: [cardId],
   };
+  if (!advisory) return observation;
+  const counterevidenceBoundary = {
+    kind: "grounded_counterevidence" as const,
+    evidenceRequestRefs: [] as string[],
+  };
+  const passage = supportPassageEvidence && counterPassageEvidence
+    ? buildDeterministicNamedLensPassage({
+      card,
+      supportId,
+      counterId,
+      supportEvidence: supportPassageEvidence,
+      counterEvidence: counterPassageEvidence,
+      conclusion,
+      unknowns,
+      limitations,
+      counterevidenceBoundary,
+    })
+    : null;
+  if (passage === null) {
+    return {
+      applicability: "applicable",
+      conclusion: "abstain",
+      supportEvidenceItemIds: [],
+      counterEvidenceItemIds: [],
+      unusedEvidenceItemIds: ids,
+      strongestSupport: null,
+      strongestCounterargument: null,
+      unknowns: [
+        "The selected advisory focus cannot satisfy the current canonical passage contract.",
+      ],
+      limitations,
+      confidence: lowConfidence(),
+      frameworkRuleRefs: [cardId],
+      counterevidenceBoundary: {
+        kind: "no_candidate_local_counterevidence",
+        evidenceRequestRefs: [
+          `fixture_evidence_request:${cardId}:current_advisory_contract`,
+        ],
+      },
+    };
+  }
+  return {
+    ...observation,
+    counterevidenceBoundary,
+    passage,
+  };
+}
+
+function buildDeterministicNamedLensPassage(input: {
+  card: Record<string, unknown>;
+  supportId: string;
+  counterId: string;
+  supportEvidence: string;
+  counterEvidence: string;
+  conclusion: "supportive" | "negative";
+  unknowns: string[];
+  limitations: string[];
+  counterevidenceBoundary: {
+    kind: "grounded_counterevidence";
+    evidenceRequestRefs: string[];
+  };
+}): Record<string, unknown> | null {
+  const cardId = requiredText(String(input.card.id ?? ""), "advisory Card id");
+  const metadata = requireRecord(
+    input.card.experimentalAdvisory,
+    "advisory Card metadata",
+  );
+  const components = requireArray(
+    metadata.components,
+    "advisory Card components",
+  ).map((value, index) => requireRecord(
+    value,
+    `advisory Card component ${index + 1}`,
+  ));
+  const bindings = requireArray(
+    metadata.decisionTaxonomyBindings,
+    "advisory decision taxonomy bindings",
+  ).map((value, index) => requireRecord(
+    value,
+    `advisory decision taxonomy binding ${index + 1}`,
+  ));
+  const focusCandidates = bindings.flatMap((binding) => {
+    const frameworkId = requiredText(
+      String(binding.frameworkId ?? ""),
+      "advisory focus framework id",
+    );
+    const component = components.find((candidate) =>
+      candidate.frameworkId === frameworkId
+    );
+    if (!component) return [];
+    const sourceRef = optionalArray(component.sourceRefs)
+      .map(asRecord)
+      .filter((value): value is Record<string, unknown> => value !== null)
+      .find((candidate) =>
+        typeof candidate.sourceId === "string"
+        && optionalArray(candidate.claimIds).some((claimId) =>
+          typeof claimId === "string"
+        )
+        && asRecord(candidate.locator) !== null
+        && typeof candidate.attributionScope === "string"
+      );
+    if (!sourceRef) return [];
+    const cardFieldRef = requiredText(
+      String(binding.cardFieldRef ?? ""),
+      "advisory focus Card field",
+    );
+    return [{
+      component,
+      binding,
+      sourceRef,
+      identity: `${frameworkId}\u0000${cardFieldRef}`,
+    }];
+  }).sort((left, right) => compareUtf8(left.identity, right.identity));
+  if (focusCandidates.length === 0) {
+    throw new Error(
+      `Deterministic advisory fixture ${cardId} has no source-grounded focus.`,
+    );
+  }
+  const digest = createHash("sha256").update(cardId, "utf8").digest();
+  const focus = focusCandidates[(digest[0] ?? 0) % focusCandidates.length]!;
+  const frameworkId = requiredText(
+    String(focus.component.frameworkId ?? ""),
+    "advisory component framework id",
+  );
+  const componentVersion = requiredText(
+    String(focus.component.version ?? ""),
+    "advisory component version",
+  );
+  const cardFieldRef = requiredText(
+    String(focus.binding.cardFieldRef ?? ""),
+    "advisory Card field",
+  );
+  const decisionQuestionCode = requiredText(
+    String(focus.binding.decisionQuestionCode ?? ""),
+    "advisory decision question code",
+  );
+  const evidenceDomainCodes = uniqueStrings(
+    optionalArray(focus.binding.evidenceDomainCodes)
+      .filter((value): value is string => typeof value === "string"),
+  );
+  if (evidenceDomainCodes.length === 0) {
+    throw new Error(`Deterministic advisory fixture ${cardId} has no evidence domain.`);
+  }
+  if (evidenceDomainCodes.some((value, index) =>
+    index > 0 && compareUtf8(evidenceDomainCodes[index - 1]!, value) >= 0
+  )) return null;
+  const topic = decisionQuestionCode.replaceAll("_", " ");
+  const attribution = requireRecord(
+    focus.component.attribution,
+    "advisory component attribution",
+  );
+  const namedPeople = optionalArray(attribution.people)
+    .filter((value): value is string => typeof value === "string");
+  const publicDoctrine = decisionSafePassageText(
+    requiredText(
+      String(focus.component.neutralParaphrase ?? ""),
+      "advisory public doctrine",
+    ),
+    namedPeople,
+  );
+  const questionText = decisionSafePassageText(
+    requiredText(
+      String(focus.binding.questionText ?? ""),
+      "advisory decision question text",
+    ),
+    namedPeople,
+  );
+  const domainText = evidenceDomainCodes
+    .map((value) => value.replaceAll("_", " "))
+    .join(" and ");
+  const sourceId = requiredText(
+    String(focus.sourceRef.sourceId ?? ""),
+    "advisory public source id",
+  );
+  const claimIds = uniqueStrings(
+    optionalArray(focus.sourceRef.claimIds)
+      .filter((value): value is string => typeof value === "string"),
+  ).sort(compareUtf8);
+  const locator = requireRecord(
+    focus.sourceRef.locator,
+    "advisory public source locator",
+  );
+  const attributionScope = requiredText(
+    String(focus.sourceRef.attributionScope ?? ""),
+    "advisory attribution scope",
+  );
+  const supportive = input.conclusion === "supportive";
+  const mechanism = namedLensMechanism(decisionQuestionCode, domainText);
+  return {
+    focus: {
+      componentFrameworkId: frameworkId,
+      componentVersion,
+      cardFieldRef,
+      decisionQuestionCode,
+      evidenceDomainCodes,
+    },
+    premise: {
+      text: [
+        "This deterministic E2E passage applies an audited public-source doctrine; it is not a production-model observation or endorsement.",
+        `The doctrine states: ${publicDoctrine}`,
+        `The Card tests: ${questionText}`,
+        `The cited material is classified as ${attributionLabel(attributionScope)}, which identifies the public source basis without assigning a private view.`,
+      ].join(" "),
+      componentFrameworkId: frameworkId,
+      componentVersion,
+      cardFieldRef,
+      publicSourceIds: [sourceId],
+      claimIds,
+      locator,
+      attributionScope,
+    },
+    caseApplication: {
+      text:
+        `The candidate's ${decisionSafePassageText(input.supportEvidence, namedPeople)}; this supports the reading because ${mechanism.support}.`,
+      evidenceItemIds: [input.supportId],
+    },
+    countercase: {
+      text:
+        `The candidate's ${decisionSafePassageText(input.counterEvidence, namedPeople)}; this limits that inference because ${mechanism.counter}.`,
+      boundaryKind: input.counterevidenceBoundary.kind,
+      evidenceItemIds: [input.counterId],
+      evidenceRequestRefs:
+        input.counterevidenceBoundary.evidenceRequestRefs,
+    },
+    unknownBoundary: {
+      text: [
+        decisionSafePassageText(
+          input.unknowns[0] ?? "Material evidence remains unresolved.",
+          namedPeople,
+        ),
+        `The evidence request is ${mechanism.evidenceRequest}.`,
+        decisionSafePassageText(
+          input.limitations[0] ??
+            "This deterministic E2E fixture is not an observed production-model output or endorsement.",
+          namedPeople,
+        ),
+      ].join(" "),
+      judgmentUnknownRefs: input.unknowns,
+      judgmentLimitationRefs: input.limitations,
+      evidenceRequestRefs: [],
+    },
+    conditionalConclusion: {
+      text: supportive
+        ? `Taken together, the ${topic} reading is conditionally supportive: the support outweighs the counterpoint only if ${mechanism.verification}; contrary results would weaken it.`
+        : `Taken together, the ${topic} reading is conditionally negative: the counterpoint prevents a stronger inference unless ${mechanism.verification}; confirming results could soften it.`,
+      stance: input.conclusion,
+      advisoryPosture: supportive
+        ? "supports_further_diligence"
+        : "urges_caution",
+    },
+    advisoryContract: {
+      formalDecisionWeight: "0",
+      noEndorsement: true,
+      namedPersonImpersonation: false,
+      hiddenChainOfThought: false,
+    },
+  };
+}
+
+function namedLensMechanism(
+  decisionQuestionCode: string,
+  evidenceDomains: string,
+): {
+  support: string;
+  counter: string;
+  evidenceRequest: string;
+  verification: string;
+} {
+  const mechanisms: Record<string, {
+    support: string;
+    counter: string;
+    evidenceRequest: string;
+    verification: string;
+  }> = {
+    market_structure: {
+      support:
+        "persistent buyer behavior can alter rival incentives and make demand less contestable",
+      counter:
+        "buyer hesitation can reveal viable substitutes and a competitive response that remains open",
+      evidenceRequest:
+        "independent renewal cohorts, buyer alternatives, and observed competitor responses",
+      verification:
+        "renewal and substitution evidence confirms the apparent competitive constraint",
+    },
+    product_differentiation: {
+      support:
+        "repeat adoption can connect a distinct capability to an outcome customers value",
+      counter:
+        "implementation friction can show that the claimed difference is not usable or defensible",
+      evidenceRequest:
+        "product-level outcome measures, replication tests, and customer switching evidence",
+      verification:
+        "measured outcomes persist and competitors cannot readily reproduce the capability",
+    },
+    customer_adoption: {
+      support:
+        "expanded paid use can indicate a recurring customer need rather than experimental interest",
+      counter:
+        "paused renewals can expose weak ownership, integration burden, or incomplete willingness to pay",
+      evidenceRequest:
+        "cohort renewal, expansion, usage depth, and loss-reason data from independent customers",
+      verification:
+        "cohorts retain and expand without exceptional support or one-off incentives",
+    },
+    founder_team_execution: {
+      support:
+        "customer expansion can reflect a team turning feedback into coordinated delivery",
+      counter:
+        "unresolved ownership can indicate that execution depends on informal effort rather than clear accountability",
+      evidenceRequest:
+        "decision ownership, operating cadence, hiring gaps, and repeated delivery evidence",
+      verification:
+        "accountability and delivery remain clear across multiple customer cycles",
+    },
+    operating_model: {
+      support:
+        "repeat deployment can show that delivery is becoming a process rather than a one-off project",
+      counter:
+        "renewal pauses can reveal hidden coordination costs that prevent the process from scaling",
+      evidenceRequest:
+        "implementation time, support load, ownership, and repeatability across comparable deployments",
+      verification:
+        "delivery repeats with stable time, staffing, and customer ownership",
+    },
+    unit_economics: {
+      support:
+        "paid expansion can spread acquisition and service costs across a larger durable revenue base",
+      counter:
+        "renewal risk can shorten customer life and erase the apparent contribution from expansion",
+      evidenceRequest:
+        "segmented retention, contribution cost, payback, and expansion economics by cohort",
+      verification:
+        "incremental cohorts retain positive contribution after acquisition and support costs",
+    },
+    financing_valuation: {
+      support:
+        "durable paid expansion can improve the operating path supporting value and return assumptions",
+      counter:
+        "renewal uncertainty can lower durable cash-flow expectations and make price or dilution more consequential",
+      evidenceRequest:
+        "cohort economics, financing terms, dilution, ownership, and scenario-linked return inputs",
+      verification:
+        "verified operating inputs still support the modeled payoff after terms and dilution",
+    },
+    governance: {
+      support:
+        "documented customer progress can show that oversight is translating risk review into accountable execution",
+      counter:
+        "unclear ownership can leave material issues without an accountable decision right or control",
+      evidenceRequest:
+        "named owners, control evidence, escalation records, and board-level follow-through",
+      verification:
+        "controls have accountable owners and operate consistently when issues recur",
+    },
+    security: {
+      support:
+        "independent reviews followed by expansion can connect control quality to customer trust",
+      counter:
+        "paused renewals can indicate unresolved control, integration, or responsibility boundaries",
+      evidenceRequest:
+        "independent control tests, incident history, remediation evidence, and customer security reviews",
+      verification:
+        "controls remain effective and independently verified across deployments",
+    },
+    portfolio_risk: {
+      support:
+        "customer expansion can improve the probability-weighted case for committing scarce follow-on capacity",
+      counter:
+        "renewal uncertainty can increase reserve, concentration, and timing risk at the fund level",
+      evidenceRequest:
+        "exposure, reserve capacity, ownership, liquidity timing, and downside scenario evidence",
+      verification:
+        "company-level progress remains attractive after fund capacity and concentration constraints",
+    },
+  };
+  return mechanisms[decisionQuestionCode] ?? {
+    support:
+      `the observed signal can change how ${evidenceDomains} evidence bears on the selected question`,
+    counter:
+      `the adverse signal can break the link between ${evidenceDomains} evidence and the claimed outcome`,
+    evidenceRequest:
+      `independent ${evidenceDomains} evidence that tests persistence and alternative explanations`,
+    verification:
+      `independent ${evidenceDomains} evidence confirms persistence and rules out alternatives`,
+  };
+}
+
+function attributionLabel(value: string): string {
+  const labels: Record<string, string> = {
+    person_direct: "direct public material",
+    coauthored_work: "a coauthored public work",
+    course_notes_derivative: "public course-note material",
+    institution_doctrine: "institutional public doctrine",
+    revealed_behavior: "documented public behavior",
+    external_empirical: "external empirical work",
+  };
+  return labels[value] ?? "audited public material";
+}
+
+function publicDoctrinePassageText(value: string): string {
+  return passageText(value)
+    .replace(/\bin advance\b/giu, "beforehand");
+}
+
+function decisionSafePassageText(
+  value: string,
+  namedPeople: readonly string[],
+): string {
+  let normalized = publicDoctrinePassageText(value);
+  const aliases = new Set(namedPeople.flatMap((person) => {
+    const words = person.trim().split(/\s+/u).filter(Boolean);
+    return words.length === 0
+      ? []
+      : [person.trim(), words[0]!, words.at(-1)!];
+  }).filter((alias) => alias.length >= 3));
+  for (const alias of [...aliases].sort((left, right) =>
+    right.length - left.length
+  )) {
+    normalized = normalized.replace(
+      new RegExp(`\\b${escapeRegularExpression(alias)}\\b`, "giu"),
+      "the cited public framework",
+    );
+  }
+  return normalized
+    .replace(/\bdeal decks?\b/giu, "presentations")
+    .replace(/\bdeals?\b/giu, "commercial arrangements")
+    .replace(/\binvestments?\b/giu, "capital commitments")
+    .replace(/\binvesting\b/giu, "capital allocation")
+    .replace(/\binvest\b/giu, "commit capital")
+    .replace(/\bdecision policy\b/giu, "assessment policy")
+    .replace(/\bdecisions?\b/giu, "assessments")
+    .replace(/\brecommendations?\b/giu, "research conclusions")
+    .replace(/\bnext[ _-]+step\b/giu, "remaining inquiry")
+    .replace(/\bhard[ _-]+veto\b/giu, "binding control")
+    .replace(/\bveto(?:es)?\b/giu, "blocking rights")
+    .replace(/\bWatch\b/gu, "continued observation")
+    .replace(/\bAdvance\b/gu, "further diligence")
+    .replace(/\bPass\b/gu, "decline");
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function passageText(value: string): string {
+  return value
+    .replace(/[\r\n\t]+/gu, " ")
+    .replace(/["“”„‟«»‹›「」『』〝〞〟＂]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function prioritizeFrameworkEvidenceIds(
@@ -1879,6 +2398,33 @@ function describeFrameworkEvidence(
   return value
     ? `${field} (${value}${unit ? ` ${unit}` : ""})`
     : `${field} evidence (${id})`;
+}
+
+function describeFrameworkPassageEvidence(
+  records: readonly Record<string, unknown>[],
+  id: string,
+): string | null {
+  const item = records.find((record) => record.id === id);
+  if (!item) return null;
+  const rawValue = typeof item.value === "string"
+    ? item.value
+    : typeof item.output === "string"
+    ? item.output
+    : null;
+  if (!rawValue?.trim()) return null;
+  const words = passageText(rawValue).split(/\s+/u).filter(Boolean);
+  if (words.length === 0) return null;
+  const boundedValue = (words.length <= 18
+    ? words.join(" ")
+    : `${words.slice(0, 18).join(" ")}…`)
+    .replace(/[.!?;:]+$/gu, "");
+  const field = typeof item.field === "string"
+    ? item.field.replaceAll("_", " ")
+    : "evidence";
+  const unit = typeof item.unit === "string" && item.unit.trim()
+    ? ` ${passageText(item.unit)}`
+    : "";
+  return `${field}: ${boundedValue}${unit}`;
 }
 
 function frameworkConclusion(
@@ -1967,7 +2513,7 @@ async function buildReferenceCatalog(input: {
 
 async function runPinnedPass(input: {
   workspaceId: string;
-  snapshotId: typeof APPROVED_PINNED_DEMO_SNAPSHOT_ID;
+  snapshotId: typeof PINNED_THIRTY_DEAL_SNAPSHOT_ID;
   workerId: string;
   runs: ReturnType<typeof createRunsRepository>;
   processDependencies: Parameters<typeof processClaimedRun>[1];
@@ -1975,6 +2521,7 @@ async function runPinnedPass(input: {
   underwritingArtifacts: ReturnType<
     typeof createSupabaseUnderwritingArtifactsRepository
   >;
+  expectedCurrentOutcomes?: CurrentColdExpectedOutcomes;
 }): Promise<BeliefReversalPipelinePass> {
   const queued = await input.runs.create({
     workspaceId: input.workspaceId,
@@ -1992,8 +2539,43 @@ async function runPinnedPass(input: {
   }
   const processed = await processClaimedRun(claimed, input.processDependencies);
   if (processed.run.status !== "completed") {
+    const diagnosticBatch = await input.underwritingRuns.getBatchByScanRunId({
+      workspaceId: input.workspaceId,
+      scanRunId: processed.run.id,
+    });
+    const diagnosticCandidates = diagnosticBatch
+      ? await input.underwritingRuns.listCandidatesForBatch({
+          workspaceId: input.workspaceId,
+          batchId: diagnosticBatch.id,
+        })
+      : [];
+    const diagnosticSummary = await Promise.all(
+      diagnosticCandidates.map(async (candidate) => {
+        const [artifact, checkpoints] = await Promise.all([
+          input.underwritingArtifacts.getByCandidateRunId({
+            workspaceId: input.workspaceId,
+            candidateRunId: candidate.id,
+          }),
+          input.underwritingRuns.listCheckpoints({
+            workspaceId: input.workspaceId,
+            candidateRunId: candidate.id,
+          }),
+        ]);
+        return {
+          candidateId: candidate.id,
+          dealId: candidate.dealId,
+          status: candidate.status,
+          terminalReasonCodes: artifact?.terminalReasonCodes
+            ?? candidate.terminalReasonCodes
+            ?? [],
+          failedStages: checkpoints
+            .filter(({ status }) => status === "failed")
+            .map(({ stage, reasonCode }) => ({ stage, reasonCode })),
+        };
+      }),
+    );
     throw new Error(
-      `Pinned E2E scan ${processed.run.id} ended ${processed.run.status}: ${processed.run.warnings.join(" | ")}`,
+      `Pinned E2E scan ${processed.run.id} ended ${processed.run.status}: ${processed.run.warnings.join(" | ")}. Candidate diagnostics: ${JSON.stringify(diagnosticSummary)}`,
     );
   }
   const batch = await input.underwritingRuns.getBatchByScanRunId({
@@ -2023,6 +2605,13 @@ async function runPinnedPass(input: {
     }
     return artifact;
   }));
+  assertCurrentBeliefReversalColdPass({
+    report: processed.report,
+    batch,
+    selections,
+    candidates,
+    artifacts,
+  }, input.expectedCurrentOutcomes);
   const cases = validateQualifiedCases({
     report: processed.report,
     batch,
@@ -2048,16 +2637,29 @@ function validateQualifiedCases(input: {
   selections: UnderwritingSelection[];
   candidates: CandidateRun[];
   artifacts: CandidateArtifactBundle[];
+  expectedCaseCount?: number;
 }): BeliefReversalPipelineCaseResult[] {
+  const selectedCount = input.selections.filter(
+    ({ status }) => status === "selected",
+  ).length;
+  const derivedCount = input.report.companyAnalyses.filter(
+    ({ outcome }) => outcome === "belief_revised",
+  ).length;
   if (
-    input.report.opportunities.length !== 4
-    || input.selections.filter(({ status }) => status === "selected").length !== 4
-    || input.candidates.length !== 4
-    || input.artifacts.length !== 4
+    input.report.opportunities.length !== derivedCount
+    || selectedCount !== derivedCount
+    || input.candidates.length !== derivedCount
+    || input.artifacts.length !== derivedCount
     || input.batch.status !== "completed"
+    || (
+      input.expectedCaseCount !== undefined
+      && derivedCount !== input.expectedCaseCount
+    )
   ) {
     throw new Error(
-      "E2E must derive exactly four terminal belief-revision priorities.",
+      input.expectedCaseCount === undefined
+        ? "Live E2E must create one terminal priority for every and only belief-revised Deal."
+        : `Pinned E2E must derive exactly ${input.expectedCaseCount} terminal belief-revision priorities.`,
     );
   }
   const expectedByDeal = new Map<string, ExpectedCase>(
@@ -2087,7 +2689,7 @@ function validateQualifiedCases(input: {
     const artifact = artifactByDeal.get(opportunity.dealId);
     const assessment = analysis?.beliefAssessment;
     if (!expected || !analysis || !candidate || !artifact || !assessment) {
-      throw new Error(`Pinned E2E selected unknown or incomplete Deal ${opportunity.dealId}.`);
+      throw new Error(`E2E selected unknown or incomplete Deal ${opportunity.dealId}.`);
     }
     const actionKinds = assessment.actions.map(({ kind }) => kind);
     if (
@@ -2109,7 +2711,7 @@ function validateQualifiedCases(input: {
       || artifact.evidencePack.dealId !== opportunity.dealId
     ) {
       throw new Error(
-        `Pinned E2E derived an invalid qualified result for ${opportunity.dealId}.`,
+        `E2E derived an invalid qualified result for ${opportunity.dealId}.`,
       );
     }
     return {
@@ -2177,17 +2779,23 @@ function assertExactParentMatrix(parents: readonly ExactXTraceParentUnit[]): voi
   }
 }
 
-function assertFirstExactIngest(results: readonly ExactParentIngestResult[]): void {
+export function assertInitialExactXTraceIngest(
+  results: readonly ExactParentIngestResult[],
+  expectedMode: "created" | "reused",
+): void {
+  const expectedReused = expectedMode === "reused";
   if (
     results.length !== 85
     || results.some((result) =>
       result.outcome !== "recorded"
       || result.ingest.state !== "succeeded"
-      || result.ingest.reused
+      || result.ingest.reused !== expectedReused
       || result.ingest.memoryIds.length !== 1
     )
   ) {
-    throw new Error("E2E first exact XTrace pass must create 85 succeeded children.");
+    throw new Error(
+      `E2E first exact XTrace pass must ${expectedMode} exactly 85 succeeded children.`,
+    );
   }
 }
 

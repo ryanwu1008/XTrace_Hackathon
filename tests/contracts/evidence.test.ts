@@ -147,6 +147,7 @@ test("keeps analysis type and provenance origin orthogonal", () => {
     "management",
     "uploaded_document",
     "public_source",
+    "demo_fixture",
     "benchmark",
     "recommended_policy",
     "user_custom",
@@ -157,6 +158,36 @@ test("keeps analysis type and provenance origin orthogonal", () => {
   assert.throws(() => AssumptionSchema.parse(assumptionFixture({
     provenanceOrigin: "uploaded_document",
   })));
+});
+
+test("a Sample decision Fact is permanently synthetic and never gate eligible", () => {
+  const sample = factFixture({
+    provenanceOrigin: "demo_fixture",
+    field: "sample_decision_context",
+    value: "Sample decision record. Synthetic context only.",
+    unit: null,
+    currency: null,
+    periodStart: null,
+    periodEnd: null,
+    publishedAt: null,
+    sourceRole: "management",
+    assertionStatus: "reported",
+    verificationMethod: "synthetic_sample_decision_record_v1",
+    acceptedForGate: false,
+  });
+  assert.equal(FactSchema.parse(sample).provenanceOrigin, "demo_fixture");
+  for (const invalid of [{
+    ...sample,
+    acceptedForGate: true,
+  }, {
+    ...sample,
+    field: "public_claim",
+  }, {
+    ...sample,
+    verificationMethod: null,
+  }]) {
+    assert.throws(() => FactSchema.parse(invalid), /synthetic|sample|gate/i);
+  }
 });
 
 test("accepts every exact evidence locator shape, including an image without excerpt", () => {

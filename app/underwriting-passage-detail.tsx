@@ -2,6 +2,7 @@ import type { UnderwritingAnalysisContext } from "./underwriting-detail";
 import { buildUnderwritingArticleViewModel } from "./underwriting-article-view-model";
 import type { VersionedCandidateUnderwritingDetail } from
   "../lib/underwriting/read-model";
+import type { PublicActionDraft } from "../lib/underwriting/read-model";
 import {
   DecisionCriticalEvidenceProjectionSchema,
   NamedLensPassageSchema,
@@ -11,6 +12,7 @@ import {
   SAMPLE_RESEARCH_SCREENING_BADGE,
 } from "../lib/belief-reversal/sample-research-screening-authority";
 import { SourceRevisionLink } from "./source-revision-link";
+import { buildActionDraftSection } from "./action-draft-view-model";
 
 type CurrentUnderwritingDetail = Extract<
   VersionedCandidateUnderwritingDetail,
@@ -42,12 +44,19 @@ export function PassageUnderwritingDetailPanel({
   companyName,
   analysis,
   detail,
+  drafts,
+  canSaveDrafts,
+  onEditDraft,
 }: {
   companyName: string;
   analysis: UnderwritingAnalysisContext | null;
   detail: CurrentUnderwritingDetail;
+  drafts: PublicActionDraft[];
+  canSaveDrafts: boolean;
+  onEditDraft(draft: PublicActionDraft): void;
 }) {
   const article = buildUnderwritingArticleViewModel({ analysis, detail });
+  const actionDraftSection = buildActionDraftSection(drafts);
   const namedLens = article.persistedNamedLens;
   if (!namedLens) return null;
   const hasSampleResearchAuthority = Boolean(
@@ -72,6 +81,10 @@ export function PassageUnderwritingDetailPanel({
     detail,
     namedLens,
   });
+  const firstScreenTension = namedLens.synthesis.branch
+      === "principal_disagreement"
+    ? namedLens.synthesis.text
+    : "No grounded tension was established among the selected public-source framework readings.";
 
   return (
     <main className="underwriting-memo" aria-label="Underwriting memorandum">
@@ -87,10 +100,14 @@ export function PassageUnderwritingDetailPanel({
 
       <MemoSection number="01" title="Decision Request">
         <div className="underwriting-decision-first">
-          <p className="underwriting-status">
-            Underwriting Status · {humanize(detail.evidencePack.coverage.underwritingStatus)}
-          </p>
           <h3>{formalResult}</h3>
+          {!persistedFormalResult && (
+            <p className="underwriting-decision-boundary">
+              The saved evidence does not yet support a formal investment
+              decision. The request below is limited to diligence and risk
+              control while the missing underwriting inputs are collected.
+            </p>
+          )}
           <p>{article.decisionAsk.summary}</p>
           {article.decisionAsk.actionLines.length ? (
             <ol>
@@ -146,6 +163,18 @@ export function PassageUnderwritingDetailPanel({
                   </p>
                 </div>
               ))
+              : decisionEvidence.state === "evidence_ceiling"
+              ? (
+                <p
+                  className="underwriting-projection-unavailable"
+                  data-evidence-state="decision-ceiling"
+                  role="status"
+                >
+                  A formal investment decision is not supportable yet because
+                  required underwriting evidence is incomplete. This is an
+                  evidence ceiling, not a negative investment conclusion.
+                </p>
+              )
               : (
                 <p
                   className="underwriting-projection-unavailable"
@@ -156,11 +185,7 @@ export function PassageUnderwritingDetailPanel({
                 </p>
               )}
           </div>
-          <p>
-            {namedLens.synthesis.branch === "principal_disagreement"
-              ? namedLens.synthesis.text
-              : "No grounded tension was persisted in the selected Named Lens readings."}
-          </p>
+          <p>{firstScreenTension}</p>
           <p className="underwriting-draft-notice">
             DRAFT ONLY · decision support; no message is sent or published.
             {syntheticDisclosureBadges.length > 0
@@ -175,20 +200,35 @@ export function PassageUnderwritingDetailPanel({
       </MemoSection>
 
       <MemoSection number="03" title="Company Position">
-        <EditorialList title="Accepted for this decision" values={article.companySnapshot.verifiedFacts} />
-        <EditorialList title="Recorded but not accepted" values={article.companySnapshot.unverifiedFacts} />
-        <EditorialList title="Not available at all" values={article.companySnapshot.unknownFieldIds} />
+        <EditorialList
+          title="Accepted for this decision"
+          values={article.companySnapshot.verifiedFacts.map(readerFact)}
+          emptyText="No company fact met the report's decision-use standard."
+        />
+        <EditorialList
+          title="Recorded but not accepted"
+          values={article.companySnapshot.unverifiedFacts.map(readerFact)}
+          emptyText="No additional unaccepted company fact was recorded."
+        />
+        <EditorialList
+          title="Evidence still needed"
+          values={article.companySnapshot.unknownFieldIds.map(
+            evidenceFieldLabel,
+          )}
+          emptyText="No missing company field was recorded."
+        />
       </MemoSection>
 
       <MemoSection number="04" title="Thesis Assessment">
         <p>{detail.narrative}</p>
-        <p>{namedLens.synthesis.text}</p>
+        {namedLens.synthesis.text !== detail.narrative
+            && namedLens.synthesis.text !== firstScreenTension && (
+          <p>{namedLens.synthesis.text}</p>
+        )}
       </MemoSection>
 
       <MemoSection number="05" title="Financial and Valuation Status">
-        <p>
-          Current modeling status: {article.financialCase.unavailableInputCount} of {article.financialCase.totalInputCount} required scenario inputs are unavailable.
-        </p>
+        <p>{financialModelBoundary(article.financialCase)}</p>
         <EditorialList
           title="Required Before Valuation"
           values={article.financialCase.requiredBeforeValuation.map(({ requiredEvidence, decisionUse }) =>
@@ -199,7 +239,10 @@ export function PassageUnderwritingDetailPanel({
 
       <MemoSection number="06" title="Named Lens Readings">
         <p className="underwriting-named-lens-disclosure">
-          Named Lens readings are advisory only and have formal decision weight zero.
+          VSee application of a public-source framework; not the named
+          person&apos;s opinion on this company; no endorsement; formal decision
+          weight zero. Each reading remains independent, and conflicting
+          conclusions are not reconciled.
         </p>
         {namedLens.selectedPassages.length ? namedLens.selectedPassages.map((selected) => (
           <Passage key={selected.passage.fingerprint} selected={selected} />
@@ -209,10 +252,12 @@ export function PassageUnderwritingDetailPanel({
       </MemoSection>
 
       <MemoSection number="07" title="Recommendation and Next Steps">
-        <p>{article.finalPosition.nextAction === "Unavailable"
-          ? "Immediate next action: obtain the missing inputs recorded in the audit appendix."
-          : `Immediate next action: ${humanize(article.finalPosition.nextAction)}.`}</p>
-        <p>Formal decision: {formalResult}. Confidence: {humanize(detail.decision.confidence)}.</p>
+        <CurrentRecommendation
+          article={article}
+          actionDraftSection={actionDraftSection}
+          canSaveDrafts={canSaveDrafts}
+          onEditDraft={onEditDraft}
+        />
       </MemoSection>
 
       <AuditAppendix
@@ -247,6 +292,9 @@ function Passage({
   return (
     <article className="underwriting-passage">
       <h3>{selected.displayIdentity.displayName}</h3>
+      <p className="underwriting-passage-attribution">
+        {selected.displayIdentity.attributionDisplay}
+      </p>
       {paragraphs.map((text, index) => <p key={`${passage.fingerprint}:${index}`}>{text}</p>)}
       <p className="underwriting-passage-sources">
         {selected.publicPremiseSources.map((source) => (
@@ -378,11 +426,155 @@ function MemoSection({ number, title, children }: {
   </section>;
 }
 
-function EditorialList({ title, values }: { title: string; values: string[] }) {
+function EditorialList({
+  title,
+  values,
+  emptyText = "No supported information was recorded.",
+}: {
+  title: string;
+  values: string[];
+  emptyText?: string;
+}) {
   return <section className="underwriting-editorial-list">
     <h3>{title}</h3>
-    {values.length ? <ul>{values.map((value) => <li key={value}>{value}</li>)}</ul> : <p>Unavailable.</p>}
+    {values.length
+      ? <ul>{values.map((value) => <li key={value}>{value}</li>)}</ul>
+      : <p>{emptyText}</p>}
   </section>;
+}
+
+function CurrentRecommendation({
+  article,
+  actionDraftSection,
+  canSaveDrafts,
+  onEditDraft,
+}: {
+  article: ReturnType<typeof buildUnderwritingArticleViewModel>;
+  actionDraftSection: ReturnType<typeof buildActionDraftSection>;
+  canSaveDrafts: boolean;
+  onEditDraft(draft: PublicActionDraft): void;
+}) {
+  const draftEvidence = new Map(
+    actionDraftSection.missingEvidence.map((item) => [item.fieldId, item]),
+  );
+  const diligence = new Map<string, {
+    label: string;
+    impact: string;
+    unblocks: string | null;
+    settlesDisagreement: boolean;
+  }>();
+  for (const item of article.diligence.items) {
+    const draftItem = draftEvidence.get(item.fieldId);
+    diligence.set(item.fieldId, {
+      label: draftItem?.externalLabel || draftItem?.label
+        || evidenceFieldLabel(item.fieldId),
+      impact: draftItem?.mostLikelyDecisionImpact
+        || "Resolving this gap may raise or lower the current decision ceiling.",
+      unblocks: item.unblocks,
+      settlesDisagreement: item.settlesDisagreement !== null,
+    });
+  }
+  for (const item of actionDraftSection.missingEvidence) {
+    if (diligence.has(item.fieldId)) continue;
+    diligence.set(item.fieldId, {
+      label: item.externalLabel || item.label || evidenceFieldLabel(item.fieldId),
+      impact: item.mostLikelyDecisionImpact,
+      unblocks: null,
+      settlesDisagreement: false,
+    });
+  }
+  const diligenceItems = [...diligence.values()];
+
+  return <div className="underwriting-next-steps">
+    <h3>Decision-relevant diligence</h3>
+    <p>
+      Collect the evidence that can change the decision boundary before asking
+      the investment committee for a formal investment decision or supported
+      valuation.
+    </p>
+    {actionDraftSection.conflictingFieldIds.length > 0 && (
+      <p className="underwriting-diligence-warning" role="alert">
+        Some persisted drafts describe the same evidence request differently.
+        Review their audit records before using either version.
+      </p>
+    )}
+    {diligenceItems.length ? (
+      <ol className="underwriting-diligence-list">
+        {diligenceItems.map((item) => <li key={item.label}>
+          <strong>{item.label}</strong>
+          <p>{item.impact}</p>
+          {item.settlesDisagreement && (
+            <p>This evidence would help resolve the principal framework disagreement.</p>
+          )}
+          {item.unblocks && <p>{item.unblocks}</p>}
+        </li>)}
+      </ol>
+    ) : (
+      <p>No additional decision-changing evidence request was persisted.</p>
+    )}
+
+    <h3>Action drafts</h3>
+    <p className="underwriting-draft-notice">
+      DRAFT ONLY — NOT SENT OR PUBLISHED. Opening or editing a draft does not
+      deliver it.
+    </p>
+    {!canSaveDrafts && actionDraftSection.drafts.length > 0 && (
+      <p className="underwriting-readonly-note" role="status">
+        Draft editing is disabled in this read-only view.
+      </p>
+    )}
+    {actionDraftSection.drafts.length ? (
+      <div className="underwriting-action-drafts">
+        {actionDraftSection.drafts.map(({ draft, title }) => (
+          <details className="underwriting-action-draft" key={draft.id}>
+            <summary aria-label={`Read full ${title} draft`}>
+              Read {title} draft
+            </summary>
+            <div>
+              <pre className="underwriting-action-draft-body">{draft.body}</pre>
+              {canSaveDrafts && (
+                <button
+                  type="button"
+                  aria-label={`Edit ${title} draft`}
+                  onClick={() => onEditDraft(draft)}
+                >
+                  Edit draft
+                </button>
+              )}
+            </div>
+          </details>
+        ))}
+      </div>
+    ) : (
+      <p>No action draft was finalized for this recommendation.</p>
+    )}
+  </div>;
+}
+
+function financialModelBoundary(
+  financialCase: ReturnType<typeof buildUnderwritingArticleViewModel>["financialCase"],
+): string {
+  if (financialCase.unavailableInputCount === 0) {
+    return "The saved inputs support a complete Bear, Base, and Bull scenario model.";
+  }
+  if (financialCase.unavailableInputCount === financialCase.totalInputCount) {
+    return `The saved evidence cannot support a Bear, Base, and Bull valuation model: all ${financialCase.totalInputCount} required inputs are missing.`;
+  }
+  return `${financialCase.unavailableInputCount} of ${financialCase.totalInputCount} inputs needed for the Bear, Base, and Bull valuation model are still missing.`;
+}
+
+function readerFact(value: string): string {
+  return value.replace(/ · [^·]+$/u, "");
+}
+
+function evidenceFieldLabel(value: string): string {
+  const normalized = value.toLowerCase();
+  if (normalized === "arr" || normalized === "arr_path") {
+    return "Annual recurring revenue (ARR)";
+  }
+  if (normalized === "burn") return "Monthly cash burn";
+  if (normalized === "runway") return "Cash runway";
+  return humanize(value);
 }
 
 function isRenderablePassageText(value: string): boolean {
@@ -423,17 +615,28 @@ function resolveFirstScreenDecisionEvidence({
   state: "resolved";
   reasons: ResolvedDecisionEvidence[];
 } | {
+  state: "evidence_ceiling";
+} | {
   state: "unavailable";
 } {
   const ids = namedLens.firstScreenProjectionRefs.decisionEvidenceItemIds;
   if (
     namedLens.firstScreenProjectionRefs.decisionId !== detail.decision.id
-    || ids.length < 2
-    || ids.length > 3
-    || new Set(ids).size !== ids.length
     || !DecisionCriticalEvidenceProjectionSchema.safeParse(
       namedLens.decisionCriticalEvidenceProjection,
     ).success
+  ) return { state: "unavailable" };
+  if (ids.length === 0) {
+    return detail.decision.decision === null
+        && detail.decision.decisionCeiling === null
+        && !detail.evidencePack.coverage.criticalEvidenceComplete
+      ? { state: "evidence_ceiling" }
+      : { state: "unavailable" };
+  }
+  if (
+    ids.length < 2
+    || ids.length > 3
+    || new Set(ids).size !== ids.length
   ) return { state: "unavailable" };
 
   const projectionRefs = new Map(

@@ -144,7 +144,14 @@ function passage(
   } = {},
 ): NamedLensPassage {
   const basis = input.basis ?? priority.selectionBasisEvidenceIds;
-  const text = input.text ?? `Persisted analysis for ${priority.judgmentId}.`;
+  const rawText = input.text ?? `Persisted analysis for ${priority.judgmentId}.`;
+  const text = [
+    rawText,
+    ...Array.from(
+      { length: Math.max(0, 36 - englishWords(rawText)) },
+      () => "context",
+    ),
+  ].join(" ");
   return {
     schemaVersion: "named-lens-passage-v1",
     workspaceId: "workspace_1",
@@ -198,7 +205,7 @@ function passage(
       hiddenChainOfThought: false,
     },
     selectionBasisEvidenceIds: basis,
-    wordCount: input.wordCount ?? englishWords(text) * 5,
+    wordCount: input.wordCount ?? 180,
     generatorVersion: "named-lens-generator-v1",
     fingerprint: sha(input.fingerprintDigit ?? "a"),
   };
@@ -686,6 +693,32 @@ test("builds exactly the five deterministic synthesis branches", () => {
   );
 });
 
+test("keeps structured evidence identities out of reader-facing synthesis prose", () => {
+  const base = scenario(2);
+  const passages = base.provisionalPriority.map((priority, index) => ({
+    ...passage(priority, { fingerprintDigit: String(index + 1) }),
+    decisionQuestionCode: "customer_adoption" as const,
+    selectionBasisEvidenceIds: [`semantic-field-${index + 1}`],
+    conditionalConclusion: {
+      ...passage(priority, { fingerprintDigit: String(index + 1) })
+        .conditionalConclusion,
+      stance: index === 0 ? "supportive" as const : "negative" as const,
+    },
+  }));
+  const synthesis = buildNamedLensSynthesis(synthesisInput(passages));
+
+  assert.equal(synthesis.branch, "principal_disagreement");
+  assert.deepEqual(synthesis.evidenceItemIds, [
+    "semantic-field-1",
+    "semantic-field-2",
+  ]);
+  assert.doesNotMatch(
+    synthesis.text,
+    /semantic-field|evidence ids?|persisted conditional conclusions/i,
+  );
+  assert.match(synthesis.text, /materially different conclusions/i);
+});
+
 test("enforces the 1,600-word selected-passage plus synthesis budget", () => {
   const input = scenario(6);
   const passages = input.provisionalPriority.map((priority, index) => {
@@ -785,7 +818,7 @@ test("rejects understated and overstated persisted passage word counts", () => {
     const malformed = { ...exact, wordCount };
     assert.throws(
       () => buildNamedLensSynthesis(synthesisInput([malformed])),
-      /persisted passage word count|exact word count/i,
+      /180|persisted passage word count|exact(?:ly)?(?: equal)? word count|exactly equal the five persisted passage segments/i,
     );
   }
 });

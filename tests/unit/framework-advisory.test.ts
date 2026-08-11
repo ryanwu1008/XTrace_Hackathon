@@ -268,9 +268,11 @@ test("executes each applicable real pack once through a stable four-worker pool 
     assert.match(request.system, /third-person application/i);
     assert.match(request.system, /bounded advisoryPosture/i);
     assert.match(request.system, /exact supplied Card fields/i);
+    assert.match(request.system, /180\s+to\s+260 English words/i);
     assert.match(request.system, /do not invent or output a quotation/i);
     assert.equal("tools" in request, false);
     const payload = promptPayload(request);
+    assert.match(payload.task, /180\s+to\s+260 English words/i);
     assert.equal(payload.card.executionMode, "experimental_advisory");
     assert.equal(Array.isArray(payload.card), false);
     assert.equal(payload.card.experimentalAdvisory.applicable, true);
@@ -1539,7 +1541,10 @@ function advisoryOutput(card: ExperimentalAdvisoryFrameworkCard) {
         evidenceRequestRefs: [],
       },
       conditionalConclusion: {
-        text: "The framework supports further diligence if independent cohorts confirm durability.",
+        text: [
+          "The framework supports further diligence if independent cohorts confirm durability.",
+          Array.from({ length: 140 }, () => "context").join(" "),
+        ].join(" "),
         stance: "supportive",
         advisoryPosture: "supports_further_diligence",
       },
@@ -1632,12 +1637,13 @@ function advisoryOutputShape() {
 
 function promptPayload(
   request: Parameters<ClaudeClient["complete"]>[0],
-): { card: ExperimentalAdvisoryFrameworkCard } {
+): { task: string; card: ExperimentalAdvisoryFrameworkCard } {
   const content = request.messages[0]?.content;
   if (typeof content !== "string") {
     throw new Error("Advisory prompt must be text-only.");
   }
   return JSON.parse(content) as {
+    task: string;
     card: ExperimentalAdvisoryFrameworkCard;
   };
 }

@@ -16,6 +16,7 @@ import {
 } from "../../db/repositories/deal-registry";
 import {
   createMemoryEvidencePacksRepository,
+  type SourceEvidenceInput,
 } from "../../db/repositories/evidence-packs";
 import {
   createMemorySourceRegistry,
@@ -396,6 +397,7 @@ function analysis(
   };
   const priorSource = interactionSourceV2(priorInteraction);
   const triggerSource = exactSourceV2(`trigger_${dealId}`, {
+    documentId: `document_trigger_${dealId}`,
     eventAt: "2026-07-28",
     eventAtPrecision: "date",
     publishedAt: "2026-07-28",
@@ -409,6 +411,7 @@ function analysis(
     },
   });
   const counterSource = exactSourceV2(`counter_${dealId}`, {
+    documentId: `document_counter_${dealId}`,
     canonicalUrl: `https://example.com/${encodeURIComponent(dealId)}/counterevidence`,
     eventAt: "2026-07-28",
     eventAtPrecision: "date",
@@ -618,7 +621,8 @@ async function candidateGroundingFor(
       "adaptation" in source
         && source.adaptation === "canonical"
         && source.sourceRevisionId
-        ? [[source.sourceRevisionId, source.id] as const]
+        && source.documentId
+        ? [[source.sourceRevisionId, source.documentId] as const]
         : []
     ),
   );
@@ -663,15 +667,38 @@ async function candidateGroundingFor(
     acceptedForGate: true,
   };
   if (options.includeContext) {
-    await repository.putSourceEvidence([
-      ...(options.sourceLineage ?? []).flatMap((source, index) =>
-        "adaptation" in source
-          && source.adaptation === "canonical"
-          && source.sourceRevisionId
+    const lineageEvidence: SourceEvidenceInput[] = (
+      options.sourceLineage ?? []
+    ).flatMap((source, index): SourceEvidenceInput[] =>
+      "adaptation" in source
+        && source.adaptation === "canonical"
+        && source.sourceRevisionId
+        && source.documentId
+        ? source.provenance === "demo_fixture"
           ? [{
               ...common,
+              id: source.id,
+              sourceId: source.documentId,
+              sourceRevisionId: source.sourceRevisionId,
+              provenanceOrigin: "demo_fixture" as const,
+              field: "sample_decision_context",
+              value: sourceTextForRetrieval(source),
+              eventAt: source.eventAt,
+              retrievedAt: source.retrievedAt!,
+              locator: {
+                kind: "text_range" as const,
+                start: 0,
+                end: sourceTextForRetrieval(source).length,
+                excerpt: sourceTextForRetrieval(source),
+              },
+              verificationMethod: "synthetic_sample_decision_record_v1",
+              acceptedForGate: false,
+              sourceRef: source,
+            }]
+          : [{
+              ...common,
               id: `fact_${dealId}_lineage_${index}`,
-              sourceId: source.id,
+              sourceId: source.documentId,
               sourceRevisionId: source.sourceRevisionId,
               field: `lineage_source_${index}`,
               value: source.title,
@@ -682,8 +709,10 @@ async function candidateGroundingFor(
                 excerpt: source.title,
               },
             }]
-          : []
-      ),
+        : []
+    );
+    await repository.putSourceEvidence([
+      ...lineageEvidence,
       {
         ...common,
         id: `fact_${dealId}_company`,
@@ -2966,7 +2995,10 @@ test("real authorized eight-core and twenty-advisory execution settles a truthfu
   const frameworkCheckpoint = runs.inspect().checkpoints.find(
     ({ stage }) => stage === "framework_lenses",
   );
-  assert.ok(frameworkCheckpoint);
+  assert.ok(frameworkCheckpoint, [
+    ...warnings,
+    JSON.stringify(runs.inspect(), null, 2),
+  ].join("\n"));
   const reservedTokenUnits = frameworkCheckpoint.providerAttempts.reduce(
     (total, attempt) => total + attempt.reservedTokenUnits,
     0,
@@ -3204,7 +3236,7 @@ function frameworkPromptOutputWithPassage(
         evidenceDomainCodes: [...binding.evidenceDomainCodes].sort(),
       },
       premise: {
-        text: `${proseLead} frames ${questionLabel} as the auditable company question.`,
+        text: `${proseLead} frames ${questionLabel} as an auditable research question. It treats the supplied public doctrine as a bounded method for organizing candidate evidence, not as a personal view, endorsement, or authoritative recommendation. The passage therefore keeps the framework source, the candidate record, and unresolved evidence separate while testing one stated interpretation.`,
         componentFrameworkId: component.frameworkId,
         componentVersion: component.version,
         cardFieldRef: binding.cardFieldRef,
@@ -3216,19 +3248,19 @@ function frameworkPromptOutputWithPassage(
         attributionScope: sourceRef.attributionScope,
       },
       caseApplication: {
-        text: `${variant === "mutated" ? "Under the alternate presentation" : "For the saved case"}, ${questionLabel} uses retained company evidence without creating a new fact.`,
+        text: `${variant === "mutated" ? "Under the alternate presentation" : "For the saved case"}, ${questionLabel} uses the retained support item without creating a new fact. That item raises the plausibility of the selected interpretation within this candidate record, while leaving magnitude, persistence, causal attribution, and transferability to other periods unproven.`,
         evidenceItemIds: failure === "grounding"
           ? [supportId, "foreign_evidence_item"].sort()
           : [supportId],
       },
       countercase: {
-        text: `The retained counterevidence ${variant === "mutated" ? "still bounds" : "limits"} the ${questionLabel} conclusion.`,
+        text: `The retained counterevidence ${variant === "mutated" ? "still bounds" : "limits"} the ${questionLabel} conclusion by preserving a plausible competing explanation. This boundary matters because an apparently favorable signal can remain dependent on unverified execution, customer behavior, operating durability, or conditions that the current record does not establish.`,
         boundaryKind: "grounded_counterevidence" as const,
         evidenceItemIds: [counterId],
         evidenceRequestRefs: [],
       },
       unknownBoundary: {
-        text: `Independent confirmation remains the explicit ${variant === "mutated" ? "decision boundary" : "boundary"} on the ${questionLabel} reading.`,
+        text: `Independent confirmation remains the explicit ${variant === "mutated" ? "research boundary" : "boundary"} on the ${questionLabel} reading. The record still needs evidence that distinguishes persistence from a temporary observation and tests the strongest alternative explanation. No missing point is silently converted into an assumption, and this advisory passage cannot alter canonical artifacts.`,
         judgmentUnknownRefs: [
           "Independent confirmation remains outstanding.",
         ],
@@ -3237,8 +3269,8 @@ function frameworkPromptOutputWithPassage(
       },
       conditionalConclusion: {
         text: changedPosture
-          ? `The ${questionLabel} framework urges caution until the retained unknown is resolved.`
-          : `The ${questionLabel} framework supports further diligence only if the retained unknown is resolved.`,
+          ? `Taken together, the ${questionLabel} reading remains conditionally cautionary until the retained unknown is resolved with independent, candidate-specific evidence. Evidence that rules out the competing explanation could soften that posture; evidence that confirms it would strengthen caution. The interpretation remains provisional and carries no authoritative weight.`
+          : `Taken together, the ${questionLabel} reading conditionally supports further research only if independent, candidate-specific evidence resolves the retained unknown. Evidence that confirms the competing explanation would weaken that posture, while durable confirmation would strengthen it. The interpretation remains provisional and carries no authoritative weight.`,
         stance: changedPosture ? "negative" as const : "supportive" as const,
         advisoryPosture: changedPosture
           ? "urges_caution" as const

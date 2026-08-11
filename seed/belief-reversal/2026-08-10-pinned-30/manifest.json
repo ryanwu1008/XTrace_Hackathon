@@ -1,0 +1,175 @@
+{
+  "schemaVersion": "belief-reversal-pinned-thirty-package-v1",
+  "packageId": "belief_reversal_pinned_30_2026_08_10_v1",
+  "version": "1.0.0",
+  "usage": "test_and_review_only",
+  "sourceResearchPackageId": "belief_reversal_2026_08_01",
+  "legacySnapshot": {
+    "snapshotId": "belief_reversal_2026_08_01",
+    "expectedCompanyAnalysisCount": 23,
+    "mutationPolicy": "immutable_do_not_rewrite"
+  },
+  "snapshot": {
+    "id": "belief_reversal_pinned_30_2026_08_10_v1",
+    "evidenceMode": "pinned",
+    "snapshotAsOfDate": "2026-08-01",
+    "windowDays": 14,
+    "anchorAt": "2026-08-01T23:59:59-07:00",
+    "windowStartAt": "2026-07-19T00:00:00-07:00",
+    "windowEndAt": "2026-08-01T23:59:59-07:00",
+    "windowTimezone": "America/Los_Angeles",
+    "displayLabel": "Demo evidence snapshot as of 2026-08-01",
+    "eventSetFingerprint": "sha256:f7f4f25fea16aa5eccd7e78263c880959482b884cff07e84f238fe45724b82b9"
+  },
+  "dealUniverse": {
+    "id": "deal_universe_belief_reversal_pinned_30_2026_08_10_v1",
+    "members": [
+      { "dealId": "deal_100plus", "companyId": "company_100plus", "status": "evaluating", "activeSourceRevisionFingerprint": "sha256:facffb2a566e8f0ff85e87036c555abc39ce5093abd0ad1ed1461dc81a6b8002" },
+      { "dealId": "deal_1906", "companyId": "company_1906", "status": "passed", "activeSourceRevisionFingerprint": "sha256:5bd8850f8b525da3c1b61cbbd57d35f1f5a7fff9999314afc1b1b58c7bc7dd4b" },
+      { "dealId": "deal_7bridges", "companyId": "company_7bridges", "status": "passed", "activeSourceRevisionFingerprint": "sha256:11acc1b5137e08e8225a7008236471e4fac88c1156e3829030ce68cc84d384ec" },
+      { "dealId": "deal_a_champs", "companyId": "company_a_champs", "status": "watchlist", "activeSourceRevisionFingerprint": "sha256:af31ac7e886f1fa43f58ff3c9b28f17a4fcd0f98eab35ef3723539e77c1844ad" },
+      { "dealId": "deal_ably", "companyId": "company_ably", "status": "evaluating", "activeSourceRevisionFingerprint": "sha256:5d80335dfd6789a9972dc3cfaa288ed262a98ab8f72652ab0caea17df502c52e" },
+      { "dealId": "deal_acin", "companyId": "company_acin", "status": "invested", "activeSourceRevisionFingerprint": "sha256:07150fa6a2cdd0c0a0d28ded519a1f7f8b6b98995cd3f17c9ab9ab87a2e61406" },
+      { "dealId": "deal_acquco", "companyId": "company_acquco", "status": "passed", "activeSourceRevisionFingerprint": "sha256:250f3ec3067b0aa5b0c202957f6267a405fc354cf0e00375305941c04d9b497c" },
+      { "dealId": "deal_ada_health", "companyId": "company_ada_health", "status": "evaluating", "activeSourceRevisionFingerprint": "sha256:c6abaeecc0d2c6e1911a1a88e0c5b741789b1bdf41d53282d26e14c7a535f9f2" },
+      { "dealId": "deal_alpha_builders", "companyId": "company_alpha_builders", "status": "screening", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_cascade_v1", "companyId": "company_cascade_v1", "status": "screening", "activeSourceRevisionFingerprint": "sha256:71883518443fe3e9caaff0ca1ec4f0c54b1b3b99015565cb30358123159c1bfc" },
+      { "dealId": "deal_centralize_v1", "companyId": "company_centralize_v1", "status": "screening", "activeSourceRevisionFingerprint": "sha256:7fdade98d9031400da08691687741a15a7ce4f7fab917c6b8b2353ef12c5a32b" },
+      { "dealId": "deal_chipagents_v1", "companyId": "company_chipagents_v1", "status": "screening", "activeSourceRevisionFingerprint": "sha256:cdca2dd5198b1a8da5ca11a4ae2e8b0ea1a771af347d10affe61827c4ffa8344" },
+      { "dealId": "deal_cordant_v1", "companyId": "company_cordant_v1", "status": "screening", "activeSourceRevisionFingerprint": "sha256:aa61030414076160fe05683afaaf69e455e098b34135dbd85f41dd2f2b87cff5" },
+      { "dealId": "deal_coupro", "companyId": "company_coupro", "status": "evaluating", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_empirical_security_v1", "companyId": "company_empirical_security_v1", "status": "screening", "activeSourceRevisionFingerprint": "sha256:e35261c96ad32c3292559fe8a87716d7550204c090e6ffe3e686beec679a7428" },
+      { "dealId": "deal_fellowtrip", "companyId": "company_fellowtrip", "status": "passed", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_freight_hero_v1", "companyId": "company_freight_hero_v1", "status": "screening", "activeSourceRevisionFingerprint": "sha256:5ffa7050988cd9200e6906a8c414c382dfc55677357900119db621791c653597" },
+      { "dealId": "deal_henry_ai_v1", "companyId": "company_henry_ai_v1", "status": "passed", "activeSourceRevisionFingerprint": "sha256:e272c820922529c12193a942005fa14eb15c9ee8c6bbc60e4abc12562d5dab8b" },
+      { "dealId": "deal_humetric", "companyId": "company_humetric", "status": "evaluating", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_hush_security_v1", "companyId": "company_hush_security_v1", "status": "invested", "activeSourceRevisionFingerprint": "sha256:f91655f451023f3d783adc55b6281d1f2976b7415f8262f0ff1ef6c4e7b0d319" },
+      { "dealId": "deal_indieshow", "companyId": "company_indieshow", "status": "watchlist", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_innformnest", "companyId": "company_innformnest", "status": "passed", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_intertwin_ai", "companyId": "company_intertwin_ai", "status": "watchlist", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_irregular_v1", "companyId": "company_irregular_v1", "status": "invested", "activeSourceRevisionFingerprint": "sha256:ddb4986a6b8e5ce1f5213883cab35d9cda22f2d1eed1ea339068cfa557de436a" },
+      { "dealId": "deal_kanesh", "companyId": "company_kanesh", "status": "evaluating", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_mirror", "companyId": "company_mirror", "status": "watchlist", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_sent_v1", "companyId": "company_sent_v1", "status": "screening", "activeSourceRevisionFingerprint": "sha256:cd4e25eef0b1227d31cf673b2e61a83aec85f1213eab48c014e2729f13b60dc6" },
+      { "dealId": "deal_silvermemory", "companyId": "company_silvermemory", "status": "watchlist", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" },
+      { "dealId": "deal_smallest_ai_v1", "companyId": "company_smallest_ai_v1", "status": "watchlist", "activeSourceRevisionFingerprint": "sha256:d9c7ba9538782e996d7b0d18d2c00eb4467ad7ab142547b51f18394d14141a36" },
+      { "dealId": "deal_unikudo", "companyId": "company_unikudo", "status": "screening", "activeSourceRevisionFingerprint": "sha256:7a5a9168b89c6e4d8c8b11b4e050c206584018bd288a3a5f01ac126138fe4b5e" }
+    ],
+    "memberFingerprint": "sha256:cd230039d61edae2785a03efc9384663a4133fe5cc73438e5ee1f7184a3d9536"
+  },
+  "runContract": {
+    "eligibleDealCount": 30,
+    "companyAnalysisCount": 30,
+    "dealUniversePolicy": "pinned_exact_member_snapshot",
+    "underwritingAdmissionPolicy": "all_belief_revised"
+  },
+  "formalEvents": [
+    {
+      "id": "event_henry_series_a_v1",
+      "caseId": "case_henry_ai_v1",
+      "dealId": "deal_henry_ai_v1",
+      "contentFingerprint": "sha256:a5ce7f17355dc8b9473329796231567b55e93c55b8fe64c93b97448a2c9eee70",
+      "authority": "public_evidence"
+    },
+    {
+      "id": "event_hush_series_a_v1",
+      "caseId": "case_hush_security_v1",
+      "dealId": "deal_hush_security_v1",
+      "contentFingerprint": "sha256:6e66908e1d5a423a47fcc0f2a6200c66551b65770a2f8c3b2ead52c985281013",
+      "authority": "public_evidence"
+    },
+    {
+      "id": "event_irregular_incidents_v1",
+      "caseId": "case_irregular_v1",
+      "dealId": "deal_irregular_v1",
+      "contentFingerprint": "sha256:b5ff42d399d42c99d1c339bf88c22e1ddc6954839bba5482e3bc489709e844b4",
+      "authority": "public_evidence"
+    },
+    {
+      "id": "event_smallest_series_a_v1",
+      "caseId": "case_smallest_ai_v1",
+      "dealId": "deal_smallest_ai_v1",
+      "contentFingerprint": "sha256:b271b4c22365103443e74387034c1ab70b269e4bcc1cf075966eac751dc3499c",
+      "authority": "public_evidence"
+    }
+  ],
+  "screeningDeals": [
+    {
+      "companyName": "Cascade",
+      "dealId": "deal_cascade_v1",
+      "dealStatus": "screening",
+      "researchDisposition": "qualified_not_selected",
+      "analysisEligible": true,
+      "memoryScope": "research_only",
+      "sampleLabel": "Sample research screening record",
+      "historicalInteractionPolicy": "none",
+      "formalDecisionAuthority": "not_gate_eligible"
+    },
+    {
+      "companyName": "Centralize",
+      "dealId": "deal_centralize_v1",
+      "dealStatus": "screening",
+      "researchDisposition": "qualified_not_selected",
+      "analysisEligible": true,
+      "memoryScope": "research_only",
+      "sampleLabel": "Sample research screening record",
+      "historicalInteractionPolicy": "none",
+      "formalDecisionAuthority": "not_gate_eligible"
+    },
+    {
+      "companyName": "ChipAgents",
+      "dealId": "deal_chipagents_v1",
+      "dealStatus": "screening",
+      "researchDisposition": "qualified_not_selected",
+      "analysisEligible": true,
+      "memoryScope": "research_only",
+      "sampleLabel": "Sample research screening record",
+      "historicalInteractionPolicy": "none",
+      "formalDecisionAuthority": "not_gate_eligible"
+    },
+    {
+      "companyName": "Cordant",
+      "dealId": "deal_cordant_v1",
+      "dealStatus": "screening",
+      "researchDisposition": "qualified_not_selected",
+      "analysisEligible": true,
+      "memoryScope": "research_only",
+      "sampleLabel": "Sample research screening record",
+      "historicalInteractionPolicy": "none",
+      "formalDecisionAuthority": "not_gate_eligible"
+    },
+    {
+      "companyName": "Empirical Security",
+      "dealId": "deal_empirical_security_v1",
+      "dealStatus": "screening",
+      "researchDisposition": "qualified_not_selected",
+      "analysisEligible": true,
+      "memoryScope": "research_only",
+      "sampleLabel": "Sample research screening record",
+      "historicalInteractionPolicy": "none",
+      "formalDecisionAuthority": "not_gate_eligible"
+    },
+    {
+      "companyName": "Freight Hero",
+      "dealId": "deal_freight_hero_v1",
+      "dealStatus": "screening",
+      "researchDisposition": "qualified_not_selected",
+      "analysisEligible": true,
+      "memoryScope": "research_only",
+      "sampleLabel": "Sample research screening record",
+      "historicalInteractionPolicy": "none",
+      "formalDecisionAuthority": "not_gate_eligible"
+    },
+    {
+      "companyName": "Sent",
+      "dealId": "deal_sent_v1",
+      "dealStatus": "screening",
+      "researchDisposition": "qualified_not_selected",
+      "analysisEligible": true,
+      "memoryScope": "research_only",
+      "sampleLabel": "Sample research screening record",
+      "historicalInteractionPolicy": "none",
+      "formalDecisionAuthority": "not_gate_eligible"
+    }
+  ]
+}

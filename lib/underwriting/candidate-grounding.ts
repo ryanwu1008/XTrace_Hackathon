@@ -25,6 +25,7 @@ import type {
   FundPolicySnapshot,
   ResolvedUnderwritingContext,
   XTraceLineageSnapshot,
+  XTraceParentBinding,
 } from "../contracts/underwriting";
 import {
   type EvidencePackBuilder,
@@ -358,6 +359,7 @@ async function resolveXTraceLineage(input: {
   const sourceRevisionIds = new Set<string>();
   const sourceIds = new Set<string>();
   const fixtureIds = new Set<string>();
+  const parentBindings: XTraceParentBinding[] = [];
   for (const memoryId of memoryIds) {
     const usesExactLineage = input.repository.resolveExact !== undefined;
     const lineage = usesExactLineage
@@ -375,6 +377,7 @@ async function resolveXTraceLineage(input: {
         });
     if (
       !lineage
+      || lineage.memoryId !== memoryId
       || lineage.workspaceId !== input.deal.workspaceId
       || lineage.dealId !== input.deal.id
     ) {
@@ -383,6 +386,11 @@ async function resolveXTraceLineage(input: {
       ]);
     }
     if (lineage.sourceRevisionIds.length > 0) {
+      if (usesExactLineage && lineage.sourceRevisionIds.length !== 1) {
+        throw new CandidateGroundingUnavailableError([
+          "XTRACE_SOURCE_LINEAGE_MISMATCH",
+        ]);
+      }
       const exactRevisions = lineage.sourceRevisionIds.map((revisionId) =>
         revisionsById.get(revisionId)
       );
@@ -398,16 +406,38 @@ async function resolveXTraceLineage(input: {
         const exactFixtureIds = exactSourceIds.map(sampleFixtureIdForSource);
         if (
           lineage.sourceIds.length > 0
+          || lineage.fixtureIds.length !== 1
           || !sameStringSet(exactFixtureIds, lineage.fixtureIds)
         ) {
           throw new CandidateGroundingUnavailableError([
             "XTRACE_FIXTURE_LINEAGE_MISMATCH",
           ]);
         }
-      } else if (!sameStringSet(exactSourceIds, lineage.sourceIds)) {
+        parentBindings.push({
+          kind: "fixture",
+          memoryId,
+          sourceRevisionId: exactRevisions[0]!.id,
+          sourceId: null,
+          fixtureId: lineage.fixtureIds[0]!,
+        });
+      } else if (
+        !sameStringSet(exactSourceIds, lineage.sourceIds)
+        || (usesExactLineage && (
+          lineage.sourceIds.length !== 1
+          || lineage.fixtureIds.length !== 0
+        ))
+      ) {
         throw new CandidateGroundingUnavailableError([
           "XTRACE_SOURCE_LINEAGE_MISMATCH",
         ]);
+      } else if (usesExactLineage) {
+        parentBindings.push({
+          kind: "source",
+          memoryId,
+          sourceRevisionId: exactRevisions[0]!.id,
+          sourceId: exactRevisions[0]!.sourceId,
+          fixtureId: null,
+        });
       }
       for (const revision of exactRevisions) {
         sourceRevisionIds.add(revision!.id);
@@ -446,6 +476,15 @@ async function resolveXTraceLineage(input: {
     sourceRevisionIds: uniqueSorted([...sourceRevisionIds]),
     sourceIds: uniqueSorted([...sourceIds]),
     fixtureIds: uniqueSorted([...fixtureIds]),
+    ...(parentBindings.length === 0
+      ? {}
+      : {
+          parentBindings: [...parentBindings].sort((left, right) =>
+            compareUtf8(left.memoryId, right.memoryId)
+            || compareUtf8(left.sourceRevisionId, right.sourceRevisionId)
+            || compareUtf8(left.kind, right.kind)
+          ),
+        }),
     capturedAt: input.capturedAt,
   };
 }

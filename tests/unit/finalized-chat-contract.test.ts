@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  FinalizedChatArtifactTypeSchema,
   FinalizedChatArtifactRefSchema,
   FinalizedChatClaimSchema,
   FinalizedChatEvidenceFrameSchema,
@@ -138,6 +139,26 @@ const v1ByteBaseline = {
 };
 
 test("V1 bytes and fingerprints remain immutable after adding the V2 discriminant", () => {
+  assert.deepEqual(FinalizedChatArtifactTypeSchema.options, [
+    "company_analysis",
+    "investment_memory",
+    "sample_decision_record",
+    "market_event",
+    "belief_assessment",
+    "match_assessment",
+    "evidence_pack",
+    "fact",
+    "assumption",
+    "calculation",
+    "framework_judgment",
+    "framework_disagreement",
+    "scenario_model",
+    "valuation_evaluation",
+    "decision_result",
+    "missing_evidence",
+    "action_policy",
+    "action_draft",
+  ]);
   const claim = createFinalizedChatClaim({
     identity: v1ByteBaseline.identity,
     topic: "match_confidence",

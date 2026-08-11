@@ -12,6 +12,7 @@
 .underwriting-memo ol,.underwriting-memo ul{max-width:68ch;margin:17px 0;padding-left:1.25rem}
 .underwriting-memo li+li{margin-top:8px}
 .underwriting-decision-first>h3{margin-top:11px;font-size:31px}
+.underwriting-decision-boundary{color:#d9c49e!important}
 .underwriting-decision-reasons{padding-left:17px;border-left:2px solid rgba(199,255,74,.48)}
 .underwriting-decision-reason{margin:15px 0}
 .underwriting-decision-reasons p{margin:8px 0}
@@ -23,8 +24,23 @@
 .underwriting-named-lens-disclosure{color:#adb7af!important;font-style:italic}
 .underwriting-passage{padding:27px 0;border-top:1px solid rgba(142,155,146,.3)}
 .underwriting-passage h3{margin-top:0}
+.underwriting-passage-attribution{margin:4px 0 18px!important;color:#aeb7b1!important;font:600 15px/1.55 var(--mono)!important}
 .underwriting-passage-sources{display:flex;flex-wrap:wrap;gap:11px;margin-top:20px!important}
 .underwriting-passage-sources a{color:#dbe4a8;text-decoration:underline;text-underline-offset:3px}
+.underwriting-next-steps>h3:first-child{margin-top:0}
+.underwriting-diligence-list{padding-left:1.45rem!important}
+.underwriting-diligence-list>li{padding:9px 0 15px;border-bottom:1px solid rgba(142,155,146,.24)}
+.underwriting-diligence-list strong{color:#e5ebe6;font:600 18px/1.45 var(--serif)}
+.underwriting-diligence-list p{margin:6px 0}
+.underwriting-diligence-warning{padding:13px 0;border-top:1px solid #806d46;border-bottom:1px solid #806d46;color:#e0bd87!important}
+.underwriting-readonly-note{color:#aeb7b1!important;font-style:italic}
+.underwriting-action-drafts{border-top:1px solid var(--line)}
+.underwriting-action-draft{border-bottom:1px solid var(--line)}
+.underwriting-action-draft>summary{min-height:44px;padding:14px 0;color:#e3e9e4;cursor:pointer;font:600 18px/1.4 var(--serif)}
+.underwriting-action-draft>div{padding:0 0 22px}
+.underwriting-action-draft-body{max-width:68ch;margin:0 0 17px;padding:17px 0;border-top:1px solid rgba(142,155,146,.24);background:transparent;color:#d2dad4;white-space:pre-wrap;overflow-wrap:anywhere;font:400 16px/1.7 var(--sans)}
+.underwriting-action-draft button{min-width:44px;min-height:44px;padding:0 14px;border:1px solid var(--lime);background:transparent;color:var(--lime);cursor:pointer;font:700 12px/1.4 var(--mono)}
+.underwriting-action-draft>summary:focus-visible,.underwriting-action-draft button:focus-visible{outline:3px solid var(--lime);outline-offset:3px}
 .underwriting-audit-appendix{margin-top:38px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .underwriting-audit-appendix>summary{min-height:48px;padding:14px 0;color:#e6ece7;cursor:pointer;font:600 18px/1.3 var(--serif)}
 .underwriting-audit-appendix>summary:focus-visible,.underwriting-passage-sources a:focus-visible{outline:3px solid var(--lime);outline-offset:3px}

@@ -28,7 +28,7 @@ const premise = {
   attributionScope: "person_direct",
 };
 
-const passage = {
+const passageBase = {
   schemaVersion: NAMED_LENS_PASSAGE_SCHEMA_VERSION,
   workspaceId: "workspace_1",
   artifactSourceCandidateRunId: "candidate_1",
@@ -66,10 +66,26 @@ const passage = {
     hiddenChainOfThought: false,
   },
   selectionBasisEvidenceIds: ["fact_1", "fact_2"],
-  wordCount: 72,
   generatorVersion: "named-lens-generator-v1",
   fingerprint: sha("1"),
 };
+
+function passageAtWordCount(wordCount: number) {
+  if (wordCount < 40) throw new Error("Passage fixture is too short.");
+  return {
+    ...passageBase,
+    conditionalConclusion: {
+      ...passageBase.conditionalConclusion,
+      text: Array.from(
+        { length: wordCount - 39 },
+        () => "conditional",
+      ).join(" "),
+    },
+    wordCount,
+  };
+}
+
+const passage = passageAtWordCount(180);
 
 const criticalEvidence = {
   evidencePackItemId: "fact_1",
@@ -353,6 +369,29 @@ test("requires complete plain-text passage segment provenance", () => {
       evidenceRequestRefs: [],
     },
   }));
+});
+
+test("requires the current persisted Named Lens word count to stay within 180 through 260", () => {
+  assert.throws(
+    () => NamedLensPassageSchema.parse(passageAtWordCount(179)),
+    /180|word/i,
+  );
+  assert.equal(
+    NamedLensPassageSchema.parse(passageAtWordCount(180)).wordCount,
+    180,
+  );
+  assert.equal(
+    NamedLensPassageSchema.parse(passageAtWordCount(260)).wordCount,
+    260,
+  );
+  assert.throws(
+    () => NamedLensPassageSchema.parse(passageAtWordCount(261)),
+    /260|word/i,
+  );
+  assert.throws(() => NamedLensPassageSchema.parse({
+    ...passage,
+    wordCount: 200,
+  }), /exact|word/i);
 });
 
 test("requires canonical decision-critical and selection evidence IDs", () => {

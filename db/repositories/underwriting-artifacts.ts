@@ -16,11 +16,13 @@ import {
 } from "../../lib/contracts/evidence";
 import {
   ActionDraftSchema,
+  FrameworkAdvisoryMetadataSchema,
   CurrentFrameworkJudgmentSchema,
   DecisionResultSchema,
   FundPolicySnapshotSchema,
   FrameworkDisagreementSchema,
   FrameworkJudgmentSchema,
+  LegacyFrameworkJudgmentSchema,
   parseActionDraftRead,
   ResolvedUnderwritingContextSchema,
   ScenarioModelSchema,
@@ -64,6 +66,7 @@ import {
 import {
   createDecisionCriticalEvidenceProjectionFingerprint,
   createNamedLensSemanticFingerprints,
+  selectFirstScreenDecisionEvidenceIds,
 } from
   "../../lib/underwriting/named-lens-presentation";
 import {
@@ -264,6 +267,169 @@ export const CandidateVersionSnapshotSchema = z.strictObject({
 export type CandidateVersionSnapshot = z.infer<
   typeof CandidateVersionSnapshotSchema
 >;
+
+const REVIEWED_LEGACY_JUDGMENT_VERSION = {
+  schemaVersion: "framework-judgment-v1",
+  settingsFingerprint: "belief-reversal-task12-v1",
+  applicationCommit: "task12-local-e2e",
+} as const;
+
+function omitSchemaShapeKeys<
+  Shape extends Record<string, z.ZodType>,
+  Key extends keyof Shape,
+>(shape: Shape, keys: readonly Key[]): Omit<Shape, Key> {
+  const result: Partial<Shape> = { ...shape };
+  for (const key of keys) delete result[key];
+  return result as Omit<Shape, Key>;
+}
+
+const ReviewedLegacyFrameworkAdvisoryMetadataSchema = z.strictObject(
+  omitSchemaShapeKeys(FrameworkAdvisoryMetadataSchema.shape, [
+    "decisionTaxonomyVersion",
+    "decisionTaxonomyDigest",
+    "decisionTaxonomyBindings",
+  ]),
+).superRefine((metadata, context) => {
+  const componentIds = metadata.components.map(({ frameworkId }) =>
+    frameworkId
+  );
+  if (
+    componentIds.length !== metadata.componentCardIds.length
+    || componentIds.some(
+      (frameworkId, index) =>
+        frameworkId !== metadata.componentCardIds[index],
+    )
+    || new Set(componentIds).size !== componentIds.length
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Legacy advisory component Card IDs must uniquely match component records",
+    });
+  }
+  if (metadata.applicable !== (metadata.components.length > 0)) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Legacy advisory applicability must match whether components were selected",
+    });
+  }
+  const sourceIds = metadata.sources.map(({ sourceId }) => sourceId);
+  const sourceIdSet = new Set(sourceIds);
+  if (
+    sourceIdSet.size !== sourceIds.length
+    || metadata.components.some((component) =>
+      component.sourceRefs.some(({ sourceId }) => !sourceIdSet.has(sourceId))
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Every legacy advisory component source reference must resolve uniquely",
+    });
+  }
+  if (
+    metadata.components.some((component) =>
+      component.rights.status !== "public_source_paraphrase"
+      || component.review.contentStatus !== "draft"
+      || component.review.publicationStatus !== "unpublished"
+      || component.decisionUtility.formalDecisionWeight !== 0
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Legacy advisory components must satisfy every eligibility gate",
+    });
+  }
+});
+
+const ReviewedLegacyPersistedFrameworkJudgmentSchema = z.strictObject({
+  ...omitSchemaShapeKeys(LegacyFrameworkJudgmentSchema.shape, [
+    "frameworkMetadata",
+  ]),
+  frameworkMetadata: ReviewedLegacyFrameworkAdvisoryMetadataSchema.optional(),
+}).superRefine((judgment, context) => {
+  if (judgment.claimEdges.some((edge) => edge.claimItemId !== judgment.id)) {
+    context.addIssue({
+      code: "custom",
+      message: "Legacy framework claim edges must belong to the saved judgment",
+    });
+  }
+});
+
+interface PersistedFrameworkJudgmentVersionIdentity {
+  schemaVersion: string;
+  settingsFingerprint: string;
+  applicationCommit: string;
+  namedLensSelectionPolicyVersion?: unknown;
+  namedLensPassageSchemaVersion?: unknown;
+  namedLensGeneratorVersion?: unknown;
+  underwritingPresentationSchemaVersion?: unknown;
+  decisionTaxonomyVersion?: unknown;
+  decisionTaxonomyDigest?: unknown;
+  criticalEvidenceProjectionFingerprint?: unknown;
+  finalDispositionsFingerprint?: unknown;
+  presentationFingerprint?: unknown;
+  refreshNonce?: unknown;
+}
+
+/**
+ * Hydrates the finite reviewed pre-Named-Lens generation without rewriting its
+ * immutable payload or pretending that it carried the current taxonomy.
+ */
+export function parsePersistedFrameworkJudgments(input: {
+  judgments: readonly unknown[];
+  versionSnapshot: PersistedFrameworkJudgmentVersionIdentity;
+}): FrameworkJudgment[] {
+  const version = input.versionSnapshot;
+  const exactReviewedTuple =
+    version.schemaVersion === REVIEWED_LEGACY_JUDGMENT_VERSION.schemaVersion
+    && version.settingsFingerprint
+      === REVIEWED_LEGACY_JUDGMENT_VERSION.settingsFingerprint
+    && version.applicationCommit
+      === REVIEWED_LEGACY_JUDGMENT_VERSION.applicationCommit;
+  const hasAnyCurrentNamedLensMarker = [
+    version.namedLensSelectionPolicyVersion,
+    version.namedLensPassageSchemaVersion,
+    version.namedLensGeneratorVersion,
+    version.underwritingPresentationSchemaVersion,
+    version.decisionTaxonomyVersion,
+    version.decisionTaxonomyDigest,
+    version.criticalEvidenceProjectionFingerprint,
+    version.finalDispositionsFingerprint,
+    version.presentationFingerprint,
+  ].some((value) => value !== undefined);
+  const hasCurrentRefreshIdentity = version.refreshNonce !== undefined
+    && version.refreshNonce !== null;
+  const hasCurrentMarker = hasAnyCurrentNamedLensMarker
+    || hasCurrentRefreshIdentity;
+
+  // The legacy branch returns the original parsed object shape. The cast only
+  // widens the read-model type; it does not add current-only fields or write DB
+  // state. Downstream legacy presentation code consumes the shared fields.
+  if (exactReviewedTuple && !hasCurrentMarker) {
+    return input.judgments.map((value) => {
+      const parsed = ReviewedLegacyPersistedFrameworkJudgmentSchema.parse(
+        value,
+      );
+      return parsed as FrameworkJudgment;
+    });
+  }
+  return input.judgments.map((value) => {
+    const current = CurrentFrameworkJudgmentSchema.safeParse(value);
+    if (current.success) return current.data;
+    if (
+      hasCurrentMarker
+      && typeof value === "object"
+      && value !== null
+      && !Array.isArray(value)
+      && (value as Record<string, unknown>).frameworkMetadata === undefined
+    ) {
+      return LegacyFrameworkJudgmentSchema.parse(value);
+    }
+    throw current.error;
+  });
+}
 
 export type CurrentCandidateVersionSnapshot = CandidateVersionSnapshot & {
   frameworkCatalogVersion: string;
@@ -1296,9 +1462,17 @@ export function prepareCandidateFinalization(
   const calculationClaimEdges = input.calculationClaimEdges.map((value) =>
     ClaimEdgeSchema.parse(value)
   );
-  const judgments = input.judgments.map((value) =>
-    FrameworkJudgmentSchema.parse(value)
+  const versionSnapshot = CandidateVersionSnapshotSchema.parse(
+    input.versionSnapshot,
   );
+  const judgments = isNewFinalization
+    ? input.judgments.map((value) =>
+      FrameworkJudgmentSchema.parse(value)
+    )
+    : parsePersistedFrameworkJudgments({
+      judgments: input.judgments,
+      versionSnapshot,
+    });
   const disagreements = input.disagreements.map((value) =>
     FrameworkDisagreementSchema.parse(value)
   );
@@ -1308,9 +1482,6 @@ export function prepareCandidateFinalization(
     isNewFinalization
       ? ActionDraftSchema.parse(value)
       : parseActionDraftRead(value)
-  );
-  const versionSnapshot = CandidateVersionSnapshotSchema.parse(
-    input.versionSnapshot,
   );
   const namedLensCatalogConsiderations =
     input.namedLensCatalogConsiderations?.map((value) =>
@@ -2248,15 +2419,8 @@ export function validateNamedLensFinalization(input: {
       evidencePackItemId
     ),
   ]));
-  const decisionEvidenceIds = new Set([
-    ...input.decision.blockingEvidenceItemIds,
-    ...input.decision.firedRules.flatMap(({ inputRefs }) => inputRefs),
-    ...input.decision.claimEdges
-      .filter(({ dependencyType }) =>
-        dependencyType === "fact" || dependencyType === "assumption"
-      )
-      .map(({ dependencyItemId }) => dependencyItemId),
-  ].filter((id) => evidenceIds.has(id)));
+  const expectedFirstScreenEvidenceIds =
+    selectFirstScreenDecisionEvidenceIds(projection.evidenceRefs);
   if (
     input.presentation.firstScreenProjectionRefs.decisionId
       !== input.decision.id
@@ -2264,8 +2428,10 @@ export function validateNamedLensFinalization(input: {
       input.presentation.firstScreenProjectionRefs.selectedJudgmentIds,
       selectedJudgmentIds,
     )
-    || input.presentation.firstScreenProjectionRefs.decisionEvidenceItemIds
-      .some((id) => !decisionEvidenceIds.has(id))
+    || !isDeepStrictEqual(
+      input.presentation.firstScreenProjectionRefs.decisionEvidenceItemIds,
+      expectedFirstScreenEvidenceIds,
+    )
     || input.presentation.synthesis.judgmentIds.some((id) =>
       !selectedJudgmentIdSet.has(id)
     )

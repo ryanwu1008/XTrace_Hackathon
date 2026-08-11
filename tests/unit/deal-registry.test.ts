@@ -18,6 +18,7 @@ import type {
   DealMemoryBundle,
   DealStatus,
 } from "../../lib/contracts/domain";
+import { buildSampleDecisionSourceRef } from "../../lib/belief-reversal/sample-decision-source";
 import { backfillPreloadedSourceRegistry } from "../../scripts/backfill-source-registry";
 
 function revisionInput(
@@ -1720,7 +1721,7 @@ test("Supabase Deal memory projects a permanently labelled non-gating research s
           status: "screening",
           analysis_eligible_at: "2026-08-03T13:34:43.000Z",
           active_source_revision_fingerprint: sourceRevisionFingerprint([
-            sourceRef.sourceRevisionId,
+            sourceRef.sourceRevisionId!,
           ]),
         }]);
       }
@@ -1766,6 +1767,123 @@ test("Supabase Deal memory projects a permanently labelled non-gating research s
       payload: { ...canonicalRow.payload, acceptedForGate: true },
     }).listAnalysisEligibleBundles("workspace_one"),
     /permanent non-interaction and non-gating identity/iu,
+  );
+});
+
+test("Supabase Deal memory projects a permanently labelled non-gating Sample decision fact with exact source ownership", async () => {
+  const contentFingerprint =
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const sourceRef = buildSampleDecisionSourceRef({
+    id: "fixture_irregular_invested_v1",
+    documentId: "source_fixture_irregular_invested_v1",
+    sourceRevisionId: "revision_fixture_irregular_invested_v1",
+    contentFingerprint,
+    occurredAt: "2026-06-15T12:00:00.000Z",
+    retrievedAt: "2026-08-01T12:00:00.000Z",
+    summary: "The sample committee elected to pause pending containment evidence.",
+    decisionReason: "Containment had not been independently verified.",
+    concerns: ["Unauthorized system access."],
+    revisitConditions: ["Verify durable containment."],
+  });
+  assert.equal(sourceRef.text.status, "normalized_only");
+  const value = sourceRef.text.normalizedStatement;
+  const canonicalRow = {
+    workspace_id: "workspace_one",
+    evidence_id: sourceRef.id,
+    deal_id: "deal_irregular_v1",
+    source_id: sourceRef.documentId,
+    source_revision_id: sourceRef.sourceRevisionId,
+    payload: {
+      id: sourceRef.id,
+      workspaceId: "workspace_one",
+      dealId: "deal_irregular_v1",
+      sourceId: sourceRef.documentId,
+      sourceRevisionId: sourceRef.sourceRevisionId,
+      provenanceOrigin: "demo_fixture",
+      field: "sample_decision_context",
+      value,
+      unit: null,
+      currency: null,
+      periodStart: null,
+      periodEnd: null,
+      publishedAt: null,
+      eventAt: sourceRef.eventAt,
+      retrievedAt: sourceRef.retrievedAt!,
+      locator: {
+        kind: "text_range",
+        start: 0,
+        end: value.length,
+        excerpt: value,
+      },
+      sourceRole: "management",
+      assertionStatus: "reported",
+      verificationMethod: "synthetic_sample_decision_record_v1",
+      freshness: "current",
+      acceptedForGate: false,
+      sourceRef,
+    },
+  };
+  const repositoryFor = (
+    evidenceRow: typeof canonicalRow,
+  ) => createSupabaseDealRegistry({
+    url: "https://example.supabase.co",
+    serviceRoleKey: "test-service-role-key",
+    fetchImpl: async (input) => {
+      const url = String(input);
+      if (url.includes("/deals?")) {
+        return Response.json([{
+          id: "deal_irregular_v1",
+          workspace_id: "workspace_one",
+          company_id: "company_irregular_v1",
+          company_name: "Irregular",
+          status: "invested",
+          analysis_eligible_at: "2026-08-01T00:00:00.000Z",
+          active_source_revision_fingerprint: sourceRevisionFingerprint([
+            sourceRef.sourceRevisionId!,
+          ]),
+        }]);
+      }
+      if (url.includes("/deal_source_assignments?")) {
+        return Response.json([{
+          deal_id: "deal_irregular_v1",
+          source_id: sourceRef.documentId,
+          source_revision_id: sourceRef.sourceRevisionId,
+        }]);
+      }
+      if (url.includes("/source_evidence_items?")) {
+        return Response.json([evidenceRow]);
+      }
+      if (url.includes("/source_documents?")) {
+        return Response.json([{
+          id: sourceRef.documentId,
+          title: "Sample decision record",
+          role: "sample_decision_record",
+        }]);
+      }
+      if (url.includes("/source_revisions?")) {
+        return Response.json([{
+          workspace_id: "workspace_one",
+          id: sourceRef.sourceRevisionId,
+          source_id: sourceRef.documentId,
+          content_hash: contentFingerprint,
+          extracted_at: "2026-08-01T12:00:00.000Z",
+        }]);
+      }
+      return Response.json([]);
+    },
+  });
+
+  const repository = repositoryFor(canonicalRow);
+  const [bundle] = await repository.listAnalysisEligibleBundles(
+    "workspace_one",
+  );
+  assert.deepEqual(bundle?.facts, [{ text: value, sources: [sourceRef] }]);
+  await assert.rejects(
+    repositoryFor({
+      ...canonicalRow,
+      payload: { ...canonicalRow.payload, acceptedForGate: true },
+    }).listAnalysisEligibleBundles("workspace_one"),
+    /permanent synthetic and non-gating identity/iu,
   );
 });
 

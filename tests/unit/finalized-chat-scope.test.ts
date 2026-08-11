@@ -181,14 +181,15 @@ function bundle(input: {
     presentationFingerprint: SHA_B,
     refreshNonce: null,
   };
+  const reviewedLegacyVersionSnapshot = {
+    ...currentIdentity,
+    schemaVersion: "framework-judgment-v1",
+    settingsFingerprint: "belief-reversal-task12-v1",
+    applicationCommit: "task12-local-e2e",
+  };
   const generation = input.generation ?? "pinned_legacy";
   const versionSnapshot = generation === "legacy_pre_passage"
-    ? {
-      ...currentIdentity,
-      schemaVersion: "framework-judgment-v1",
-      settingsFingerprint: "belief-reversal-task12-v1",
-      applicationCommit: "task12-local-e2e",
-    }
+    ? reviewedLegacyVersionSnapshot
     : generation === "partial_current"
     ? {
       ...currentIdentity,
@@ -206,7 +207,7 @@ function bundle(input: {
     }
     : generation === "current"
     ? currentVersionSnapshot
-    : currentIdentity;
+    : reviewedLegacyVersionSnapshot;
   return {
     candidateRunId: input.candidateRunId,
     sourceCandidateRunId,

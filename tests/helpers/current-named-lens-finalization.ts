@@ -260,7 +260,8 @@ export function createCurrentNamedLensFinalizationFixture():
     decisionQuestionCode: "customer_adoption",
     evidenceDomainCodes: ["customer"],
     premise: {
-      text: "The public framework tests durable customer demand.",
+      text:
+        "The public framework tests durable customer demand. It asks whether buyers can identify a costly problem, recognize why the product is a credible alternative, and repeat that choice across a defined segment rather than treating one favorable signal as broad product-market fit.",
       componentFrameworkId: component.frameworkId,
       componentVersion: component.version,
       cardFieldRef: "decisionQuestions[0]",
@@ -270,23 +271,27 @@ export function createCurrentNamedLensFinalizationFixture():
       attributionScope: sourceRef.attributionScope,
     },
     caseApplication: {
-      text: "Saved company evidence applies the framework.",
+      text:
+        "Saved company evidence applies the framework. The current record shows reported customer demand and gives the team a concrete basis for follow-up, but it does not yet establish retention, expansion, sales efficiency, or a repeatable reason that comparable buyers select the product.",
       evidenceItemIds: ["fact_1"],
     },
     countercase: {
-      text: "Saved counterevidence limits the conclusion.",
+      text:
+        "Saved counterevidence limits the conclusion. A separate persisted fact points to customer uncertainty, so the supportive signal cannot carry the investment case by itself. The evidence supports further diligence, not a claim that adoption risk or competitive differentiation has been resolved.",
       boundaryKind: "grounded_counterevidence",
       evidenceItemIds: ["counter_1"],
       evidenceRequestRefs: [],
     },
     unknownBoundary: {
-      text: "A saved unknown defines the diligence boundary.",
+      text:
+        "A saved unknown defines the diligence boundary. Customer durability remains unverified, and the record does not show cohort retention, renewal behavior, expansion by account, or win-loss evidence. Those missing observations determine whether early demand is durable enough to support underwriting.",
       judgmentUnknownRefs: ["Unknown customer durability."],
       judgmentLimitationRefs: ["One customer signal remains bounded."],
       evidenceRequestRefs: [],
     },
     conditionalConclusion: {
-      text: "The view remains conditional on resolving the saved unknown.",
+      text:
+        "The view remains conditional on resolving the saved unknown. If customer references and operating data confirm repeat use, credible expansion, and defensible positioning, this lens supports advancing diligence. If they show isolated demand or weak retention, the same framework argues against treating the signal as investment-ready.",
       stance: "supportive",
       advisoryPosture: "supports_further_diligence",
     },
@@ -297,7 +302,7 @@ export function createCurrentNamedLensFinalizationFixture():
       hiddenChainOfThought: false,
     },
     selectionBasisEvidenceIds: ["fact_1"],
-    wordCount: 45,
+    wordCount: 211,
     generatorVersion: "named-lens-generator-v1",
     fingerprint: sha("1"),
   };

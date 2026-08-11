@@ -18,7 +18,9 @@ import { isXTraceConfigured } from "../../../lib/xtrace/client";
 import { toPublicRun } from "../../../lib/runs/public";
 import { isDurableWorkspaceMode } from "../../../lib/auth/request-context";
 import { getTestGenerationRepository } from "../../../db/repositories/test-generations";
-import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from "../../../lib/contracts/evidence-context";
+import {
+  PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+} from "../../../lib/belief-reversal/pinned-thirty-deal-snapshot";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +35,9 @@ export async function GET(
     const resetAt = await getTestGenerationRepository().currentResetAt(
       context.workspaceId,
     );
-    const runs = await createRunsRepository(getDataClient()).list(
+    const runsRepository = dependencies.runs
+      ?? createRunsRepository(getDataClient());
+    const runs = await runsRepository.list(
       context.workspaceId,
       resetAt,
     );
@@ -58,7 +62,7 @@ export async function POST(
       && (
         context.mode !== "public_sandbox"
         || parsed.evidenceRequest.snapshotId
-          !== APPROVED_PINNED_DEMO_SNAPSHOT_ID
+          !== PINNED_THIRTY_DEAL_SNAPSHOT_ID
       )
     ) throw new Error("FORBIDDEN");
     if (
@@ -72,7 +76,8 @@ export async function POST(
         true,
       );
     }
-    const rate = await rateLimitRequest(
+    const limitRequest = dependencies.rateLimitRequest ?? rateLimitRequest;
+    const rate = await limitRequest(
       request,
       "run-scan",
       5,
@@ -87,7 +92,7 @@ export async function POST(
         true,
       );
     }
-    const runs = createRunsRepository(getDataClient());
+    const runs = dependencies.runs ?? createRunsRepository(getDataClient());
     let workerReady = false;
     try {
       workerReady = await runs.isWorkerHealthy();

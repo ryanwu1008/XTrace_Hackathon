@@ -14,6 +14,9 @@ import { DEMO_DEAL_EVIDENCE } from "../../lib/corpus/evidence";
 import { DEMO_FIXTURES } from "../../lib/corpus/fixtures";
 import { listPreloadedDocuments } from "../../lib/corpus/manifest";
 import { loadBeliefReversalManifest } from "../../lib/belief-reversal/manifest";
+import {
+  PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+} from "../../lib/belief-reversal/pinned-thirty-deal-snapshot";
 import { parseBeliefReversalManifest } from "../../lib/belief-reversal/contracts";
 import {
   createMemoryDemoDataStore,
@@ -105,7 +108,7 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     deals: 11,
     sourceRevisions: 66,
     assignments: 66,
-    canonicalEvidence: 62,
+    canonicalEvidence: 66,
     sampleInteractions: 4,
     researchCandidates: 7,
     researchSourceAssignments: 25,
@@ -134,7 +137,21 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
   assert.equal(snapshot.deals.length, 30);
   assert.equal(sourceRegistry.inspect().revisions.length, 80);
   assert.equal(dealRegistry.inspect().assignments.length, 85);
-  assert.equal(evidencePacks.inspect().sourceEvidence.length, 62);
+  assert.equal(evidencePacks.inspect().sourceEvidence.length, 66);
+  const sampleDecisionEvidence = evidencePacks.inspect().sourceEvidence.filter(
+    ({ sourceRef }) =>
+      sourceRef?.provenance === "demo_fixture"
+      && sourceRef.title === "Sample decision record",
+  );
+  assert.equal(sampleDecisionEvidence.length, 4);
+  assert.ok(sampleDecisionEvidence.every((item) =>
+    item.provenanceOrigin === "demo_fixture"
+    && item.field === "sample_decision_context"
+    && item.acceptedForGate === false
+    && item.sourceRef?.documentId === item.sourceId
+    && item.sourceRef.sourceRevisionId === item.sourceRevisionId
+    && item.value.startsWith("Sample decision record. ")
+  ));
   const irregularProjection = projectUnderwritingEvidence(
     evidencePacks.inspect().sourceEvidence.filter(({ dealId }) =>
       dealId === "deal_irregular_v1"
@@ -322,8 +339,13 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     bundle.dealId.endsWith("_v1")
   );
   assert.equal(reversalBundles.length, 11);
-  assert.equal(reversalBundles.flatMap((bundle) => bundle.facts).length, 62);
+  assert.equal(reversalBundles.flatMap((bundle) => bundle.facts).length, 66);
   assert.equal(reversalBundles.flatMap((bundle) => bundle.interactions).length, 4);
+  assert.equal(reversalBundles.flatMap((bundle) => bundle.facts).filter((fact) =>
+    fact.text.startsWith("Sample decision record. ")
+    && fact.sources.length === 1
+    && fact.sources[0]!.provenance === "demo_fixture"
+  ).length, 4);
   assert.ok(reversalBundles.flatMap((bundle) => bundle.interactions).every(
     (interaction) => {
       const source = (interaction as unknown as {
@@ -394,6 +416,28 @@ test("belief-reversal seed coexists with the fixed corpus and is exactly idempot
     displayLabel: manifest.evidenceWindow.displayLabel,
   });
   assert.equal(pinnedSnapshot.anchorAt, pinnedSnapshot.windowEndAt);
+  const pinnedThirtySnapshot = await marketEvidenceSnapshots.get(
+    "workspace_demo",
+    PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+  );
+  assert.ok(pinnedThirtySnapshot);
+  assert.notEqual(pinnedThirtySnapshot.id, pinnedSnapshot.id);
+  assert.deepEqual(pinnedThirtySnapshot.events, pinnedSnapshot.events);
+  assert.deepEqual({
+    snapshotAsOfDate: pinnedThirtySnapshot.snapshotAsOfDate,
+    anchorAt: pinnedThirtySnapshot.anchorAt,
+    windowStartAt: pinnedThirtySnapshot.windowStartAt,
+    windowEndAt: pinnedThirtySnapshot.windowEndAt,
+    windowTimezone: pinnedThirtySnapshot.windowTimezone,
+    displayLabel: pinnedThirtySnapshot.displayLabel,
+  }, {
+    snapshotAsOfDate: pinnedSnapshot.snapshotAsOfDate,
+    anchorAt: pinnedSnapshot.anchorAt,
+    windowStartAt: pinnedSnapshot.windowStartAt,
+    windowEndAt: pinnedSnapshot.windowEndAt,
+    windowTimezone: pinnedSnapshot.windowTimezone,
+    displayLabel: pinnedSnapshot.displayLabel,
+  });
   const hushEvent = pinnedSnapshot.events.find(({ id }) =>
     id === "event_hush_series_a_v1"
   );

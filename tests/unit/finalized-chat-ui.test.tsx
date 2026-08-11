@@ -167,6 +167,96 @@ test("durable Chat renders an exact finalized Source Revision citation", () => {
   );
 });
 
+test("Named Lens Chat V2 gives multiple artifact citations distinct React keys", () => {
+  const errors: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...arguments_) => {
+    errors.push(arguments_);
+  };
+
+  try {
+    renderToStaticMarkup(createElement(ChatView, {
+      messages: [{
+        role: "assistant" as const,
+        text: "The saved lens uses persisted report evidence.",
+        citations: [{
+          kind: "artifact" as const,
+          artifactRef: {
+            artifactType: "named_lens_passage_segment" as const,
+            artifactId: "passage_named_lens_ui",
+            fieldPath: "premise.text",
+          },
+        }, {
+          kind: "artifact" as const,
+          artifactRef: {
+            artifactType: "named_lens_passage_segment" as const,
+            artifactId: "passage_named_lens_ui",
+            fieldPath: "caseApplication.text",
+          },
+        }],
+      }],
+      question: "",
+      onQuestion() {},
+      onSubmit() {},
+      busy: false,
+      xtraceEnabled: false,
+      deploymentMode: "public_sandbox" as const,
+      reportScope: resolveReportChatScope(reportFixture()),
+    }));
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.deepEqual(errors, []);
+});
+
+test("Named Lens Chat V2 renders its wrapped exact Source Revision citation", () => {
+  const canonicalSource = WritableSourceRefV2Schema.parse(normalizedSourceV2(
+    "source_named_lens_ui",
+    {
+      documentId: "document_named_lens_ui",
+      sourceRevisionId: "revision_named_lens_ui",
+      contentFingerprint: `sha256:${"6".repeat(64)}`,
+      text: {
+        status: "normalized_only",
+        normalizedStatement: "Named Lens source evidence.",
+      },
+    },
+  ));
+  const html = renderToStaticMarkup(createElement(ChatView, {
+    messages: [{
+      role: "assistant" as const,
+      text: "The saved lens cites exact evidence.",
+      citations: [{
+        kind: "source_revision" as const,
+        sourceRef: {
+          sourceId: "source_named_lens_ui",
+          documentId: "document_named_lens_ui",
+          sourceRevisionId: "revision_named_lens_ui",
+          contentFingerprint: `sha256:${"6".repeat(64)}`,
+          canonicalSource,
+          text: {
+            status: "normalized_only" as const,
+            normalizedStatement: "Named Lens source evidence.",
+          },
+        },
+      }],
+    }],
+    question: "",
+    onQuestion() {},
+    onSubmit() {},
+    busy: false,
+    xtraceEnabled: false,
+    deploymentMode: "public_sandbox" as const,
+    reportScope: resolveReportChatScope(reportFixture()),
+  }));
+
+  assert.match(
+    html,
+    /\/api\/source-revisions\/revision_named_lens_ui\/access/,
+  );
+});
+
 test("Chat transcript resets across report, Deal, and global scope boundaries", () => {
   const reportA = resolveReportChatScope(reportFixture());
   assert.ok(reportA);

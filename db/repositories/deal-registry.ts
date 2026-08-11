@@ -28,6 +28,7 @@ import {
 } from "../../lib/uploads/structured-image-evidence";
 import {
   assertConsistentCanonicalEvidenceUnits,
+  SAMPLE_DECISION_RECORD_LABEL,
   WritableSourceRefV2Schema,
   sourceTextForRetrieval,
 } from "../../lib/contracts/source-evidence";
@@ -514,14 +515,50 @@ function canonicalDealFactFromRow(input: {
       && item.verificationMethod
         === "synthetic_research_screening_record_v1"
       && item.acceptedForGate === false;
+    const isCanonicalSampleDecision =
+      source.provenance === "demo_fixture"
+      && documentRole === "sample_decision_record"
+      && source.title === SAMPLE_DECISION_RECORD_LABEL
+      && source.canonicalUrl === null
+      && source.publisher === "Internal Deal Registry"
+      && source.providerId === "deal-registry"
+      && source.entityKeys.length === 0
+      && source.sourceClass === "internal_decision_record"
+      && source.sourceAuthority === "primary"
+      && source.evidenceRole === "context"
+      && sourceLocator?.kind === "json_pointer"
+      && sourceLocator.pointer === "/priorDecision"
+      && source.text.status === "normalized_only"
+      && source.text.normalizedStatement.startsWith(
+        `${SAMPLE_DECISION_RECORD_LABEL}. `,
+      )
+      && item.provenanceOrigin === "demo_fixture"
+      && item.field === "sample_decision_context"
+      && item.unit === null
+      && item.currency === null
+      && item.periodStart === null
+      && item.periodEnd === null
+      && item.publishedAt === null
+      && item.eventAt === source.eventAt
+      && item.retrievedAt === source.retrievedAt
+      && item.sourceRole === "management"
+      && item.assertionStatus === "reported"
+      && item.verificationMethod === "synthetic_sample_decision_record_v1"
+      && item.acceptedForGate === false;
     if (
       commonIdentityHasDrift
-      || (!isCanonicalPublicWeb && !isCanonicalSampleResearch)
+      || (
+        !isCanonicalPublicWeb
+        && !isCanonicalSampleResearch
+        && !isCanonicalSampleDecision
+      )
     ) {
       throw new Error(
         documentRole === "sample_research_screening_record"
           ? "Canonical Sample research screening evidence does not preserve its permanent non-interaction and non-gating identity."
-          : "Canonical public-web evidence does not preserve exact source identity and reviewed text.",
+          : documentRole === "sample_decision_record"
+            ? "Canonical Sample decision evidence does not preserve its permanent synthetic and non-gating identity."
+            : "Canonical public-web evidence does not preserve exact source identity and reviewed text.",
       );
     }
     return {

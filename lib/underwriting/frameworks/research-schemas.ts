@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import {
   DecisionTaxonomyDocumentSchema,
-} from "./decision-taxonomy";
+} from "./decision-taxonomy-contract";
 
 const NonEmptyStringSchema = z.string().min(1);
 const NonEmptyStringsSchema = z.array(NonEmptyStringSchema).min(1);

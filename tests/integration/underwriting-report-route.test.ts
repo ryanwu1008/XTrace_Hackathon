@@ -752,15 +752,22 @@ function currentNamedLensRouteDependencies(input: {
     bundle.underwritingPresentationReportId = input.presentationReportId;
   }
   const reportId = input.reportId ?? "report_current";
+  const canonicalReport = canonicalIntelligenceReportFixture({
+    id: reportId,
+    workspaceId: bundle.workspaceId,
+    runId: CURRENT_NAMED_LENS_RUN_ID,
+    createdAt: "2026-08-10T12:00:00.000Z",
+    marketSummary: "Current Named Lens report.",
+    dealIds: [bundle.dealId],
+  });
   const report = {
-    ...canonicalIntelligenceReportFixture({
-      id: reportId,
-      workspaceId: bundle.workspaceId,
-      runId: CURRENT_NAMED_LENS_RUN_ID,
-      createdAt: "2026-08-10T12:00:00.000Z",
-      marketSummary: "Current Named Lens report.",
-      dealIds: [bundle.dealId],
-    }),
+    ...canonicalReport,
+    companyAnalyses: canonicalReport.companyAnalyses?.map((analysis) => ({
+      ...analysis,
+      outcome: "belief_revised" as const,
+      confidence: "medium" as const,
+      score: 0.8,
+    })),
     analysisStatus: "completed" as const,
     evidenceCoverage: {
       acceptedPublicEvents: 1,
@@ -839,6 +846,29 @@ function currentNamedLensRouteDependencies(input: {
           : null;
       },
     } as RouteDependencies["intelligence"],
+    runs: {
+      async get(workspaceId, runId) {
+        return workspaceId === bundle.workspaceId
+            && runId === CURRENT_NAMED_LENS_RUN_ID
+          ? {
+            id: CURRENT_NAMED_LENS_RUN_ID,
+            workspaceId,
+            mode: "structured" as const,
+            windowDays: 14 as const,
+            status: "completed" as const,
+            currentStage: "report",
+            warningCount: 0,
+            warnings: [],
+            workerId: null,
+            createdAt: "2026-08-10T12:00:00.000Z",
+            startedAt: "2026-08-10T12:00:00.000Z",
+            completedAt: "2026-08-10T12:01:00.000Z",
+            leaseExpiresAt: null,
+            evidenceContext: report.evidenceContext,
+          }
+          : null;
+      },
+    } as RouteDependencies["runs"],
     underwritingRuns: {
       async getBatchByScanRunId({ workspaceId, scanRunId }) {
         return workspaceId === bundle.workspaceId
@@ -854,6 +884,17 @@ function currentNamedLensRouteDependencies(input: {
             createdAt: "2026-08-10T12:00:00.000Z",
           }
           : null;
+      },
+      async listSelectionsForBatch({ workspaceId, batchId }) {
+        return workspaceId === bundle.workspaceId && batchId === "batch_current"
+          ? [{
+            batchId,
+            dealId: bundle.dealId,
+            status: "selected" as const,
+            rank: 1,
+            reason: "Belief revision admitted to Deep Underwriting.",
+          }]
+          : [];
       },
       async listCandidatesForBatch({ workspaceId, batchId }) {
         return workspaceId === bundle.workspaceId && batchId === "batch_current"
@@ -1132,11 +1173,32 @@ test("public sandbox renders the complete persisted canonical named-advisory rep
 
 test("current report API exposes every belief revision in the underwriting queue including priority six", async () => {
   const repositories = await readRepositories();
+  const activeScanRuns = {
+    ...repositories.scanRuns,
+    async get(workspaceId: string, runId: string) {
+      const run = await repositories.scanRuns?.get(workspaceId, runId);
+      return run
+        ? { ...run, status: "running" as const, completedAt: null }
+        : null;
+    },
+  } as NonNullable<RouteDependencies["runs"]>;
   const response = await getReport(
     new Request(`https://vsee.test/api/reports/${REPORT_ID}`),
     params(REPORT_ID),
     productDependencies({
-      intelligence: repositories.intelligence,
+      intelligence: {
+        ...repositories.intelligence,
+        async getReport(workspaceId, reportId) {
+          const report = await repositories.intelligence.getReport(
+            workspaceId,
+            reportId,
+          );
+          return report
+            ? { ...report, evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT }
+            : null;
+        },
+      },
+      runs: activeScanRuns,
       underwritingRuns: repositories.runs,
       underwritingArtifacts: repositories.artifacts,
     }),
@@ -1151,9 +1213,27 @@ test("current report API exposes every belief revision in the underwriting queue
         queue: Array<Record<string, unknown>>;
         underwritingStatusCounts: Record<string, number>;
       };
+      underwritingExecution: {
+        runId: string;
+        runStatus: string;
+        currentStage: string | null;
+        state: string;
+        message: string | null;
+        expectedCandidateCount: number;
+        persistedCandidateCount: number;
+      };
     };
   };
   assert.equal(payload.data.underwritingBatch.batchId, repositories.batch.id);
+  assert.deepEqual(payload.data.underwritingExecution, {
+    runId: RUN_ID,
+    runStatus: "running",
+    currentStage: "report",
+    state: "in_progress",
+    message: null,
+    expectedCandidateCount: 6,
+    persistedCandidateCount: 6,
+  });
   assert.equal(payload.data.underwritingBatch.queue.length, 6);
   assert.deepEqual(
     payload.data.underwritingBatch.queue.map((entry) => ({
@@ -1226,7 +1306,7 @@ test("current report list exposes accurate underwriting counts for the rendered 
   assert.equal(payload.data[0].counts.underwritingQueuedCount, 6);
 });
 
-test("current report list fails closed when a belief-revised report is missing its underwriting batch", async () => {
+test("completed current report list returns terminal integrity without exposing a missing underwriting batch", async () => {
   const repositories = await readRepositories();
   const stored = await repositories.intelligence.getReport(
     WORKSPACE_ID,
@@ -1250,6 +1330,7 @@ test("current report list fails closed when a belief-revised report is missing i
             : null;
         },
       },
+      runs: repositories.scanRuns,
       underwritingRuns: {
         ...repositories.runs,
         async getBatchByScanRunId() {
@@ -1260,10 +1341,180 @@ test("current report list fails closed when a belief-revised report is missing i
     }),
   );
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: Array<{
+      underwritingBatch?: unknown;
+      underwritingExecution: {
+        runStatus: string;
+        state: string;
+        expectedCandidateCount: number;
+        persistedCandidateCount: number;
+      };
+    }>;
+  };
+  assert.equal(payload.data[0]!.underwritingBatch, undefined);
+  assert.deepEqual(payload.data[0]!.underwritingExecution, {
+    runId: RUN_ID,
+    runStatus: "completed",
+    currentStage: "report",
+    state: "integrity_error",
+    message:
+      "Deep Underwriting integrity error: the terminal scan persisted 6 belief revisions but 0 underwriting jobs.",
+    expectedCandidateCount: 6,
+    persistedCandidateCount: 0,
+  });
 });
 
-test("current report list fails closed when its underwriting batch belongs to a stale scan", async () => {
+test("terminal partial report list returns an explicit integrity state when its underwriting batch is missing", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const partialScanRuns = {
+    ...repositories.scanRuns,
+    async get(workspaceId: string, runId: string) {
+      const run = await repositories.scanRuns?.get(workspaceId, runId);
+      return run
+        ? { ...run, status: "partial" as const }
+        : null;
+    },
+  } as NonNullable<RouteDependencies["runs"]>;
+
+  const response = await listReports(
+    new Request(`https://vsee.test/api/reports?runId=${RUN_ID}`),
+    undefined,
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReportByRunId(workspaceId, runId) {
+          return workspaceId === WORKSPACE_ID && runId === RUN_ID
+            ? {
+              ...structuredClone(stored),
+              evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+            }
+            : null;
+        },
+      },
+      runs: partialScanRuns,
+      underwritingRuns: {
+        ...repositories.runs,
+        async getBatchByScanRunId() {
+          return null;
+        },
+      },
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: Array<{
+      underwritingBatch?: unknown;
+      underwritingExecution: {
+        runStatus: string;
+        state: string;
+        message: string | null;
+        expectedCandidateCount: number;
+        persistedCandidateCount: number;
+      };
+    }>;
+  };
+  assert.equal(payload.data.length, 1);
+  assert.equal(payload.data[0]!.underwritingBatch, undefined);
+  assert.deepEqual(payload.data[0]!.underwritingExecution, {
+    runId: RUN_ID,
+    runStatus: "partial",
+    currentStage: "report",
+    state: "integrity_error",
+    message:
+      "Deep Underwriting integrity error: the terminal scan persisted 6 belief revisions but 0 underwriting jobs.",
+    expectedCandidateCount: 6,
+    persistedCandidateCount: 0,
+  });
+});
+
+test("terminal partial report list returns an integrity state instead of polling an incomplete queue", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const partialScanRuns = {
+    ...repositories.scanRuns,
+    async get(workspaceId: string, runId: string) {
+      const run = await repositories.scanRuns?.get(workspaceId, runId);
+      return run
+        ? { ...run, status: "partial" as const }
+        : null;
+    },
+  } as NonNullable<RouteDependencies["runs"]>;
+  const incompleteRuns = {
+    ...repositories.runs,
+    async listSelectionsForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return (await repositories.runs.listSelectionsForBatch(input))
+        .filter(({ status }) => status === "selected")
+        .slice(0, 1);
+    },
+    async listCandidatesForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return (await repositories.runs.listCandidatesForBatch(input)).slice(0, 1);
+    },
+  };
+
+  const response = await listReports(
+    new Request(`https://vsee.test/api/reports?runId=${RUN_ID}`),
+    undefined,
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReportByRunId(workspaceId, runId) {
+          return workspaceId === WORKSPACE_ID && runId === RUN_ID
+            ? {
+              ...structuredClone(stored),
+              evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+            }
+            : null;
+        },
+      },
+      runs: partialScanRuns,
+      underwritingRuns: incompleteRuns,
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: Array<{
+      underwritingExecution: {
+        runStatus: string;
+        state: string;
+        expectedCandidateCount: number;
+        persistedCandidateCount: number;
+      };
+    }>;
+  };
+  assert.deepEqual(payload.data[0]!.underwritingExecution, {
+    runId: RUN_ID,
+    runStatus: "partial",
+    currentStage: "report",
+    state: "integrity_error",
+    message:
+      "Deep Underwriting integrity error: the terminal scan persisted 6 belief revisions but 1 underwriting jobs.",
+    expectedCandidateCount: 6,
+    persistedCandidateCount: 1,
+  });
+});
+
+test("terminal current report list withholds a batch that belongs to a stale scan", async () => {
   const repositories = await readRepositories();
   const stored = await repositories.intelligence.getReport(
     WORKSPACE_ID,
@@ -1287,6 +1538,7 @@ test("current report list fails closed when its underwriting batch belongs to a 
             : null;
         },
       },
+      runs: repositories.scanRuns,
       underwritingRuns: {
         ...repositories.runs,
         async getBatchByScanRunId() {
@@ -1300,10 +1552,24 @@ test("current report list fails closed when its underwriting batch belongs to a 
     }),
   );
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: Array<{
+      underwritingBatch?: unknown;
+      underwritingExecution: { runStatus: string; state: string };
+    }>;
+  };
+  assert.equal(payload.data[0]!.underwritingBatch, undefined);
+  assert.deepEqual({
+    runStatus: payload.data[0]!.underwritingExecution.runStatus,
+    state: payload.data[0]!.underwritingExecution.state,
+  }, {
+    runStatus: "completed",
+    state: "integrity_error",
+  });
 });
 
-test("current report list fails closed when the same-size underwriting queue names a non-belief Deal", async () => {
+test("terminal current report list withholds a same-size queue that names a non-belief Deal", async () => {
   const repositories = await readRepositories();
   const stored = await repositories.intelligence.getReport(
     WORKSPACE_ID,
@@ -1350,15 +1616,25 @@ test("current report list fails closed when the same-size underwriting queue nam
             : null;
         },
       },
+      runs: repositories.scanRuns,
       underwritingRuns: mismatchedRuns,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: Array<{
+      underwritingBatch?: unknown;
+      underwritingExecution: { runStatus: string; state: string };
+    }>;
+  };
+  assert.equal(payload.data[0]!.underwritingBatch, undefined);
+  assert.equal(payload.data[0]!.underwritingExecution.runStatus, "completed");
+  assert.equal(payload.data[0]!.underwritingExecution.state, "integrity_error");
 });
 
-test("current report list fails closed when its underwriting queue contains an extra Deal", async () => {
+test("terminal current report list withholds an underwriting queue containing an extra Deal", async () => {
   const repositories = await readRepositories();
   const stored = await repositories.intelligence.getReport(
     WORKSPACE_ID,
@@ -1414,15 +1690,25 @@ test("current report list fails closed when its underwriting queue contains an e
             : null;
         },
       },
+      runs: repositories.scanRuns,
       underwritingRuns: extraQueueRuns,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: Array<{
+      underwritingBatch?: unknown;
+      underwritingExecution: { runStatus: string; state: string };
+    }>;
+  };
+  assert.equal(payload.data[0]!.underwritingBatch, undefined);
+  assert.equal(payload.data[0]!.underwritingExecution.runStatus, "completed");
+  assert.equal(payload.data[0]!.underwritingExecution.state, "integrity_error");
 });
 
-test("current report API rejects a same-size queue containing a non-belief outcome", async () => {
+test("terminal current report API exposes a persisted integrity error for a same-size wrong queue", async () => {
   const repositories = await readRepositories();
   const stored = await repositories.intelligence.getReport(
     WORKSPACE_ID,
@@ -1469,15 +1755,33 @@ test("current report API rejects a same-size queue containing a non-belief outco
             : null;
         },
       },
+      runs: repositories.scanRuns,
       underwritingRuns: mismatchedRuns,
       underwritingArtifacts: repositories.artifacts,
     }),
   );
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: {
+      underwritingBatch?: unknown;
+      underwritingExecution: {
+        runStatus: string;
+        state: string;
+        message: string | null;
+      };
+    };
+  };
+  assert.equal(payload.data.underwritingExecution.runStatus, "completed");
+  assert.equal(payload.data.underwritingExecution.state, "integrity_error");
+  assert.equal(payload.data.underwritingBatch, undefined);
+  assert.match(
+    payload.data.underwritingExecution.message ?? "",
+    /persisted underwriting jobs do not match the report's belief revisions/i,
+  );
 });
 
-test("current report API rejects belief revisions without an underwriting batch", async () => {
+test("terminal current report API exposes a persisted integrity error when its batch is absent", async () => {
   const repositories = await readRepositories();
   const stored = await repositories.intelligence.getReport(
     WORKSPACE_ID,
@@ -1501,6 +1805,7 @@ test("current report API rejects belief revisions without an underwriting batch"
             : null;
         },
       },
+      runs: repositories.scanRuns,
       underwritingRuns: {
         ...repositories.runs,
         async getBatchByScanRunId() {
@@ -1511,7 +1816,28 @@ test("current report API rejects belief revisions without an underwriting batch"
     }),
   );
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    data: {
+      underwritingExecution: {
+        runStatus: string;
+        state: string;
+        message: string | null;
+        expectedCandidateCount: number;
+        persistedCandidateCount: number;
+      };
+    };
+  };
+  assert.deepEqual(payload.data.underwritingExecution, {
+    runId: RUN_ID,
+    runStatus: "completed",
+    currentStage: "report",
+    state: "integrity_error",
+    message:
+      "Deep Underwriting integrity error: the terminal scan persisted 6 belief revisions but 0 underwriting jobs.",
+    expectedCandidateCount: 6,
+    persistedCandidateCount: 0,
+  });
 });
 
 test("the approved pinned report uses an explicit read-only historical priority adapter", async () => {
@@ -1834,23 +2160,23 @@ test("current candidate detail projects only persisted Named Lens order, passage
   });
   assert.equal(
     selected.passage.premise.text,
-    "The public framework tests durable customer demand.",
+    "The public framework tests durable customer demand. It asks whether buyers can identify a costly problem, recognize why the product is a credible alternative, and repeat that choice across a defined segment rather than treating one favorable signal as broad product-market fit.",
   );
   assert.equal(
     selected.passage.caseApplication.text,
-    "Saved company evidence applies the framework.",
+    "Saved company evidence applies the framework. The current record shows reported customer demand and gives the team a concrete basis for follow-up, but it does not yet establish retention, expansion, sales efficiency, or a repeatable reason that comparable buyers select the product.",
   );
   assert.equal(
     selected.passage.countercase.text,
-    "Saved counterevidence limits the conclusion.",
+    "Saved counterevidence limits the conclusion. A separate persisted fact points to customer uncertainty, so the supportive signal cannot carry the investment case by itself. The evidence supports further diligence, not a claim that adoption risk or competitive differentiation has been resolved.",
   );
   assert.equal(
     selected.passage.unknownBoundary.text,
-    "A saved unknown defines the diligence boundary.",
+    "A saved unknown defines the diligence boundary. Customer durability remains unverified, and the record does not show cohort retention, renewal behavior, expansion by account, or win-loss evidence. Those missing observations determine whether early demand is durable enough to support underwriting.",
   );
   assert.equal(
     selected.passage.conditionalConclusion.text,
-    "The view remains conditional on resolving the saved unknown.",
+    "The view remains conditional on resolving the saved unknown. If customer references and operating data confirm repeat use, credible expansion, and defensible positioning, this lens supports advancing diligence. If they show isolated demand or weak retention, the same framework argues against treating the signal as investment-ready.",
   );
   assert.equal(selected.passage.advisoryContract.formalDecisionWeight, "0");
   assert.deepEqual(selected.publicPremiseSources, [{
@@ -2078,6 +2404,73 @@ test("current candidate detail maps report and fingerprint integrity failures to
       },
     });
   }
+});
+
+test("current candidate detail rejects a same-size wrong report queue before reading its artifact", async () => {
+  const repositories = await readRepositories();
+  const stored = await repositories.intelligence.getReport(
+    WORKSPACE_ID,
+    REPORT_ID,
+  );
+  assert.ok(stored);
+  const mismatchedRuns = {
+    ...repositories.runs,
+    async listSelectionsForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return (await repositories.runs.listSelectionsForBatch(input)).map(
+        (selection) => selection.dealId === "deal_selected"
+          ? { ...selection, dealId: "deal_not_selected" }
+          : selection,
+      );
+    },
+    async listCandidatesForBatch(input: {
+      workspaceId: string;
+      batchId: string;
+    }) {
+      return (await repositories.runs.listCandidatesForBatch(input)).map(
+        (candidate) => candidate.dealId === "deal_selected"
+          ? { ...candidate, dealId: "deal_not_selected" }
+          : candidate,
+      );
+    },
+  };
+
+  const response = await getUnderwriting(
+    new Request(
+      `https://vsee.test/api/reports/${REPORT_ID}/underwriting/deal_selected`,
+    ),
+    params(REPORT_ID, "deal_selected") as {
+      params: Promise<{ id: string; dealId: string }>;
+    },
+    productDependencies({
+      intelligence: {
+        ...repositories.intelligence,
+        async getReport(workspaceId, reportId) {
+          return workspaceId === WORKSPACE_ID && reportId === REPORT_ID
+            ? {
+              ...structuredClone(stored),
+              evidenceContext: CURRENT_LIVE_EVIDENCE_CONTEXT,
+            }
+            : null;
+        },
+      },
+      runs: repositories.scanRuns,
+      underwritingRuns: mismatchedRuns,
+      underwritingArtifacts: repositories.artifacts,
+    }),
+  );
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "CONFLICT",
+      message:
+        "Underwriting presentation identity is unavailable or inconsistent.",
+      retryable: false,
+    },
+  });
 });
 
 test("current candidate detail rejects a disposition physically linked to a different same-judgment passage", async () => {

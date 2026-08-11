@@ -50,7 +50,7 @@ function source(id: string, sourceRevisionId: string, evidenceRole: string) {
     provenance: id === "source_prior" ? "source_document" : "public_web",
     title: id,
     canonicalUrl: id === "source_prior" ? null : `https://example.com/${id}`,
-    documentId: id === "source_prior" ? id : null,
+    documentId: id,
     publisher: null,
     providerId: null,
     eventAt: at,
@@ -81,6 +81,12 @@ function fixture() {
     fact("fact_prior", "revision_prior"),
     fact("fact_recursive", "revision_financial"),
   ];
+  facts[2] = {
+    ...facts[2]!,
+    provenanceOrigin: "demo_fixture",
+    field: "sample_decision_context",
+    acceptedForGate: false,
+  };
   const pack = {
     id: "pack_1",
     version: 1,
@@ -263,6 +269,102 @@ function fixture() {
   };
 }
 
+test("selects two or three deterministic first-screen refs from the exact projection instead of raw typed decision refs", async () => {
+  const presentationModule = await import(
+    "../../lib/underwriting/named-lens-presentation"
+  ) as Record<string, unknown>;
+  const select = presentationModule.selectFirstScreenDecisionEvidenceIds;
+  assert.equal(
+    typeof select,
+    "function",
+    "the first-screen selector must consume the resolved candidate-local projection",
+  );
+  if (typeof select !== "function") return;
+
+  const evidenceRefs = [{
+    evidencePackItemId: "fact_prior",
+    classification: "fact",
+    originRefs: [{ kind: "prior_record", id: "record_1" }],
+    reasonCodes: ["BELIEF_CHANGE_PRIOR_RECORD"],
+    resolutionPath: ["record_1", "fact_prior"],
+  }, {
+    evidencePackItemId: "fact_event",
+    classification: "fact",
+    originRefs: [{ kind: "market_event", id: "event_1" }],
+    reasonCodes: ["BELIEF_CHANGE_MARKET_EVENT"],
+    resolutionPath: ["event_1", "fact_event"],
+  }, {
+    evidencePackItemId: "fact_counter",
+    classification: "fact",
+    originRefs: [{ kind: "counterevidence_gate", id: "claim_counter" }],
+    reasonCodes: ["BELIEF_CHANGE_COUNTEREVIDENCE_GATE"],
+    resolutionPath: ["claim_counter", "fact_counter"],
+  }, {
+    evidencePackItemId: "fact_revisit",
+    classification: "fact",
+    originRefs: [{ kind: "revisit_gate", id: "claim_revisit" }],
+    reasonCodes: ["BELIEF_CHANGE_REVISIT_GATE"],
+    resolutionPath: ["claim_revisit", "fact_revisit"],
+  }];
+
+  assert.deepEqual(
+    (select as (refs: unknown[]) => string[])(evidenceRefs),
+    ["fact_counter", "fact_event", "fact_revisit"],
+  );
+});
+
+test("first-screen selection prefers formal decision evidence and does not duplicate one Source Revision", async () => {
+  const presentationModule = await import(
+    "../../lib/underwriting/named-lens-presentation"
+  ) as Record<string, unknown>;
+  const select = presentationModule.selectFirstScreenDecisionEvidenceIds;
+  assert.equal(typeof select, "function");
+  if (typeof select !== "function") return;
+
+  const evidenceRefs = [{
+    evidencePackItemId: "fact_blocking",
+    classification: "fact",
+    originRefs: [{ kind: "blocking_evidence", id: "fact_blocking" }],
+    reasonCodes: ["FORMAL_DECISION_BLOCKING_EVIDENCE"],
+    resolutionPath: ["decision_1", "fact_blocking"],
+  }, {
+    evidencePackItemId: "fact_rule",
+    classification: "fact",
+    originRefs: [{ kind: "fired_rule", id: "rule_1" }],
+    reasonCodes: ["FORMAL_DECISION_RULE_INPUT"],
+    resolutionPath: ["rule_1", "fact_rule"],
+  }, {
+    evidencePackItemId: "claim_revisit",
+    classification: "fact",
+    originRefs: [{ kind: "revisit_gate", id: "claim_revisit" }, {
+      kind: "source_revision",
+      id: "revision_revisit",
+    }],
+    reasonCodes: ["BELIEF_CHANGE_REVISIT_GATE"],
+    resolutionPath: ["claim_revisit", "revision_revisit"],
+  }, {
+    evidencePackItemId: "semantic_duplicate",
+    classification: "fact",
+    originRefs: [{ kind: "revisit_gate", id: "claim_revisit" }, {
+      kind: "source_revision",
+      id: "revision_revisit",
+    }],
+    reasonCodes: ["BELIEF_CHANGE_REVISIT_GATE"],
+    resolutionPath: ["semantic_duplicate", "revision_revisit"],
+  }, {
+    evidencePackItemId: "fact_counter",
+    classification: "fact",
+    originRefs: [{ kind: "counterevidence_gate", id: "claim_counter" }],
+    reasonCodes: ["BELIEF_CHANGE_COUNTEREVIDENCE_GATE"],
+    resolutionPath: ["claim_counter", "fact_counter"],
+  }];
+
+  assert.deepEqual(
+    (select as (refs: unknown[]) => string[])(evidenceRefs),
+    ["claim_revisit", "fact_blocking", "fact_rule"],
+  );
+});
+
 test("resolves formal FrameworkJudgment decision refs through their exact evidence partitions", () => {
   const input = fixture();
   const judgmentId = "judgment_core_1";
@@ -439,6 +541,7 @@ test("projects exact MarketEvent, gate, memory, decision, and recursive Calculat
   assert.ok(prior?.originRefs.some(({ kind, id }) =>
     kind === "prior_record" && id === "source_prior"
   ));
+  assert.equal(prior?.classification, "fact");
   assert.ok(projection.find((item) =>
     item.evidencePackItemId === "assumption_exit_multiple"
   )?.resolutionPath.includes("calculation_inner"));
@@ -451,6 +554,113 @@ test("projects exact MarketEvent, gate, memory, decision, and recursive Calculat
   assert.ok(calculationInput?.originRefs.some(({ kind, id }) =>
     kind === "calculation" && id === "calculation_inner"
   ));
+});
+
+test("resolves canonical claim SourceRefs through documentId and exact Source Revision while preserving claim origins", () => {
+  const input = fixture();
+  const event = input.analysis.marketEvidence.events[0] as {
+    triggerSourceId: string;
+    sources: Array<{ id: string; documentId: string | null }>;
+  };
+  event.triggerSourceId = "claim_trigger";
+  event.sources[0]!.id = "claim_trigger";
+  event.sources[0]!.documentId = "source_trigger";
+  event.sources[1]!.id = "claim_counter";
+  event.sources[1]!.documentId = "source_counter";
+  input.analysis.marketEvidence.sourceIds = [
+    "claim_trigger",
+    "claim_counter",
+  ];
+  const assessment = input.analysis.beliefAssessment!;
+  assessment.gateContext.triggerEvent.sourceIds = ["claim_trigger"];
+  assessment.gateContext.sources = event.sources as typeof assessment.gateContext.sources;
+  assessment.gateContext.sources.push(source(
+    "source_prior",
+    "revision_prior",
+    "context",
+  ) as typeof assessment.gateContext.sources[number]);
+  assessment.gates.revisitConditionMapping.citedSourceIds = ["claim_trigger"];
+  assessment.gates.counterevidence.citedSourceIds = ["claim_counter"];
+
+  const projection = buildDecisionCriticalEvidenceProjection(input);
+  const trigger = projection.find(({ evidencePackItemId }) =>
+    evidencePackItemId === "fact_trigger"
+  );
+  const counter = projection.find(({ evidencePackItemId }) =>
+    evidencePackItemId === "fact_counter"
+  );
+  assert.ok(trigger?.originRefs.some(({ kind, id }) =>
+    kind === "chronology_gate" && id === "claim_trigger"
+  ));
+  assert.ok(trigger?.originRefs.some(({ kind, id }) =>
+    kind === "revisit_gate" && id === "claim_trigger"
+  ));
+  assert.ok(counter?.originRefs.some(({ kind, id }) =>
+    kind === "counterevidence_gate" && id === "claim_counter"
+  ));
+  assert.ok(trigger?.resolutionPath.includes("claim_trigger"));
+  assert.ok(trigger?.resolutionPath.includes("source_trigger"));
+  assert.ok(counter?.resolutionPath.includes("claim_counter"));
+  assert.ok(counter?.resolutionPath.includes("source_counter"));
+});
+
+test("fails closed when canonical claim SourceRef authority crosses document, revision, workspace, or candidate boundaries", () => {
+  const cases: Array<{
+    label: string;
+    mutate(input: ReturnType<typeof fixture>): void;
+  }> = [{
+    label: "missing documentId",
+    mutate(input) {
+      const event = input.analysis.marketEvidence.events[0] as {
+        sources: Array<{ id: string; documentId: string | null }>;
+      };
+      event.sources[0]!.id = "claim_trigger";
+      event.sources[0]!.documentId = null;
+    },
+  }, {
+    label: "foreign documentId",
+    mutate(input) {
+      const event = input.analysis.marketEvidence.events[0] as {
+        sources: Array<{ id: string; documentId: string | null }>;
+      };
+      event.sources[0]!.id = "claim_trigger";
+      event.sources[0]!.documentId = "source_foreign";
+    },
+  }, {
+    label: "mismatched exact revision",
+    mutate(input) {
+      const event = input.analysis.marketEvidence.events[0] as {
+        sources: Array<{
+          id: string;
+          documentId: string | null;
+          sourceRevisionId: string | null;
+        }>;
+      };
+      event.sources[0]!.id = "claim_trigger";
+      event.sources[0]!.documentId = "source_trigger";
+      event.sources[0]!.sourceRevisionId = "revision_counter";
+    },
+  }, {
+    label: "foreign workspace revision",
+    mutate(input) {
+      input.grounding.sourceRevisionSnapshots[0]!.workspaceId = "workspace_2";
+    },
+  }, {
+    label: "foreign candidate Deal",
+    mutate(input) {
+      input.pack.dealId = "deal_foreign";
+    },
+  }];
+
+  for (const { label, mutate } of cases) {
+    const input = fixture();
+    mutate(input);
+    assert.throws(
+      () => buildDecisionCriticalEvidenceProjection(input),
+      /candidate-local|workspace|cannot resolve/i,
+      label,
+    );
+  }
 });
 
 test("resolves a raw candidate-local Calculation ID containing colons before typed-ref parsing", () => {
@@ -541,6 +751,105 @@ test("fails closed instead of inventing a Cartesian bridge for aggregate multi-m
   );
 });
 
+test("projects multi-memory XTrace lineage only through exact persisted parent bindings", () => {
+  const input = fixture();
+  input.grounding.xtraceLineage.memoryIds.push("memory_2");
+  input.grounding.xtraceLineage.sourceRevisionIds.push("revision_trigger");
+  input.grounding.xtraceLineage.sourceIds.push("source_trigger");
+  input.grounding.xtraceLineage.parentBindings = [{
+    kind: "source",
+    memoryId: "memory_1",
+    sourceRevisionId: "revision_prior",
+    sourceId: "source_prior",
+    fixtureId: null,
+  }, {
+    kind: "source",
+    memoryId: "memory_2",
+    sourceRevisionId: "revision_trigger",
+    sourceId: "source_trigger",
+    fixtureId: null,
+  }];
+  (input.analysis.investmentMemory.memoryIds as string[]).push("memory_2");
+  (input.analysis.investmentMemory.sourceIds as string[]).push(
+    "source_trigger",
+  );
+
+  const projection = buildDecisionCriticalEvidenceProjection(input);
+  assert.ok(projection.find(({ evidencePackItemId }) =>
+    evidencePackItemId === "fact_prior"
+  )?.originRefs.some(({ kind, id }) =>
+    kind === "xtrace_memory" && id === "memory_1"
+  ));
+  assert.ok(projection.find(({ evidencePackItemId }) =>
+    evidencePackItemId === "fact_trigger"
+  )?.originRefs.some(({ kind, id }) =>
+    kind === "xtrace_memory" && id === "memory_2"
+  ));
+});
+
+test("multi-memory XTrace parent bindings reject duplicate, foreign, and owner-mismatched tuples", () => {
+  const mutations: Array<{
+    label: string;
+    mutate(bindings: Array<Record<string, unknown>>): void;
+  }> = [{
+    label: "duplicate memory",
+    mutate(bindings) {
+      bindings[1]!.memoryId = "memory_1";
+    },
+  }, {
+    label: "foreign revision",
+    mutate(bindings) {
+      bindings[1]!.sourceRevisionId = "revision_foreign";
+    },
+  }, {
+    label: "source owner mismatch",
+    mutate(bindings) {
+      bindings[1]!.sourceId = "source_counter";
+    },
+  }, {
+    label: "source advertised as fixture",
+    mutate(bindings) {
+      bindings[1] = {
+        kind: "fixture",
+        memoryId: "memory_2",
+        sourceRevisionId: "revision_trigger",
+        sourceId: null,
+        fixtureId: "fixture_foreign",
+      };
+    },
+  }];
+  for (const { label, mutate } of mutations) {
+    const input = fixture();
+    input.grounding.xtraceLineage.memoryIds.push("memory_2");
+    input.grounding.xtraceLineage.sourceRevisionIds.push("revision_trigger");
+    input.grounding.xtraceLineage.sourceIds.push("source_trigger");
+    const bindings: Array<Record<string, unknown>> = [{
+      kind: "source",
+      memoryId: "memory_1",
+      sourceRevisionId: "revision_prior",
+      sourceId: "source_prior",
+      fixtureId: null,
+    }, {
+      kind: "source",
+      memoryId: "memory_2",
+      sourceRevisionId: "revision_trigger",
+      sourceId: "source_trigger",
+      fixtureId: null,
+    }];
+    mutate(bindings);
+    input.grounding.xtraceLineage.parentBindings = bindings as never;
+    (input.analysis.investmentMemory.memoryIds as string[]).push("memory_2");
+    (input.analysis.investmentMemory.sourceIds as string[]).push(
+      "source_trigger",
+    );
+    assert.throws(
+      () => buildDecisionCriticalEvidenceProjection(input),
+      /XTrace|candidate-local|cannot resolve|ambiguous|binding/i,
+      label,
+    );
+  }
+});
+
 test("projects saved prior-memory source IDs even without a belief-assessment gate context", () => {
   const input = fixture();
   input.analysis.beliefAssessment = undefined;
@@ -555,7 +864,14 @@ test("projects saved prior-memory source IDs even without a belief-assessment ga
 
 test("resolves canonical Sample fixture source IDs without adding a source prefix", () => {
   const input = fixture();
-  const fixtureFact = fact("fact_fixture", "revision_fixture");
+  const fixtureFact = {
+    ...fact("fixture_1", "revision_fixture"),
+    provenanceOrigin: "demo_fixture" as const,
+    field: "sample_decision_context",
+    value: "Sample decision record. Synthetic prior decision context.",
+    acceptedForGate: false,
+    verificationMethod: "synthetic_sample_decision_record_v1",
+  };
   input.pack.facts.push(fixtureFact);
   input.pack.sourceRevisionIds.push("revision_fixture");
   input.grounding.sourceRevisionIds.push("revision_fixture");
@@ -575,32 +891,100 @@ test("resolves canonical Sample fixture source IDs without adding a source prefi
     createdAt: at,
   });
   (input.analysis.investmentMemory.sourceIds as string[]).push(
-    "source_fixture_1",
+    "fixture_1",
   );
   (input.analysis.investmentMemory.fixtureIds as string[]).push(
-    "source_fixture_1",
+    "fixture_1",
   );
 
   const projected = buildDecisionCriticalEvidenceProjection(input).find(
-    ({ evidencePackItemId }) => evidencePackItemId === "fact_fixture",
+    ({ evidencePackItemId }) => evidencePackItemId === "fixture_1",
   );
   assert.ok(projected?.originRefs.some(({ kind, id }) =>
-    kind === "prior_record" && id === "source_fixture_1"
+    kind === "prior_record" && id === "fixture_1"
   ));
+  assert.ok(projected?.originRefs.some(({ kind, id }) =>
+    kind === "source_revision" && id === "revision_fixture"
+  ));
+  assert.ok(projected?.resolutionPath.includes("source_fixture_1"));
   assert.equal(
     projected?.resolutionPath.includes("source_source_fixture_1"),
     false,
   );
 });
 
-test("rejects malformed and double-prefixed persisted fixture source IDs", () => {
-  for (const malformedId of ["fixture_1", "source_source_fixture_1"]) {
+test("Sample fixture prior-record resolution rejects a missing or non-synthetic candidate-local Fact", () => {
+  const cases: Array<{
+    label: string;
+    mutate(input: ReturnType<typeof fixture>, sample: Fact): void;
+  }> = [{
+    label: "missing exact Fact",
+    mutate(input) {
+      input.pack.facts.pop();
+    },
+  }, {
+    label: "public Fact impostor",
+    mutate(_input, sample) {
+      sample.provenanceOrigin = "public_source";
+    },
+  }, {
+    label: "gate-eligible impostor",
+    mutate(_input, sample) {
+      sample.acceptedForGate = true;
+    },
+  }, {
+    label: "wrong sample field",
+    mutate(_input, sample) {
+      sample.field = "public_claim";
+    },
+  }, {
+    label: "foreign revision",
+    mutate(_input, sample) {
+      sample.sourceRevisionId = "revision_trigger";
+    },
+  }, {
+    label: "foreign workspace",
+    mutate(input) {
+      input.grounding.sourceRevisionSnapshots.at(-1)!.workspaceId =
+        "workspace_2";
+    },
+  }];
+
+  for (const { label, mutate } of cases) {
     const input = fixture();
-    (input.analysis.investmentMemory.fixtureIds as string[]).push(malformedId);
+    const sample = {
+      ...fact("fixture_1", "revision_fixture"),
+      provenanceOrigin: "demo_fixture" as const,
+      field: "sample_decision_context",
+      value: "Sample decision record. Synthetic prior decision context.",
+      acceptedForGate: false,
+      verificationMethod: "synthetic_sample_decision_record_v1",
+    };
+    input.pack.facts.push(sample);
+    input.pack.sourceRevisionIds.push("revision_fixture");
+    input.grounding.sourceRevisionIds.push("revision_fixture");
+    input.grounding.sourceRevisionSnapshots.push({
+      id: "revision_fixture",
+      workspaceId: "workspace_1",
+      sourceId: "source_fixture_1",
+      revision: 1,
+      contentHash: "hash:revision_fixture",
+      objectKey: "revision_fixture",
+      objectVersion: "1",
+      contentType: "text/plain",
+      extractorId: "plain_text_v1",
+      extractorVersion: "1",
+      extractedAt: at,
+      supersedesRevisionId: null,
+      createdAt: at,
+    });
+    (input.analysis.investmentMemory.sourceIds as string[]).push("fixture_1");
+    (input.analysis.investmentMemory.fixtureIds as string[]).push("fixture_1");
+    mutate(input, sample);
     assert.throws(
       () => buildDecisionCriticalEvidenceProjection(input),
-      /cannot resolve to a candidate-local Evidence Pack item/i,
-      malformedId,
+      /cannot resolve to a candidate-local Evidence Pack item|candidate-local workspace/i,
+      label,
     );
   }
 });

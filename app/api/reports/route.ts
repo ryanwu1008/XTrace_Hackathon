@@ -1,4 +1,6 @@
+import { getDataClient } from "../../../db/client";
 import { getIntelligenceRepository } from "../../../db/repositories/intelligence";
+import { createRunsRepository } from "../../../db/repositories/runs";
 import { errorResponse, jsonOk } from "../../../lib/api/response";
 import {
   resolveRouteRequestContext,
@@ -12,7 +14,8 @@ import { getUnderwritingRunsRepository } from "../../../db/repositories/underwri
 import { isDurableWorkspaceMode } from "../../../lib/auth/request-context";
 import { APPROVED_PINNED_DEMO_SNAPSHOT_ID } from "../../../lib/contracts/evidence-context";
 import { buildUnderwritingBatchSummary } from "../../../lib/underwriting/read-model";
-import { assertCurrentReportUnderwritingIntegrity } from "../../../lib/reports/current-underwriting-integrity";
+import { buildCurrentUnderwritingExecution } from
+  "../../../lib/reports/current-underwriting-integrity";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +40,8 @@ export async function GET(
         )
       : await repository.listReports(context.workspaceId, resetAt);
     const durableWorkspace = isDurableWorkspaceMode(context.mode);
+    const scanRuns = dependencies.runs
+      ?? createRunsRepository(getDataClient());
     const publicReports = await Promise.all(reports.map(async (report) => {
       if (!durableWorkspace) return toPublicReport(report);
       const legacyPinnedSnapshotId = report.evidenceContext?.state === "current"
@@ -45,26 +50,64 @@ export async function GET(
             === APPROVED_PINNED_DEMO_SNAPSHOT_ID
         ? APPROVED_PINNED_DEMO_SNAPSHOT_ID
         : null;
-      const underwritingBatch = await buildUnderwritingBatchSummary({
-        workspaceId: context.workspaceId,
-        scanRunId: report.runId,
-        runs: dependencies.underwritingRuns
-          ?? getUnderwritingRunsRepository(),
-        artifacts: dependencies.underwritingArtifacts
-          ?? getUnderwritingArtifactsRepository(),
-        legacyPinnedSnapshotId,
-      });
-      const publicReport = toPublicReport(report, { underwritingBatch });
-      if (
+      const currentReport =
         report.evidenceContext?.state === "current"
-        && legacyPinnedSnapshotId === null
-      ) {
-        assertCurrentReportUnderwritingIntegrity({
-          companyAnalyses: publicReport.companyAnalyses,
-          underwritingBatch,
+        && legacyPinnedSnapshotId === null;
+      const owningRun = currentReport
+        ? await scanRuns.get(context.workspaceId, report.runId)
+        : null;
+      let batchReadIntegrityError = false;
+      let underwritingBatch = null;
+      try {
+        underwritingBatch = await buildUnderwritingBatchSummary({
+          workspaceId: context.workspaceId,
+          scanRunId: report.runId,
+          runs: dependencies.underwritingRuns
+            ?? getUnderwritingRunsRepository(),
+          artifacts: dependencies.underwritingArtifacts
+            ?? getUnderwritingArtifactsRepository(),
+          legacyPinnedSnapshotId,
         });
+      } catch (error) {
+        const terminalCurrentRun = currentReport
+          && owningRun !== null
+          && !["queued", "running"].includes(owningRun.status);
+        if (!terminalCurrentRun) throw error;
+        batchReadIntegrityError = true;
       }
-      return publicReport;
+      const reportWithObservedBatch = toPublicReport(report, {
+        underwritingBatch,
+      });
+      let underwritingExecution = currentReport
+        ? buildCurrentUnderwritingExecution({
+          reportRunId: report.runId,
+          run: owningRun,
+          companyAnalyses: reportWithObservedBatch.companyAnalyses,
+          underwritingBatch,
+        })
+        : null;
+      if (underwritingExecution && batchReadIntegrityError) {
+        underwritingExecution = {
+          ...underwritingExecution,
+          state: "integrity_error",
+          message:
+            "Deep Underwriting integrity error: the persisted batch could not be verified against the terminal scan.",
+        };
+      }
+      const trustedUnderwritingBatch =
+        underwritingExecution?.state === "integrity_error"
+          ? null
+          : underwritingBatch;
+      const publicReport = trustedUnderwritingBatch === underwritingBatch
+        ? reportWithObservedBatch
+        : toPublicReport(report, { underwritingBatch: null });
+      return {
+        ...publicReport,
+        ...(trustedUnderwritingBatch
+          ? { underwritingBatch: trustedUnderwritingBatch }
+          : {}),
+        ...(underwritingExecution ? { underwritingExecution } : {}),
+      };
     }));
     return jsonOk(publicReports);
   } catch (error) {

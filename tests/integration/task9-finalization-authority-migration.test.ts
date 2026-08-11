@@ -209,6 +209,9 @@ function currentPayload(): CandidateFinalization {
     },
     decision,
     narrative: "Current source-grounded terminal underwriting artifact.",
+    // Migration 0022 predates the externalLabel field added by 0023. Keep this
+    // historical fixture on the exact 0022 wire shape so forged calculations
+    // reach the calculation validator instead of failing at draft identity.
     actionDrafts: createActionDraftGenerator({
       workspaceId: "workspace_authority",
       now: () => new Date(NOW),
@@ -221,7 +224,20 @@ function currentPayload(): CandidateFinalization {
       actions,
       judgments,
       disagreements: [],
-    }),
+    }).map((draft) => {
+      if (!("schemaVersion" in draft) || draft.schemaVersion !== "action-draft-v2") {
+        throw new Error("Expected a current Task 9 action draft fixture.");
+      }
+      return {
+        ...draft,
+        missingEvidence: draft.missingEvidence.map((item) => ({
+          fieldId: item.fieldId,
+          label: item.label,
+          reasonCode: item.reasonCode,
+          mostLikelyDecisionImpact: item.mostLikelyDecisionImpact,
+        })),
+      };
+    }) as unknown as CandidateFinalization["actionDrafts"],
     versionSnapshot: {
       fundPolicyId: "fund_policy:workspace_authority:v1",
       dealStatus: "screening",
@@ -844,15 +860,16 @@ test(
       assert.equal(success(postgres.run("psql", [
         "--no-password", "-At", "-d", database,
         "-c", [
-          "select",
-          "(select count(*) from public.decision_critical_evidence_projections) +",
-          "(select count(*) from public.named_lens_passage_attempt_events) +",
-          "(select count(*) from public.named_lens_dispositions) +",
-          "(select count(*) from public.named_lens_passages) +",
-          "(select count(*) from public.named_lens_passage_segments) +",
-          "(select count(*) from public.underwriting_presentations)",
+          "select count(*) from unnest(array[",
+          "'public.decision_critical_evidence_projections',",
+          "'public.named_lens_passage_attempt_events',",
+          "'public.named_lens_dispositions',",
+          "'public.named_lens_passages',",
+          "'public.named_lens_passage_segments',",
+          "'public.underwriting_presentations'",
+          "]) relation_name where to_regclass(relation_name) is not null",
         ].join(" "),
-      ]), "legacy Task 9 Named Lens row isolation").split("\n").at(-1), "0");
+      ]), "legacy Task 9 Named Lens schema isolation").split("\n").at(-1), "0");
     } finally {
       success(postgres.run("dropdb", ["--if-exists", database]), "database cleanup");
     }

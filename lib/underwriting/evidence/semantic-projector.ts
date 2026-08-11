@@ -133,6 +133,8 @@ export function projectUnderwritingEvidence(
       facts.push(normalizeSourceEvidence(evidence));
       continue;
     }
+    const publicClaimBridge = projectAcceptedPublicClaimBridge(evidence);
+    if (publicClaimBridge) facts.push(publicClaimBridge);
     if (!evidence.sourceRef) {
       throw new SemanticEvidenceProjectionError(
         `Public claim ${evidence.id} is missing canonical source lineage.`,
@@ -255,6 +257,37 @@ export function projectUnderwritingEvidence(
   }
 
   return { facts, assumptions, unavailableFields, contextValues };
+}
+
+function projectAcceptedPublicClaimBridge(
+  evidence: SourceEvidenceInput,
+): Fact | null {
+  if (!evidence.acceptedForGate) return null;
+  const source = evidence.sourceRef;
+  if (!source || source.provenance !== "public_web") return null;
+  const normalizedStatement = source.text.status === "verified_exact"
+    ? source.text.normalizedStatement
+    : source.text.status === "normalized_only"
+    ? source.text.normalizedStatement
+    : null;
+  if (
+    evidence.provenanceOrigin !== "public_source"
+    || source.id !== evidence.id
+    || source.documentId !== evidence.sourceId
+    || source.sourceRevisionId !== evidence.sourceRevisionId
+    || !normalizedStatement
+    || normalizedStatement !== evidence.value
+    || (source.text.status === "verified_exact"
+      && normalizedStatement === source.text.verbatimExcerpt)
+  ) {
+    throw new SemanticEvidenceProjectionError(
+      `Accepted public claim ${evidence.id} does not preserve exact normalized source and revision lineage.`,
+    );
+  }
+  return normalizeSourceEvidence({
+    ...evidence,
+    value: normalizedStatement,
+  });
 }
 
 function reviewedContextFor(

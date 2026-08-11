@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import type { CompanyAnalysis } from "../lib/contracts/domain";
+import type { CompanyAnalysis, RunStatus } from "../lib/contracts/domain";
 import type { ReportEvidenceContext } from "../lib/contracts/evidence-context";
 import type {
   PublicActionDraft,
@@ -15,6 +15,8 @@ import {
   UnderwritingDetailDialog,
 } from "./underwriting-detail";
 import { orderUnderwritingQueue } from "./underwriting-view-model";
+import type { CurrentUnderwritingExecution } from
+  "../lib/reports/current-underwriting-integrity";
 
 const statusLabels = {
   queued: "Queued",
@@ -23,6 +25,18 @@ const statusLabels = {
   completed: "Completed",
   failed: "Failed",
 } as const;
+
+const UNDERWRITING_REFRESH_INTERVAL_MS = 2_000;
+
+export function underwritingSummaryNeedsRefresh(
+  batch: UnderwritingBatchSummary | null,
+  expectedCandidateCount: number,
+  runStatus: RunStatus | "unavailable" | undefined,
+): boolean {
+  void batch;
+  void expectedCandidateCount;
+  return runStatus === "queued" || runStatus === "running";
+}
 
 export function UnderwritingSummary({
   reportId,
@@ -42,6 +56,8 @@ export function UnderwritingSummary({
   );
   const [loading, setLoading] = useState(enabled);
   const [batchError, setBatchError] = useState("");
+  const [execution, setExecution] =
+    useState<CurrentUnderwritingExecution | null>(null);
   const [candidateError, setCandidateError] = useState("");
   const [retryToken, setRetryToken] = useState(0);
   const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
@@ -54,41 +70,95 @@ export function UnderwritingSummary({
   const [drafts, setDrafts] = useState<PublicActionDraft[]>([]);
   const [editingDraft, setEditingDraft] =
     useState<PublicActionDraft | null>(null);
+  const expectedCandidateCount = analyses.filter(
+    ({ outcome }) => outcome === "belief_revised",
+  ).length;
 
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    void apiRequest<{
-      underwritingBatch?: UnderwritingBatchSummary;
-      evidenceContext?: ReportEvidenceContext;
-    }>(`/api/reports/${encodeURIComponent(reportId)}`)
-      .then((report) => {
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastRunStatus: CurrentUnderwritingExecution["runStatus"] | undefined;
+
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setBatch(null);
+      setExecution(null);
+      setBatchError("");
+      setLoading(true);
+    });
+
+    const scheduleRefresh = () => {
+      refreshTimer = setTimeout(() => {
+        void loadSummary();
+      }, UNDERWRITING_REFRESH_INTERVAL_MS);
+    };
+    const loadSummary = async () => {
+      try {
+        const report = await apiRequest<{
+          underwritingBatch?: UnderwritingBatchSummary;
+          underwritingExecution?: CurrentUnderwritingExecution;
+          evidenceContext?: ReportEvidenceContext;
+        }>(`/api/reports/${encodeURIComponent(reportId)}`);
         if (!cancelled) {
-          setBatch(report.underwritingBatch ?? null);
+          const nextBatch = report.underwritingBatch ?? null;
+          const nextExecution = report.underwritingExecution ?? null;
+          setBatchError("");
+          setBatch(nextBatch);
+          setExecution(nextExecution);
+          if (nextExecution?.state === "integrity_error") {
+            setSelectedDealId(null);
+            setDetail(null);
+            setDrafts([]);
+            setEditingDraft(null);
+          }
+          lastRunStatus = report.underwritingExecution?.runStatus;
           setLoadedEvidenceContext({
             reportId,
             context: report.evidenceContext,
           });
+          if (underwritingSummaryNeedsRefresh(
+            nextBatch,
+            expectedCandidateCount,
+            report.underwritingExecution?.runStatus,
+          )) {
+            scheduleRefresh();
+          }
         }
-      })
-      .catch((loadError) => {
+      } catch (loadError) {
         if (!cancelled) {
           setBatchError(loadError instanceof Error
             ? loadError.message
             : "Underwriting summary could not be loaded.");
+          if (underwritingSummaryNeedsRefresh(
+            null,
+            expectedCandidateCount,
+            lastRunStatus,
+          )) {
+            scheduleRefresh();
+          }
         }
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    };
+
+    void loadSummary();
     return () => {
       cancelled = true;
+      if (refreshTimer !== undefined) clearTimeout(refreshTimer);
     };
-  }, [enabled, reportId, retryToken]);
+  }, [enabled, expectedCandidateCount, reportId, retryToken]);
 
   async function openCandidate(
     entry: UnderwritingBatchSummary["queue"][number],
   ) {
+    if (execution?.state === "integrity_error") {
+      setCandidateError(
+        "Candidate detail is withheld until the underwriting integrity error is resolved.",
+      );
+      return;
+    }
     setSelectedDealId(entry.dealId);
     setDetail(null);
     setDrafts([]);
@@ -145,6 +215,8 @@ export function UnderwritingSummary({
           emptyMessage={enabled
             ? "This report has no persisted underwriting batch."
             : "Public demo reports are synthetic and read-only; no persisted product underwriting is presented as fact."}
+          executionMessage={execution?.message ?? undefined}
+          integrityBlocked={execution?.state === "integrity_error"}
         />
       )}
       {batchError && (
@@ -197,6 +269,8 @@ export function UnderwritingSummaryPanel({
   companyNames,
   onOpenCandidate,
   emptyMessage = "This report has no persisted underwriting batch.",
+  executionMessage,
+  integrityBlocked = false,
 }: {
   batch: UnderwritingBatchSummary | null;
   companyNames: Record<string, string>;
@@ -204,9 +278,12 @@ export function UnderwritingSummaryPanel({
     entry: UnderwritingBatchSummary["queue"][number],
   ): void;
   emptyMessage?: string;
+  executionMessage?: string;
+  integrityBlocked?: boolean;
 }) {
-  const queue = batch
-    ? orderUnderwritingQueue(batch.queue)
+  const trustedBatch = integrityBlocked ? null : batch;
+  const queue = trustedBatch
+    ? orderUnderwritingQueue(trustedBatch.queue)
     : [];
 
   return (
@@ -226,14 +303,25 @@ export function UnderwritingSummaryPanel({
             public-source lineage.
           </p>
         </div>
-        {batch && (
-          <span className={`vsee-batch-state ${batch.status}`}>
-            Underwriting Status · {statusLabels[batch.status]}
+        {trustedBatch && (
+          <span className={`vsee-batch-state ${trustedBatch.status}`}>
+            Underwriting Status · {statusLabels[trustedBatch.status]}
           </span>
         )}
       </header>
 
-      {!batch ? (
+      {executionMessage && (
+        <p className="vsee-underwriting-execution-message" role="alert">
+          {executionMessage}
+        </p>
+      )}
+
+      {integrityBlocked ? (
+        <p className="vsee-underwriting-empty" role="status">
+          The underwriting queue and candidate details are withheld. Review
+          System activity and rerun the scan before relying on this work.
+        </p>
+      ) : !trustedBatch ? (
         <p className="vsee-underwriting-empty" role="status">{emptyMessage}</p>
       ) : (
         <>
@@ -241,7 +329,7 @@ export function UnderwritingSummaryPanel({
             className="vsee-underwriting-status-counts"
             aria-label="Underwriting Status counts"
           >
-            {Object.entries(batch.underwritingStatusCounts).map(
+            {Object.entries(trustedBatch.underwritingStatusCounts).map(
               ([status, count]) => (
                 <span className="vsee-underwriting-count" key={status}>
                   {statusLabels[status as keyof typeof statusLabels]} · {count}
@@ -301,7 +389,7 @@ export function UnderwritingSummaryPanel({
             );
           })}
           </div>
-          {batch.legacyPinnedPriorityOrder && (
+          {trustedBatch.legacyPinnedPriorityOrder && (
             <details className="vsee-details">
               <summary>Historical Priority Order · read-only pinned report</summary>
               <p>
@@ -309,7 +397,7 @@ export function UnderwritingSummaryPanel({
                 does not control eligibility for new runs.
               </p>
               <ol>
-                {batch.legacyPinnedPriorityOrder.entries.map((entry) => (
+                {trustedBatch.legacyPinnedPriorityOrder.entries.map((entry) => (
                   <li key={entry.dealId}>
                     {entry.historicalPriorityOrder === null
                       ? "No historical priority"

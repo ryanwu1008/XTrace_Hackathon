@@ -1019,6 +1019,9 @@ function matchConfidenceClaims(context: ProjectionContext): ClaimInput[] {
 
 function frameworkDisagreementClaims(context: ProjectionContext): ClaimInput[] {
   const bundle = requireBundle(context, "framework_disagreement");
+  if (bundle.namedLensPresentation !== undefined) {
+    return currentFrameworkPresentationClaims(context, bundle);
+  }
   if (bundle.disagreements.length === 0) {
     fail("finalized_artifact_missing", [{
       artifactType: "framework_disagreement",
@@ -1060,6 +1063,40 @@ function frameworkDisagreementClaims(context: ProjectionContext): ClaimInput[] {
     });
   }
   return claims;
+}
+
+function currentFrameworkPresentationClaims(
+  context: ProjectionContext,
+  bundle: CandidateArtifactBundle,
+): ClaimInput[] {
+  const presentation = bundle.namedLensPresentation;
+  if (
+    presentation === undefined
+    || bundle.underwritingPresentationReportId !== context.identity.reportId
+    || presentation.workspaceId !== context.identity.workspaceId
+    || presentation.artifactSourceCandidateRunId !== bundle.sourceCandidateRunId
+    || bundle.versionSnapshot.presentationFingerprint !== presentation.fingerprint
+  ) {
+    fail("artifact_mismatch", [{
+      artifactType: "framework_disagreement",
+      artifactId: presentation?.fingerprint ?? bundle.candidateRunId,
+      fieldPath: "namedLensPresentation.synthesis.text",
+    }]);
+  }
+  return [{
+    text: presentation.synthesis.text,
+    textClass: "persisted_inference",
+    artifactRefs: [{
+      artifactType: "framework_disagreement",
+      artifactId: presentation.fingerprint,
+      fieldPath: "namedLensPresentation.synthesis.text",
+    }],
+    sourceRefs: evidenceSourcesForItemIds(
+      context,
+      bundle,
+      presentation.synthesis.evidenceItemIds,
+    ),
+  }];
 }
 
 function frameworkJudgmentClaim(

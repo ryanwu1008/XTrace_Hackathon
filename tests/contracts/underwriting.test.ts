@@ -455,6 +455,48 @@ test("round-trips batch, legacy persistence selection, candidate, checkpoint, an
   }));
 });
 
+test("current XTrace lineage binds every recalled memory to one exact parent deterministically", () => {
+  const current = {
+    memoryIds: ["memory_1", "memory_2"],
+    sourceRevisionIds: ["revision_1", "revision_2"],
+    sourceIds: ["source_1"],
+    fixtureIds: ["fixture_2"],
+    parentBindings: [{
+      kind: "source" as const,
+      memoryId: "memory_1",
+      sourceRevisionId: "revision_1",
+      sourceId: "source_1",
+      fixtureId: null,
+    }, {
+      kind: "fixture" as const,
+      memoryId: "memory_2",
+      sourceRevisionId: "revision_2",
+      sourceId: null,
+      fixtureId: "fixture_2",
+    }],
+    capturedAt: "2026-07-28T10:05:00.000Z",
+  };
+  assert.deepEqual(XTraceLineageSnapshotSchema.parse(current), current);
+  for (const invalid of [{
+    ...current,
+    parentBindings: [current.parentBindings[1], current.parentBindings[0]],
+  }, {
+    ...current,
+    parentBindings: [current.parentBindings[0], current.parentBindings[0]],
+  }, {
+    ...current,
+    parentBindings: [current.parentBindings[0]],
+  }, {
+    ...current,
+    parentBindings: [{
+      ...current.parentBindings[0],
+      sourceRevisionId: "revision_foreign",
+    }, current.parentBindings[1]],
+  }]) {
+    assert.throws(() => XTraceLineageSnapshotSchema.parse(invalid));
+  }
+});
+
 test("new-run underwriting queue entries expose priority and every supported status without selection semantics", () => {
   const statuses = [
     "queued",

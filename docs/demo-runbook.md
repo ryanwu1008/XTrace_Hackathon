@@ -169,16 +169,44 @@ The historical 2026-08-01 pinned report remains bound to its immutable
 23-analysis universe and original fingerprints. It is a legacy replay artifact,
 not the current registry or current-run cardinality.
 
+The distinct pinned-30 review package is
+`belief_reversal_pinned_30_2026_08_10_v1`. It uses its own immutable 30-member
+Deal universe, four-event evidence set, and run/report identities; it never
+rewrites or expands the legacy 23-analysis artifact. On 2026-08-11,
+`npm run test:e2e:belief-reversal` passed against a fresh disposable PostgreSQL
+17.6 database at terminal migration `0028_named_lens_authority_repair`. The
+final pinned run `060e66e6-9254-45d5-954c-ebe0e2a4a61d` and current cold run
+`fda8d8bd-f7fc-4680-9cbe-b13d57bccb15` each passed their exact 30-Deal /
+30-analysis backend gates. The pinned run admitted and completed four Deep
+Underwriting candidates in deterministic priority order: Irregular, Henry AI,
+Hush Security, and Smallest.ai. Thirteen finalized Reports/Chat verifier
+queries completed for the pinned report.
+
+That checkpoint used `deterministic-e2e-observer-v1`, a permanently identified
+test stub rather than the production model provider. It proves the contracts,
+persistence, and complete artifact path only. Browser acceptance subsequently
+passed for both buttons, automatic terminal-report refresh, the decision-first
+detail, Reports/Chat, exact source access, keyboard/mobile behavior, overflow,
+and console cleanliness. The final full suite passed 1,946 tests with zero
+failures; TypeScript, build, parser-boundary, 112 fresh PostgreSQL 17.6
+migration tests, the separate 3-profile production safe-refusal gate, and
+independent review also passed. A schema-compatible isolated deployment remains
+a separate infrastructure gate.
+Production was not read or modified.
+The complete checkpoint record is
+`docs/qa/2026-08-10-pinned-30-underwriting-acceptance.md`.
+
 The first complete current-30 automated cold smoke passed on 2026-08-03
 (`1/1`, `73.7s`) against disposable loopback PostgreSQL 17.6. It persisted 30
 CompanyAnalyses with the derived `4 / 6 / 20 / 0` outcome distribution,
 created exactly four Deep Underwriting jobs, replayed the immutable legacy
-23-analysis report, and recorded zero remote network attempts. At this
-checkpoint no smoke-verified commit has been created and no exact-SHA private
-Preview/Staging handoff has occurred. The newly authorized private Staging
-target must use only disposable/non-production data, credentials, providers,
-database, and Worker resources; the configured public Sites target remains out
-of scope.
+23-analysis report, and recorded zero remote network attempts. At that
+historical checkpoint no smoke-verified commit had been created and no
+exact-SHA private Preview/Staging handoff had occurred. The owner-only private
+Staging Sites target is now configured, but its runtime environment remains empty. It must
+use only disposable/non-production data, credentials, providers, database, and
+Worker resources; the public production-backed Sites target remains out of
+scope.
 
 Localization and bilingual implementation are paused until the company mainline
 is complete and the final schema recheck has finished. This checkpoint does not
@@ -194,7 +222,9 @@ procedure. The current-30 cold smoke and any private Preview/Staging handoff
 must not use the production XTrace endpoint, macOS Keychain credentials, or the
 public Sites target. They must use test-only/non-production provider seams and
 credentials, a disposable non-production database and Worker, and a separately
-authorized non-production target.
+authorized non-production target. Do not deploy the configured owner-only
+Staging site until its isolated data plane and persistent same-commit Worker
+are configured.
 
 Start one foreground Worker from the same reviewed commit:
 
@@ -234,8 +264,13 @@ single Worker, and wait for its heartbeat instead of bypassing the check.
    IDs exactly. Priority ordering may change execution order but not admission.
 8. Verify the seven screening labels and confirm their prior records never
    claim a meeting, VC interaction, historical Pass, or automatic gate pass.
-9. Replay the historical pinned report separately and confirm its immutable
-   universe and fingerprints remain unchanged.
+9. Run the current pinned Demo replay and verify that it uses snapshot
+   `belief_reversal_pinned_30_2026_08_10_v1`, exactly 30 eligible Deals, and
+   exactly 30 analyses. This is the current review package, not the legacy
+   23-analysis artifact.
+10. Verify the historical 23-analysis artifact separately through its legacy
+    read/replay adapter and confirm its universe and fingerprints remain
+    unchanged. Never recreate it by invoking the current pinned replay action.
 
 The report includes the market-scan result and company analyses; opening a
 candidate exposes these named underwriting sections: **What happened?**,

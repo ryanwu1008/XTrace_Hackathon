@@ -26,13 +26,14 @@ import { toPublicCompanyAnalysis } from "../../lib/reports/public";
 import { createActionDraftGenerator } from "../../lib/underwriting/action-drafts";
 import { buildCandidateMissingEvidence } from "../../lib/underwriting/missing-evidence";
 import {
-  toCandidateUnderwritingDetail,
   toPublicActionDraft,
+  toVersionedCandidateUnderwritingDetail,
 } from "../../lib/underwriting/read-model";
 import {
   BeliefReversalQaRecordSchema,
   FINALIZED_CHAT_E2E_QUERIES,
   renderBeliefReversalQaRecord,
+  validateFrameworkOpinionPresentation,
   verifyBeliefReversalCurrentColdReport,
   verifyBeliefReversalReportsAndChat,
 } from "../helpers/belief-reversal-e2e-verifier";
@@ -798,7 +799,7 @@ function verificationFixture() {
     },
     priorityDealId: analyses[0]!.dealId,
     companyAnalyses: [...analyses, ...originalAnalyses],
-    evidenceContext: PINNED_CONTEXT,
+    evidenceContext: structuredClone(PINNED_CONTEXT),
     underwritingBatch: {
       batchId: "batch_task12",
       status: "completed",
@@ -902,7 +903,13 @@ function verificationFixture() {
     },
     async readUnderwritingDetail({ dealId }: { dealId: string }) {
       const candidateRunId = candidateIds.get(dealId)!;
-      return toCandidateUnderwritingDetail(bundles.get(candidateRunId)!);
+      return toVersionedCandidateUnderwritingDetail({
+        bundle: bundles.get(candidateRunId)!,
+        adapter: {
+          kind: "legacy_pinned_23",
+          schemaVersion: "legacy-pinned-23-v1",
+        },
+      });
     },
     async readArtifact({ candidateRunId }: { candidateRunId: string }) {
       return structuredClone(bundles.get(candidateRunId) ?? null);
@@ -995,6 +1002,232 @@ test("verifier reads the exact four PostgreSQL-backed report cases through full 
       remoteNetworkAttempts: 0,
     },
   });
+});
+
+test("full report and Chat verifier rejects an unknown pinned snapshot before choosing a legacy or current schema", async () => {
+  const fixture = verificationFixture();
+  (fixture.report.evidenceContext as { snapshotId: string }).snapshotId =
+    "belief_reversal_unreviewed_snapshot_v1";
+  await assert.rejects(
+    verifyBeliefReversalReportsAndChat(fixture.input),
+    /unreviewed pinned snapshot identity/u,
+  );
+});
+
+test("full current pinned verifier preserves complete selected analyses after validating the 30-Deal projection", async () => {
+  const fixture = verificationFixture();
+  const report = fixture.report as unknown as {
+    counts: Record<string, number>;
+    companyAnalyses: Array<Record<string, unknown>>;
+    evidenceContext: Record<string, unknown>;
+    underwritingBatch: {
+      legacyPinnedPriorityOrder?: unknown;
+    };
+  };
+  const evidenceContext = {
+    ...PINNED_CONTEXT,
+    snapshotId: "belief_reversal_pinned_30_2026_08_10_v1",
+  };
+  report.evidenceContext = evidenceContext;
+  const dealUniverseId = "deal_universe_current_pinned_30_v1";
+  const dealUniverseFingerprint = `sha256:${"9".repeat(64)}`;
+  const audit = (analysis: Record<string, unknown>, screening: boolean) => ({
+    schemaVersion: "company-analysis-current-run-audit-v1",
+    workspaceId: WORKSPACE_ID,
+    stableDealId: analysis.dealId,
+    priorDealStatus: analysis.dealStatus,
+    dealUniverseId,
+    dealUniverseFingerprint,
+    evidenceContextFingerprint: evidenceContext.contextFingerprint,
+    evidenceBindingFingerprint: evidenceContext.bindingFingerprint,
+    priorMemory: { kind: screening ? "screening" : "investment" },
+    outcome: analysis.outcome,
+  });
+  report.companyAnalyses.forEach((analysis) => {
+    analysis.currentRunAudit = audit(analysis, false);
+  });
+  fixture.analyses.forEach((analysis) => {
+    const persisted = report.companyAnalyses.find(
+      ({ dealId }) => dealId === analysis.dealId,
+    );
+    assert.ok(persisted);
+    const assessment = analysis.beliefAssessment;
+    assert.ok(assessment);
+    persisted.currentRunAudit = {
+      ...audit(persisted, false),
+      companyId: `company_${analysis.dealId}`,
+      analysisEligibleAt: CREATED_AT,
+      activeParentFingerprint: `sha256:${"a".repeat(64)}`,
+      sourceRevisionIds: analysis.sources.flatMap((source) =>
+        "sourceRevisionId" in source && source.sourceRevisionId
+          ? [source.sourceRevisionId]
+          : []
+      ),
+      xtraceMemoryIds: [...analysis.investmentMemory.memoryIds],
+      priorMemory: {
+        kind: "investment",
+        previousMeetingSummary:
+          analysis.investmentMemory.previousMeetingSummary,
+        decisionReason: analysis.investmentMemory.decisionReason,
+        concerns: [...analysis.investmentMemory.concerns],
+        revisitConditions: [...analysis.investmentMemory.revisitConditions],
+        lastEvaluatedAt: analysis.investmentMemory.lastEvaluatedAt,
+        sourceIds: [...analysis.investmentMemory.sourceIds],
+        fixtureIds: [...analysis.investmentMemory.fixtureIds],
+      },
+      consideredMarketEventIds: [...analysis.marketEvidence.eventIds],
+      matchedMarketEventIds: [...analysis.marketEvidence.eventIds],
+      scoreBreakdown: structuredClone(assessment.scoreBreakdown),
+      gates: {
+        chronology: {
+          passed: assessment.gates.chronology.passed,
+          failureReason: assessment.gates.chronology.failureReason,
+        },
+        revisitConditionMapping: {
+          passed: assessment.gates.revisitConditionMapping.passed,
+          failureReason:
+            assessment.gates.revisitConditionMapping.failureReason,
+        },
+        counterevidence: {
+          passed: assessment.gates.counterevidence.passed,
+          failureReason: assessment.gates.counterevidence.failureReason,
+        },
+        actionDelta: {
+          passed: assessment.gates.actionDelta.passed,
+          failureReason: assessment.gates.actionDelta.failureReason,
+        },
+        allPassed: assessment.gates.allPassed,
+      },
+      direction: assessment.direction,
+      actions: structuredClone(assessment.actions),
+      nonChangeReason: null,
+      analysisFailureReason: null,
+      whyNotUnderwriting: null,
+      recall: {
+        attempted: true,
+        succeeded: true,
+        failureReason: null,
+      },
+    };
+  });
+  const screeningDeals = [
+    "deal_cascade_v1",
+    "deal_centralize_v1",
+    "deal_chipagents_v1",
+    "deal_cordant_v1",
+    "deal_empirical_security_v1",
+    "deal_freight_hero_v1",
+    "deal_sent_v1",
+  ];
+  report.companyAnalyses.push(...screeningDeals.map((dealId, index) => {
+    const analysis: Record<string, unknown> = {
+      dealId,
+      companyName: dealId,
+      dealStatus: "screening",
+      outcome: "monitor",
+      confidence: "low",
+      score: 0.2 - index * 0.01,
+    };
+    analysis.currentRunAudit = audit(analysis, true);
+    return analysis;
+  }));
+  Object.assign(report.counts, {
+    companyCount: 30,
+    beliefRevised: 4,
+    monitor: 7,
+    noMaterialChange: 19,
+    analysisUnavailable: 0,
+    eligibleDealCount: 30,
+    companyAnalysisCount: 30,
+    beliefRevisedCount: 4,
+    monitorCount: 7,
+    noMaterialChangeCount: 19,
+    analysisUnavailableCount: 0,
+    underwritingCandidateCount: 4,
+    underwritingQueuedCount: 0,
+    underwritingRunningCount: 0,
+    underwritingCompletedCount: 4,
+    underwritingPartialCount: 0,
+    underwritingFailedCount: 0,
+  });
+  delete report.underwritingBatch.legacyPinnedPriorityOrder;
+
+  await assert.rejects(
+    verifyBeliefReversalReportsAndChat({
+      ...fixture.input,
+      async readUnderwritingDetail() {
+        throw new Error("REACHED_CURRENT_PINNED_DETAIL");
+      },
+    }),
+    /REACHED_CURRENT_PINNED_DETAIL/u,
+  );
+});
+
+test("framework verifier accepts a typed abstention outside publishable readings", () => {
+  const fixture = verificationFixture();
+  const bundle = fixture.bundles.values().next().value!;
+  const abstained = bundle.judgments[0]!;
+  abstained.conclusion = "abstain";
+  abstained.strongestSupport = null;
+  abstained.strongestCounterargument = null;
+  abstained.unknowns = ["No candidate-local counterevidence was available."];
+  bundle.namedLensDispositions = [{
+    judgmentId: abstained.id,
+    judgmentOrCatalogCandidateId: abstained.id,
+    disposition: "abstained",
+    passageFingerprint: null,
+  }] as CandidateArtifactBundle["namedLensDispositions"];
+  bundle.namedLensPassages = [];
+
+  assert.doesNotThrow(() =>
+    validateFrameworkOpinionPresentation(bundle, bundle.dealId)
+  );
+});
+
+test("framework verifier rejects a selected reading with an incomplete passage", () => {
+  const fixture = verificationFixture();
+  const bundle = fixture.bundles.values().next().value!;
+  const judgment = bundle.judgments[0]!;
+  bundle.namedLensDispositions = [{
+    judgmentId: judgment.id,
+    judgmentOrCatalogCandidateId: judgment.id,
+    disposition: "selected_main",
+    passageFingerprint: FINGERPRINT,
+  }] as CandidateArtifactBundle["namedLensDispositions"];
+  bundle.namedLensPassages = [{
+    judgmentId: judgment.id,
+    fingerprint: FINGERPRINT,
+  }] as CandidateArtifactBundle["namedLensPassages"];
+
+  assert.throws(
+    () => validateFrameworkOpinionPresentation(bundle, bundle.dealId),
+    /publishable Named Lens passage is incomplete/u,
+  );
+});
+
+test("framework verifier rejects an abstention rendered as a selected reading", () => {
+  const fixture = verificationFixture();
+  const bundle = fixture.bundles.values().next().value!;
+  const abstained = bundle.judgments[0]!;
+  abstained.conclusion = "abstain";
+  abstained.strongestSupport = null;
+  abstained.strongestCounterargument = null;
+  abstained.unknowns = ["No candidate-local counterevidence was available."];
+  bundle.namedLensDispositions = [{
+    judgmentId: abstained.id,
+    judgmentOrCatalogCandidateId: abstained.id,
+    disposition: "selected_main",
+    passageFingerprint: FINGERPRINT,
+  }] as CandidateArtifactBundle["namedLensDispositions"];
+  bundle.namedLensPassages = [{
+    judgmentId: abstained.id,
+    fingerprint: FINGERPRINT,
+  }] as CandidateArtifactBundle["namedLensPassages"];
+
+  assert.throws(
+    () => validateFrameworkOpinionPresentation(bundle, bundle.dealId),
+    /abstained framework cannot be rendered as a publishable reading/u,
+  );
 });
 
 function currentReportFixture() {
@@ -1130,6 +1363,33 @@ test("current report verifier accepts 30 analyses, 4/7/19/0 outcomes, and a four
     priorityRank: index + 1,
   })));
   assert.equal(result.screeningMonitorCount, 7);
+});
+
+test("current report verifier accepts only the exact reviewed pinned-30 identity as a current 30-Deal report", () => {
+  const reviewed = currentReportFixture();
+  const reviewedContext = reviewed.evidenceContext as {
+    evidenceMode: "live" | "pinned";
+    snapshotId: string | null;
+    snapshotFingerprint: string | null;
+  };
+  reviewedContext.evidenceMode = "pinned";
+  reviewedContext.snapshotId = "belief_reversal_pinned_30_2026_08_10_v1";
+  reviewedContext.snapshotFingerprint = `sha256:${"7".repeat(64)}`;
+  assert.doesNotThrow(() => verifyBeliefReversalCurrentColdReport(reviewed));
+
+  const unknown = currentReportFixture();
+  const unknownContext = unknown.evidenceContext as {
+    evidenceMode: "live" | "pinned";
+    snapshotId: string | null;
+    snapshotFingerprint: string | null;
+  };
+  unknownContext.evidenceMode = "pinned";
+  unknownContext.snapshotId = "belief_reversal_unreviewed_pinned_30_v1";
+  unknownContext.snapshotFingerprint = `sha256:${"8".repeat(64)}`;
+  assert.throws(
+    () => verifyBeliefReversalCurrentColdReport(unknown),
+    /exact reviewed pinned-30 snapshot/u,
+  );
 });
 
 test("current report verifier rejects 23-only output, candidate truncation, and a legacy adapter on a live run", () => {

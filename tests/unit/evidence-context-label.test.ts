@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
+import type { ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import test from "node:test";
 
+import * as pageModule from "../../app/page";
 import {
+  PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+} from "../../lib/belief-reversal/pinned-thirty-deal-snapshot";
+import type { RunEvidenceRequestV1 } from "../../lib/contracts/evidence-context";
+
+const {
   canRunPinnedDemo,
   evidenceContextLabel,
   formatEvidenceWindow,
-} from "../../app/page";
+} = pageModule;
 
 test("UI evidence labels present a readable evidence window for live, pinned replay, and legacy reports", () => {
   const current = {
@@ -68,4 +76,48 @@ test("the pinned replay control is sandbox-only", () => {
   assert.equal(canRunPinnedDemo("public_sandbox"), true);
   assert.equal(canRunPinnedDemo("product"), false);
   assert.equal(canRunPinnedDemo("public_demo"), false);
+});
+
+test("the pinned demo button visibly anchors the 30-Deal replay and submits only its reviewed snapshot", () => {
+  const buildRequest = (
+    pageModule as typeof pageModule & {
+      buildPinnedThirtyDealDemoEvidenceRequest?: () => RunEvidenceRequestV1;
+    }
+  ).buildPinnedThirtyDealDemoEvidenceRequest;
+  const PinnedDemoButton = (
+    pageModule as typeof pageModule & {
+      PinnedThirtyDealDemoButton?: (props: {
+        busy: boolean;
+        disabled: boolean;
+        onRun(request: RunEvidenceRequestV1): void;
+      }) => ReactElement;
+    }
+  ).PinnedThirtyDealDemoButton;
+  assert.ok(buildRequest);
+  assert.ok(PinnedDemoButton);
+
+  const expectedRequest = {
+    schemaVersion: "run-evidence-request-v1" as const,
+    evidenceMode: "pinned" as const,
+    snapshotId: PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+  };
+  const submitted: RunEvidenceRequestV1[] = [];
+  const button = PinnedDemoButton({
+    busy: false,
+    disabled: false,
+    onRun(request) {
+      submitted.push(request);
+    },
+  });
+  const buttonProps = button.props as { onClick?: () => void };
+  assert.ok(buttonProps.onClick);
+  buttonProps.onClick();
+
+  assert.deepEqual(buildRequest(), expectedRequest);
+  assert.deepEqual(submitted, [expectedRequest]);
+  const html = renderToStaticMarkup(button);
+  assert.match(html, /PINNED 30-DEAL DEMO/iu);
+  assert.match(html, /AUG 1, 2026/iu);
+  assert.match(html, /immutable evidence anchor/iu);
+  assert.doesNotMatch(html, /TOP\s*5/iu);
 });

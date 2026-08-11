@@ -4,6 +4,7 @@ import {
   NamedLensDispositionSchema,
   NamedLensFinalizationDispositionSchema,
   NamedLensPresentationSchema,
+  type DecisionCriticalEvidenceRef,
   type NamedLensCatalogConsideration,
   type NamedLensFinalizationDisposition,
   type NamedLensPassage,
@@ -274,10 +275,8 @@ export function buildNamedLensPresentationArtifacts(input: {
     ),
     firstScreenProjectionRefs: {
       decisionId: input.decision.id,
-      decisionEvidenceItemIds: decisionEvidenceIds(
-        input.decision,
-        input.pack,
-      ),
+      decisionEvidenceItemIds:
+        selectFirstScreenDecisionEvidenceIds(evidenceRefs),
       selectedJudgmentIds: selected.map(({ judgmentId }) => judgmentId!),
     },
   };
@@ -528,23 +527,62 @@ function segmentCitations(passage: NamedLensPassage) {
   }];
 }
 
-function decisionEvidenceIds(
-  decision: DecisionResult,
-  pack: EvidencePack,
+const FIRST_SCREEN_ORIGIN_PRIORITY = new Map<
+  DecisionCriticalEvidenceRef["originRefs"][number]["kind"],
+  number
+>([
+  ["blocking_evidence", 0],
+  ["fired_rule", 1],
+  ["valuation_evaluation", 2],
+  ["return_calculation", 2],
+  ["calculation", 2],
+  ["scenario_input", 2],
+  ["revisit_gate", 3],
+  ["counterevidence_gate", 4],
+  ["action_delta_gate", 5],
+  ["market_event", 6],
+  ["chronology_gate", 7],
+  ["prior_record", 8],
+  ["xtrace_memory", 9],
+  ["source_revision", 9],
+]);
+
+/**
+ * Selects the small, persisted evidence set rendered beside the IC ask.
+ *
+ * The formal DecisionResult frequently points first to typed authorities or a
+ * completed Calculation rather than directly to a Fact ID. The critical
+ * projection is the fail-closed bridge from those authorities and the belief
+ * gates to candidate-local Evidence Pack items, so first-screen selection must
+ * consume that resolved projection instead of re-reading raw decision refs.
+ */
+export function selectFirstScreenDecisionEvidenceIds(
+  evidenceRefs: readonly DecisionCriticalEvidenceRef[],
 ): string[] {
-  const allowed = new Set([
-    ...pack.facts.map(({ id }) => id),
-    ...pack.assumptions.map(({ id }) => id),
-  ]);
-  return uniqueSorted([
-    ...decision.blockingEvidenceItemIds,
-    ...decision.firedRules.flatMap(({ inputRefs }) => inputRefs),
-    ...decision.claimEdges
-      .filter(({ dependencyType }) =>
-        dependencyType === "fact" || dependencyType === "assumption"
-      )
-      .map(({ dependencyItemId }) => dependencyItemId),
-  ].filter((id) => allowed.has(id)));
+  const ranked = [...evidenceRefs].sort((left, right) =>
+    firstScreenPriority(left) - firstScreenPriority(right)
+    || compareUtf8(left.evidencePackItemId, right.evidencePackItemId)
+  );
+  const selected: string[] = [];
+  const selectedSourceRevisionIds = new Set<string>();
+  for (const reference of ranked) {
+    const sourceRevisionIds = reference.originRefs
+      .filter(({ kind }) => kind === "source_revision")
+      .map(({ id }) => id);
+    if (sourceRevisionIds.some((id) => selectedSourceRevisionIds.has(id))) {
+      continue;
+    }
+    selected.push(reference.evidencePackItemId);
+    for (const id of sourceRevisionIds) selectedSourceRevisionIds.add(id);
+    if (selected.length === 3) break;
+  }
+  return uniqueSorted(selected);
+}
+
+function firstScreenPriority(reference: DecisionCriticalEvidenceRef): number {
+  return Math.min(...reference.originRefs.map(({ kind }) =>
+    FIRST_SCREEN_ORIGIN_PRIORITY.get(kind) ?? Number.MAX_SAFE_INTEGER
+  ));
 }
 
 function semanticPassage(passage: NamedLensPassage) {

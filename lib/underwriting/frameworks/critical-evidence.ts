@@ -17,6 +17,8 @@ import type {
   ValuationEvaluation,
 } from "../../contracts/underwriting";
 import { compareUtf8 } from "../../format/canonical-order";
+import { SAMPLE_DECISION_RECORD_PREFIX } from
+  "../../contracts/source-evidence";
 import type { CandidateGroundingSnapshot } from "../candidate-grounding";
 import { isFormalDecisionJudgment } from "../decision/engine";
 import { DECISION_POLICY_V1 } from "../decision/rules";
@@ -196,15 +198,19 @@ export function buildDecisionCriticalEvidenceProjection(input: {
       unresolved({ kind: "market_event", id: eventId }, eventId);
     }
     for (const source of event.sources) {
-      if (source.adaptation !== "canonical" || source.sourceRevisionId === null) {
+      if (
+        source.adaptation !== "canonical"
+        || source.documentId === null
+        || source.sourceRevisionId === null
+      ) {
         unresolved({ kind: "market_event", id: eventId }, source.id);
       }
       resolveSource({
-        sourceId: source.id,
+        sourceId: source.documentId,
         explicitRevisionId: source.sourceRevisionId,
         origin: { kind: "market_event", id: eventId },
         reasonCode: "BELIEF_CHANGE_MARKET_EVENT",
-        path: [eventId],
+        path: [eventId, source.id],
       });
     }
   }
@@ -225,11 +231,16 @@ export function buildDecisionCriticalEvidenceProjection(input: {
       reasonCode: string,
     ): void => {
       const source = sourceById.get(sourceId);
-      if (!source || source.adaptation !== "canonical") {
+      if (
+        !source
+        || source.adaptation !== "canonical"
+        || source.documentId === null
+        || source.sourceRevisionId === null
+      ) {
         unresolved({ kind, id: sourceId }, sourceId);
       }
       resolveSource({
-        sourceId,
+        sourceId: source.documentId,
         explicitRevisionId: source.sourceRevisionId,
         origin: { kind, id: sourceId },
         reasonCode,
@@ -277,15 +288,55 @@ export function buildDecisionCriticalEvidenceProjection(input: {
     // records carry no candidate-local evidence edge.
   }
 
-  for (const sourceId of uniqueSorted([
-    ...input.analysis.investmentMemory.sourceIds,
-    ...input.analysis.investmentMemory.fixtureIds,
-  ])) {
+  const fixtureIds = new Set(
+    uniqueSorted(input.analysis.investmentMemory.fixtureIds),
+  );
+  for (const sourceId of uniqueSorted(
+    input.analysis.investmentMemory.sourceIds,
+  ).filter((sourceId) => !fixtureIds.has(sourceId))) {
     resolveSource({
       sourceId,
       origin: { kind: "prior_record", id: sourceId },
       reasonCode: "BELIEF_CHANGE_PRIOR_RECORD",
       path: [sourceId],
+    });
+  }
+  for (const fixtureId of fixtureIds) {
+    const origin = { kind: "prior_record" as const, id: fixtureId };
+    const fact = factById.get(fixtureId);
+    const revision = fact
+      ? revisionById.get(fact.sourceRevisionId)
+      : undefined;
+    const revisionFacts = fact
+      ? factsByRevisionId.get(fact.sourceRevisionId) ?? []
+      : [];
+    if (
+      !fact
+      || fact.provenanceOrigin !== "demo_fixture"
+      || fact.field !== "sample_decision_context"
+      || fact.acceptedForGate
+      || !fact.value.startsWith(SAMPLE_DECISION_RECORD_PREFIX)
+      || fact.unit !== null
+      || fact.currency !== null
+      || fact.periodStart !== null
+      || fact.periodEnd !== null
+      || fact.publishedAt !== null
+      || fact.sourceRole !== "management"
+      || fact.assertionStatus !== "reported"
+      || fact.verificationMethod !== "synthetic_sample_decision_record_v1"
+      || !revision
+      || revision.workspaceId !== input.pack.workspaceId
+      || !input.pack.sourceRevisionIds.includes(fact.sourceRevisionId)
+      || revisionFacts.length !== 1
+      || revisionFacts[0]!.id !== fixtureId
+    ) {
+      unresolved(origin, fixtureId);
+    }
+    resolveRevision({
+      revisionId: fact.sourceRevisionId,
+      origin,
+      reasonCode: "BELIEF_CHANGE_PRIOR_RECORD",
+      path: [fixtureId, revision.sourceId],
     });
   }
 
@@ -632,6 +683,91 @@ function resolveXTraceLineage(input: {
       || lineage.fixtureIds.length > 0
     ) {
       throw new DecisionCriticalEvidenceResolutionError("XTrace lineage without a memory cannot resolve exactly.");
+    }
+    return;
+  }
+  const parentBindings = lineage.parentBindings;
+  if (parentBindings !== undefined) {
+    const sortedBindings = [...parentBindings].sort((left, right) =>
+      compareUtf8(left.memoryId, right.memoryId)
+      || compareUtf8(left.sourceRevisionId, right.sourceRevisionId)
+      || compareUtf8(left.kind, right.kind)
+    );
+    const bindingMemoryIds = parentBindings.map(({ memoryId }) => memoryId);
+    const bindingRevisionIds = parentBindings.map(
+      ({ sourceRevisionId }) => sourceRevisionId,
+    );
+    const bindingSourceIds = parentBindings.flatMap((binding) =>
+      binding.kind === "source" ? [binding.sourceId] : []
+    );
+    const bindingFixtureIds = parentBindings.flatMap((binding) =>
+      binding.kind === "fixture" ? [binding.fixtureId] : []
+    );
+    if (
+      parentBindings.length !== lineage.memoryIds.length
+      || new Set(bindingMemoryIds).size !== bindingMemoryIds.length
+      || !parentBindings.every((binding, index) =>
+        binding === sortedBindings[index]
+      )
+      || !sameStrings(
+        uniqueSorted(bindingMemoryIds),
+        uniqueSorted(lineage.memoryIds),
+      )
+      || !sameStrings(
+        uniqueSorted(bindingRevisionIds),
+        uniqueSorted(lineage.sourceRevisionIds),
+      )
+      || !sameStrings(
+        uniqueSorted(bindingSourceIds),
+        uniqueSorted(lineage.sourceIds),
+      )
+      || !sameStrings(
+        uniqueSorted(bindingFixtureIds),
+        uniqueSorted(lineage.fixtureIds),
+      )
+    ) {
+      throw new DecisionCriticalEvidenceResolutionError(
+        "XTrace parent bindings are incomplete, duplicated, or non-deterministic.",
+      );
+    }
+    for (const binding of parentBindings) {
+      const revision = input.revisionById.get(binding.sourceRevisionId);
+      if (
+        !revision
+        || revision.workspaceId !== input.input.pack.workspaceId
+        || !input.input.pack.sourceRevisionIds.includes(
+          binding.sourceRevisionId,
+        )
+      ) {
+        unresolved(
+          { kind: "xtrace_memory", id: binding.memoryId },
+          binding.sourceRevisionId,
+        );
+      }
+      if (
+        binding.kind === "source"
+          ? revision.sourceId !== binding.sourceId
+          : !input.input.pack.facts.some((fact) =>
+            fact.id === binding.fixtureId
+            && fact.sourceRevisionId === binding.sourceRevisionId
+            && fact.provenanceOrigin === "demo_fixture"
+            && fact.field === "sample_decision_context"
+            && fact.acceptedForGate === false
+          )
+      ) {
+        throw new DecisionCriticalEvidenceResolutionError(
+          `XTrace parent binding ${binding.memoryId} does not match its exact revision owner.`,
+        );
+      }
+      input.resolveRevision({
+        revisionId: binding.sourceRevisionId,
+        origin: { kind: "xtrace_memory", id: binding.memoryId },
+        reasonCode: "BELIEF_CHANGE_XTRACE_MEMORY",
+        path: [
+          binding.memoryId,
+          binding.kind === "source" ? binding.sourceId : binding.fixtureId,
+        ],
+      });
     }
     return;
   }
