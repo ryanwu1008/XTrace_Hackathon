@@ -27,7 +27,8 @@ import { exactSourceV2 } from "../helpers/source-evidence-v2";
 const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
 
 function currentNamedLensBundle(): CandidateArtifactBundle {
-  const { finalization } = createCurrentNamedLensFinalizationFixture();
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const { finalization } = fixture;
   const {
     workerId: _workerId,
     leaseToken: _leaseToken,
@@ -44,6 +45,7 @@ function currentNamedLensBundle(): CandidateArtifactBundle {
     sourceCandidateRunId: candidateRunId,
     workspaceId: finalization.evidencePack.workspaceId,
     dealId: finalization.evidencePack.dealId,
+    namedLensProviderAttempts: structuredClone(fixture.persistedAttempts),
     claimEdges: [
       ...finalization.judgments.flatMap(({ claimEdges }) =>
         structuredClone(claimEdges)
@@ -276,6 +278,7 @@ function adaptCurrentFixtureToLegacy(
   delete bundle.decisionCriticalEvidenceProjection;
   delete bundle.namedLensCatalogConsiderations;
   delete bundle.namedLensAttemptRefs;
+  delete bundle.namedLensProviderAttempts;
   delete bundle.namedLensDispositions;
   delete bundle.namedLensPassages;
   delete bundle.underwritingPresentationReportId;

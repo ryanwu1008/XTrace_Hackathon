@@ -348,6 +348,13 @@ test("requires settled persisted attempt rows that exactly cover provider execut
   assert.doesNotThrow(() => validateNamedLensFinalization(valid));
   assert.throws(() => validateNamedLensFinalization({
     ...valid,
+    persistedAttempts: [{
+      ...valid.persistedAttempts[0]!,
+      workspaceId: "workspace_other",
+    }, ...valid.persistedAttempts.slice(1)],
+  }), /attempt|candidate|workspace|ownership/i);
+  assert.throws(() => validateNamedLensFinalization({
+    ...valid,
     persistedAttempts: valid.persistedAttempts.slice(1),
   }), /attempt|persisted|cover/i);
   assert.throws(() => validateNamedLensFinalization({

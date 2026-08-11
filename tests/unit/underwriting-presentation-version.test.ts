@@ -72,10 +72,9 @@ function pinned23Input(): UnderwritingPresentationIdentityInput {
 }
 
 function currentInput(): UnderwritingPresentationIdentityInput {
-  const finalization = structuredClone(
-    createCurrentNamedLensFinalizationFixture().finalization,
-  );
-  return {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const finalization = structuredClone(fixture.finalization);
+  const input: UnderwritingPresentationIdentityInput = {
     report: {
       id: "report_current",
       workspaceId: "workspace_current",
@@ -115,13 +114,16 @@ function currentInput(): UnderwritingPresentationIdentityInput {
         finalization.decisionCriticalEvidenceProjection!,
       namedLensCatalogConsiderations:
         finalization.namedLensCatalogConsiderations!,
+      namedLensAttemptRefs: finalization.namedLensAttemptRefs!,
       namedLensDispositions: finalization.namedLensDispositions!,
       namedLensPassages: finalization.namedLensPassages!,
+      namedLensProviderAttempts: structuredClone(fixture.persistedAttempts),
       underwritingPresentationReportId:
         finalization.underwritingPresentationReportId!,
       namedLensPresentation: finalization.namedLensPresentation!,
     },
   };
+  return input;
 }
 
 function expectIntegrityError(
@@ -303,6 +305,29 @@ test("rejects incomplete, null, unknown, and mixed generation identities", () =>
     "mixed_generation",
   );
 
+  const attemptsOnlyMixed = legacyPrePassageInput();
+  attemptsOnlyMixed.bundle.namedLensProviderAttempts = structuredClone(
+    createCurrentNamedLensFinalizationFixture().persistedAttempts,
+  );
+  expectIntegrityError(
+    () => resolveUnderwritingPresentationAdapter(attemptsOnlyMixed),
+    "mixed_generation",
+  );
+
+  const missingAttempts = currentInput();
+  delete missingAttempts.bundle.namedLensProviderAttempts;
+  expectIntegrityError(
+    () => resolveUnderwritingPresentationAdapter(missingAttempts),
+    "incomplete_current_identity",
+  );
+
+  const missingAttemptRefs = currentInput();
+  delete missingAttemptRefs.bundle.namedLensAttemptRefs;
+  expectIntegrityError(
+    () => resolveUnderwritingPresentationAdapter(missingAttemptRefs),
+    "incomplete_current_identity",
+  );
+
   const unknown = legacyPrePassageInput();
   unknown.bundle.versionSnapshot = {
     schemaVersion: "unknown",
@@ -393,6 +418,19 @@ test("rejects current cross-report, canonical-source, ownership, and fingerprint
     mutate: (input) => {
       input.bundle.namedLensPassages![0]!.artifactSourceCandidateRunId =
         "candidate_other";
+    },
+  }, {
+    name: "provider attempt ownership",
+    reason: "current_artifact_ownership_mismatch",
+    mutate: (input) => {
+      input.bundle.namedLensProviderAttempts![0]!.workspaceId =
+        "workspace_other";
+    },
+  }, {
+    name: "provider attempt reference identity",
+    reason: "current_artifact_ownership_mismatch",
+    mutate: (input) => {
+      input.bundle.namedLensProviderAttempts![0]!.attemptFingerprint = sha("e");
     },
   }];
 

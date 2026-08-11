@@ -952,7 +952,8 @@ test("resolves the finite pre-passage adapter without using row absence", async 
 });
 
 test("resolves a complete current artifact and rejects incomplete identity", async () => {
-  const { finalization } = createCurrentNamedLensFinalizationFixture();
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const { finalization } = fixture;
   const {
     workerId: _workerId,
     leaseToken: _leaseToken,
@@ -969,6 +970,7 @@ test("resolves a complete current artifact and rejects incomplete identity", asy
     sourceCandidateRunId: candidateRunId,
     workspaceId: finalization.evidencePack.workspaceId,
     dealId: finalization.evidencePack.dealId,
+    namedLensProviderAttempts: structuredClone(fixture.persistedAttempts),
     claimEdges: [
       ...finalization.judgments.flatMap(({ claimEdges }) =>
         structuredClone(claimEdges)

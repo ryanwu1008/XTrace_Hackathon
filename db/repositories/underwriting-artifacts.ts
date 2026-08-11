@@ -337,6 +337,7 @@ export interface CandidateArtifactBundle
   workspaceId: string;
   dealId: string;
   claimEdges: ClaimEdge[];
+  namedLensProviderAttempts?: NamedLensProviderAttempt[];
 }
 
 export interface CurrentCandidateArtifactBundle
@@ -345,6 +346,7 @@ export interface CurrentCandidateArtifactBundle
   namedLensCatalogConsiderations: NamedLensCatalogConsideration[];
   decisionCriticalEvidenceProjection: DecisionCriticalEvidenceProjection;
   namedLensAttemptRefs: NamedLensProviderAttemptRef[];
+  namedLensProviderAttempts: NamedLensProviderAttempt[];
   namedLensDispositions: NamedLensFinalizationDisposition[];
   namedLensPassages: NamedLensPassage[];
   underwritingPresentationReportId: string;
@@ -1323,6 +1325,11 @@ export function prepareCandidateFinalization(
   const namedLensAttemptRefs = input.namedLensAttemptRefs?.map((value) =>
     NamedLensProviderAttemptRefSchema.parse(value)
   );
+  const namedLensProviderAttempts = input.namedLensAttemptRefs === undefined
+    ? undefined
+    : (options.persistedNamedLensProviderAttempts ?? []).map((value) =>
+      NamedLensProviderAttemptSchema.parse(value)
+    );
   const namedLensDispositions = input.namedLensDispositions?.map((value) =>
     NamedLensFinalizationDispositionSchema.parse(value)
   );
@@ -1407,7 +1414,7 @@ export function prepareCandidateFinalization(
       decisionCriticalEvidenceProjection:
         decisionCriticalEvidenceProjection!,
       attemptRefs: namedLensAttemptRefs!,
-      persistedAttempts: options.persistedNamedLensProviderAttempts ?? [],
+      persistedAttempts: namedLensProviderAttempts!,
       dispositions: namedLensDispositions!,
       passages: namedLensPassages!,
       underwritingPresentationReportId:
@@ -1803,6 +1810,7 @@ export function prepareCandidateFinalization(
     ...(hasReadableNamedLensContract
       ? {
         namedLensAttemptRefs: namedLensAttemptRefs!,
+        namedLensProviderAttempts: namedLensProviderAttempts!,
         namedLensCatalogConsiderations: namedLensCatalogConsiderations!,
         decisionCriticalEvidenceProjection:
           decisionCriticalEvidenceProjection!,
@@ -1992,7 +2000,11 @@ export function validateNamedLensFinalization(input: {
       ),
   );
   if (
-    persistedAttempts.some(({ status }) => status === "reserved")
+    persistedAttempts.some((attempt) =>
+      attempt.workspaceId !== input.workspaceId
+      || attempt.artifactSourceCandidateRunId !== input.candidateRunId
+    )
+    || persistedAttempts.some(({ status }) => status === "reserved")
     || persistedAttemptIdentities.size !== attemptRefIdentities.size
     || [...persistedAttemptIdentities].some((identity) =>
       !attemptRefIdentities.has(identity)
@@ -2029,7 +2041,7 @@ export function validateNamedLensFinalization(input: {
     )
   ) {
     throw new Error(
-      "Finalization requires settled persisted attempt rows covering every Named Lens provider execution and a completed attempt for each publishable passage.",
+      "Finalization requires candidate-local, settled persisted attempt rows covering every Named Lens provider execution and a completed attempt for each publishable passage.",
     );
   }
   const passageFingerprints = new Set(

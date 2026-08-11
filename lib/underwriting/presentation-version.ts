@@ -8,6 +8,8 @@ import type {
   NamedLensFinalizationDisposition,
   NamedLensPassage,
   NamedLensPresentation,
+  NamedLensProviderAttempt,
+  NamedLensProviderAttemptRef,
 } from "../contracts/named-lens";
 import {
   createDecisionCriticalEvidenceProjectionFingerprint,
@@ -102,8 +104,10 @@ export interface UnderwritingPresentationIdentityInput {
     judgments?: readonly FrameworkJudgment[];
     decisionCriticalEvidenceProjection?: DecisionCriticalEvidenceProjection;
     namedLensCatalogConsiderations?: NamedLensCatalogConsideration[];
+    namedLensAttemptRefs?: NamedLensProviderAttemptRef[];
     namedLensDispositions?: NamedLensFinalizationDisposition[];
     namedLensPassages?: NamedLensPassage[];
+    namedLensProviderAttempts?: NamedLensProviderAttempt[];
     underwritingPresentationReportId?: string;
     namedLensPresentation?: NamedLensPresentation;
   };
@@ -262,8 +266,10 @@ function hasAnyCurrentIdentity(
   return CURRENT_EXCLUSIVE_VERSION_FIELDS.some((field) => field in version)
     || input.bundle.decisionCriticalEvidenceProjection !== undefined
     || input.bundle.namedLensCatalogConsiderations !== undefined
+    || input.bundle.namedLensAttemptRefs !== undefined
     || input.bundle.namedLensDispositions !== undefined
     || input.bundle.namedLensPassages !== undefined
+    || input.bundle.namedLensProviderAttempts !== undefined
     || input.bundle.underwritingPresentationReportId !== undefined
     || input.bundle.namedLensPresentation !== undefined;
 }
@@ -323,7 +329,15 @@ function assertCompleteCurrentIdentity(
   const projection = input.bundle.decisionCriticalEvidenceProjection;
   const dispositions = input.bundle.namedLensDispositions;
   const passages = input.bundle.namedLensPassages;
-  if (!projection || !dispositions || !passages) {
+  const attemptRefs = input.bundle.namedLensAttemptRefs;
+  const providerAttempts = input.bundle.namedLensProviderAttempts;
+  if (
+    !projection
+    || !dispositions
+    || !passages
+    || !attemptRefs
+    || !providerAttempts
+  ) {
     throw integrity("incomplete_current_identity");
   }
   assertCurrentNamedLensPhysicalGraph({ dispositions, passages });
@@ -372,10 +386,12 @@ function assertCompleteCurrentIdentity(
     ...(input.bundle.namedLensCatalogConsiderations ?? []),
     ...(input.bundle.namedLensDispositions ?? []),
     ...(input.bundle.namedLensPassages ?? []),
+    ...providerAttempts,
   ];
   if (
     input.bundle.decisionCriticalEvidenceProjection === undefined
     || input.bundle.namedLensCatalogConsiderations === undefined
+    || input.bundle.namedLensAttemptRefs === undefined
     || input.bundle.namedLensDispositions === undefined
     || input.bundle.namedLensPassages === undefined
   ) {
@@ -385,6 +401,25 @@ function assertCompleteCurrentIdentity(
     artifact.workspaceId !== input.report.workspaceId
     || artifact.artifactSourceCandidateRunId !== sourceCandidateRunId
   )) {
+    throw integrity("current_artifact_ownership_mismatch");
+  }
+  const attemptIdentity = (
+    attempt: NamedLensProviderAttempt | NamedLensProviderAttemptRef,
+  ) => `${attempt.judgmentOrCatalogCandidateId}\u0000${attempt.logicalPassageId}`
+    + `\u0000${attempt.attemptNumber}\u0000${attempt.attemptFingerprint}`;
+  const attemptRefIdentities = new Set(attemptRefs.map(attemptIdentity));
+  const providerAttemptIdentities = new Set(
+    providerAttempts.map(attemptIdentity),
+  );
+  if (
+    attemptRefIdentities.size !== attemptRefs.length
+    || providerAttemptIdentities.size !== providerAttempts.length
+    || attemptRefIdentities.size !== providerAttemptIdentities.size
+    || [...attemptRefIdentities].some((identity) =>
+      !providerAttemptIdentities.has(identity)
+    )
+    || providerAttempts.some(({ status }) => status === "reserved")
+  ) {
     throw integrity("current_artifact_ownership_mismatch");
   }
 }

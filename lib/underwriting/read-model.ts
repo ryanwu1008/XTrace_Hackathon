@@ -461,6 +461,7 @@ export function toVersionedCandidateUnderwritingDetail(input: {
         bundle.namedLensCatalogConsiderations,
       ),
       providerAttemptRefs: structuredClone(bundle.namedLensAttemptRefs),
+      providerAttempts: structuredClone(bundle.namedLensProviderAttempts),
     },
   };
 }
@@ -476,6 +477,7 @@ function requireCurrentCandidateBundle(
     bundle.decisionCriticalEvidenceProjection === undefined
     || bundle.namedLensCatalogConsiderations === undefined
     || bundle.namedLensAttemptRefs === undefined
+    || bundle.namedLensProviderAttempts === undefined
     || bundle.namedLensDispositions === undefined
     || bundle.namedLensPassages === undefined
     || bundle.underwritingPresentationReportId === undefined
