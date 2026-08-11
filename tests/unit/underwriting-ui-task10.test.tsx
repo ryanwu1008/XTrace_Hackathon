@@ -15,6 +15,7 @@ import { actionsForDealStatusAndDirection } from "../../lib/reports/action-polic
 import type {
   CandidateUnderwritingDetail,
   PublicActionDraft,
+  VersionedCandidateUnderwritingDetail,
 } from "../../lib/underwriting/read-model";
 import { toVersionedCandidateUnderwritingDetail } from
   "../../lib/underwriting/read-model";
@@ -477,8 +478,9 @@ function draftFixture(): PublicActionDraft {
 function currentDetailFixture(input: {
   claimEdges?: CandidateUnderwritingDetail["claimEdges"];
   providerModel?: string;
-} = {}): CandidateUnderwritingDetail {
-  const finalization = createCurrentNamedLensFinalizationFixture().finalization;
+} = {}): VersionedCandidateUnderwritingDetail {
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const finalization = fixture.finalization;
   finalization.versionSnapshot.providerModel = input.providerModel
     ?? finalization.versionSnapshot.providerModel;
   return toVersionedCandidateUnderwritingDetail({
@@ -488,6 +490,7 @@ function currentDetailFixture(input: {
       workspaceId: finalization.evidencePack.workspaceId,
       dealId: finalization.evidencePack.dealId,
       claimEdges: input.claimEdges ?? [],
+      namedLensProviderAttempts: fixture.persistedAttempts,
     },
     adapter: {
       kind: "current",
@@ -565,11 +568,25 @@ test("current first screen uses its saved projection references across facts and
     unit: "decimal",
     scenario: "all",
     rationale: "Persisted decisive assumption.",
-    inputRefIds: [],
+    inputRefIds: ["revision_counter_1"],
     provenanceOrigin: "recommended_policy",
     sensitivity: "high",
     requiresConfirmation: false,
   });
+  detail.namedLensPresentation.decisionCriticalEvidenceProjection.evidenceRefs
+    .unshift({
+      evidencePackItemId: "assumption_decisive_growth",
+      classification: "assumption",
+      originRefs: [{
+        kind: "source_revision",
+        id: "revision_counter_1",
+      }],
+      reasonCodes: ["ASSUMPTION_INPUT"],
+      resolutionPath: [
+        "assumption_decisive_growth",
+        "revision_counter_1",
+      ],
+    });
   detail.namedLensPresentation.firstScreenProjectionRefs.decisionEvidenceItemIds = [
     "assumption_decisive_growth",
     "fact_1",
@@ -586,12 +603,51 @@ test("current first screen uses its saved projection references across facts and
 
   assert.match(firstScreen, /Growth: 0\.35 decimal\./);
   assert.match(firstScreen, /Customer Demand: supported\./);
+  assert.equal(
+    (firstScreen.match(/class="underwriting-decision-reason"/g) ?? []).length,
+    2,
+  );
+  assert.match(
+    firstScreen,
+    /api\/source-revisions\/revision_counter_1\/access[^>]*>Open archived source for Growth ↗/,
+  );
+  assert.match(
+    firstScreen,
+    /https:\/\/example\.test\/fact_1[^>]*>View original source for Customer Demand ↗/,
+  );
 });
 
-test("current Named Lens body fails closed when one saved segment is invalid", () => {
+test("current first screen cites a valid no-lineage assumption by its persisted artifact identity", () => {
   const detail = currentDetailFixture();
   if (!isCurrentUnderwritingDetail(detail)) throw new Error("Expected current detail.");
-  detail.namedLensPresentation.selectedPassages[0]!.passage.countercase.text = "\u0000invalid";
+  detail.evidencePack.assumptions.push({
+    id: "assumption_policy_growth",
+    field: "growth",
+    value: "0.35",
+    unit: "decimal",
+    scenario: "all",
+    rationale: "Persisted policy assumption without source lineage.",
+    inputRefIds: [],
+    provenanceOrigin: "recommended_policy",
+    sensitivity: "high",
+    requiresConfirmation: false,
+  });
+  detail.decision.firedRules[0]!.inputRefs = [
+    "assumption_policy_growth",
+    "fact_1",
+  ];
+  detail.namedLensPresentation.decisionCriticalEvidenceProjection.evidenceRefs
+    .unshift({
+      evidencePackItemId: "assumption_policy_growth",
+      classification: "assumption",
+      originRefs: [{ kind: "fired_rule", id: "rule_current" }],
+      reasonCodes: ["FORMAL_DECISION_RULE_INPUT"],
+      resolutionPath: ["assumption_policy_growth", "rule_current"],
+    });
+  detail.namedLensPresentation.firstScreenProjectionRefs.decisionEvidenceItemIds = [
+    "assumption_policy_growth",
+    "fact_1",
+  ];
   const html = renderToStaticMarkup(<UnderwritingDetailPanel
     companyName="Current Lens Co"
     analysis={analysisFixture()}
@@ -600,9 +656,186 @@ test("current Named Lens body fails closed when one saved segment is invalid", (
     canSaveDrafts={false}
     onEditDraft={() => {}}
   />);
+  const firstScreen = html.slice(0, html.indexOf("What Changed"));
 
-  assert.doesNotMatch(html, /The public framework tests durable customer demand\./);
-  assert.doesNotMatch(html, /class="underwriting-passage"/);
+  assert.equal(
+    (firstScreen.match(/class="underwriting-decision-reason"/g) ?? []).length,
+    2,
+  );
+  assert.match(firstScreen, /Growth: 0\.35 decimal\./);
+  assert.match(
+    firstScreen,
+    /data-citation-kind="assumption_artifact"[^>]*>Persisted assumption · Recommended Policy/,
+  );
+  assert.doesNotMatch(firstScreen, /assumption_policy_growth/);
+  assert.doesNotMatch(firstScreen, /data-integrity-state="unavailable"/);
+});
+
+test("current first screen renders exactly the persisted reasons with adjacent source citations", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={currentDetailFixture()}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  const firstScreen = html.slice(0, html.indexOf("What Changed"));
+
+  assert.equal(
+    (firstScreen.match(/class="underwriting-decision-reason"/g) ?? []).length,
+    2,
+  );
+  assert.match(firstScreen, /Customer Counterevidence: counter\./);
+  assert.match(firstScreen, /Customer Demand: supported\./);
+  assert.match(
+    firstScreen,
+    /https:\/\/example\.test\/counter_1[^>]*>View original source for Customer Counterevidence ↗/,
+  );
+  assert.match(
+    firstScreen,
+    /api\/source-revisions\/revision_fact_1\/access[^>]*>Open archived source for Customer Demand ↗/,
+  );
+});
+
+test("current first screen fails closed when its persisted projection is not exact and resolvable", async (context) => {
+  const cases: Array<{
+    name: string;
+    mutate(detail: Extract<VersionedCandidateUnderwritingDetail, {
+      presentationAdapter: { kind: "current" };
+    }>): void;
+  }> = [{
+    name: "decision identity mismatch",
+    mutate(detail) {
+      detail.namedLensPresentation.firstScreenProjectionRefs.decisionId =
+        "decision_other";
+    },
+  }, {
+    name: "zero references",
+    mutate(detail) {
+      detail.namedLensPresentation.firstScreenProjectionRefs
+        .decisionEvidenceItemIds = [];
+    },
+  }, {
+    name: "only one reference",
+    mutate(detail) {
+      detail.namedLensPresentation.firstScreenProjectionRefs
+        .decisionEvidenceItemIds = ["fact_1"];
+    },
+  }, {
+    name: "more than three references",
+    mutate(detail) {
+      detail.namedLensPresentation.firstScreenProjectionRefs
+        .decisionEvidenceItemIds = [
+          "counter_1",
+          "fact_1",
+          "unknown_1",
+          "unknown_2",
+        ];
+    },
+  }, {
+    name: "an unknown reference",
+    mutate(detail) {
+      detail.namedLensPresentation.firstScreenProjectionRefs
+        .decisionEvidenceItemIds = ["fact_1", "unknown_1"];
+    },
+  }];
+
+  for (const testCase of cases) {
+    await context.test(testCase.name, () => {
+      const detail = currentDetailFixture();
+      if (!isCurrentUnderwritingDetail(detail)) {
+        throw new Error("Expected current detail.");
+      }
+      testCase.mutate(detail);
+      const html = renderToStaticMarkup(<UnderwritingDetailPanel
+        companyName="Current Lens Co"
+        analysis={analysisFixture()}
+        detail={detail}
+        drafts={[]}
+        canSaveDrafts={false}
+        onEditDraft={() => {}}
+      />);
+      const firstScreen = html.slice(0, html.indexOf("What Changed"));
+
+      assert.match(firstScreen, /data-integrity-state="unavailable"/);
+      assert.match(
+        firstScreen,
+        /Decision evidence unavailable · persisted projection failed integrity checks\./,
+      );
+      assert.equal(
+        (firstScreen.match(/class="underwriting-decision-reason"/g) ?? [])
+          .length,
+        0,
+      );
+    });
+  }
+});
+
+test("current Named Lens body enforces the complete saved passage schema and plain-text contract", async (context) => {
+  for (const { invalidText, marker } of [{
+    invalidText: "\u0000INVALID_NUL_BODY",
+    marker: "INVALID_NUL_BODY",
+  }, {
+    invalidText: "<strong>INVALID_HTML_BODY</strong>",
+    marker: "INVALID_HTML_BODY",
+  }, {
+    invalidText: "# INVALID_MARKDOWN_HEADING",
+    marker: "INVALID_MARKDOWN_HEADING",
+  }, {
+    invalidText: "[INVALID_MARKDOWN_LINK](https://example.test)",
+    marker: "INVALID_MARKDOWN_LINK",
+  }]) {
+    await context.test(`rejects ${JSON.stringify(invalidText)}`, () => {
+      const detail = currentDetailFixture();
+      if (!isCurrentUnderwritingDetail(detail)) {
+        throw new Error("Expected current detail.");
+      }
+      detail.namedLensPresentation.selectedPassages[0]!.passage.countercase
+        .text = invalidText;
+      const html = renderToStaticMarkup(<UnderwritingDetailPanel
+        companyName="Current Lens Co"
+        analysis={analysisFixture()}
+        detail={detail}
+        drafts={[]}
+        canSaveDrafts={false}
+        onEditDraft={() => {}}
+      />);
+      const mainReading = html.slice(
+        html.indexOf("Named Lens Readings"),
+        html.indexOf("Recommendation and Next Steps"),
+      );
+
+      assert.doesNotMatch(
+        mainReading,
+        /The public framework tests durable customer demand\./,
+      );
+      assert.doesNotMatch(mainReading, /class="underwriting-passage"/);
+      assert.doesNotMatch(html, new RegExp(marker));
+    });
+  }
+
+  await context.test("rejects an invalid non-text passage field", () => {
+    const detail = currentDetailFixture();
+    if (!isCurrentUnderwritingDetail(detail)) {
+      throw new Error("Expected current detail.");
+    }
+    detail.namedLensPresentation.selectedPassages[0]!.passage.wordCount = 0;
+    const html = renderToStaticMarkup(<UnderwritingDetailPanel
+      companyName="Current Lens Co"
+      analysis={analysisFixture()}
+      detail={detail}
+      drafts={[]}
+      canSaveDrafts={false}
+      onEditDraft={() => {}}
+    />);
+    const mainReading = html.slice(
+      html.indexOf("Named Lens Readings"),
+      html.indexOf("Recommendation and Next Steps"),
+    );
+
+    assert.doesNotMatch(mainReading, /class="underwriting-passage"/);
+  });
 });
 
 test("current Appendix retains complete persisted audit identities", () => {
@@ -623,6 +856,53 @@ test("current Appendix retains complete persisted audit identities", () => {
   assert.match(appendix, /decision-first-named-lens-v1/);
   assert.match(appendix, /judgment_advisory_1@named-lens-passage-v1@named-lens-generator-v1/);
   assert.match(appendix, /attemptNumber[\s\S]*1/);
+  for (const field of [
+    "supportEvidenceItemIds",
+    "counterEvidenceItemIds",
+    "strongestSupport",
+    "strongestCounterargument",
+    "unknowns",
+    "limitations",
+    "confidence",
+    "frameworkMetadata",
+    "sources",
+    "immutableRevision",
+  ]) assert.match(appendix, new RegExp(field));
+  for (const field of [
+    "fundPolicyId",
+    "frameworkCatalogFingerprint",
+    "referenceCatalogFingerprint",
+    "formulaVersions",
+    "providerModel",
+    "promptVersion",
+    "schemaVersion",
+    "settingsFingerprint",
+    "applicationCommit",
+    "namedLensSelectionPolicyVersion",
+    "namedLensPassageSchemaVersion",
+    "namedLensGeneratorVersion",
+    "underwritingPresentationSchemaVersion",
+    "decisionTaxonomyVersion",
+    "criticalEvidenceProjectionFingerprint",
+    "finalDispositionsFingerprint",
+    "presentationFingerprint",
+  ]) assert.match(appendix, new RegExp(field));
+  for (const identity of [
+    "report_current",
+    "projection_current",
+    "named-lens-renderer-v1",
+    "judgment_advisory_1",
+    "decision_current",
+  ]) assert.match(appendix, new RegExp(identity));
+  for (const attemptField of [
+    "status",
+    "telemetry",
+    "inputTokens",
+    "outputTokens",
+    "costUsd",
+    "latencyMs",
+    "failureReason",
+  ]) assert.match(appendix, new RegExp(attemptField));
 });
 
 test("new-run summary presents all queue statuses and a sixth priority without selection semantics", () => {

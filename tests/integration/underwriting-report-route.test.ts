@@ -731,6 +731,7 @@ function currentNamedLensBundle(input: {
     sourceCandidateRunId,
     workspaceId: finalization.evidencePack.workspaceId,
     dealId: finalization.evidencePack.dealId,
+    namedLensProviderAttempts: fixture.persistedAttempts,
     claimEdges: [
       ...finalization.judgments.flatMap(({ claimEdges }) =>
         structuredClone(claimEdges)
@@ -1773,6 +1774,16 @@ test("current candidate detail projects only persisted Named Lens order, passage
       };
       auditAppendix: {
         judgments: unknown[];
+        providerAttempts: Array<{
+          status: string;
+          telemetry: {
+            inputTokens: number;
+            outputTokens: number;
+            costUsd: string;
+            latencyMs: number;
+          } | null;
+          failureReason: string | null;
+        }>;
       };
       judgments: unknown[];
     };
@@ -1796,7 +1807,7 @@ test("current candidate detail projects only persisted Named Lens order, passage
   assert.deepEqual(
     payload.data.namedLensPresentation.decisionCriticalEvidenceProjection
       .evidenceRefs.map(({ evidencePackItemId }) => evidencePackItemId),
-    ["fact_1"],
+    ["counter_1", "fact_1"],
   );
   assert.deepEqual(
     payload.data.namedLensPresentation.dispositions.map((disposition) => ({
@@ -1861,12 +1872,31 @@ test("current candidate detail projects only persisted Named Lens order, passage
     payload.data.namedLensPresentation.firstScreenProjectionRefs,
     {
       decisionId: "decision_current",
-      decisionEvidenceItemIds: ["fact_1"],
+      decisionEvidenceItemIds: ["counter_1", "fact_1"],
       selectedJudgmentIds: ["judgment_advisory_1"],
     },
   );
   assert.deepEqual(payload.data.judgments, []);
   assert.ok(payload.data.auditAppendix.judgments.length > 0);
+  assert.deepEqual(payload.data.auditAppendix.providerAttempts, [{
+    workspaceId: "workspace_current",
+    artifactSourceCandidateRunId: "candidate_current",
+    judgmentOrCatalogCandidateId: "judgment_advisory_1",
+    logicalPassageId:
+      "judgment_advisory_1@named-lens-passage-v1@named-lens-generator-v1",
+    attemptNumber: 1,
+    attemptFingerprint: `sha256:${"4".repeat(64)}`,
+    status: "completed",
+    telemetry: {
+      inputTokens: 100,
+      outputTokens: 50,
+      costUsd: "0",
+      costUsdPricingVersion: "deterministic-zero-cost-v1",
+      costUsdUnavailableReason: null,
+      latencyMs: 10,
+    },
+    failureReason: null,
+  }]);
   const serialized = JSON.stringify(payload.data);
   assert.doesNotMatch(serialized, /rightsStatus|attributionNotes|packReview/);
   assert.doesNotMatch(serialized, /openIssues|Private authoring/);

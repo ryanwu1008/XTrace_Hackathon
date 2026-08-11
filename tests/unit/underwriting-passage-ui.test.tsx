@@ -10,7 +10,8 @@ import { createCurrentNamedLensFinalizationFixture } from
   "../helpers/current-named-lens-finalization";
 
 function renderCurrentMemo(): string {
-  const finalization = createCurrentNamedLensFinalizationFixture().finalization;
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const finalization = fixture.finalization;
   const detail = toVersionedCandidateUnderwritingDetail({
     bundle: {
       ...finalization,
@@ -18,6 +19,7 @@ function renderCurrentMemo(): string {
       workspaceId: finalization.evidencePack.workspaceId,
       dealId: finalization.evidencePack.dealId,
       claimEdges: [],
+      namedLensProviderAttempts: fixture.persistedAttempts,
     },
     adapter: {
       kind: "current",
@@ -52,6 +54,30 @@ test("current memo is a semantic single-column editorial reading experience", ()
   assert.doesNotMatch(html, /<table[^>]*class="vsee-framework-synthesis-table"/);
   assert.match(css, /font-size:17px;line-height:1\.68/);
   assert.match(css, /@media\(max-width:600px\)[\s\S]*font-size:16px/);
+  assert.match(
+    css,
+    /\.underwriting-audit-identities dt\{[^}]*font:700 16px/,
+  );
+  assert.match(
+    css,
+    /\.underwriting-audit-identities dd\{[^}]*font:400 16px/,
+  );
+  assert.match(
+    css,
+    /\.underwriting-audit-records pre\{[^}]*font:400 16px/,
+  );
+  assert.match(
+    css,
+    /@media\(max-width:600px\)[\s\S]*\.underwriting-audit-appendix table\{[^}]*table-layout:fixed;min-width:0;font-size:16px/,
+  );
+  assert.match(
+    css,
+    /\.underwriting-audit-appendix th,\.underwriting-audit-appendix td\{[^}]*overflow-wrap:anywhere/,
+  );
   assert.match(css, /:focus-visible/);
   assert.doesNotMatch(css, /grid-template-columns:[^;]*(?:2fr|repeat\(2)/);
+  assert.doesNotMatch(
+    css,
+    /\.underwriting-audit-(?:appendix|identities|records)[^{}]*\{[^}]*font(?:-size)?:[^;}]*(?:1[0-5])px/,
+  );
 });

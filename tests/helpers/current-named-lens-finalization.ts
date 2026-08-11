@@ -226,6 +226,15 @@ export function createCurrentNamedLensFinalizationFixture():
     fingerprint: "advisory-fixture-fingerprint",
   };
   const projectionEvidenceRefs = [{
+    evidencePackItemId: "counter_1",
+    classification: "fact" as const,
+    originRefs: [{
+      kind: "counterevidence_gate" as const,
+      id: "counter_1",
+    }],
+    reasonCodes: ["COUNTEREVIDENCE_GATE_INPUT"],
+    resolutionPath: ["counter_1"],
+  }, {
     evidencePackItemId: "fact_1",
     classification: "fact" as const,
     originRefs: [{ kind: "fired_rule" as const, id: "rule_current" }],
@@ -369,7 +378,7 @@ export function createCurrentNamedLensFinalizationFixture():
     }],
     firstScreenProjectionRefs: {
       decisionId: "decision_current",
-      decisionEvidenceItemIds: ["fact_1"],
+      decisionEvidenceItemIds: ["counter_1", "fact_1"],
       selectedJudgmentIds: [advisoryJudgmentId],
     },
     fingerprint: sha("9"),
@@ -406,7 +415,7 @@ export function createCurrentNamedLensFinalizationFixture():
     hardVeto: false,
     firedRules: [{
       ruleId: "rule_current",
-      inputRefs: ["fact_1"],
+      inputRefs: ["counter_1", "fact_1"],
       result: "not_applicable" as const,
       appliedCeiling: null,
       veto: false,

@@ -31,7 +31,8 @@ const scenarioFields = [
 ] as const;
 
 test("current article view model reads the saved named-lens passage order without reselecting judgments", () => {
-  const finalization = createCurrentNamedLensFinalizationFixture().finalization;
+  const fixture = createCurrentNamedLensFinalizationFixture();
+  const finalization = fixture.finalization;
   const detail = toVersionedCandidateUnderwritingDetail({
     bundle: {
       ...finalization,
@@ -39,6 +40,7 @@ test("current article view model reads the saved named-lens passage order withou
       workspaceId: finalization.evidencePack.workspaceId,
       dealId: finalization.evidencePack.dealId,
       claimEdges: [],
+      namedLensProviderAttempts: fixture.persistedAttempts,
     },
     adapter: {
       kind: "current",

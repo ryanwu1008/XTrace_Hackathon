@@ -3,9 +3,14 @@ import { buildUnderwritingArticleViewModel } from "./underwriting-article-view-m
 import type { VersionedCandidateUnderwritingDetail } from
   "../lib/underwriting/read-model";
 import {
+  DecisionCriticalEvidenceProjectionSchema,
+  NamedLensPassageSchema,
+} from "../lib/contracts/named-lens";
+import {
   hasSampleResearchScreeningAuthority,
   SAMPLE_RESEARCH_SCREENING_BADGE,
 } from "../lib/belief-reversal/sample-research-screening-authority";
+import { SourceRevisionLink } from "./source-revision-link";
 
 type CurrentUnderwritingDetail = Extract<
   VersionedCandidateUnderwritingDetail,
@@ -41,20 +46,15 @@ export function PassageUnderwritingDetailPanel({
   );
   const isSynthetic = /synthetic|sample/i.test(detail.versionSnapshot.providerModel)
     || hasSampleResearchAuthority;
-  const formalResult = detail.decision.decision
-    ?? detail.decision.decisionCeiling
-    ?? "Formal decision unavailable";
-  const decisionEvidence = namedLens.firstScreenProjectionRefs
-    .decisionEvidenceItemIds.flatMap((id) => {
-      const fact = detail.evidencePack.facts.find((item) => item.id === id);
-      if (fact) return [{ label: humanize(fact.field), value: fact.value, unit: fact.unit }];
-      const assumption = detail.evidencePack.assumptions.find((item) =>
-        item.id === id
-      );
-      return assumption
-        ? [{ label: humanize(assumption.field), value: assumption.value, unit: assumption.unit }]
-        : [];
-    });
+  const persistedFormalResult = detail.decision.decision
+    ?? detail.decision.decisionCeiling;
+  const formalResult = persistedFormalResult
+    ? humanize(persistedFormalResult)
+    : "Formal decision unavailable";
+  const decisionEvidence = resolveFirstScreenDecisionEvidence({
+    detail,
+    namedLens,
+  });
 
   return (
     <main className="underwriting-memo" aria-label="Underwriting memorandum">
@@ -83,14 +83,61 @@ export function PassageUnderwritingDetailPanel({
             <p>Immediate next action: obtain the persisted missing inputs before reconsidering the formal decision.</p>
           )}
           <div className="underwriting-decision-reasons">
-            {decisionEvidence.slice(0, 3).map((item, index) => (
-              <p key={`${item.label}:${index}`}>
-                {item.label}: {item.value}{item.unit ? ` ${item.unit}` : ""}.
-              </p>
-            ))}
-            {!decisionEvidence.length && (
-              <p>No decision-critical evidence item was persisted for the first-screen summary.</p>
-            )}
+            {decisionEvidence.state === "resolved"
+              ? decisionEvidence.reasons.map((item) => (
+                <div className="underwriting-decision-reason" key={item.id}>
+                  <p>
+                    {item.label}: {item.value}{item.unit
+                      ? ` ${item.unit}`
+                      : ""}.
+                  </p>
+                  <p className="underwriting-decision-reason-sources">
+                    {item.citations.map((citation) =>
+                      citation.kind === "original_public_source"
+                        ? (
+                          <a
+                            href={citation.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            key={`original:${citation.url}`}
+                          >
+                            View original source for {item.label} ↗
+                          </a>
+                        )
+                        : citation.kind === "stored_source_revision"
+                        ? (
+                          <SourceRevisionLink
+                            revisionId={citation.revisionId}
+                            page={citation.page ?? undefined}
+                            ariaLabel={`Open archived source for ${item.label}`}
+                            key={`revision:${citation.revisionId}:${citation.page ?? ""}`}
+                          >
+                            Open archived source for {item.label} ↗
+                          </SourceRevisionLink>
+                        )
+                        : (
+                          <span
+                            data-citation-kind="assumption_artifact"
+                            key={`assumption:${citation.assumptionId}`}
+                          >
+                            Persisted assumption · {humanize(
+                              citation.provenanceOrigin,
+                            )}
+                          </span>
+                        )
+                    )}
+                  </p>
+                </div>
+              ))
+              : (
+                <p
+                  className="underwriting-projection-unavailable"
+                  data-integrity-state="unavailable"
+                  role="status"
+                >
+                  Decision evidence unavailable · persisted projection failed integrity checks.
+                </p>
+              )}
           </div>
           <p>
             {namedLens.synthesis.branch === "principal_disagreement"
@@ -160,7 +207,9 @@ function Passage({
 }: {
   selected: NonNullable<ReturnType<typeof buildUnderwritingArticleViewModel>["persistedNamedLens"]>["selectedPassages"][number];
 }) {
-  const { passage } = selected;
+  const parsedPassage = NamedLensPassageSchema.safeParse(selected.passage);
+  if (!parsedPassage.success) return null;
+  const passage = parsedPassage.data;
   const segments = [
     passage.premise.text,
     passage.caseApplication.text,
@@ -232,8 +281,14 @@ function AuditAppendix({
         </table>
 
         <h3>Complete Named Lens artifact records</h3>
+        <AuditRecords label="Framework judgments" values={detail.auditAppendix.judgments} />
+        <AuditRecords label="Version snapshot" values={[detail.versionSnapshot]} />
+        <AuditRecords label="Named Lens presentation identities" values={[
+          namedLensAuditIdentityRecord(namedLens),
+        ]} />
         <AuditRecords label="Dispositions" values={namedLens.dispositions} />
         <AuditRecords label="Catalog considerations" values={detail.auditAppendix.catalogConsiderations} />
+        <AuditRecords label="Provider attempts" values={detail.auditAppendix.providerAttempts} />
         <AuditRecords label="Provider attempt references" values={detail.auditAppendix.providerAttemptRefs} />
 
         <h3>Complete scenario input matrix</h3>
@@ -309,6 +364,246 @@ function EditorialList({ title, values }: { title: string; values: string[] }) {
 
 function isRenderablePassageText(value: string): boolean {
   return Boolean(value.trim() && !value.includes("\u0000"));
+}
+
+type DecisionEvidenceCitation = {
+  kind: "original_public_source";
+  url: string;
+} | {
+  kind: "stored_source_revision";
+  revisionId: string;
+  page: number | null;
+} | {
+  kind: "assumption_artifact";
+  assumptionId: string;
+  provenanceOrigin: string;
+};
+
+type ResolvedDecisionEvidence = {
+  id: string;
+  label: string;
+  value: string;
+  unit: string | null;
+  citations: DecisionEvidenceCitation[];
+};
+
+type SelectedNamedLensPassage =
+  CurrentUnderwritingDetail["namedLensPresentation"]["selectedPassages"][number];
+
+function resolveFirstScreenDecisionEvidence({
+  detail,
+  namedLens,
+}: {
+  detail: CurrentUnderwritingDetail;
+  namedLens: CurrentUnderwritingDetail["namedLensPresentation"];
+}): {
+  state: "resolved";
+  reasons: ResolvedDecisionEvidence[];
+} | {
+  state: "unavailable";
+} {
+  const ids = namedLens.firstScreenProjectionRefs.decisionEvidenceItemIds;
+  if (
+    namedLens.firstScreenProjectionRefs.decisionId !== detail.decision.id
+    || ids.length < 2
+    || ids.length > 3
+    || new Set(ids).size !== ids.length
+    || !DecisionCriticalEvidenceProjectionSchema.safeParse(
+      namedLens.decisionCriticalEvidenceProjection,
+    ).success
+  ) return { state: "unavailable" };
+
+  const projectionRefs = new Map(
+    namedLens.decisionCriticalEvidenceProjection.evidenceRefs.map((reference) =>
+      [reference.evidencePackItemId, reference] as const
+    ),
+  );
+  if (
+    projectionRefs.size
+      !== namedLens.decisionCriticalEvidenceProjection.evidenceRefs.length
+  ) return { state: "unavailable" };
+
+  const reasons: ResolvedDecisionEvidence[] = [];
+  for (const id of ids) {
+    const projectionRef = projectionRefs.get(id);
+    const facts = detail.evidencePack.facts.filter((item) => item.id === id);
+    const assumptions = detail.evidencePack.assumptions.filter((item) =>
+      item.id === id
+    );
+    if (
+      !projectionRef
+      || facts.length + assumptions.length !== 1
+      || (projectionRef.classification === "fact"
+        ? facts.length !== 1
+        : projectionRef.classification === "assumption"
+        ? assumptions.length !== 1
+        : true)
+    ) return { state: "unavailable" };
+
+    if (facts.length === 1) {
+      const fact = facts[0]!;
+      const citations = citationsForFact(detail, fact);
+      if (!citations.length) return { state: "unavailable" };
+      reasons.push({
+        id,
+        label: humanize(fact.field),
+        value: fact.value,
+        unit: fact.unit,
+        citations,
+      });
+      continue;
+    }
+
+    const assumption = assumptions[0]!;
+    const citations = citationsForAssumption({
+      detail,
+      assumption,
+      projectionRef,
+    });
+    if (!citations.length) return { state: "unavailable" };
+    reasons.push({
+      id,
+      label: humanize(assumption.field),
+      value: assumption.value,
+      unit: assumption.unit,
+      citations,
+    });
+  }
+  return { state: "resolved", reasons };
+}
+
+function citationsForFact(
+  detail: CurrentUnderwritingDetail,
+  fact: CurrentUnderwritingDetail["evidencePack"]["facts"][number],
+): DecisionEvidenceCitation[] {
+  if (!isPersistedSourceRevision(detail, fact.sourceRevisionId)) return [];
+  return [
+    ...(fact.sourceAction.kind === "original_public_source"
+      ? [{
+        kind: "original_public_source" as const,
+        url: fact.sourceAction.url,
+      }]
+      : []),
+    {
+      kind: "stored_source_revision",
+      revisionId: fact.sourceRevisionId,
+      page: fact.sourceAction.kind === "stored_source_revision"
+        ? fact.sourceAction.page
+        : null,
+    },
+  ];
+}
+
+function citationsForAssumption({
+  detail,
+  assumption,
+  projectionRef,
+}: {
+  detail: CurrentUnderwritingDetail;
+  assumption: CurrentUnderwritingDetail["evidencePack"]["assumptions"][number];
+  projectionRef: CurrentUnderwritingDetail["namedLensPresentation"]["decisionCriticalEvidenceProjection"]["evidenceRefs"][number];
+}): DecisionEvidenceCitation[] {
+  const citations = new Map<string, DecisionEvidenceCitation>([[
+    `assumption:${assumption.id}`,
+    {
+      kind: "assumption_artifact",
+      assumptionId: assumption.id,
+      provenanceOrigin: assumption.provenanceOrigin,
+    },
+  ]]);
+  const addRevision = (revisionId: string, page: number | null = null) => {
+    if (isPersistedSourceRevision(detail, revisionId)) {
+      citations.set(`revision:${revisionId}:${page ?? ""}`, {
+        kind: "stored_source_revision",
+        revisionId,
+        page,
+      });
+    }
+  };
+  const addFactLineage = (itemId: string) => {
+    const linkedFacts = detail.evidencePack.facts.filter((fact) =>
+      fact.id === itemId
+    );
+    if (linkedFacts.length !== 1) return;
+    for (const citation of citationsForFact(detail, linkedFacts[0]!)) {
+      if (citation.kind === "assumption_artifact") continue;
+      const key = citation.kind === "original_public_source"
+        ? `original:${citation.url}`
+        : `revision:${citation.revisionId}:${citation.page ?? ""}`;
+      citations.set(key, citation);
+    }
+  };
+
+  for (const origin of projectionRef.originRefs) {
+    if (origin.kind === "source_revision") addRevision(origin.id);
+    addFactLineage(origin.id);
+  }
+  for (const reference of [
+    ...assumption.inputRefIds,
+    ...projectionRef.resolutionPath,
+  ]) {
+    addRevision(reference);
+    addFactLineage(reference);
+  }
+  return [...citations.values()];
+}
+
+function namedLensAuditIdentityRecord(
+  namedLens: CurrentUnderwritingDetail["namedLensPresentation"],
+) {
+  const passageIdentity = (
+    selected: SelectedNamedLensPassage,
+  ) => ({
+    selectedPosition: selected.selectedPosition,
+    disposition: selected.disposition,
+    displayIdentity: selected.displayIdentity,
+    passage: {
+      ...selected.passage,
+      premise: withoutPassageText(selected.passage.premise),
+      caseApplication: withoutPassageText(selected.passage.caseApplication),
+      countercase: withoutPassageText(selected.passage.countercase),
+      unknownBoundary: withoutPassageText(selected.passage.unknownBoundary),
+      conditionalConclusion: withoutPassageText(
+        selected.passage.conditionalConclusion,
+      ),
+    },
+    segmentCitations: selected.segmentCitations,
+    publicPremiseSources: selected.publicPremiseSources,
+  });
+  return {
+    reportId: namedLens.reportId,
+    schemaVersion: namedLens.schemaVersion,
+    rendererVersion: namedLens.rendererVersion,
+    fingerprint: namedLens.fingerprint,
+    terminalStatus: namedLens.terminalStatus,
+    terminalReasonCodes: namedLens.terminalReasonCodes,
+    versionIdentity: namedLens.versionIdentity,
+    decisionCriticalEvidenceProjection:
+      namedLens.decisionCriticalEvidenceProjection,
+    dispositions: namedLens.dispositions,
+    selectedPassages: namedLens.selectedPassages.map(passageIdentity),
+    appendixPassages: namedLens.appendixPassages.map(passageIdentity),
+    withheldDispositions: namedLens.withheldDispositions,
+    synthesis: namedLens.synthesis,
+    segmentCitations: namedLens.segmentCitations,
+    firstScreenProjectionRefs: namedLens.firstScreenProjectionRefs,
+  };
+}
+
+function withoutPassageText<T extends { text: string }>(
+  segment: T,
+): Omit<T, "text"> {
+  const { text, ...identity } = segment;
+  void text;
+  return identity;
+}
+
+function isPersistedSourceRevision(
+  detail: CurrentUnderwritingDetail,
+  revisionId: string,
+): boolean {
+  return detail.sourceRevisionIds.includes(revisionId)
+    && detail.evidencePack.sourceRevisionIds.includes(revisionId);
 }
 
 function isSyntheticProvider(detail: CurrentUnderwritingDetail): boolean {
