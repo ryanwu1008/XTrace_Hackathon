@@ -139,6 +139,36 @@ function sampleResearchScreeningSource(): CanonicalSourceRefV2 {
   };
 }
 
+function sampleDecisionSource(): CanonicalSourceRefV2 {
+  return {
+    ...canonicalPublicSource(),
+    id: "fixture_invested_negative_sample",
+    provenance: "demo_fixture",
+    title: "Sample decision record",
+    canonicalUrl: null,
+    documentId: "source_fixture_invested_negative_sample",
+    publisher: "Internal Deal Registry",
+    providerId: "deal-registry",
+    eventAt: "2026-04-01T12:00:00.000Z",
+    eventAtPrecision: "timestamp",
+    publishedAt: null,
+    publishedAtPrecision: null,
+    updatedAt: null,
+    updatedAtPrecision: null,
+    entityKeys: [],
+    sourceClass: "internal_decision_record",
+    sourceAuthority: "primary",
+    evidenceRole: "context",
+    sourceRevisionId: "revision_fixture_invested_negative_sample",
+    locator: { kind: "json_pointer", pointer: "/priorDecision" },
+    text: {
+      status: "normalized_only",
+      normalizedStatement:
+        "Sample decision record. The synthetic portfolio thesis depended on containment. Reconsideration conditions: Independent incident evidence changes the risk assessment.",
+    },
+  };
+}
+
 const PINNED_CONTEXT: ReportEvidenceContext = {
   state: "current",
   schemaVersion: "run-evidence-context-v1",
@@ -556,6 +586,44 @@ test("current memo preserves the authoritative sample-research label and raw lin
   const appendix = html.slice(html.indexOf("Audit Appendix"));
   assert.match(appendix, /xtrace:claim_current/);
   assert.match(appendix, /fact_1/);
+});
+
+test("current memo labels exact Sample decision record lineage independently of provider naming", () => {
+  const unmatched = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={currentDetailFixture({ providerModel: "reviewed-provider-v1" })}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  assert.doesNotMatch(
+    unmatched,
+    /Sample decision record · synthetic demo history/,
+  );
+
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={{
+      ...analysisFixture(),
+      sources: [sampleDecisionSource()],
+    }}
+    detail={currentDetailFixture({ providerModel: "reviewed-provider-v1" })}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  const firstScreen = html.slice(0, html.indexOf("What Changed"));
+  const appendix = html.slice(html.indexOf("Audit Appendix"));
+
+  assert.match(
+    firstScreen,
+    /Sample decision record · synthetic demo history/,
+  );
+  assert.match(
+    appendix,
+    /Sample decision record · synthetic demo history/,
+  );
 });
 
 test("current first screen uses its saved projection references across facts and assumptions", () => {
