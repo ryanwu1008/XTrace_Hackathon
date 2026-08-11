@@ -44,13 +44,17 @@ export function PassageUnderwritingDetailPanel({
   const formalResult = detail.decision.decision
     ?? detail.decision.decisionCeiling
     ?? "Formal decision unavailable";
-  const decisionEvidence = namedLens.decisionCriticalEvidenceProjection
-    .evidenceRefs.map(({ evidencePackItemId }) =>
-      detail.evidencePack.facts.find(({ id }) => id === evidencePackItemId)
-    )
-    .filter((fact): fact is typeof detail.evidencePack.facts[number] =>
-      fact !== undefined
-    );
+  const decisionEvidence = namedLens.firstScreenProjectionRefs
+    .decisionEvidenceItemIds.flatMap((id) => {
+      const fact = detail.evidencePack.facts.find((item) => item.id === id);
+      if (fact) return [{ label: humanize(fact.field), value: fact.value, unit: fact.unit }];
+      const assumption = detail.evidencePack.assumptions.find((item) =>
+        item.id === id
+      );
+      return assumption
+        ? [{ label: humanize(assumption.field), value: assumption.value, unit: assumption.unit }]
+        : [];
+    });
 
   return (
     <main className="underwriting-memo" aria-label="Underwriting memorandum">
@@ -79,9 +83,9 @@ export function PassageUnderwritingDetailPanel({
             <p>Immediate next action: obtain the persisted missing inputs before reconsidering the formal decision.</p>
           )}
           <div className="underwriting-decision-reasons">
-            {decisionEvidence.slice(0, 3).map((fact) => (
-              <p key={fact.id}>
-                {humanize(fact.field)}: {fact.value}{fact.unit ? ` ${fact.unit}` : ""}.
+            {decisionEvidence.slice(0, 3).map((item, index) => (
+              <p key={`${item.label}:${index}`}>
+                {item.label}: {item.value}{item.unit ? ` ${item.unit}` : ""}.
               </p>
             ))}
             {!decisionEvidence.length && (
@@ -146,7 +150,7 @@ export function PassageUnderwritingDetailPanel({
         <p>Formal decision: {formalResult}. Confidence: {humanize(detail.decision.confidence)}.</p>
       </MemoSection>
 
-      <AuditAppendix detail={detail} />
+      <AuditAppendix detail={detail} hasSampleResearchAuthority={hasSampleResearchAuthority} />
     </main>
   );
 }
@@ -163,11 +167,17 @@ function Passage({
     passage.countercase.text,
     passage.unknownBoundary.text,
     passage.conditionalConclusion.text,
-  ].filter(isRenderablePassageText);
+  ];
+  if (!segments.every(isRenderablePassageText)) return null;
+  const paragraphs = [
+    `${segments[0]} ${segments[1]}`,
+    segments[2],
+    `${segments[3]} ${segments[4]}`,
+  ];
   return (
     <article className="underwriting-passage">
       <h3>{selected.displayIdentity.displayName}</h3>
-      {segments.map((text, index) => <p key={`${passage.fingerprint}:${index}`}>{text}</p>)}
+      {paragraphs.map((text, index) => <p key={`${passage.fingerprint}:${index}`}>{text}</p>)}
       <p className="underwriting-passage-sources">
         {selected.publicPremiseSources.map((source) => (
           <a href={source.url} target="_blank" rel="noreferrer" key={source.sourceId}>
@@ -179,14 +189,20 @@ function Passage({
   );
 }
 
-function AuditAppendix({ detail }: { detail: CurrentUnderwritingDetail }) {
+function AuditAppendix({
+  detail,
+  hasSampleResearchAuthority,
+}: {
+  detail: CurrentUnderwritingDetail;
+  hasSampleResearchAuthority: boolean;
+}) {
   const namedLens = detail.namedLensPresentation;
   return (
     <details className="underwriting-audit-appendix">
       <summary>Audit Appendix</summary>
       <div>
         <h2>Audit Appendix</h2>
-        <p>DRAFT ONLY. {isSyntheticProvider(detail) ? "SYNTHETIC / SAMPLE RESEARCH-ONLY." : "Persisted candidate artifacts only."}</p>
+        <p>DRAFT ONLY. {isSyntheticProvider(detail) || hasSampleResearchAuthority ? "SYNTHETIC / SAMPLE RESEARCH-ONLY." : "Persisted candidate artifacts only."}</p>
         <h3>Additional Named Lens perspectives</h3>
         {namedLens.appendixPassages.map((selected) => <Passage key={selected.passage.fingerprint} selected={selected} />)}
         {namedLens.withheldDispositions.length ? (
@@ -215,6 +231,11 @@ function AuditAppendix({ detail }: { detail: CurrentUnderwritingDetail }) {
           })}</tbody>
         </table>
 
+        <h3>Complete Named Lens artifact records</h3>
+        <AuditRecords label="Dispositions" values={namedLens.dispositions} />
+        <AuditRecords label="Catalog considerations" values={detail.auditAppendix.catalogConsiderations} />
+        <AuditRecords label="Provider attempt references" values={detail.auditAppendix.providerAttemptRefs} />
+
         <h3>Complete scenario input matrix</h3>
         <table>
           <thead><tr><th>Scenario</th><th>Input</th><th>Value</th><th>Reason</th></tr></thead>
@@ -238,8 +259,12 @@ function AuditAppendix({ detail }: { detail: CurrentUnderwritingDetail }) {
         <dl className="underwriting-audit-identities">
           <div><dt>Candidate run</dt><dd>{detail.candidateRunId}</dd></div>
           <div><dt>Source candidate run</dt><dd>{detail.sourceCandidateRunId}</dd></div>
+          <div><dt>Presentation report</dt><dd>{namedLens.reportId}</dd></div>
+          <div><dt>Presentation schema</dt><dd>{namedLens.schemaVersion}</dd></div>
           <div><dt>Presentation fingerprint</dt><dd>{namedLens.fingerprint}</dd></div>
           <div><dt>Renderer version</dt><dd>{namedLens.rendererVersion}</dd></div>
+          <div><dt>Terminal status</dt><dd>{namedLens.terminalStatus}</dd></div>
+          <div><dt>Terminal reasons</dt><dd>{namedLens.terminalReasonCodes.join(", ")}</dd></div>
           <div><dt>Provider model</dt><dd>{detail.versionSnapshot.providerModel}</dd></div>
           <div><dt>Provider attempt references</dt><dd>{detail.auditAppendix.providerAttemptRefs.map(({ attemptFingerprint }) => attemptFingerprint).join(", ") || "None"}</dd></div>
           <div><dt>Catalog considerations</dt><dd>{detail.auditAppendix.catalogConsiderations.map(({ fingerprint }) => fingerprint).join(", ") || "None"}</dd></div>
@@ -252,6 +277,15 @@ function AuditAppendix({ detail }: { detail: CurrentUnderwritingDetail }) {
       </div>
     </details>
   );
+}
+
+function AuditRecords({ label, values }: { label: string; values: unknown[] }) {
+  return <section className="underwriting-audit-records">
+    <h4>{label}</h4>
+    {values.length ? values.map((value, index) => (
+      <pre key={`${label}:${index}`}>{JSON.stringify(value, null, 2)}</pre>
+    )) : <p>No persisted {label.toLowerCase()}.</p>}
+  </section>;
 }
 
 function MemoSection({ number, title, children }: {

@@ -6,6 +6,7 @@ import {
   type UnderwritingAnalysisContext,
   UnderwritingDetailPanel,
 } from "../../app/underwriting-detail";
+import { isCurrentUnderwritingDetail } from "../../app/underwriting-passage-detail";
 import { UnderwritingSummaryPanel } from "../../app/underwriting-summary";
 import type { ReportEvidenceContext } from "../../lib/contracts/evidence-context";
 import type { SourceRefV2 } from "../../lib/contracts/source-evidence";
@@ -552,6 +553,76 @@ test("current memo preserves the authoritative sample-research label and raw lin
   const appendix = html.slice(html.indexOf("Audit Appendix"));
   assert.match(appendix, /xtrace:claim_current/);
   assert.match(appendix, /fact_1/);
+});
+
+test("current first screen uses its saved projection references across facts and assumptions", () => {
+  const detail = currentDetailFixture();
+  if (!isCurrentUnderwritingDetail(detail)) throw new Error("Expected current detail.");
+  detail.evidencePack.assumptions.push({
+    id: "assumption_decisive_growth",
+    field: "growth",
+    value: "0.35",
+    unit: "decimal",
+    scenario: "all",
+    rationale: "Persisted decisive assumption.",
+    inputRefIds: [],
+    provenanceOrigin: "recommended_policy",
+    sensitivity: "high",
+    requiresConfirmation: false,
+  });
+  detail.namedLensPresentation.firstScreenProjectionRefs.decisionEvidenceItemIds = [
+    "assumption_decisive_growth",
+    "fact_1",
+  ];
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={detail}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  const firstScreen = html.slice(0, html.indexOf("What Changed"));
+
+  assert.match(firstScreen, /Growth: 0\.35 decimal\./);
+  assert.match(firstScreen, /Customer Demand: supported\./);
+});
+
+test("current Named Lens body fails closed when one saved segment is invalid", () => {
+  const detail = currentDetailFixture();
+  if (!isCurrentUnderwritingDetail(detail)) throw new Error("Expected current detail.");
+  detail.namedLensPresentation.selectedPassages[0]!.passage.countercase.text = "\u0000invalid";
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={detail}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+
+  assert.doesNotMatch(html, /The public framework tests durable customer demand\./);
+  assert.doesNotMatch(html, /class="underwriting-passage"/);
+});
+
+test("current Appendix retains complete persisted audit identities", () => {
+  const detail = currentDetailFixture();
+  if (!isCurrentUnderwritingDetail(detail)) throw new Error("Expected current detail.");
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={detail}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+  const appendix = html.slice(html.indexOf("Audit Appendix"));
+
+  assert.match(appendix, /judgment_advisory_1/);
+  assert.match(appendix, /named-lens-passage-v1/);
+  assert.match(appendix, /decision-first-named-lens-v1/);
+  assert.match(appendix, /judgment_advisory_1@named-lens-passage-v1@named-lens-generator-v1/);
+  assert.match(appendix, /attemptNumber[\s\S]*1/);
 });
 
 test("new-run summary presents all queue statuses and a sixth priority without selection semantics", () => {
