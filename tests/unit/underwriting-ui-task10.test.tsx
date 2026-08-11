@@ -15,6 +15,10 @@ import type {
   CandidateUnderwritingDetail,
   PublicActionDraft,
 } from "../../lib/underwriting/read-model";
+import { toVersionedCandidateUnderwritingDetail } from
+  "../../lib/underwriting/read-model";
+import { createCurrentNamedLensFinalizationFixture } from
+  "../helpers/current-named-lens-finalization";
 
 const SCENARIO_FIELDS: readonly ScenarioInputField[] = [
   "revenue_path",
@@ -468,6 +472,87 @@ function draftFixture(): PublicActionDraft {
     updatedAt: "2026-08-01T12:00:00.000Z",
   };
 }
+
+function currentDetailFixture(input: {
+  claimEdges?: CandidateUnderwritingDetail["claimEdges"];
+  providerModel?: string;
+} = {}): CandidateUnderwritingDetail {
+  const finalization = createCurrentNamedLensFinalizationFixture().finalization;
+  finalization.versionSnapshot.providerModel = input.providerModel
+    ?? finalization.versionSnapshot.providerModel;
+  return toVersionedCandidateUnderwritingDetail({
+    bundle: {
+      ...finalization,
+      sourceCandidateRunId: finalization.candidateRunId,
+      workspaceId: finalization.evidencePack.workspaceId,
+      dealId: finalization.evidencePack.dealId,
+      claimEdges: input.claimEdges ?? [],
+    },
+    adapter: {
+      kind: "current",
+      schemaVersion: "decision-first-named-lens-v1",
+    },
+  });
+}
+
+test("current decision-first memo renders persisted prose before audit with one advisory disclosure", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={analysisFixture()}
+    detail={currentDetailFixture()}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+
+  for (const heading of [
+    "Decision Request",
+    "What Changed",
+    "Company Position",
+    "Thesis Assessment",
+    "Financial and Valuation Status",
+    "Named Lens Readings",
+    "Recommendation and Next Steps",
+  ]) assert.match(html, new RegExp(heading));
+  assert.match(html, /Appendix/);
+  assert.match(html, /The public framework tests durable customer demand\./);
+  assert.match(html, /Saved company evidence applies the framework\./);
+  assert.match(html, /Saved counterevidence limits the conclusion\./);
+  assert.match(html, /A saved unknown defines the diligence boundary\./);
+  assert.match(html, /The view remains conditional on resolving the saved unknown\./);
+  assert.equal((html.match(/formal decision weight zero/g) ?? []).length, 1);
+  assert.match(html, /<details[^>]*><summary>Audit Appendix/);
+  assert.doesNotMatch(html, /vsee-framework-synthesis-table/);
+  assert.doesNotMatch(html, /AnalystPanelSynthesis/);
+  assert.doesNotMatch(html, /<button[^>]*>\s*(?:SEND|PUBLISH)/i);
+});
+
+test("current memo preserves the authoritative sample-research label and raw lineage in its audit", () => {
+  const html = renderToStaticMarkup(<UnderwritingDetailPanel
+    companyName="Current Lens Co"
+    analysis={{
+      ...analysisFixture(),
+      sources: [sampleResearchScreeningSource()],
+    }}
+    detail={currentDetailFixture({
+      providerModel: "reviewed-provider-v1",
+      claimEdges: [{
+        claimItemId: "xtrace:claim_current",
+        dependencyItemId: "fact_1",
+        dependencyType: "fact",
+      }],
+    })}
+    drafts={[]}
+    canSaveDrafts={false}
+    onEditDraft={() => {}}
+  />);
+
+  assert.match(html,
+    /Sample research screening record · synthetic, no meeting or VC interaction/);
+  const appendix = html.slice(html.indexOf("Audit Appendix"));
+  assert.match(appendix, /xtrace:claim_current/);
+  assert.match(appendix, /fact_1/);
+});
 
 test("new-run summary presents all queue statuses and a sixth priority without selection semantics", () => {
   const statuses = [

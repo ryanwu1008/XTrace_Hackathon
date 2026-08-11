@@ -5,9 +5,9 @@ import { useEffect, useState } from "react";
 import type { CompanyAnalysis } from "../lib/contracts/domain";
 import type { ReportEvidenceContext } from "../lib/contracts/evidence-context";
 import type {
-  CandidateUnderwritingDetail,
   PublicActionDraft,
   UnderwritingBatchSummary,
+  VersionedCandidateUnderwritingDetail,
 } from "../lib/underwriting/read-model";
 import { ActionDraftDialog } from "./action-draft-dialog";
 import { apiRequest } from "./api-client";
@@ -46,7 +46,7 @@ export function UnderwritingSummary({
   const [retryToken, setRetryToken] = useState(0);
   const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
   const [detail, setDetail] =
-    useState<CandidateUnderwritingDetail | null>(null);
+    useState<VersionedCandidateUnderwritingDetail | null>(null);
   const [loadedEvidenceContext, setLoadedEvidenceContext] = useState<{
     reportId: string;
     context: ReportEvidenceContext | undefined;
@@ -95,7 +95,7 @@ export function UnderwritingSummary({
     setCandidateError("");
     try {
       const [candidateDetail, actionDrafts] = await Promise.all([
-        apiRequest<CandidateUnderwritingDetail>(
+        apiRequest<VersionedCandidateUnderwritingDetail>(
           `/api/reports/${encodeURIComponent(reportId)}/underwriting/${
             encodeURIComponent(entry.dealId)
           }`,
@@ -221,8 +221,8 @@ export function UnderwritingSummaryPanel({
           <p>
             All Changed Beliefs enter Deep Underwriting. Priority Order
             controls execution order only and never eligibility. Open finalized
-            work for the decision memo, Analyst Panel Synthesis, complete
-            Investor Framework Perspectives, Evidence Pack IDs, and exact
+            work for the decision-first memo, complete Investor Framework
+            Perspectives and Named Lens readings, Evidence Pack IDs, and exact
             public-source lineage.
           </p>
         </div>

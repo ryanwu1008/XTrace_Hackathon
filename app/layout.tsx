@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./vsee.css";
+import "./underwriting-memo.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://vsee-vc-intelligence.dream86625.chatgpt.site"),

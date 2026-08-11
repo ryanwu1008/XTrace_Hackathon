@@ -1,0 +1,35 @@
+.underwriting-memo{width:min(780px,100%);margin:0 auto;padding:32px 24px 64px;color:#dce2dd;font-size:17px;line-height:1.68;overflow-wrap:anywhere}
+.underwriting-memo *{min-width:0}
+.underwriting-memo-masthead{padding:0 0 34px;border-bottom:1px solid var(--line)}
+.underwriting-memo-masthead>span,.underwriting-memo-section>header>span,.underwriting-status{color:var(--lime);font:700 11px/1.45 var(--mono);letter-spacing:.1em;text-transform:uppercase}
+.underwriting-memo h1{margin:9px 0 8px;color:#f0f3f0;font:400 clamp(34px,5vw,52px)/1.05 var(--serif)}
+.underwriting-memo-masthead p{margin:0;color:#aeb7b1;font:400 19px/1.45 var(--serif)}
+.underwriting-memo-section{padding:40px 0;border-bottom:1px solid var(--line)}
+.underwriting-memo-section>header{display:flex;align-items:baseline;gap:13px}
+.underwriting-memo h2{margin:0;color:#edf1ed;font:400 clamp(25px,3vw,32px)/1.15 var(--serif)}
+.underwriting-memo h3{margin:26px 0 10px;color:#e6ece7;font:400 23px/1.25 var(--serif)}
+.underwriting-memo p{max-width:68ch;margin:16px 0;color:#c9d1cb;font-size:17px;line-height:1.68}
+.underwriting-memo ol,.underwriting-memo ul{max-width:68ch;margin:17px 0;padding-left:1.25rem}
+.underwriting-memo li+li{margin-top:8px}
+.underwriting-decision-first>h3{margin-top:11px;font-size:31px}
+.underwriting-decision-reasons{padding-left:17px;border-left:2px solid rgba(199,255,74,.48)}
+.underwriting-decision-reasons p{margin:8px 0}
+.underwriting-draft-notice{color:#e0bd87!important;font:700 12px/1.55 var(--mono)!important;letter-spacing:.04em}
+.underwriting-editorial-list+ .underwriting-editorial-list{margin-top:25px}
+.underwriting-editorial-list h3{margin-bottom:7px;font-size:21px}
+.underwriting-named-lens-disclosure{color:#adb7af!important;font-style:italic}
+.underwriting-passage{padding:27px 0;border-top:1px solid rgba(142,155,146,.3)}
+.underwriting-passage h3{margin-top:0}
+.underwriting-passage-sources{display:flex;flex-wrap:wrap;gap:11px;margin-top:20px!important}
+.underwriting-passage-sources a{color:#dbe4a8;text-decoration:underline;text-underline-offset:3px}
+.underwriting-audit-appendix{margin-top:38px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.underwriting-audit-appendix>summary{min-height:48px;padding:14px 0;color:#e6ece7;cursor:pointer;font:600 18px/1.3 var(--serif)}
+.underwriting-audit-appendix>summary:focus-visible,.underwriting-passage-sources a:focus-visible{outline:3px solid var(--lime);outline-offset:3px}
+.underwriting-audit-appendix>div{padding:4px 0 32px}
+.underwriting-audit-appendix table{width:100%;border-collapse:collapse;font-size:16px;line-height:1.55}
+.underwriting-audit-appendix th,.underwriting-audit-appendix td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.underwriting-audit-identities{display:grid;gap:10px}
+.underwriting-audit-identities div{display:grid;grid-template-columns:minmax(150px,.35fr) minmax(0,1fr);gap:16px}
+.underwriting-audit-identities dt{color:#aab3ac;font:700 12px/1.45 var(--mono)}
+.underwriting-audit-identities dd{margin:0;font:400 14px/1.55 var(--mono)}
+@media(max-width:600px){.underwriting-memo{padding:24px 16px 44px;font-size:16px;line-height:1.62}.underwriting-memo-section{padding:32px 0}.underwriting-memo p{font-size:16px;line-height:1.62}.underwriting-memo h2{font-size:26px}.underwriting-memo h3{font-size:22px}.underwriting-decision-first>h3{font-size:29px}.underwriting-audit-appendix>summary{min-height:48px;padding:13px 0}.underwriting-audit-appendix{overflow-x:auto}.underwriting-audit-identities div{grid-template-columns:1fr;gap:3px}.underwriting-audit-appendix table{min-width:560px}.underwriting-passage-sources a{display:inline-block;min-height:44px;padding:10px 0}}

@@ -7,6 +7,7 @@ import type { ReportEvidenceContext } from "../lib/contracts/evidence-context";
 import type {
   CandidateUnderwritingDetail,
   PublicActionDraft,
+  VersionedCandidateUnderwritingDetail,
 } from "../lib/underwriting/read-model";
 import { SourceRevisionLink } from "./source-revision-link";
 import { formatTemporalForDisplay } from "../lib/format/temporal";
@@ -23,6 +24,10 @@ import {
   hasSampleResearchScreeningAuthority,
   SAMPLE_RESEARCH_SCREENING_BADGE,
 } from "../lib/belief-reversal/sample-research-screening-authority";
+import {
+  isCurrentUnderwritingDetail,
+  PassageUnderwritingDetailPanel,
+} from "./underwriting-passage-detail";
 
 /** @deprecated Import CandidateUnderwritingDetail from the read model. */
 export type CandidateUnderwritingDetailDto = CandidateUnderwritingDetail;
@@ -65,7 +70,7 @@ export function UnderwritingDetailDialog({
   open: boolean;
   companyName: string;
   analysis: UnderwritingAnalysisContext | null;
-  detail: CandidateUnderwritingDetail | null;
+  detail: VersionedCandidateUnderwritingDetail | null;
   drafts: PublicActionDraft[];
   evidenceContext?: ReportEvidenceContext;
   canSaveDrafts: boolean;
@@ -119,6 +124,41 @@ export function UnderwritingDetailDialog({
 }
 
 export function UnderwritingDetailPanel({
+  companyName,
+  analysis,
+  detail,
+  drafts,
+  evidenceContext,
+  canSaveDrafts,
+  onEditDraft,
+}: {
+  companyName: string;
+  analysis: UnderwritingAnalysisContext | null;
+  detail: CandidateUnderwritingDetail | VersionedCandidateUnderwritingDetail;
+  drafts: PublicActionDraft[];
+  evidenceContext?: ReportEvidenceContext;
+  canSaveDrafts: boolean;
+  onEditDraft(draft: PublicActionDraft): void;
+}) {
+  if (isCurrentUnderwritingDetail(detail)) {
+    return <PassageUnderwritingDetailPanel
+      companyName={companyName}
+      analysis={analysis}
+      detail={detail}
+    />;
+  }
+  return <LegacyUnderwritingDetailPanel
+    companyName={companyName}
+    analysis={analysis}
+    detail={detail as CandidateUnderwritingDetail}
+    drafts={drafts}
+    evidenceContext={evidenceContext}
+    canSaveDrafts={canSaveDrafts}
+    onEditDraft={onEditDraft}
+  />;
+}
+
+export function LegacyUnderwritingDetailPanel({
   companyName,
   analysis,
   detail,

@@ -1,4 +1,7 @@
-import type { CandidateUnderwritingDetail } from "../lib/underwriting/read-model";
+import type {
+  CandidateUnderwritingDetail,
+  VersionedCandidateUnderwritingDetail,
+} from "../lib/underwriting/read-model";
 import type { ScenarioInputField } from "../lib/contracts/underwriting";
 import type { BeliefAction } from "../lib/contracts/domain";
 import { renderRecommendedNextMove } from "../lib/reports/action-policy";
@@ -126,11 +129,30 @@ export interface UnderwritingArticleViewModel {
     confidence: string;
     nextAction: string;
   };
+  persistedNamedLens: PersistedNamedLensPresentation | null;
+}
+
+type CurrentCandidateUnderwritingDetail = Extract<
+  VersionedCandidateUnderwritingDetail,
+  { presentationAdapter: { kind: "current" } }
+>;
+
+export type PersistedNamedLensPresentation =
+  CurrentCandidateUnderwritingDetail["namedLensPresentation"];
+
+function currentNamedLensPresentation(
+  detail: CandidateUnderwritingDetail | VersionedCandidateUnderwritingDetail,
+): PersistedNamedLensPresentation | null {
+  return "presentationAdapter" in detail
+    && detail.presentationAdapter.kind === "current"
+    && "namedLensPresentation" in detail
+    ? detail.namedLensPresentation
+    : null;
 }
 
 export function buildUnderwritingArticleViewModel(input: {
   analysis: ArticleAnalysisContext | null;
-  detail: CandidateUnderwritingDetail;
+  detail: CandidateUnderwritingDetail | VersionedCandidateUnderwritingDetail;
 }): UnderwritingArticleViewModel {
   const activeJudgments = input.detail.judgments.filter((judgment) =>
     judgment.applicability === "applicable"
@@ -166,7 +188,10 @@ export function buildUnderwritingArticleViewModel(input: {
       : [];
   });
 
-  const namedLensReadings = buildNamedLensReadings(input.detail);
+  const persistedNamedLens = currentNamedLensPresentation(input.detail);
+  const namedLensReadings = persistedNamedLens
+    ? emptyNamedLensReadings()
+    : buildNamedLensReadings(input.detail);
   const requiredBeforeValuation = valuationDiligenceCatalog.filter((
     { fieldIds },
   ) => fieldIds.some((fieldId) => missingScenarioFields.has(fieldId)));
@@ -261,6 +286,22 @@ export function buildUnderwritingArticleViewModel(input: {
       ceiling: input.detail.decision.decisionCeiling ?? "Unavailable",
       confidence: input.detail.decision.confidence,
       nextAction,
+    },
+    persistedNamedLens,
+  };
+}
+
+function emptyNamedLensReadings(): NamedLensReadingsPresentation {
+  return {
+    readings: [],
+    passagesDiscriminate: false,
+    withheldCount: 0,
+    panel: {
+      activeCount: 0,
+      abstainedCount: 0,
+      unavailableCount: 0,
+      supportiveCount: 0,
+      negativeCount: 0,
     },
   };
 }
@@ -471,7 +512,7 @@ function buildNamedLensReadings(
   const argumentSignatures = new Set(
     eligible.map(({ displayName, support, counterargument }) =>
       [support ?? "", counterargument ?? ""]
-        .join(" ")
+        .join(" ")
         .split(displayName)
         .join("")
         .replace(/\s+/gu, " ")

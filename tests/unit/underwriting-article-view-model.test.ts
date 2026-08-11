@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildUnderwritingArticleViewModel } from "../../app/underwriting-article-view-model";
-import type { CandidateUnderwritingDetail } from "../../lib/underwriting/read-model";
+import { isCurrentUnderwritingDetail } from "../../app/underwriting-passage-detail";
+import {
+  toVersionedCandidateUnderwritingDetail,
+  type CandidateUnderwritingDetail,
+} from "../../lib/underwriting/read-model";
+import { createCurrentNamedLensFinalizationFixture } from
+  "../helpers/current-named-lens-finalization";
 
 const scenarioFields = [
   "revenue_path",
@@ -23,6 +29,53 @@ const scenarioFields = [
   "failure_conditions",
   "probability",
 ] as const;
+
+test("current article view model reads the saved named-lens passage order without reselecting judgments", () => {
+  const finalization = createCurrentNamedLensFinalizationFixture().finalization;
+  const detail = toVersionedCandidateUnderwritingDetail({
+    bundle: {
+      ...finalization,
+      sourceCandidateRunId: finalization.candidateRunId,
+      workspaceId: finalization.evidencePack.workspaceId,
+      dealId: finalization.evidencePack.dealId,
+      claimEdges: [],
+    },
+    adapter: {
+      kind: "current",
+      schemaVersion: "decision-first-named-lens-v1",
+    },
+  });
+  if (!isCurrentUnderwritingDetail(detail)) {
+    throw new Error("Expected the current presentation adapter fixture.");
+  }
+  const firstSavedPassage = detail.namedLensPresentation.selectedPassages[0]!;
+  const secondSavedPassage = structuredClone(firstSavedPassage);
+  secondSavedPassage.selectedPosition = 2;
+  secondSavedPassage.passage.fingerprint = `sha256:${"f".repeat(64)}`;
+  secondSavedPassage.passage.premise.text =
+    "Second persisted passage must remain first in the saved order.";
+  detail.namedLensPresentation.selectedPassages = [
+    secondSavedPassage,
+    firstSavedPassage,
+  ];
+
+  const article = buildUnderwritingArticleViewModel({
+    analysis: null,
+    detail,
+  });
+  assert.ok(article.persistedNamedLens);
+
+  assert.deepEqual(
+    article.persistedNamedLens.selectedPassages.map(({ selectedPosition }) =>
+      selectedPosition
+    ),
+    [2, 1],
+  );
+  assert.equal(
+    article.persistedNamedLens.selectedPassages[0]?.passage.premise.text,
+    "Second persisted passage must remain first in the saved order.",
+  );
+});
 
 test("consolidates a 51-cell unavailable scenario matrix into decision-use diligence rows", () => {
   const detail = {
@@ -378,4 +431,3 @@ test("named lens readings always include every lens in a prioritized disagreemen
     ["j_left", "j_right"],
   );
 });
-
