@@ -15,6 +15,9 @@ import {
   type IntelligenceReportRecord,
 } from "../../db/repositories/intelligence";
 import {
+  createSupabaseNamedLensArtifactsRepository,
+} from "../../db/repositories/named-lens-artifacts";
+import {
   createSupabaseReasonerJudgmentsRepository,
 } from "../../db/repositories/reasoner-judgments";
 import { createRunsRepository } from "../../db/repositories/runs";
@@ -793,7 +796,12 @@ export async function createBeliefReversalProcessRuntime(input: {
   });
   const runs = createRunsRepository(createSupabaseDataClient(common));
   const references = createSupabaseUnderwritingReferencesRepository(common);
-  const underwritingRuns = createSupabaseUnderwritingRunsRepository(common);
+  const namedLensArtifacts =
+    createSupabaseNamedLensArtifactsRepository(common);
+  const underwritingRuns = createSupabaseUnderwritingRunsRepository({
+    ...common,
+    namedLensArtifacts,
+  });
   const underwritingArtifacts =
     createSupabaseUnderwritingArtifactsRepository(common);
   const judgments = createSupabaseReasonerJudgmentsRepository(common);
@@ -861,6 +869,7 @@ export async function createBeliefReversalProcessRuntime(input: {
   });
   const underwriting = createUnderwritingOrchestrator({
     runs: underwritingRuns,
+    namedLensArtifacts,
     activeFundPolicy: (requestedWorkspaceId) =>
       references.activeFundPolicy(requestedWorkspaceId),
     candidateExecutionFingerprint:
@@ -880,6 +889,7 @@ export async function createBeliefReversalProcessRuntime(input: {
         applicationCommit: "task12-local-e2e",
       },
     }),
+    onWarning: (warning) => console.error(`[underwriting-e2e] ${warning}`),
     now,
   });
 
@@ -1362,7 +1372,12 @@ export async function runBeliefReversalPinnedPipeline(input: {
     ...common,
   }));
   const references = createSupabaseUnderwritingReferencesRepository(common);
-  const underwritingRuns = createSupabaseUnderwritingRunsRepository(common);
+  const namedLensArtifacts =
+    createSupabaseNamedLensArtifactsRepository(common);
+  const underwritingRuns = createSupabaseUnderwritingRunsRepository({
+    ...common,
+    namedLensArtifacts,
+  });
   const underwritingArtifacts =
     createSupabaseUnderwritingArtifactsRepository(common);
   const judgments = createSupabaseReasonerJudgmentsRepository(common);
@@ -1439,6 +1454,7 @@ export async function runBeliefReversalPinnedPipeline(input: {
   });
   const underwriting = createUnderwritingOrchestrator({
     runs: underwritingRuns,
+    namedLensArtifacts,
     activeFundPolicy: (requestedWorkspaceId) =>
       references.activeFundPolicy(requestedWorkspaceId),
     candidateExecutionFingerprint:
@@ -1458,6 +1474,7 @@ export async function runBeliefReversalPinnedPipeline(input: {
         applicationCommit: "task12-local-e2e",
       },
     }),
+    onWarning: (warning) => console.error(`[underwriting-e2e] ${warning}`),
     now,
   });
   let liveMarketCalls = 0;
