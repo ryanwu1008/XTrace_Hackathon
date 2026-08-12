@@ -287,6 +287,135 @@ test("matching reasoner asks for coverage-first reporting", async () => {
     /evidenceQuality belongs at 0\.6 or higher/,
     "evidence-quality calibration guidance must stay in the prompt",
   );
+  assert.match(
+    systemPrompt,
+    /at most one observation per Deal/i,
+    "a 30-Deal response must never emit ambiguous duplicate Deal rows",
+  );
+});
+
+test("matching reasoner accepts every field advertised by its output schema", async () => {
+  let calls = 0;
+  let advertisedCompletion = "";
+  const reasoner = createClaudeMatchingReasoner({
+    async complete(input) {
+      calls += 1;
+      if (!advertisedCompletion) {
+        const prompt = JSON.parse(String(input.messages[0].content)) as {
+          outputSchema: Record<string, unknown>;
+        };
+        const completion: Record<string, unknown> = {
+          dealId: "deal_ably",
+          whyNow: "The announcement concerns realtime infrastructure.",
+          previousContext: "The prior record concerned realtime infrastructure.",
+          positiveImplications: [],
+          negativeImplications: [],
+          selectedTriggerEventId: "event_1",
+          selectedPriorInteractionId: "fixture_ably",
+          revisitConditionIndex: 0,
+          revisitConditionText: "Relevant market change",
+          revisitCitedSourceIds: ["market_source"],
+          counterevidence: {
+            statement: "The announcement concerns realtime infrastructure.",
+            citedSourceIds: ["market_source"],
+          },
+          citedSourceIds: ["market_source"],
+          scoreInputs: {
+            eventRelevance: 0.8,
+            dealRelevance: 0.8,
+            priorContextStrength: 0.7,
+            evidenceQuality: 0.8,
+          },
+          claimSourceIds: {
+            "The announcement concerns realtime infrastructure.": [
+              "market_source",
+            ],
+          },
+        };
+        for (const [field, example] of Object.entries(prompt.outputSchema)) {
+          if (!(field in completion)) completion[field] = example;
+        }
+        advertisedCompletion = JSON.stringify([completion]);
+      }
+      return advertisedCompletion;
+    },
+  });
+
+  const result = await reasoner.reason(replayInput());
+
+  assert.equal(calls, 1, "an advertised output must not require repair");
+  assert.deepEqual(result.map(({ dealId }) => dealId), ["deal_ably"]);
+});
+
+test("matching reasoner accepts one valid observation for every Deal in a 30-Deal scan", async () => {
+  const template = JSON.parse(REPLAY_COMPLETION)[0] as Record<string, unknown>;
+  const deals = Array.from({ length: 30 }, (_, index) => ({
+    id: `deal_${index + 1}`,
+    companyName: `Company ${index + 1}`,
+    status: "passed" as const,
+  }));
+  const completion = deals.map(({ id }) => ({ ...template, dealId: id }));
+  let calls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify(completion);
+    },
+  });
+
+  const result = await reasoner.reason(replayInput({ deals }));
+
+  assert.equal(calls, 1, "a valid 30-Deal response must not require repair");
+  assert.deepEqual(result.map(({ dealId }) => dealId), deals.map(({ id }) => id));
+});
+
+test("matching reasoner rejects a 31-row response without widening the 30-Deal contract", async () => {
+  const template = JSON.parse(REPLAY_COMPLETION)[0] as Record<string, unknown>;
+  const completion = Array.from({ length: 31 }, (_, index) => ({
+    ...template,
+    dealId: `deal_${index + 1}`,
+  }));
+  let calls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify(completion);
+    },
+  });
+
+  await assert.rejects(
+    reasoner.reason(replayInput({
+      deals: completion.map((_, index) => ({
+        id: `deal_${index + 1}`,
+        companyName: `Company ${index + 1}`,
+        status: "passed" as const,
+      })),
+    })),
+    (error: unknown) =>
+      error instanceof MatchingFailure
+      && error.code === "MATCHING_RESPONSE_INVALID",
+  );
+  assert.equal(calls, 2, "one bounded repair attempt is still required");
+});
+
+test("matching reasoner keeps each 30-Deal row strict", async () => {
+  const completion = JSON.parse(REPLAY_COMPLETION) as Array<Record<string, unknown>>;
+  completion[0]!.modelSelectedAction = "invest_now";
+  let calls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify(completion);
+    },
+  });
+
+  await assert.rejects(
+    reasoner.reason(replayInput()),
+    (error: unknown) =>
+      error instanceof MatchingFailure
+      && error.code === "MATCHING_RESPONSE_INVALID",
+  );
+  assert.equal(calls, 2, "an unknown field cannot bypass strict repair");
 });
 
 test("both Claude prompt paths separate normalized text from quote eligibility", async () => {

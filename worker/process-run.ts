@@ -325,6 +325,7 @@ export async function processClaimedRun(
     const structuredImageFallbackDealIds = new Set<string>();
     const recallAttemptedDealIds = new Set<string>();
     const recallFailureReasons = new Map<string, string>();
+    const analysisFailureReasons = new Map<string, string>();
 
     if (claimedRun.mode === "xtrace") {
       // Ingest submission and job polling are an explicit separate stage.
@@ -449,8 +450,13 @@ export async function processClaimedRun(
         });
       await updateStage("opportunity_matching", "completed");
     } catch (error) {
-      for (const deal of deals) unavailableDealIds.add(deal.id);
       const diagnostic = safeMatchingFailureDiagnostic(error);
+      const analysisFailureReason =
+        `${diagnostic.code} (${diagnostic.phase})`;
+      for (const deal of deals) {
+        unavailableDealIds.add(deal.id);
+        analysisFailureReasons.set(deal.id, analysisFailureReason);
+      }
       const warning = [
         "Company matching was unavailable; affected analyses are marked unavailable.",
         `Diagnostic: code=${diagnostic.code} phase=${diagnostic.phase}.`,
@@ -486,6 +492,7 @@ export async function processClaimedRun(
         }])),
         recallAttemptedDealIds,
         recallFailureReasons,
+        analysisFailureReasons,
       },
     });
     const counts = countCompanyAnalyses(companyAnalyses);

@@ -64,9 +64,9 @@ used to start private Staging.
 
 `SAFE_REFUSAL — production forward migration remains blocked`
 
-The reviewed production terminal remains `0018`. Migration `0019` and the
-isolated-environment `0020`–`0030` chain have not received production catalog
-approval.
+The reviewed production terminal remains `0018`. Migration `0019` has not
+received production catalog approval. The isolated-environment `0020`–`0030`
+chain has not received production catalog approval either.
 Task 13 reads no production credentials and runs no launcher against
 production; its production-shaped launcher verification uses only disposable
 PostgreSQL 17.6 fixtures.

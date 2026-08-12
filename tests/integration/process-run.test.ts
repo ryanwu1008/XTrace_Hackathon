@@ -505,6 +505,105 @@ test("a matching failure persists only its safe code and phase", async () => {
   assert.ok(result.report.companyAnalyses.every((analysis) =>
     analysis.outcome === "analysis_unavailable"
   ));
+  assert.ok(result.report.companyAnalyses.every((analysis) =>
+    analysis.currentRunAudit?.analysisFailureReason
+      === "MATCHING_PROVIDER_AUTH_FAILED (provider_request)"
+  ));
+  assert.ok(result.report.companyAnalyses.every((analysis) =>
+    analysis.currentRunAudit?.analysisFailureReason
+      !== "Analysis unavailable because XTrace did not return verified investment memory for this company."
+  ));
+  assert.doesNotMatch(JSON.stringify(result.report), new RegExp(sensitiveProviderDetail, "u"));
+});
+
+test("a global matching failure preserves successful XTrace recall authority", async () => {
+  const runs = createRunsRepository(createMemoryDataClient({
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  }));
+  await runs.create({
+    workspaceId: "workspace_demo",
+    mode: "xtrace",
+    windowDays: 14,
+  });
+  const run = await runs.claimNext("test-worker");
+  assert.ok(run);
+  const bundles = buildPreloadedDealMemoryBundles();
+  const authoritative = authoritativeDeals(bundles);
+  const sensitiveProviderDetail = "SENSITIVE_PROVIDER_DETAIL_MUST_NOT_PERSIST";
+
+  const result = await processClaimedRun(run, {
+    runs,
+    intelligence: createTestIntelligenceRepository(
+      authoritative.dealRegistry as DealRegistry,
+    ),
+    ...authoritative,
+    importGate: READY_IMPORT_GATE,
+    market: {
+      async scanMarketWindow() {
+        return {
+          status: "completed",
+          window: {
+            from: "2026-07-10T12:00:00.000Z",
+            to: "2026-07-24T12:00:00.000Z",
+            days: 14,
+          },
+          providers: [],
+          events: [marketEventFixture({
+            id: "market_matching_failure_after_recall",
+            sourceId: "market_matching_failure_after_recall_source",
+            title: "Realtime infrastructure announcement",
+            statement: "A source-backed realtime infrastructure event occurred.",
+            canonicalUrl: "https://example.com/matching-failure-after-recall",
+            publishedAt: "2026-07-23T00:00:00.000Z",
+            eventType: "technology",
+            sectors: ["infrastructure"],
+            themes: ["realtime"],
+            confidence: "high",
+            entityKeys: ["ably"],
+          })],
+        };
+      },
+    },
+    xtrace: {
+      async listOpenIngestJobs() { return []; },
+      async pollIngestJob() { throw new Error("No jobs expected"); },
+      async recallDealContext(input) {
+        const dealId = input.candidateDealIds[0]!;
+        return [{
+          dealId,
+          memoryId: `memory_${dealId}`,
+          memoryType: "fact",
+          text: "Exact active-parent context.",
+          score: 0.9,
+          provenance: "source_document",
+          sourceRevisionIds: [`revision_${dealId}`],
+          sourceIds: [`source_${dealId}`],
+          fixtureIds: [],
+        }];
+      },
+    },
+    reasoner: {
+      async reason() {
+        const failure = new MatchingFailure({
+          code: "MATCHING_RESPONSE_INVALID",
+          phase: "response_validation",
+        });
+        failure.message = sensitiveProviderDetail;
+        throw failure;
+      },
+    },
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  });
+
+  assert.ok(result.report.companyAnalyses.every((analysis) =>
+    analysis.currentRunAudit?.recall.attempted === true
+      && analysis.currentRunAudit.recall.succeeded === true
+      && analysis.currentRunAudit.recall.failureReason === null
+      && analysis.investmentMemory.memoryIds.length === 1
+      && analysis.currentRunAudit.analysisFailureReason
+        === "MATCHING_RESPONSE_INVALID (response_validation)"
+  ));
+  assert.doesNotMatch(JSON.stringify(result.report), new RegExp(sensitiveProviderDetail, "u"));
 });
 
 test("a new analysis run rejects registry bundles without immutable Deal revisions", async () => {

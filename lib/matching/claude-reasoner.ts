@@ -55,6 +55,7 @@ export function createClaudeMatchingReasoner(
           "A Sample research screening record explicitly means no meeting and no VC interaction. Never describe it as a meeting, decision, pass, or investment; it may only establish the supplied research disposition, prior research next-step boundary, and reconsideration conditions.",
           "Provide a substantive counterevidence statement supported by canonical counterevidence-role source IDs.",
           "Report every credible Deal/event overlap you find, including uncertain ones; reflect uncertainty in scoreInputs rather than omitting the match. Downstream deterministic validation drops ungrounded claims, so coverage matters more than filtering here.",
+          "Return at most one observation per Deal. When multiple events overlap one Deal, select the single strongest evidence-grounded trigger event; never emit duplicate Deal rows.",
           "Score each dimension honestly on its own merits, not uniformly low: when a public event directly addresses a Deal's sector, decision reason, or a recorded revisit condition (for example a reimbursement rule change for a remote patient monitoring company), eventRelevance and dealRelevance belong at 0.7 or higher; reserve scores below 0.4 for tangential links. Do not down-score a well-evidenced direct overlap merely to be cautious.",
           "Calibrate the other two dimensions the same way: when the recalled decision context explicitly records a revisit condition or concern that the public event directly addresses, priorContextStrength belongs at 0.6 or higher; when the cited public sources are primary official publications (government registers, regulator or agency releases, court filings), evidenceQuality belongs at 0.6 or higher. Reserve values below 0.4 for thin or secondary context.",
           "Return JSON only: an array matching the requested schema. Return [] only when no event plausibly relates to any Deal.",
@@ -84,7 +85,6 @@ export function createClaudeMatchingReasoner(
             priorContextStrength: 0.55,
             evidenceQuality: 0.55,
           },
-          scoreInputsNote: "scoreInputs values are JSON numbers between 0 and 1, never strings",
           claimSourceIds: {
             "complete claim equal to one eligible verbatim or normalized evidence unit": ["valid source IDs"],
           },

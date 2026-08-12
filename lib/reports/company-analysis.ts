@@ -46,6 +46,7 @@ export interface CompanyAnalysisCurrentRunAuthority {
   }>;
   recallAttemptedDealIds?: ReadonlySet<string>;
   recallFailureReasons: ReadonlyMap<string, string>;
+  analysisFailureReasons?: ReadonlyMap<string, string>;
 }
 
 export function buildCompanyAnalyses(input: {
@@ -99,9 +100,9 @@ export function buildCompanyAnalyses(input: {
         bundle,
         contexts: contexts ?? [],
         currentAuthority,
-        failureReason: input.currentRunAuthority?.recallFailureReasons.get(
-          bundle.dealId,
-        ) ?? match?.analysisFailureReason
+        failureReason: currentAuthority?.recallFailureReason
+          ?? currentAuthority?.analysisFailureReason
+          ?? match?.analysisFailureReason
           ?? (invalidCurrentMatch
             ? "Matching did not preserve the complete belief-assessment lineage."
             : ANALYSIS_UNAVAILABLE),
@@ -334,6 +335,7 @@ interface CurrentDealAuthority {
   activeParentFingerprint: string;
   recallAttempted: boolean;
   recallFailureReason: string | null;
+  analysisFailureReason: string | null;
 }
 
 function validScreeningMonitorMatch(match: GroundedMatch): boolean {
@@ -419,6 +421,8 @@ function currentAuthorityForDeal(
     ...deal,
     recallAttempted,
     recallFailureReason: authority.recallFailureReasons.get(bundle.dealId) ?? null,
+    analysisFailureReason:
+      authority.analysisFailureReasons?.get(bundle.dealId) ?? null,
   };
 }
 

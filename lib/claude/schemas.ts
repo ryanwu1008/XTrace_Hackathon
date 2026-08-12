@@ -41,7 +41,7 @@ export const ClaudeReasonedMatchSchema = z.strictObject({
 });
 
 export const ClaudeReasonedMatchesSchema = z.array(ClaudeReasonedMatchSchema)
-  .max(20);
+  .max(30);
 
 export type ClaudeReasonedMatch = z.infer<typeof ClaudeReasonedMatchSchema>;
 
