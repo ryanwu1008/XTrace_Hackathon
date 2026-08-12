@@ -1224,6 +1224,45 @@ test("Supabase v2 lineage never recovers a missing direct child link from conv-i
   assert.equal(requests.length, 2);
 });
 
+test("Supabase exact ownership lookup is bounded by workspace, Deal, and memory ID", async () => {
+  const requests: string[] = [];
+  const repository = createSupabaseXTraceLineageRepository({
+    url: "https://database.example.test",
+    serviceRoleKey: "test-service-role",
+    fetchImpl: async (input) => {
+      requests.push(String(input));
+      return Response.json([{
+        memory_id: "memory_exact",
+        workspace_id: "workspace_demo",
+        deal_id: "deal_1",
+        parent_kind: "canonical_source_revision",
+        source_id: "source_1",
+        source_revision_id: "revision_1",
+      }]);
+    },
+  });
+
+  assert.deepEqual(await repository.resolveExactOwnership({
+    workspaceId: "workspace_demo",
+    dealId: "deal_1",
+    memoryId: "memory_exact",
+  }), {
+    memoryId: "memory_exact",
+    workspaceId: "workspace_demo",
+    dealId: "deal_1",
+    sourceRevisionIds: ["revision_1"],
+    sourceIds: ["source_1"],
+    fixtureIds: [],
+    provenance: "public_web",
+  });
+  const url = new URL(requests[0]);
+  assert.equal(url.pathname, "/rest/v1/xtrace_memory_links_v2");
+  assert.equal(url.searchParams.get("workspace_id"), "eq.workspace_demo");
+  assert.equal(url.searchParams.get("deal_id"), "eq.deal_1");
+  assert.equal(url.searchParams.get("memory_id"), "eq.memory_exact");
+  assert.equal(url.searchParams.get("limit"), "1");
+});
+
 test("keeps polling through running and throws when the polling budget is exhausted", async () => {
   let calls = 0;
   const lineage = createMemoryXTraceLineageRepository();
@@ -1824,6 +1863,152 @@ test("exact recall rejects provider rows from another app, workspace user, or De
   }), (error: unknown) => error instanceof Error
     && "code" in error
     && error.code === "XTRACE_RECALL_LINEAGE_FAILED");
+});
+
+test("exact recall discards same-workspace semantic matches owned by another Deal", async () => {
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+  });
+  const appId = "xtrace-staging-isolated";
+  const secondParent: ExactXTraceParentUnit = {
+    ...exactParent,
+    dealId: "deal_2",
+    sourceId: "source_2",
+    sourceRevisionId: "revision_2",
+    parentFingerprint: `sha256:${"c".repeat(64)}`,
+    payloadFingerprint: `sha256:${"d".repeat(64)}`,
+    bundle: {
+      ...structuredClone(bundle),
+      dealId: "deal_2",
+      companyName: "Beacon Systems",
+    },
+  };
+  const service = createXTraceService({
+    ingest: async (input: { conv_id: string }) => {
+      const isSecond = input.conv_id.includes("deal_2");
+      return {
+        id: isSecond ? "job_2" : "job_1",
+        status: "succeeded",
+        result: {
+          memories_created: [{
+            id: isSecond ? "memory_2" : "memory_1",
+            type: "fact",
+            text: isSecond ? "Beacon context" : "Asteria context",
+          }],
+        },
+      };
+    },
+    search: async (input: { app_id?: string; user_id: string }) => ({
+      object: "search",
+      mode: "retrieve",
+      data: [
+        {
+          id: "memory_1",
+          type: "fact",
+          text: "Asteria context",
+          score: 0.9,
+          app_id: input.app_id,
+          user_id: input.user_id,
+          conv_id: "deal:deal_1:parent:revision_1",
+        },
+        {
+          id: "memory_2",
+          type: "fact",
+          text: "Beacon context",
+          score: 0.8,
+          app_id: input.app_id,
+          user_id: input.user_id,
+          conv_id: "deal:deal_2:parent:revision_2",
+        },
+      ],
+      context: null,
+    }),
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId,
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+  await service.ingestExactParent(exactParent);
+  await service.ingestExactParent(secondParent);
+
+  const contexts = await service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "Asteria investment decision",
+    candidateDealIds: ["deal_1"],
+    limit: 5,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  });
+
+  assert.deepEqual(contexts.map((context) => ({
+    dealId: context.dealId,
+    memoryId: context.memoryId,
+  })), [{ dealId: "deal_1", memoryId: "memory_1" }]);
+});
+
+test("exact recall discards provider-only artifacts without local parent lineage", async () => {
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+  });
+  const appId = "xtrace-staging-isolated";
+  const service = createXTraceService({
+    ingest: async () => ({
+      id: "job_1",
+      status: "succeeded",
+      result: {
+        memories_created: [{
+          id: "memory_1",
+          type: "fact",
+          text: "Asteria context",
+        }],
+      },
+    }),
+    search: async (input: { app_id?: string; user_id: string }) => ({
+      object: "search",
+      mode: "retrieve",
+      data: [
+        {
+          id: "memory_1",
+          type: "fact",
+          text: "Asteria context",
+          score: 0.9,
+          app_id: input.app_id,
+          user_id: input.user_id,
+          conv_id: "deal:deal_1:parent:revision_1",
+        },
+        {
+          id: "provider_episode_not_returned_by_ingest",
+          type: "episode",
+          text: "Provider-generated episode",
+          score: 0,
+          app_id: input.app_id,
+          user_id: input.user_id,
+          conv_id: "deal:deal_1:parent:revision_1",
+        },
+      ],
+      context: null,
+    }),
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId,
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+  await service.ingestExactParent(exactParent);
+
+  const contexts = await service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "Asteria investment decision",
+    candidateDealIds: ["deal_1"],
+    limit: 5,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  });
+
+  assert.deepEqual(contexts.map((context) => context.memoryId), ["memory_1"]);
 });
 
 test("a stale exact parent fails only its Deal while another active parent recalls", async () => {

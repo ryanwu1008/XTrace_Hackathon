@@ -126,6 +126,11 @@ export interface XTraceLineageRepository {
     dealId: string;
     activeParentFingerprint: string;
   }): Promise<XTraceMemoryLineage | null>;
+  resolveExactOwnership(input: {
+    memoryId: string;
+    workspaceId: string;
+    dealId: string;
+  }): Promise<XTraceMemoryLineage | null>;
   recordRecallAudit(input: XTraceRecallAuditV2): Promise<void>;
 }
 
@@ -392,6 +397,25 @@ export function createMemoryXTraceLineageRepository(options: {
           activeParentSetFingerprint: input.activeParentFingerprint,
         }))
       ) return null;
+      return {
+        memoryId: link.memoryId,
+        workspaceId: link.workspaceId,
+        dealId: link.dealId,
+        sourceRevisionIds: [link.sourceRevisionId],
+        sourceIds: link.parentKind === "sample_decision_record" ? [] : [link.sourceId],
+        fixtureIds: link.parentKind === "sample_decision_record"
+          ? [link.sourceId.replace(/^source_/, "")]
+          : [],
+        provenance: link.parentKind === "sample_decision_record"
+          ? "demo_fixture"
+          : link.parentKind === "canonical_source_revision"
+          ? "public_web"
+          : "source_document",
+      };
+    },
+    async resolveExactOwnership(input) {
+      const link = exactMemories.get(lineageKey(input.workspaceId, input.memoryId));
+      if (!link || link.dealId !== input.dealId) return null;
       return {
         memoryId: link.memoryId,
         workspaceId: link.workspaceId,
@@ -693,6 +717,32 @@ export function createSupabaseXTraceLineageRepository(options: {
       return row && typeof row === "object"
         ? toLineage(row as Record<string, unknown>)
         : null;
+    },
+    async resolveExactOwnership(input) {
+      const rows = await request(
+        `/xtrace_memory_links_v2?workspace_id=eq.${encodeURIComponent(input.workspaceId)}`
+        + `&memory_id=eq.${encodeURIComponent(input.memoryId)}`
+        + `&deal_id=eq.${encodeURIComponent(input.dealId)}&limit=1`,
+      ) as Record<string, unknown>[];
+      const link = rows[0];
+      if (!link) return null;
+      const parentKind = String(link.parent_kind ?? "");
+      const sourceId = String(link.source_id ?? "");
+      return {
+        memoryId: String(link.memory_id),
+        workspaceId: String(link.workspace_id),
+        dealId: String(link.deal_id),
+        sourceRevisionIds: [String(link.source_revision_id)],
+        sourceIds: parentKind === "sample_decision_record" ? [] : [sourceId],
+        fixtureIds: parentKind === "sample_decision_record"
+          ? [sourceId.replace(/^source_/, "")]
+          : [],
+        provenance: parentKind === "sample_decision_record"
+          ? "demo_fixture"
+          : parentKind === "canonical_source_revision"
+          ? "public_web"
+          : "source_document",
+      };
     },
     async recordRecallAudit(input) {
       await request("/rpc/record_xtrace_recall_audit_v2", {

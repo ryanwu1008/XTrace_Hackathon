@@ -490,7 +490,7 @@ export function createXTraceService(
         const scopedDealId = scopedInput.candidateDealIds.length === 1
           ? scopedInput.candidateDealIds[0]
           : undefined;
-        const providerScopeMatches = (
+        const providerTenantScopeMatches = (
           memory.app_id === undefined || memory.app_id === null
             ? !v2Recall
             : memory.app_id === appId
@@ -498,14 +498,31 @@ export function createXTraceService(
           memory.user_id === undefined || memory.user_id === null
             ? !v2Recall
             : memory.user_id === expectedUserId
-        ) && (
+        );
+        if (!providerTenantScopeMatches) {
+          if (v2Recall) lineageFailure = true;
+          continue;
+        }
+        const providerDealScopeMatches = (
           memory.conv_id === undefined || memory.conv_id === null || !scopedDealId
             ? !v2Recall
             : memory.conv_id === `deal:${scopedDealId}`
               || memory.conv_id.startsWith(`deal:${scopedDealId}:parent:`)
         );
-        if (!providerScopeMatches) {
-          if (v2Recall) lineageFailure = true;
+        if (!providerDealScopeMatches) {
+          if (v2Recall && scopedDealId) {
+            // Semantic search is scoped by app and workspace user, but the
+            // provider can legitimately return nearby memories owned by a
+            // different Deal. Discard those rows. If the external memory ID
+            // is actually bound to this Deal locally, however, contradictory
+            // provider conversation metadata is a lineage failure.
+            const contradictsLocalAuthority = await lineage.resolveExactOwnership({
+              memoryId: memory.id,
+              workspaceId,
+              dealId: scopedDealId,
+            });
+            if (contradictsLocalAuthority) lineageFailure = true;
+          }
           continue;
         }
         const v2DealId = scopedInput.candidateDealIds.length === 1
@@ -528,7 +545,14 @@ export function createXTraceService(
               workspaceId,
             });
         if (!resolved || !allowedDealIds.has(resolved.dealId)) {
-          if (v2Recall) lineageFailure = true;
+          if (v2Recall && v2DealId) {
+            const ownedByRequestedDeal = await lineage.resolveExactOwnership({
+              memoryId: memory.id,
+              workspaceId,
+              dealId: v2DealId,
+            });
+            if (ownedByRequestedDeal) lineageFailure = true;
+          }
           continue;
         }
         const fixtureIds = resolved.fixtureIds ?? [];
