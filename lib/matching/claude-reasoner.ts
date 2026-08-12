@@ -140,7 +140,7 @@ export function createClaudeMatchingReasoner(
           role: "user",
           content: requestContent,
         }],
-        maxTokens: 6_000,
+        maxTokens: 12_000,
       });
       let parsed: ClaudeReasonedMatch[];
       let validBeforeRepair: ClaudeReasonedMatch[] = [];
@@ -188,7 +188,7 @@ export function createClaudeMatchingReasoner(
               "Make citedSourceIds the exact unique union of claim, revisit, and counterevidence source IDs.",
             ].join("\n"),
           }],
-          maxTokens: 6_000,
+          maxTokens: 12_000,
         });
         try {
           const repaired = parseCompleteMatches(parseJson(response));

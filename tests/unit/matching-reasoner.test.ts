@@ -281,6 +281,30 @@ test("Claude matching reasoner parses canonical JSON", async () => {
   assert.deepEqual(result.map((item) => item.dealId), ["deal_ably"]);
 });
 
+test("matching reasoner budgets enough output for the complete 30-Deal contract", async () => {
+  const requestedBudgets: number[] = [];
+  const reasoner = createClaudeMatchingReasoner({
+    async complete(input) {
+      requestedBudgets.push(input.maxTokens ?? 0);
+      return "[]";
+    },
+  });
+
+  await reasoner.reason(replayInput({
+    deals: Array.from({ length: 30 }, (_, index) => ({
+      id: `deal_${index + 1}`,
+      companyName: `Company ${index + 1}`,
+      status: "passed" as const,
+    })),
+  }));
+
+  assert.deepEqual(
+    requestedBudgets,
+    [12_000],
+    "the 30-row exact-authority JSON response must not retain the stale 6k cap",
+  );
+});
+
 test("matching reasoner asks for coverage-first reporting", async () => {
   let systemPrompt = "";
   const reasoner = createClaudeMatchingReasoner({
