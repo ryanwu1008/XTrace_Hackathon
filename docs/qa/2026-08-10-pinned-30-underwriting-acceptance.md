@@ -1,20 +1,24 @@
 # Pinned 30-Deal Underwriting Acceptance Record
 
-- Status: **automated fresh-database backend E2E, browser acceptance, full
-  release gates, and independent review passed**
-- Verification date: **2026-08-11**
+- Status: **historical deterministic-fixture acceptance passed at terminal
+  migration `0028`; current staging continuation is documented separately
+  below and has not passed a real Anthropic E2E**
+- Historical verification date: **2026-08-11**
 - Command: `npm run test:e2e:belief-reversal`
 - Database: **fresh disposable PostgreSQL 17.6**
-- Terminal migration: **`0028_named_lens_authority_repair`**
+- Historical terminal migration: **`0028_named_lens_authority_repair`**
+- Current migration authority: **terminal `0030`**
 - Production access or mutation: **none**
 
-This record covers the first successful backend E2E execution of the distinct
-30-Deal pinned package and the current-run path on a fresh database. It proves
-the persisted queue and Worker path through Deal recall, matching, 30
-CompanyAnalyses, belief-revision admission, Deep Underwriting, finalized Report
-projection, and finalized Chat verification. It is not a substitute for the
-separate full test/lint/build/migration gates, deployment, or observation of
-the production model provider.
+The historical portion of this record covers the first successful backend E2E
+execution of the distinct 30-Deal pinned package and the current-run path on a
+fresh database at terminal migration `0028`. It proves the persisted queue and
+Worker path through Deal recall, matching, 30 CompanyAnalyses, belief-revision
+admission, Deep Underwriting, finalized Report projection, and finalized Chat
+verification under the deterministic fixture provider. It is not evidence
+that the real Anthropic provider path has completed successfully. The dated
+staging continuation at the end records the newer terminal-`0030` authority,
+deployment, and remaining real-provider blocker.
 
 ## Isolated test authority
 
@@ -27,7 +31,7 @@ quality.
 
 No production database, credential, provider, deployment target, or migration
 state was read or modified. In particular, this acceptance does not authorize
-applying `0019` through `0028` to production.
+applying `0019` through `0030` to production.
 
 ## Pinned-30 package and persisted identities
 
@@ -159,7 +163,7 @@ sandbox buttons a reviewer uses:
 This browser fixture also uses `deterministic-e2e-observer-v1`; it does not
 claim production-provider prose quality.
 
-## Final release-gate verification
+## Historical terminal-0028 release-gate verification
 
 The final working tree passed all local release gates after the browser fixes
 and the final review repairs:
@@ -191,9 +195,72 @@ Deals, 30 CompanyAnalyses, four pinned belief revisions, four terminal Deep
 Underwriting jobs, 75 resolved Source Revisions, and 13 finalized Chat
 queries. All four admitted candidates completed; no priority cutoff exists.
 
-The private owner-only Sites target is now the configured hosting target, but
-it intentionally remains undeployed until it has a schema-compatible isolated
-Supabase data plane and a persistent Worker running the same commit. Its
-runtime environment is currently empty. Production remains untouched; the
-public production-backed Web/Worker and migrations `0019`–`0028` were neither
-read for application data nor modified.
+## Current staging continuation — 2026-08-12
+
+This continuation replaces only the obsolete predeployment status formerly
+recorded at the end of this document. It does not rewrite the historical
+terminal-`0028` fixture results, identities, or fingerprints recorded in the
+preceding sections.
+
+### Current source and isolated release gates
+
+- Verified HEAD:
+  `c7dd8248206de1fa8f15fd79a7f66f04c9cc6f5c`.
+- Current migration authority: terminal `0030`.
+- Fresh PostgreSQL 17.6 migration suite: **114/114 passed**.
+- Separate fresh PostgreSQL 17.6 production-shaped safety gate: **3/3 passed**
+  and emitted exactly once:
+  `SAFE_REFUSAL — production forward migration remains blocked`.
+- Fresh deterministic-provider one-click E2E: **1/1 passed**.
+- `npm test`: **1,979 total; 1,898 passed; 0 failed; 81 expected skips**.
+- TypeScript: **0 errors**.
+- ESLint: **0 errors and 9 pre-existing warnings**.
+- Production Web build: **passed**.
+
+These fresh-database gates remain deterministic application-contract tests.
+They do not convert fixture-generated prose into evidence about the real
+Anthropic provider.
+
+### Private staging topology
+
+- Private owner-only Sites project:
+  `appgprj_6a714b15f3488191998e357436151354`.
+- Deployed Sites version: **version 5**, at
+  <https://vsee-xtrace-staging-20260803-3b6c348.dream86625.chatgpt.site>.
+- Isolated staging Supabase project ref: `gvkhitbljkrnzjzxtyua`.
+- Persisted staging registry: **30 Companies / 30 Deals / 30
+  analysis-eligible Deals**.
+- XTrace staging app namespace:
+  `xtrace-vc-deal-intelligence-staging-gvkhitbljkrnzjzxtyua-v3`.
+- XTrace staging ingest: **85 succeeded intents / 165 Deal-memory links / all
+  30 Deals covered**.
+- The `v3` suffix identifies the isolated staging app namespace. It does not
+  change the persisted parent serializer, which remains `xtrace-parent-v2`.
+- A local foreground Worker running the same `c7dd8248206d` source revision
+  has published a current heartbeat against the isolated staging data plane.
+
+### Real-provider E2E status
+
+The real Anthropic E2E is **not passed**. The previously configured Anthropic
+credential returned HTTP `401 authentication_error`. The staging diagnostic
+run identified by the `cf52` prefix therefore reached all 30 persisted
+CompanyAnalyses but ended partial with **30 `analysis_unavailable` outcomes
+and 0 reasoner judgments**. That run is diagnostic evidence of fail-closed
+behavior, not an accepted underwriting result.
+
+Consequently, the `c7dd8248206d` one-click staging path still awaits a valid,
+staging-only, standard Anthropic API key before it can prove:
+
+```text
+one-click Scan
+→ 30 CompanyAnalyses
+→ real-provider belief revisions
+→ one Deep Underwriting job per admitted revision
+→ finalized Reports and Chat projections
+```
+
+Production application data was not read, production was not modified, and
+production migrations `0019` through `0030` remain forbidden. The private
+staging deployment, isolated Supabase project, XTrace namespace, and local
+same-SHA Worker must not be interpreted as authorization to use or migrate the
+production data plane.

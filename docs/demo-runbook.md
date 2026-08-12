@@ -1,17 +1,47 @@
-# VSee public-sandbox operations runbook
+# VSee private-Staging and future production operations runbook
 
-The production Sites URL is a **public, no-login test sandbox** running
-`VSEE_DEPLOYMENT_MODE=public_sandbox`. Do not upload confidential, personal,
-customer, or production-sensitive data. Anyone with the URL can use the
-sandbox workspace. `public_demo` remains the anonymous, synthetic, read-only
-fallback mode; `product` remains a separately authenticated environment.
+## Current environment boundary
 
-## Before the cutover
+The current deployed application is an **owner-only private Staging** target,
+not production and not a public no-login sandbox:
 
-Use the exact reviewed commit for both the Sites build and the Worker. Keep the
-Sites Web process and long-running Worker separate, but pointed at the same
-Supabase workspace. Store credentials only in the deployer's macOS Keychain;
-never paste a value into the shell, a runbook, chat, or a `.env` file.
+- Sites project: `appgprj_6a714b15f3488191998e357436151354`.
+- Live Sites version: `5`, built from commit
+  `c7dd8248206de1fa8f15fd79a7f66f04c9cc6f5c`.
+- URL:
+  `https://vsee-xtrace-staging-20260803-3b6c348.dream86625.chatgpt.site`.
+- Access: custom owner-only access; no external viewers or groups.
+- Data plane: isolated Staging Supabase project `gvkhitbljkrnzjzxtyua` on
+  PostgreSQL 17.6, with 30 Companies, 30 Deals, and 30 analysis-eligible Deals.
+- XTrace app namespace:
+  `xtrace-vc-deal-intelligence-staging-gvkhitbljkrnzjzxtyua-v3`, with 85
+  succeeded ingest intents covering all 30 Deals and 165 memory links. `v3`
+  identifies the app-namespace generation; the serialized parent contract
+  remains `xtrace-parent-v2`.
+- Worker: a same-commit local foreground Worker, currently identified as
+  `vsee-staging-mac-c7dd824`. It is not a durable hosted Worker.
+
+The application runtime uses `VSEE_DEPLOYMENT_MODE=public_sandbox`, but the
+hosting access boundary remains private and owner-only. Do not describe this
+target as production. Do not upload confidential, personal, customer, or
+production-sensitive data.
+
+The Anthropic credential currently configured in the Staging runtime has
+returned HTTP 401 `authentication_error`. Presence in runtime configuration is
+not proof that a provider credential is valid. Replace it only through the
+Staging-specific Keychain service `vsee-staging-anthropic-api-key`, then restart
+the foreground Worker before attempting the real-provider acceptance flow
+below. That Keychain item is not yet present at this checkpoint. Never
+substitute a generic or production credential.
+
+## Future production cutover prerequisites
+
+The procedure in this section is production-only reference material and is not
+authorization to cut over. Use the exact reviewed commit for both the Sites
+build and the Worker. Keep the Sites Web process and long-running Worker
+separate, but pointed at the same authorized Supabase workspace. Store
+credentials only in the deployer's macOS Keychain; never paste a value into the
+shell, a runbook, chat, or a `.env` file.
 
 To add or update the database connection, run this locally and enter the value
 only at the Keychain prompt:
@@ -20,18 +50,21 @@ only at the Keychain prompt:
 security add-generic-password -U -a "$USER" -s "vsee-supabase-db-url" -w
 ```
 
-The Worker launcher obtains its other required values from Keychain services:
-`vsee-supabase-url`, `vsee-supabase-service-role-key`,
+The production Worker launcher obtains its other required values from Keychain
+services: `vsee-supabase-url`, `vsee-supabase-service-role-key`,
 `vsee-anthropic-api-key`, `vsee-xtrace-api-key`, and
 `vsee-document-url-signing-secret`. `mmk_` XTrace keys do not require an
-XTrace organization ID.
+XTrace organization ID. These unprefixed services and
+`scripts/run-worker-from-keychain.zsh` are production-only and must never be
+used to start private Staging.
 
 ## Current migration decision
 
 `SAFE_REFUSAL — production forward migration remains blocked`
 
 The reviewed production terminal remains `0018`. Migration `0019` and the
-local-only `0020`–`0028` chain have not received production catalog approval.
+isolated-environment `0020`–`0030` chain have not received production catalog
+approval.
 Task 13 reads no production credentials and runs no launcher against
 production; its production-shaped launcher verification uses only disposable
 PostgreSQL 17.6 fixtures.
@@ -54,7 +87,7 @@ Supabase superuser, non-superuser `CREATEROLE`, and repaired ACL. The command
 must report three passing enclosing tests, zero failures, and zero skips. In
 each profile the forward launcher itself must exit nonzero with the exact
 unreviewed-`0019` refusal, while the test proves reviewed `0018` is complete,
-`0019`–`0028` are absent, invariants are unchanged, and no transaction remains
+`0019`–`0030` are absent, invariants are unchanged, and no transaction remains
 open. It deliberately fails on another server version, a missing database, a
 renamed/nonmatching test, or any run in which one of the three profiles does
 not execute. This is a `SAFE_REFUSAL` gate, not a migration-success gate.
@@ -131,8 +164,8 @@ Web request or Worker process can write to PostgreSQL.
 6. On disposable PostgreSQL 17.6 only, the expected forward result is a
    nonzero exit after reviewed `0018` with `Migration 0019 has no reviewed
    terminal catalog fingerprint; refusing mutation.` Verify `0019`, `0020`,
-   `0021`, `0022`, `0023`, `0024`, `0025`, `0026`, `0027`, and `0028` remain
-   absent. Never
+   `0021`, `0022`, `0023`, `0024`, `0025`, `0026`, `0027`, `0028`, `0029`, and
+   `0030` remain absent. Never
    describe that outcome as production migrations passed, green, deployed, or
    authorized.
 7. Resume the Web and the Worker only with the already-reviewed
@@ -141,13 +174,11 @@ Web request or Worker process can write to PostgreSQL.
 
 ## Current company-mainline acceptance and release status
 
-A completed current run must bind exactly 30 Companies, 30 Deals, and 30
+A completed run must bind exactly 30 Companies, 30 Deals, and 30
 analysis-eligible Deals, then persist exactly 30 CompanyAnalyses. The four
-outcome counts must sum to 30 and are derived from the run's evidence window.
-The versioned 2026-08-01 research package records `4 / 7 / 19 / 0`. For the
-controlled 2026-08-03 cold live run, the retained 14-day authority yields
-`4 / 6 / 20 / 0` because the Empirical Security item is outside the window.
-Do not turn either distribution into a runtime shortcut.
+outcome counts must sum to 30 and must be derived from that run's evidence,
+reasoner judgments, and hard gates. No particular belief-revision count is a
+Staging acceptance constant.
 
 Every and only `belief_revised` analysis must create one Deep Underwriting
 queue entry. Deterministic score and stable Deal identity control priority
@@ -172,17 +203,21 @@ not the current registry or current-run cardinality.
 The distinct pinned-30 review package is
 `belief_reversal_pinned_30_2026_08_10_v1`. It uses its own immutable 30-member
 Deal universe, four-event evidence set, and run/report identities; it never
-rewrites or expands the legacy 23-analysis artifact. On 2026-08-11,
-`npm run test:e2e:belief-reversal` passed against a fresh disposable PostgreSQL
-17.6 database at terminal migration `0028_named_lens_authority_repair`. The
-final pinned run `060e66e6-9254-45d5-954c-ebe0e2a4a61d` and current cold run
+rewrites or expands the legacy 23-analysis artifact.
+
+### Historical deterministic fixture checkpoint
+
+On 2026-08-11, `npm run test:e2e:belief-reversal` passed against a fresh
+disposable PostgreSQL 17.6 database at terminal migration
+`0028_named_lens_authority_repair`. The final pinned run
+`060e66e6-9254-45d5-954c-ebe0e2a4a61d` and current cold run
 `fda8d8bd-f7fc-4680-9cbe-b13d57bccb15` each passed their exact 30-Deal /
-30-analysis backend gates. The pinned run admitted and completed four Deep
+30-analysis backend gates. The pinned fixture admitted and completed four Deep
 Underwriting candidates in deterministic priority order: Irregular, Henry AI,
 Hush Security, and Smallest.ai. Thirteen finalized Reports/Chat verifier
-queries completed for the pinned report.
+queries completed for the pinned fixture report.
 
-That checkpoint used `deterministic-e2e-observer-v1`, a permanently identified
+That historical checkpoint used `deterministic-e2e-observer-v1`, a permanently identified
 test stub rather than the production model provider. It proves the contracts,
 persistence, and complete artifact path only. Browser acceptance subsequently
 passed for both buttons, automatic terminal-report refresh, the decision-first
@@ -190,23 +225,33 @@ detail, Reports/Chat, exact source access, keyboard/mobile behavior, overflow,
 and console cleanliness. The final full suite passed 1,946 tests with zero
 failures; TypeScript, build, parser-boundary, 112 fresh PostgreSQL 17.6
 migration tests, the separate 3-profile production safe-refusal gate, and
-independent review also passed. A schema-compatible isolated deployment remains
-a separate infrastructure gate.
-Production was not read or modified.
+independent review also passed. These counts belong to the terminal-`0028`
+fixture checkpoint and are not evidence that the real provider or the current
+`0030` working tree passed the same flow.
+
+### Current private-Staging infrastructure checkpoint
+
+The private Sites version, isolated Staging database, 30/30/30 registry,
+same-commit local Worker heartbeat, and XTrace v3 app-namespace ingest described
+at the top of this runbook have been verified. The Staging schema also satisfies
+the terminal-`0030_xtrace_recall_audit_authority` owner, empty-search-path,
+extension-digest, and public-schema-ACL invariants. Because the Staging database
+does not expose an application migration-journal table, describe this as an
+invariant match, not as journal proof that every migration was applied.
+
+The real Anthropic E2E has **not passed**. The existing Staging run
+`cf52d17a-d4e0-47ae-b247-6569f954d79f` ended partial: matching failed, one
+XTrace recall failed, all 30 CompanyAnalyses were `analysis_unavailable`, and
+its report remained incomplete. Staging currently has zero persisted
+`reasoner_judgments`. Commit `c7dd8248206de1fa8f15fd79a7f66f04c9cc6f5c`
+contains and deploys the fallback and safe matching-failure telemetry, but no
+completed same-commit Scan has yet proved real Claude matching, validator
+repair, belief revisions, Deep Underwriting, Named Lens output, finalized
+Report/Chat, or hosted browser behavior.
+
+Production was not read or modified and remains reviewed only through `0018`.
 The complete checkpoint record is
 `docs/qa/2026-08-10-pinned-30-underwriting-acceptance.md`.
-
-The first complete current-30 automated cold smoke passed on 2026-08-03
-(`1/1`, `73.7s`) against disposable loopback PostgreSQL 17.6. It persisted 30
-CompanyAnalyses with the derived `4 / 6 / 20 / 0` outcome distribution,
-created exactly four Deep Underwriting jobs, replayed the immutable legacy
-23-analysis report, and recorded zero remote network attempts. At that
-historical checkpoint no smoke-verified commit had been created and no
-exact-SHA private Preview/Staging handoff had occurred. The owner-only private
-Staging Sites target is now configured, but its runtime environment remains empty. It must
-use only disposable/non-production data, credentials, providers, database, and
-Worker resources; the public production-backed Sites target remains out of
-scope.
 
 Localization and bilingual implementation are paused until the company mainline
 is complete and the final schema recheck has finished. This checkpoint does not
@@ -214,17 +259,28 @@ claim that either is complete or ready for release.
 
 ## Start the Worker
 
+### Private-Staging procedure
+
+Private Staging must use only the `vsee-staging-*` Keychain services, the
+isolated Staging Supabase project, the Staging XTrace app namespace, and the
+same reviewed commit as the deployed Sites version. Never start it through
+`scripts/run-worker-from-keychain.zsh`, which reads production-only unprefixed
+services.
+
+The Anthropic value must come from `vsee-staging-anthropic-api-key`. Before a
+real Scan, verify provider authentication with a safe credential check that
+does not log the key, prompt, raw response, or hidden reasoning. A configured
+secret that returns 401 or 403 is not healthy. Stop the existing foreground
+Worker before replacing the credential or starting another process, then wait
+for the new same-commit heartbeat. The present local foreground Worker is
+suitable for supervised testing only; it is not a persistent deployment.
+
 ### Production-only operator procedure
 
 This section is solely for an already authorized production/public-sandbox
-operator procedure. It is not a current-30 cold-smoke or private-Staging
-procedure. The current-30 cold smoke and any private Preview/Staging handoff
-must not use the production XTrace endpoint, macOS Keychain credentials, or the
-public Sites target. They must use test-only/non-production provider seams and
-credentials, a disposable non-production database and Worker, and a separately
-authorized non-production target. Do not deploy the configured owner-only
-Staging site until its isolated data plane and persistent same-commit Worker
-are configured.
+operator procedure. It is not a private-Staging procedure. Private Staging must
+not use the production XTrace endpoint, unprefixed macOS Keychain credentials,
+or a public production Sites target.
 
 Start one foreground Worker from the same reviewed commit:
 
@@ -240,14 +296,47 @@ for the same queue.
 
 ## Health gate before Scan
 
-Open the public Sites URL and confirm its health display shows all required
-integrations ready: PostgreSQL, the Worker heartbeat, Anthropic, and XTrace
-when the XTrace toggle is on. The **WAKE AGENT & SCAN MARKET** action must stay
-disabled until that health gate passes. If the Worker is not healthy, inspect
-`.runtime/worker.log`, correct the Keychain/configuration issue, restart the
-single Worker, and wait for its heartbeat instead of bypassing the check.
+Open the private Staging Sites URL and confirm its health display shows the
+isolated PostgreSQL data plane, the same-commit Worker heartbeat, and XTrace
+ready when the XTrace toggle is on. Separately prove Anthropic authentication:
+the current health display can prove that a secret is configured but cannot
+prove that the credential is accepted by Anthropic. A 401/403 response fails
+the gate even if the UI says the integration is present.
 
-## Public-sandbox test flow
+The **WAKE AGENT & SCAN MARKET** action must stay disabled until every gate
+passes. If the Worker is not healthy, inspect `.runtime/worker.log`, correct the
+Staging-specific Keychain/configuration issue, restart the single foreground
+Worker, and wait for its heartbeat instead of bypassing the check.
+
+## Private-Staging real-provider acceptance
+
+The private Staging release is not accepted until one same-commit run proves
+all of the following without production access:
+
+1. The browser queues a pinned or current Scan through the normal one-click
+   action and automatically follows the persisted run to its terminal report.
+2. The run binds the immutable 30-Deal universe and attempts Deal-scoped XTrace
+   recall for every eligible Deal without cross-workspace or cross-Deal recall.
+3. Real matching produces persisted, schema-valid reasoner judgments; provider
+   authentication, rate-limit, network, truncation, and schema-repair failures
+   remain typed and save no prompt, raw response, key, or hidden reasoning.
+4. Exactly 30 CompanyAnalyses are persisted, and the four outcome counts sum to
+   30. Their distribution is derived; no fixture count is an expected real-run
+   constant.
+5. Every and only `belief_revised` CompanyAnalysis creates one immutable Deep
+   Underwriting job. Priority affects execution order only.
+6. Every admitted job reaches an explicit completed, partial, or failed
+   terminal state, with no silent loss or rank cutoff.
+7. Completed work renders the finalized Report and Chat projections, including
+   exact public-source/XTrace lineage and honest unavailable states.
+8. Hosted-browser acceptance covers both Scan actions, terminal refresh,
+   report/detail navigation, exact-source access, keyboard/mobile layout,
+   overflow, and console cleanliness.
+
+The deterministic fixture checkpoint is useful regression evidence, but it
+does not satisfy this real-provider list.
+
+## Private-Staging demo flow
 
 1. Upload a non-confidential PDF or DOCX source.
 2. Wait for Worker extraction, review the extracted evidence, and confirm the
@@ -257,9 +346,8 @@ single Worker, and wait for its heartbeat instead of bypassing the check.
 5. Review the generated report and its traceable evidence rather than treating
    the sandbox result as a customer investment decision.
 6. Verify 30 Companies, 30 Deals, 30 eligible Deals, 30 analyses, and a total
-   of 30 outcomes. For the controlled 2026-08-03 14-day cold live fixture, the
-   expected evidence-derived outcome counts are `4 / 6 / 20 / 0`; other live
-   anchor dates may derive a different distribution.
+   of 30 outcomes. Do not require the historical fixture's outcome distribution
+   from a real-provider run.
 7. Verify that the Deep Underwriting Deal IDs equal the `belief_revised` Deal
    IDs exactly. Priority ordering may change execution order but not admission.
 8. Verify the seven screening labels and confirm their prior records never
@@ -272,14 +360,21 @@ single Worker, and wait for its heartbeat instead of bypassing the check.
     read/replay adapter and confirm its universe and fingerprints remain
     unchanged. Never recreate it by invoking the current pinned replay action.
 
-The report includes the market-scan result and company analyses; opening a
-candidate exposes these named underwriting sections: **What happened?**,
-**Changed assumptions**, **Which historical companies are affected?**, and
-**Company underwriting**. The Company underwriting section identifies CORE
-FRAMEWORK versus NAMED ADVISORY judgments, the advisory pack/version,
-component cards, exact source lineage, supporting/counterevidence Evidence Pack
-IDs, limitations, and independent disagreements. Named advisory viewpoints have
-formal decision weight zero.
+The report includes the market-scan result and CompanyAnalyses. Opening an
+underwritten candidate exposes these current sections, in order:
+
+1. **Decision Request**
+2. **What Changed**
+3. **Company Position**
+4. **Thesis Assessment**
+5. **Financial and Valuation Status**
+6. **Named Lens Readings**
+7. **Recommendation and Next Steps**
+8. **Appendix**
+
+Named Lens Readings identify their advisory pack/version, exact source lineage,
+supporting and counterevidence Evidence Pack IDs, limitations, and independent
+disagreements. Named advisory viewpoints have formal decision weight zero.
 
 For the Hush Security invested-positive demo, keep the product action policy
 unchanged: the canonical belief action is `evaluate_follow_on`. The research
@@ -299,9 +394,21 @@ quiet Worker before starting a new test flow.
 
 ## Rollback
 
-If the public-sandbox cutover fails, stop the Worker, restore the previously
-saved Sites version, and change the Sites runtime mode back to
-`VSEE_DEPLOYMENT_MODE=public_demo`. Verify the restored public site is the
-anonymous synthetic read-only demo. **Do not roll back database migrations:**
-only the separately reviewed production migrations through `0018` may be
-assumed present. This checkpoint never applies `0019` or later to production.
+### Private Staging
+
+If private Staging fails, stop the local foreground Worker and restore only a
+previously saved Sites version known to be compatible with the isolated Staging
+schema. Never repoint Staging to production data, XTrace namespaces, or
+credentials. Do not manually roll back Staging migration `0030` or mutate its
+authority objects; restore a compatible application version or rebuild an
+isolated Staging data plane through the reviewed migration path.
+
+### Future production
+
+If a separately authorized future production public-sandbox cutover fails,
+stop its Worker, restore the previously saved Sites version, and change its
+runtime mode back to `VSEE_DEPLOYMENT_MODE=public_demo`. Verify the restored
+public site is the anonymous synthetic read-only demo. **Do not roll back
+database migrations:** only the separately reviewed production migrations
+through `0018` may currently be assumed present. This checkpoint never applies
+`0019` through `0030` to production.
