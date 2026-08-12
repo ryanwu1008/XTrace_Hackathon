@@ -30,18 +30,31 @@ async function runCommand(
   command: string,
   arguments_: string[],
   environment: NodeJS.ProcessEnv,
+  timeoutMs?: number,
 ): Promise<CommandResult> {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, arguments_, { env: environment });
     let output = "";
+    const timeout = timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+        output += `\nCommand timed out after ${timeoutMs}ms.\n`;
+        child.kill("SIGTERM");
+      }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
       output += chunk.toString();
     });
     child.stderr.on("data", (chunk: Buffer) => {
       output += chunk.toString();
     });
-    child.on("error", reject);
-    child.on("close", (exitCode) => resolve({ exitCode, output }));
+    child.on("error", (error) => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (exitCode) => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      resolve({ exitCode, output });
+    });
   });
 }
 
@@ -106,30 +119,27 @@ test("worker image has a non-root long-running command and health check", async 
 });
 
 test("worker dependency lock supports a clean Node 22 container install", async (t) => {
+  if (process.env.REQUIRE_WORKER_CONTAINER_TESTS !== "1") {
+    t.skip("Set REQUIRE_WORKER_CONTAINER_TESTS=1 for the release container gate");
+    return;
+  }
   const dockerProbe = await runCommand("docker", ["version", "--format", "{{.Server.Version}}"], {
     ...process.env,
-  }).catch(() => ({ exitCode: 127, output: "" }));
+  }, 10_000).catch(() => ({ exitCode: 127, output: "" }));
   if (dockerProbe.exitCode !== 0) {
     t.skip("Docker is unavailable");
     return;
   }
-
-  const fixtureRoot = await mkdtemp(join(tmpdir(), "vsee-worker-lock-"));
-  await Promise.all([
-    copyFile(packagePath, join(fixtureRoot, "package.json")),
-    copyFile(packageLockPath, join(fixtureRoot, "package-lock.json")),
-  ]);
-  t.after(async () => {
-    await rm(fixtureRoot, { recursive: true, force: true });
-  });
 
   const result = await runCommand(
     "docker",
     [
       "run",
       "--rm",
-      "-v",
-      `${fixtureRoot}:/app`,
+      "--mount",
+      `type=bind,src=${packagePath.pathname},dst=/app/package.json,readonly`,
+      "--mount",
+      `type=bind,src=${packageLockPath.pathname},dst=/app/package-lock.json,readonly`,
       "-w",
       "/app",
       "node:22.13-bookworm-slim",
@@ -138,6 +148,7 @@ test("worker dependency lock supports a clean Node 22 container install", async 
       "--ignore-scripts",
     ],
     { ...process.env },
+    120_000,
   );
 
   assert.equal(result.exitCode, 0, result.output);
