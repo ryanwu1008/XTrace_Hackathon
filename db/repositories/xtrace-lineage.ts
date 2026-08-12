@@ -126,11 +126,11 @@ export interface XTraceLineageRepository {
     dealId: string;
     activeParentFingerprint: string;
   }): Promise<XTraceMemoryLineage | null>;
-  resolveExactOwnership(input: {
-    memoryId: string;
+  resolveExactOwnerships(input: {
+    memoryIds: string[];
     workspaceId: string;
     dealId: string;
-  }): Promise<XTraceMemoryLineage | null>;
+  }): Promise<Map<string, XTraceMemoryLineage>>;
   recordRecallAudit(input: XTraceRecallAuditV2): Promise<void>;
 }
 
@@ -413,24 +413,14 @@ export function createMemoryXTraceLineageRepository(options: {
           : "source_document",
       };
     },
-    async resolveExactOwnership(input) {
-      const link = exactMemories.get(lineageKey(input.workspaceId, input.memoryId));
-      if (!link || link.dealId !== input.dealId) return null;
-      return {
-        memoryId: link.memoryId,
-        workspaceId: link.workspaceId,
-        dealId: link.dealId,
-        sourceRevisionIds: [link.sourceRevisionId],
-        sourceIds: link.parentKind === "sample_decision_record" ? [] : [link.sourceId],
-        fixtureIds: link.parentKind === "sample_decision_record"
-          ? [link.sourceId.replace(/^source_/, "")]
-          : [],
-        provenance: link.parentKind === "sample_decision_record"
-          ? "demo_fixture"
-          : link.parentKind === "canonical_source_revision"
-          ? "public_web"
-          : "source_document",
-      };
+    async resolveExactOwnerships(input) {
+      const result = new Map<string, XTraceMemoryLineage>();
+      for (const memoryId of [...new Set(input.memoryIds)]) {
+        const link = exactMemories.get(lineageKey(input.workspaceId, memoryId));
+        if (!link || link.dealId !== input.dealId) continue;
+        result.set(memoryId, toExactOwnershipLineage(link));
+      }
+      return result;
     },
     async recordRecallAudit(input) {
       await options.persistRecallAudit?.(structuredClone(input));
@@ -718,31 +708,31 @@ export function createSupabaseXTraceLineageRepository(options: {
         ? toLineage(row as Record<string, unknown>)
         : null;
     },
-    async resolveExactOwnership(input) {
+    async resolveExactOwnerships(input) {
+      const memoryIds = [...new Set(input.memoryIds)];
+      if (!memoryIds.length) return new Map();
+      const query = new URLSearchParams({
+        workspace_id: `eq.${input.workspaceId}`,
+        deal_id: `eq.${input.dealId}`,
+        memory_id: `in.(${memoryIds.map(encodePostgrestValue).join(",")})`,
+        select:
+          "memory_id,workspace_id,deal_id,parent_kind,source_id,source_revision_id",
+        limit: String(memoryIds.length),
+      });
       const rows = await request(
-        `/xtrace_memory_links_v2?workspace_id=eq.${encodeURIComponent(input.workspaceId)}`
-        + `&memory_id=eq.${encodeURIComponent(input.memoryId)}`
-        + `&deal_id=eq.${encodeURIComponent(input.dealId)}&limit=1`,
+        `/xtrace_memory_links_v2?${query}`,
       ) as Record<string, unknown>[];
-      const link = rows[0];
-      if (!link) return null;
-      const parentKind = String(link.parent_kind ?? "");
-      const sourceId = String(link.source_id ?? "");
-      return {
-        memoryId: String(link.memory_id),
-        workspaceId: String(link.workspace_id),
-        dealId: String(link.deal_id),
-        sourceRevisionIds: [String(link.source_revision_id)],
-        sourceIds: parentKind === "sample_decision_record" ? [] : [sourceId],
-        fixtureIds: parentKind === "sample_decision_record"
-          ? [sourceId.replace(/^source_/, "")]
-          : [],
-        provenance: parentKind === "sample_decision_record"
-          ? "demo_fixture"
-          : parentKind === "canonical_source_revision"
-          ? "public_web"
-          : "source_document",
-      };
+      return new Map(rows.map((link) => {
+        const lineage = toExactOwnershipLineage({
+          memoryId: String(link.memory_id),
+          workspaceId: String(link.workspace_id),
+          dealId: String(link.deal_id),
+          parentKind: String(link.parent_kind ?? "") as ExactXTraceParentKind,
+          sourceId: String(link.source_id ?? ""),
+          sourceRevisionId: String(link.source_revision_id ?? ""),
+        });
+        return [lineage.memoryId, lineage] as const;
+      }));
     },
     async recordRecallAudit(input) {
       await request("/rpc/record_xtrace_recall_audit_v2", {
@@ -766,6 +756,35 @@ function exactParentKey(
     parent.parentFingerprint,
     serializerVersion,
   ]);
+}
+
+function toExactOwnershipLineage(link: {
+  memoryId: string;
+  workspaceId: string;
+  dealId: string;
+  parentKind: ExactXTraceParentKind;
+  sourceId: string;
+  sourceRevisionId: string;
+}): XTraceMemoryLineage {
+  return {
+    memoryId: link.memoryId,
+    workspaceId: link.workspaceId,
+    dealId: link.dealId,
+    sourceRevisionIds: [link.sourceRevisionId],
+    sourceIds: link.parentKind === "sample_decision_record" ? [] : [link.sourceId],
+    fixtureIds: link.parentKind === "sample_decision_record"
+      ? [link.sourceId.replace(/^source_/, "")]
+      : [],
+    provenance: link.parentKind === "sample_decision_record"
+      ? "demo_fixture"
+      : link.parentKind === "canonical_source_revision"
+      ? "public_web"
+      : "source_document",
+  };
+}
+
+function encodePostgrestValue(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
 
 function exactIntentId(

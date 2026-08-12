@@ -183,6 +183,15 @@ export class XTraceLineageError extends XTraceUnavailableError {
   }
 }
 
+export class XTraceRecallLimitError extends XTraceUnavailableError {
+  readonly code = "XTRACE_RECALL_LIMIT_EXCEEDED";
+
+  constructor() {
+    super(false, "XTrace recall returned more rows than requested");
+    this.name = "XTraceRecallLimitError";
+  }
+}
+
 export class XTraceExactIngestBlockedError extends XTraceUnavailableError {
   readonly code = "XTRACE_EXACT_INGEST_BLOCKED";
 
@@ -478,12 +487,24 @@ export function createXTraceService(
       if (!isAcceptedXTraceSearchResponse(response)) {
         throw new XTraceUnavailableError(false, "XTrace search response was invalid");
       }
+      if (response.data.length > scopedInput.limit) {
+        throw new XTraceRecallLimitError();
+      }
       const allowedDealIds = new Set(scopedInput.candidateDealIds);
       const contexts: MemoryContext[] = [];
       const v2Recall = Boolean(
         scopedInput.activeParentFingerprint
         && scopedInput.candidateDealIds.length === 1,
       );
+      const exactOwnerships = v2Recall && scopedInput.candidateDealIds[0]
+        ? await lineage.resolveExactOwnerships({
+            memoryIds: response.data.map((memory) => memory.id),
+            workspaceId,
+            dealId: scopedInput.candidateDealIds[0],
+          })
+        : new Map<string, Awaited<
+          ReturnType<XTraceLineageRepository["resolveExact"]>
+        >>();
       let lineageFailure = false;
       for (const memory of response.data) {
         const expectedUserId = stableXTraceUserId(workspaceId);
@@ -516,11 +537,7 @@ export function createXTraceService(
             // different Deal. Discard those rows. If the external memory ID
             // is actually bound to this Deal locally, however, contradictory
             // provider conversation metadata is a lineage failure.
-            const contradictsLocalAuthority = await lineage.resolveExactOwnership({
-              memoryId: memory.id,
-              workspaceId,
-              dealId: scopedDealId,
-            });
+            const contradictsLocalAuthority = exactOwnerships.get(memory.id);
             if (contradictsLocalAuthority) lineageFailure = true;
           }
           continue;
@@ -546,14 +563,20 @@ export function createXTraceService(
             });
         if (!resolved || !allowedDealIds.has(resolved.dealId)) {
           if (v2Recall && v2DealId) {
-            const ownedByRequestedDeal = await lineage.resolveExactOwnership({
-              memoryId: memory.id,
-              workspaceId,
-              dealId: v2DealId,
-            });
+            const ownedByRequestedDeal = exactOwnerships.get(memory.id);
             if (ownedByRequestedDeal) lineageFailure = true;
           }
           continue;
+        }
+        if (v2Recall && scopedDealId) {
+          const sourceRevisionIds = resolved.sourceRevisionIds ?? [];
+          const expectedParentConversation = sourceRevisionIds.length === 1
+            ? `deal:${scopedDealId}:parent:${sourceRevisionIds[0]}`
+            : undefined;
+          if (!expectedParentConversation || memory.conv_id !== expectedParentConversation) {
+            lineageFailure = true;
+            continue;
+          }
         }
         const fixtureIds = resolved.fixtureIds ?? [];
         if (!resolved.sourceIds.length && !fixtureIds.length) continue;

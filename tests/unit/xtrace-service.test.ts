@@ -1224,7 +1224,7 @@ test("Supabase v2 lineage never recovers a missing direct child link from conv-i
   assert.equal(requests.length, 2);
 });
 
-test("Supabase exact ownership lookup is bounded by workspace, Deal, and memory ID", async () => {
+test("Supabase exact ownership lookup batches workspace, Deal, and memory IDs", async () => {
   const requests: string[] = [];
   const repository = createSupabaseXTraceLineageRepository({
     url: "https://database.example.test",
@@ -1242,11 +1242,11 @@ test("Supabase exact ownership lookup is bounded by workspace, Deal, and memory 
     },
   });
 
-  assert.deepEqual(await repository.resolveExactOwnership({
+  assert.deepEqual([...await repository.resolveExactOwnerships({
     workspaceId: "workspace_demo",
     dealId: "deal_1",
-    memoryId: "memory_exact",
-  }), {
+    memoryIds: ["memory_exact", "memory_exact"],
+  })], [["memory_exact", {
     memoryId: "memory_exact",
     workspaceId: "workspace_demo",
     dealId: "deal_1",
@@ -1254,12 +1254,12 @@ test("Supabase exact ownership lookup is bounded by workspace, Deal, and memory 
     sourceIds: ["source_1"],
     fixtureIds: [],
     provenance: "public_web",
-  });
+  }]]);
   const url = new URL(requests[0]);
   assert.equal(url.pathname, "/rest/v1/xtrace_memory_links_v2");
   assert.equal(url.searchParams.get("workspace_id"), "eq.workspace_demo");
   assert.equal(url.searchParams.get("deal_id"), "eq.deal_1");
-  assert.equal(url.searchParams.get("memory_id"), "eq.memory_exact");
+  assert.equal(url.searchParams.get("memory_id"), 'in.("memory_exact")');
   assert.equal(url.searchParams.get("limit"), "1");
 });
 
@@ -1863,6 +1863,92 @@ test("exact recall rejects provider rows from another app, workspace user, or De
   }), (error: unknown) => error instanceof Error
     && "code" in error
     && error.code === "XTRACE_RECALL_LINEAGE_FAILED");
+});
+
+test("exact recall rejects a locally owned memory with contradictory parent revision metadata", async () => {
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+  });
+  const appId = "xtrace-staging-isolated";
+  const service = createXTraceService({
+    ingest: async () => ({
+      id: "job_scoped_parent",
+      status: "succeeded",
+      result: {
+        memories_created: [{ id: "memory_scoped", type: "fact", text: "Scoped" }],
+      },
+    }),
+    search: async (input: { app_id?: string; user_id: string }) => ({
+      object: "search",
+      mode: "retrieve",
+      data: [{
+        id: "memory_scoped",
+        type: "fact",
+        text: "Contradictory parent",
+        score: 0.9,
+        app_id: input.app_id,
+        user_id: input.user_id,
+        conv_id: "deal:deal_1:parent:revision_other",
+      }],
+      context: null,
+    }),
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId,
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+  await service.ingestExactParent(exactParent);
+
+  await assert.rejects(service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "scope",
+    candidateDealIds: ["deal_1"],
+    limit: 5,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  }), (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "XTRACE_RECALL_LINEAGE_FAILED");
+});
+
+test("exact recall rejects a provider response that exceeds the requested row limit", async () => {
+  const service = createXTraceService({
+    search: async (input: { app_id?: string; user_id: string }) => ({
+      object: "search",
+      mode: "retrieve",
+      data: ["memory_1", "memory_2"].map((id) => ({
+        id,
+        type: "fact",
+        text: id,
+        score: 0.9,
+        app_id: input.app_id,
+        user_id: input.user_id,
+        conv_id: "deal:deal_1:parent:revision_1",
+      })),
+      context: null,
+    }),
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId: "xtrace-staging-isolated",
+    lineageRepository: createMemoryXTraceLineageRepository({
+      isParentActive: () => true,
+    }),
+    limiter: { async acquire() {} },
+  });
+
+  await assert.rejects(service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "scope",
+    candidateDealIds: ["deal_1"],
+    limit: 1,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  }), (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "XTRACE_RECALL_LIMIT_EXCEEDED");
 });
 
 test("exact recall discards same-workspace semantic matches owned by another Deal", async () => {
