@@ -584,10 +584,14 @@ export async function processClaimedRun(
     }
     await updateStage("notification", "skipped");
 
+    const reportIsIncomplete = storedReport.analysisStatus === "incomplete"
+      || storedReport.counts.analysisUnavailable > 0;
     const finalRun = await dependencies.runs.finish({
       workspaceId: claimedRun.workspaceId,
       runId: claimedRun.id,
-      status: warnings.length ? "partial" : "completed",
+      status: warnings.length || reportIsIncomplete
+        ? "partial"
+        : "completed",
       workerId,
     });
     return { run: finalRun, report: storedReport };

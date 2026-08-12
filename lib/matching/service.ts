@@ -481,6 +481,12 @@ export function createMatchingService(reasoner: MatchingReasoner) {
         sourceById,
         "public_fact",
       ));
+      if (groundedImplications.some(({ text }) => text.length === 0)) {
+        return [unavailableMatch(
+          deal,
+          "Analysis unavailable because one or more implication claims were not grounded.",
+        )];
+      }
       const positiveImplications = match.positiveImplications.filter((claim) =>
         groundedImplications.some((groundedClaim) => groundedClaim.text === claim)
       );

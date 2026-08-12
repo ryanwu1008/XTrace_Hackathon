@@ -19,6 +19,18 @@ import {
   classifyMatchingProviderFailure,
   MatchingFailure,
 } from "./failure";
+import {
+  buildReasonedMatchRepairConstraint,
+  partitionReasonedMatchAuthority,
+  reasonedMatchSatisfiesRepairConstraint,
+  reasonedMatchesHaveExactAuthority,
+  type ReasonedMatchRepairConstraint,
+} from "./response-authority";
+
+// The immutable database RPC accepts this storage envelope. The v4 contract
+// domain below changes replay identity without requiring a schema migration.
+const JUDGMENT_STORAGE_PREFIX = "reasoner-judgment-v3:sha256:";
+const JUDGMENT_CONTRACT_DOMAIN = "reasoner-judgment-v4";
 
 export type ClaudeMatchingReasonerOptions = {
   // Persisted judgment replay. Opus 4.8 exposes no sampling controls, so the
@@ -44,7 +56,7 @@ export function createClaudeMatchingReasoner(
           "Find overlaps between recent public market events and previously reviewed Deals.",
           "Do not invent company progress, revenue, customers, fundraising, or current status.",
           "Use only the supplied memory context and source catalog.",
-          "Every sentence in whyNow and previousContext, and every implication, must appear as a key in claimSourceIds.",
+          "The complete whyNow string, complete previousContext string, and each complete implication string must each appear as its own exact key in claimSourceIds.",
           "Use verbatimExcerpt only when quoteEligible is true. A normalizedStatement is a non-quote canonical description: it may ground a factual claim only when factEligible is true, and must never be presented or described as a direct quotation.",
           "Claims are validated mechanically: each claim must equal one complete eligible evidence unit, character for character—either the cited source's full verbatimExcerpt or its full normalizedStatement. Never shorten an evidence unit, remove a qualifier or negation, or merge two evidence strings into one sentence.",
           "Sources with factEligible false, including legacy_unverified and model_inference text, are retrieval context only and cannot support output claims.",
@@ -54,6 +66,10 @@ export function createClaudeMatchingReasoner(
           "Select exactly one supplied trigger event and one supplied same-Deal typed prior-context candidate: either a Sample decision record or a Sample research screening record, plus the exact reconsideration-condition index and text.",
           "A Sample research screening record explicitly means no meeting and no VC interaction. Never describe it as a meeting, decision, pass, or investment; it may only establish the supplied research disposition, prior research next-step boundary, and reconsideration conditions.",
           "Provide a substantive counterevidence statement supported by canonical counterevidence-role source IDs.",
+          "citedSourceIds must equal the unique union of every source ID used by claimSourceIds, revisitCitedSourceIds, and counterevidence.citedSourceIds—no omissions and no extras.",
+          "Each implication must equal one complete eligible canonical evidence unit from a trigger or corroborating source; counterevidence-role sources belong only in counterevidence.",
+          "Classify each supported implication by observation polarity: positive means the evidence supports the recorded reconsideration condition, while negative means it weakens it or increases the recorded risk. This is not the formal belief direction; the downstream deterministic policy derives direction, actions, gates, outcome, and any formal decision.",
+          "Do not list both positive and negative implications merely for balance. Include both only when independently grounded canonical evidence establishes genuinely opposing observation polarity.",
           "Report every credible Deal/event overlap you find, including uncertain ones; reflect uncertainty in scoreInputs rather than omitting the match. Downstream deterministic validation drops ungrounded claims, so coverage matters more than filtering here.",
           "Return at most one observation per Deal. When multiple events overlap one Deal, select the single strongest evidence-grounded trigger event; never emit duplicate Deal rows.",
           "Score each dimension honestly on its own merits, not uniformly low: when a public event directly addresses a Deal's sector, decision reason, or a recorded revisit condition (for example a reimbursement rule change for a remote patient monitoring company), eventRelevance and dealRelevance belong at 0.7 or higher; reserve scores below 0.4 for tangential links. Do not down-score a well-evidenced direct overlap merely to be cautious.",
@@ -65,10 +81,10 @@ export function createClaudeMatchingReasoner(
         task: "Rank credible Deal/event overlaps for human follow-up.",
         outputSchema: {
           dealId: "candidate Deal id",
-          whyNow: "one or more evidence-backed sentences",
-          previousContext: "prior local context, clearly identifying synthetic records",
-          positiveImplications: ["bounded implications"],
-          negativeImplications: ["bounded implications"],
+          whyNow: "one complete eligible public evidence unit",
+          previousContext: "one complete eligible same-Deal prior-context evidence unit, clearly identifying synthetic records",
+          positiveImplications: ["each item is one complete eligible canonical evidence unit"],
+          negativeImplications: ["each item is one complete eligible canonical evidence unit"],
           selectedTriggerEventId: "one supplied accepted event ID",
           selectedPriorInteractionId: "one same-Deal typed prior-context authority ID",
           revisitConditionIndex: 0,
@@ -96,10 +112,10 @@ export function createClaudeMatchingReasoner(
       });
       const model = process.env.ANTHROPIC_MODEL ?? "claude-opus-4-8";
       const scope = requireCurrentEvidenceScope(input);
-      const fingerprint = `reasoner-judgment-v3:sha256:${
+      const fingerprint = `${JUDGMENT_STORAGE_PREFIX}${
         createHash("sha256")
           .update(
-            `reasoner-judgment-v3\n${model}\n${system}\n${requestContent}\n${stableEvidencePromptJson({
+            `${JUDGMENT_CONTRACT_DOMAIN}\n${model}\n${system}\n${requestContent}\n${stableEvidencePromptJson({
               schemaVersion: scope.schemaVersion,
               evidenceMode: scope.evidenceMode,
               contextFingerprint: scope.contextFingerprint,
@@ -126,9 +142,31 @@ export function createClaudeMatchingReasoner(
         }],
         maxTokens: 6_000,
       });
-      let parsed;
+      let parsed: ClaudeReasonedMatch[];
+      let validBeforeRepair: ClaudeReasonedMatch[] = [];
+      let invalidDealIds: string[] | null = null;
+      let repairConstraints = new Map<string, ReasonedMatchRepairConstraint>();
       try {
-        parsed = ClaudeReasonedMatchesSchema.parse(parseJson(response));
+        parsed = parseCompleteMatches(parseJson(response));
+        const partition = partitionReasonedMatchAuthority(parsed, input);
+        if (partition.invalid.length || partition.duplicateDealIds.length) {
+          const constraints = partition.invalid.map((match) => [
+            match.dealId,
+            buildReasonedMatchRepairConstraint(match, input),
+          ] as const);
+          const canRepairOnlyInvalidRows = partition.duplicateDealIds.length === 0
+            && constraints.every(([, constraint]) => constraint !== null)
+            && new Set(constraints.map(([dealId]) => dealId)).size
+              === constraints.length;
+          if (canRepairOnlyInvalidRows) {
+            validBeforeRepair = partition.valid as ClaudeReasonedMatch[];
+            repairConstraints = new Map(
+              constraints as Array<readonly [string, ReasonedMatchRepairConstraint]>,
+            );
+            invalidDealIds = [...repairConstraints.keys()];
+          }
+          throw new Error("Matching response failed exact authority validation.");
+        }
       } catch {
         response = await completeMatching(client, {
           system,
@@ -136,15 +174,45 @@ export function createClaudeMatchingReasoner(
             role: "user",
             content: [
               requestContent,
-              "The previous response failed JSON/schema validation.",
-              "Repair it once. Return only a complete JSON array matching outputSchema.",
-              `Previous response: ${response.slice(0, 12_000)}`,
+              "A previous response failed JSON, schema, or semantic claim-key validation; its content is intentionally not supplied.",
+              "Regenerate the complete response from scratch using only the supplied source catalog and other evidence above.",
+              ...(invalidDealIds
+                ? [
+                    `Return repaired rows only for these Deal IDs: ${stableEvidencePromptJson(invalidDealIds)}.`,
+                    "Do not return or alter any other Deal row; already valid rows are retained by the application.",
+                    `Preserve these reviewed selection, citation, score, and polarity-count constraints exactly: ${stableEvidencePromptJson(invalidDealIds.map((dealId) => repairConstraints.get(dealId)))}.`,
+                  ]
+                : []),
+              "Replace whyNow, previousContext, and every implication with complete eligible canonical evidence units from the source catalog; do not merely add claimSourceIds keys to paraphrases.",
+              "Repeat each complete output field as its own exact claimSourceIds key with its valid source IDs. Return only one complete JSON array matching outputSchema.",
+              "Make citedSourceIds the exact unique union of claim, revisit, and counterevidence source IDs.",
             ].join("\n"),
           }],
           maxTokens: 6_000,
         });
         try {
-          parsed = ClaudeReasonedMatchesSchema.parse(parseJson(response));
+          const repaired = parseCompleteMatches(parseJson(response));
+          const expectedRepairDealIds = invalidDealIds;
+          if (
+            expectedRepairDealIds
+            && (
+              repaired.length !== expectedRepairDealIds.length
+              || repaired.some(({ dealId }) =>
+                !expectedRepairDealIds.includes(dealId)
+              )
+              || repaired.some((match) => {
+                const constraint = repairConstraints.get(match.dealId);
+                return !constraint
+                  || !reasonedMatchSatisfiesRepairConstraint(match, constraint);
+              })
+            )
+          ) {
+            throw new Error("Matching repair changed the validated Deal set.");
+          }
+          parsed = [...validBeforeRepair, ...repaired];
+          if (!reasonedMatchesHaveExactAuthority(parsed, input)) {
+            throw new Error("Matching repair failed exact authority validation.");
+          }
         } catch {
           throw new MatchingFailure({
             code: "MATCHING_RESPONSE_INVALID",
@@ -153,6 +221,12 @@ export function createClaudeMatchingReasoner(
         }
       }
       const matches = normalizeMatches(parsed, input);
+      if (!reasonedMatchesHaveExactAuthority(matches, input)) {
+        throw new MatchingFailure({
+          code: "MATCHING_RESPONSE_INVALID",
+          phase: "response_validation",
+        });
+      }
       if (options.judgments) {
         const stored = await options.judgments.save({
           fingerprint,
@@ -161,10 +235,27 @@ export function createClaudeMatchingReasoner(
           evidenceContextFingerprint: scope.contextFingerprint,
           evidenceBindingFingerprint: scope.bindingFingerprint,
         });
-        return normalizeMatches(
-          ClaudeReasonedMatchesSchema.parse(stored.payload),
-          input,
-        );
+        try {
+          assertCurrentJudgmentIdentity(stored, {
+            fingerprint,
+            model,
+            contextFingerprint: scope.contextFingerprint,
+            bindingFingerprint: scope.bindingFingerprint,
+          });
+          const storedMatches = normalizeMatches(
+            parseCompleteMatches(stored.payload),
+            input,
+          );
+          if (!reasonedMatchesHaveExactAuthority(storedMatches, input)) {
+            throw new Error("Stored matching judgment failed exact authority.");
+          }
+          return storedMatches;
+        } catch {
+          throw new MatchingFailure({
+            code: "MATCHING_RESPONSE_INVALID",
+            phase: "response_validation",
+          });
+        }
       }
       return matches;
     },
@@ -189,17 +280,52 @@ async function replayJudgment(
 ): Promise<ReasonedMatch[] | null> {
   const record = await judgments.find(fingerprint);
   if (!record) return null;
+  if (record.state !== "current") return null;
+  try {
+    assertCurrentJudgmentIdentity(record, {
+      fingerprint,
+      model: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-8",
+      contextFingerprint: input.evidenceScope!.contextFingerprint,
+      bindingFingerprint: input.evidenceScope!.evidenceMode === "live"
+        ? input.evidenceScope!.bindingFingerprint
+        : null,
+    });
+    const matches = normalizeMatches(
+      parseCompleteMatches(record.payload),
+      input,
+    );
+    if (!reasonedMatchesHaveExactAuthority(matches, input)) {
+      throw new Error("Replayed matching judgment failed exact authority.");
+    }
+    return matches;
+  } catch {
+    throw new MatchingFailure({
+      code: "MATCHING_RESPONSE_INVALID",
+      phase: "response_validation",
+    });
+  }
+}
+
+function assertCurrentJudgmentIdentity(
+  record: Awaited<ReturnType<ReasonerJudgmentsRepository["find"]>>,
+  expected: {
+    fingerprint: string;
+    model: string;
+    contextFingerprint: string;
+    bindingFingerprint: string | null;
+  },
+): void {
   if (
-    record.state !== "current"
-    || record.evidenceContextFingerprint
-      !== input.evidenceScope!.contextFingerprint
+    !record
+    || record.state !== "current"
+    || record.fingerprint !== expected.fingerprint
+    || record.model !== expected.model
+    || record.evidenceContextFingerprint !== expected.contextFingerprint
     || (
-      input.evidenceScope!.evidenceMode === "live"
-      && record.evidenceBindingFingerprint
-        !== input.evidenceScope!.bindingFingerprint
+      expected.bindingFingerprint !== null
+      && record.evidenceBindingFingerprint !== expected.bindingFingerprint
     )
-  ) return null;
-  return normalizeMatches(ClaudeReasonedMatchesSchema.parse(record.payload), input);
+  ) throw new Error("Reasoner judgment identity mismatch.");
 }
 
 function requireCurrentEvidenceScope(
@@ -242,6 +368,22 @@ function normalizeMatches(
         ]),
       ),
     }));
+}
+
+function parseCompleteMatches(input: unknown): ClaudeReasonedMatch[] {
+  const matches = ClaudeReasonedMatchesSchema.parse(input);
+  if (matches.some((match) => {
+    const exactClaimKeys = new Set(Object.keys(match.claimSourceIds));
+    return [
+      match.whyNow,
+      match.previousContext,
+      ...match.positiveImplications,
+      ...match.negativeImplications,
+    ].some((claim) => !exactClaimKeys.has(claim));
+  })) {
+    throw new Error("Matching response omitted required exact claim keys.");
+  }
+  return matches;
 }
 
 function parseJson(text: string): unknown {

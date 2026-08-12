@@ -67,8 +67,6 @@ export function serializeEventForReasoner(event: MarketEventV2) {
     sectors: event.sectors,
     themes: event.themes,
     summary: event.summary,
-    positiveImplications: event.positiveImplications,
-    negativeImplications: event.negativeImplications,
     eventAt: event.eventAt,
     eventAtPrecision: event.eventAtPrecision,
     publishedAt: event.publishedAt,

@@ -684,7 +684,7 @@ test("uses one safe application-owned next-step template for every Deal status",
   }
 });
 
-test("normalized support stays non-quote while legacy and model text cannot support output facts", async () => {
+test("one ungrounded implication makes the Deal analysis unavailable instead of silently disappearing", async () => {
   const fixture = strictBeliefRevisionFixture({ prefix: "support" });
   const legacySource = adaptLegacySourceRef({
     id: "legacy_unverified",
@@ -737,23 +737,13 @@ test("normalized support stays non-quote while legacy and model text cannot supp
   }).analyze(fixture.input);
 
   assert.equal(matches.length, 1);
-  assert.deepEqual(matches[0].implications.positive, [
-    fixture.observation.whyNow,
-  ]);
-  assert.deepEqual(matches[0].claimSupport, [{
-    text: fixture.observation.whyNow,
-    kind: "normalized_non_quote",
-    sourceIds: [fixture.trigger.id],
-  }, {
-    text: fixture.observation.previousContext,
-    kind: "normalized_non_quote",
-    sourceIds: [fixture.prior.id],
-  }]);
-  assert.equal(
-    matches[0].sources.find((source) => source.id === fixture.trigger.id)?.text
-      .status,
-    "normalized_only",
+  assert.equal(matches[0].outcome, "analysis_unavailable");
+  assert.match(
+    matches[0].analysisFailureReason ?? "",
+    /implication claims were not grounded/i,
   );
+  assert.deepEqual(matches[0].implications, { positive: [], negative: [] });
+  assert.deepEqual(matches[0].claimSupport, []);
 });
 
 test("a Deal-background public_web source cannot satisfy event-side grounding", async () => {

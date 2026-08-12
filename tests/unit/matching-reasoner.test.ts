@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import type { DealMemoryBundle } from "../../lib/contracts/domain";
@@ -10,6 +11,7 @@ import { createClaudeMatchingReasoner } from "../../lib/matching/claude-reasoner
 import { IntegrationTransportError } from "../../lib/api/errors";
 import { ClaudeCompletionTruncatedError } from "../../lib/claude/client";
 import { MatchingFailure } from "../../lib/matching/failure";
+import { stableEvidencePromptJson } from "../../lib/matching/prompt-evidence";
 import { createClaudeReasoner } from "../../lib/claude/service";
 import {
   sourceTextForRetrieval,
@@ -61,12 +63,32 @@ const eventSource = normalizedSourceV2("market_source", {
   canonicalUrl: "https://example.com/announcement",
   publisher: "Example",
   providerId: "example-feed",
+  eventAt: "2026-07-20T00:00:00.000Z",
+  eventAtPrecision: "timestamp",
   publishedAt: "2026-07-20T00:00:00.000Z",
   retrievedAt: "2026-07-20T01:00:00.000Z",
   entityKeys: [],
   text: {
     status: "normalized_only",
-    normalizedStatement: "The announcement concerns realtime infrastructure.",
+    normalizedStatement: "The official announcement concerns realtime infrastructure.",
+  },
+});
+
+const eventCounterSource = normalizedSourceV2("market_counter_source", {
+  title: "Official announcement limitation",
+  canonicalUrl: "https://example.com/announcement-limitation",
+  publisher: "Example",
+  providerId: "example-feed",
+  eventAt: "2026-07-20T00:00:00.000Z",
+  eventAtPrecision: "timestamp",
+  publishedAt: "2026-07-20T00:00:00.000Z",
+  retrievedAt: "2026-07-20T01:00:00.000Z",
+  entityKeys: [],
+  evidenceRole: "counterevidence",
+  text: {
+    status: "normalized_only",
+    normalizedStatement:
+      "The supplied evidence does not establish durable customer retention.",
   },
 });
 
@@ -78,6 +100,7 @@ const event = marketEventV2(eventSource, {
   themes: ["realtime"],
   summary: "A source-backed market event.",
   confidence: "medium",
+  sources: [eventSource, eventCounterSource],
 });
 
 const TEST_LIVE_SCOPE = {
@@ -88,6 +111,58 @@ const TEST_LIVE_SCOPE = {
   bindingFingerprint: `sha256:${"c".repeat(64)}` as const,
   snapshotFingerprint: null,
 };
+
+function canonicalCompletionFor(input: ReturnType<typeof replayInput>, options: {
+  dealId: string;
+  priorId: string;
+  overrides?: Record<string, unknown>;
+}) {
+  const prior = input.sources.find(({ id }) => id === options.priorId);
+  assert.ok(prior);
+  const whyNow = sourceTextForRetrieval(eventSource);
+  const previousContext = sourceTextForRetrieval(prior);
+  const counterevidence = sourceTextForRetrieval(eventCounterSource);
+  return {
+    dealId: options.dealId,
+    whyNow,
+    previousContext,
+    positiveImplications: [],
+    negativeImplications: [],
+    selectedTriggerEventId: "event_1",
+    selectedPriorInteractionId: options.priorId,
+    revisitConditionIndex: 0,
+    revisitConditionText: "Relevant market change",
+    revisitCitedSourceIds: ["market_source"],
+    counterevidence: {
+      statement: counterevidence,
+      citedSourceIds: ["market_counter_source"],
+    },
+    citedSourceIds: [
+      "market_source",
+      "market_counter_source",
+      options.priorId,
+    ],
+    scoreInputs: {
+      eventRelevance: 0.8,
+      dealRelevance: 0.8,
+      priorContextStrength: 0.7,
+      evidenceQuality: 0.8,
+    },
+    claimSourceIds: {
+      [whyNow]: ["market_source"],
+      [previousContext]: [options.priorId],
+    },
+    ...options.overrides,
+  };
+}
+
+function canonicalReplayCompletion(overrides: Record<string, unknown> = {}) {
+  return canonicalCompletionFor(replayInput(), {
+    dealId: "deal_ably",
+    priorId: "fixture_ably",
+    overrides,
+  });
+}
 
 test("structured matching context preserves source and synthetic-fixture lineage", () => {
   const contexts = buildStructuredMemoryContexts([bundle]);
@@ -100,6 +175,7 @@ test("structured matching context preserves source and synthetic-fixture lineage
   assert.deepEqual(sources.map((source) => source.id).sort(), [
     "deal_source",
     "fixture_ably",
+    "market_counter_source",
     "market_source",
   ]);
   assert.match(
@@ -177,66 +253,18 @@ test("Sample decision source timestamps canonicalize one exact Fact and interact
   );
 });
 
-test("Claude matching reasoner parses JSON and rejects Deals outside the candidate set", async () => {
+test("Claude matching reasoner parses canonical JSON", async () => {
   const calls: string[] = [];
+  const valid = canonicalReplayCompletion({
+    positiveImplications: [sourceTextForRetrieval(eventSource)],
+    claimSourceIds: {
+      ...canonicalReplayCompletion().claimSourceIds,
+    },
+  });
   const reasoner = createClaudeMatchingReasoner({
     async complete(input) {
       calls.push(`${input.system}\n${input.messages[0].content}`);
-      return `\`\`\`json
-      [
-        {
-          "dealId": "deal_ably",
-          "whyNow": "The official announcement concerns realtime infrastructure.",
-          "previousContext": "The synthetic record says the fund passed.",
-          "positiveImplications": ["The event overlaps the supplied company description."],
-          "negativeImplications": [],
-          "selectedTriggerEventId": "event_1",
-          "selectedPriorInteractionId": "fixture_ably",
-          "revisitConditionIndex": 0,
-          "revisitConditionText": "Relevant market change",
-          "revisitCitedSourceIds": ["market_source"],
-          "counterevidence": {
-            "statement": "The supplied evidence does not establish durable customer retention.",
-            "citedSourceIds": ["market_source"]
-          },
-          "citedSourceIds": ["market_source", "deal_source"],
-          "scoreInputs": {
-            "eventRelevance": 0.8,
-            "dealRelevance": 0.8,
-            "priorContextStrength": 0.7,
-            "evidenceQuality": 0.8
-          },
-          "claimSourceIds": {
-            "The official announcement concerns realtime infrastructure.": ["market_source"]
-          }
-        },
-        {
-          "dealId": "deal_unknown",
-          "whyNow": "Unknown.",
-          "previousContext": "Unknown.",
-          "positiveImplications": [],
-          "negativeImplications": [],
-          "selectedTriggerEventId": "event_1",
-          "selectedPriorInteractionId": "fixture_ably",
-          "revisitConditionIndex": 0,
-          "revisitConditionText": "Relevant market change",
-          "revisitCitedSourceIds": ["market_source"],
-          "counterevidence": {
-            "statement": "The supplied evidence does not establish durable customer retention.",
-            "citedSourceIds": ["market_source"]
-          },
-          "citedSourceIds": ["market_source"],
-          "scoreInputs": {
-            "eventRelevance": 1,
-            "dealRelevance": 1,
-            "priorContextStrength": 1,
-            "evidenceQuality": 1
-          },
-          "claimSourceIds": {
-            "Unknown.": ["market_source"]
-          }
-        }
-      ]\`\`\``;
+      return JSON.stringify([valid]);
     },
   });
 
@@ -292,6 +320,26 @@ test("matching reasoner asks for coverage-first reporting", async () => {
     /at most one observation per Deal/i,
     "a 30-Deal response must never emit ambiguous duplicate Deal rows",
   );
+  assert.match(
+    systemPrompt,
+    /complete whyNow.*complete previousContext.*each complete implication.*own exact key in claimSourceIds/i,
+    "every grounded output field must be mechanically complete before persistence",
+  );
+  assert.match(
+    systemPrompt,
+    /each implication must equal one complete eligible canonical evidence unit/i,
+    "implications cannot be uncited model synthesis",
+  );
+  assert.match(
+    systemPrompt,
+    /counterevidence-role sources belong only in counterevidence/i,
+    "counterevidence must not be manufactured as an action-changing implication",
+  );
+  assert.match(
+    systemPrompt,
+    /observation polarity.*formal belief direction.*downstream/i,
+    "the model may classify evidence polarity but cannot choose the formal belief direction",
+  );
 });
 
 test("matching reasoner accepts every field advertised by its output schema", async () => {
@@ -304,34 +352,7 @@ test("matching reasoner accepts every field advertised by its output schema", as
         const prompt = JSON.parse(String(input.messages[0].content)) as {
           outputSchema: Record<string, unknown>;
         };
-        const completion: Record<string, unknown> = {
-          dealId: "deal_ably",
-          whyNow: "The announcement concerns realtime infrastructure.",
-          previousContext: "The prior record concerned realtime infrastructure.",
-          positiveImplications: [],
-          negativeImplications: [],
-          selectedTriggerEventId: "event_1",
-          selectedPriorInteractionId: "fixture_ably",
-          revisitConditionIndex: 0,
-          revisitConditionText: "Relevant market change",
-          revisitCitedSourceIds: ["market_source"],
-          counterevidence: {
-            statement: "The announcement concerns realtime infrastructure.",
-            citedSourceIds: ["market_source"],
-          },
-          citedSourceIds: ["market_source"],
-          scoreInputs: {
-            eventRelevance: 0.8,
-            dealRelevance: 0.8,
-            priorContextStrength: 0.7,
-            evidenceQuality: 0.8,
-          },
-          claimSourceIds: {
-            "The announcement concerns realtime infrastructure.": [
-              "market_source",
-            ],
-          },
-        };
+        const completion: Record<string, unknown> = canonicalReplayCompletion();
         for (const [field, example] of Object.entries(prompt.outputSchema)) {
           if (!(field in completion)) completion[field] = example;
         }
@@ -348,13 +369,31 @@ test("matching reasoner accepts every field advertised by its output schema", as
 });
 
 test("matching reasoner accepts one valid observation for every Deal in a 30-Deal scan", async () => {
-  const template = JSON.parse(REPLAY_COMPLETION)[0] as Record<string, unknown>;
   const deals = Array.from({ length: 30 }, (_, index) => ({
     id: `deal_${index + 1}`,
     companyName: `Company ${index + 1}`,
     status: "passed" as const,
   }));
-  const completion = deals.map(({ id }) => ({ ...template, dealId: id }));
+  const bundles = deals.map((deal, index): DealMemoryBundle => ({
+    ...bundle,
+    dealId: deal.id,
+    companyName: deal.companyName,
+    interactions: bundle.interactions.map((interaction) => ({
+      ...interaction,
+      id: `fixture_${index + 1}`,
+    })),
+  }));
+  const input = replayInput({
+    deals,
+    memoryContexts: buildStructuredMemoryContexts(bundles),
+    sources: buildMatchingSources(bundles, [event]),
+  });
+  const completion = deals.map(({ id }, index) =>
+    canonicalCompletionFor(input, {
+      dealId: id,
+      priorId: `fixture_${index + 1}`,
+    })
+  );
   let calls = 0;
   const reasoner = createClaudeMatchingReasoner({
     async complete() {
@@ -363,7 +402,7 @@ test("matching reasoner accepts one valid observation for every Deal in a 30-Dea
     },
   });
 
-  const result = await reasoner.reason(replayInput({ deals }));
+  const result = await reasoner.reason(input);
 
   assert.equal(calls, 1, "a valid 30-Deal response must not require repair");
   assert.deepEqual(result.map(({ dealId }) => dealId), deals.map(({ id }) => id));
@@ -418,6 +457,250 @@ test("matching reasoner keeps each 30-Deal row strict", async () => {
   assert.equal(calls, 2, "an unknown field cannot bypass strict repair");
 });
 
+test("matching reasoner repairs each structurally valid row missing an exact claim key once", async () => {
+  const complete = canonicalReplayCompletion();
+  const missingClaims = [
+    complete.whyNow,
+    complete.previousContext,
+  ] as const;
+
+  for (const missingClaim of missingClaims) {
+    const incomplete = structuredClone(complete);
+    delete incomplete.claimSourceIds[missingClaim];
+    let calls = 0;
+    const reasoner = createClaudeMatchingReasoner({
+      async complete() {
+        calls += 1;
+        return JSON.stringify([calls === 1 ? incomplete : complete]);
+      },
+    });
+
+    const result = await reasoner.reason(replayInput());
+
+    assert.equal(calls, 2, `missing exact key must be repaired: ${missingClaim}`);
+    assert.deepEqual(result.map(({ dealId }) => dealId), ["deal_ably"]);
+  }
+});
+
+test("matching semantic repair regenerates from source evidence without echoing raw output", async () => {
+  const complete = canonicalReplayCompletion();
+  const incomplete = {
+    ...complete,
+    whyNow: "SENSITIVE_FIRST_RESPONSE_MUST_NOT_REENTER_THE_PROMPT",
+    claimSourceIds: {
+      [complete.previousContext]: ["fixture_ably"],
+    },
+  };
+  const prompts: string[] = [];
+  const reasoner = createClaudeMatchingReasoner({
+    async complete(input) {
+      prompts.push(String(input.messages[0].content));
+      return JSON.stringify([prompts.length === 1 ? incomplete : complete]);
+    },
+  });
+
+  const result = await reasoner.reason(replayInput());
+
+  assert.deepEqual(result.map(({ dealId }) => dealId), ["deal_ably"]);
+  assert.equal(prompts.length, 2);
+  assert.doesNotMatch(
+    prompts[1],
+    /SENSITIVE_FIRST_RESPONSE_MUST_NOT_REENTER_THE_PROMPT/u,
+  );
+  assert.match(prompts[1], /regenerate.*from scratch/i);
+  assert.match(
+    prompts[1],
+    /replace whyNow, previousContext, and every implication.*complete eligible.*source catalog/i,
+  );
+  assert.match(prompts[1], /exact claimSourceIds key.*source IDs/i);
+});
+
+test("matching reasoner never saves a self-cited paraphrase that no canonical source supports", async () => {
+  const canonicalWhyNow = sourceTextForRetrieval(eventSource);
+  const priorSource = replayInput().sources.find(({ id }) =>
+    id === "fixture_ably"
+  );
+  assert.ok(priorSource);
+  const canonicalPreviousContext = sourceTextForRetrieval(priorSource);
+  const canonicalCounterevidence = sourceTextForRetrieval(eventCounterSource);
+  const unsupported = {
+    dealId: "deal_ably",
+    whyNow: "A self-cited paraphrase absent from every canonical evidence unit.",
+    previousContext: canonicalPreviousContext,
+    positiveImplications: [],
+    negativeImplications: [],
+    selectedTriggerEventId: "event_1",
+    selectedPriorInteractionId: "fixture_ably",
+    revisitConditionIndex: 0,
+    revisitConditionText: "Relevant market change",
+    revisitCitedSourceIds: ["market_source"],
+    counterevidence: {
+      statement: canonicalCounterevidence,
+      citedSourceIds: ["market_counter_source"],
+    },
+    citedSourceIds: [
+      "market_source",
+      "market_counter_source",
+      "fixture_ably",
+    ],
+    scoreInputs: {
+      eventRelevance: 0.8,
+      dealRelevance: 0.8,
+      priorContextStrength: 0.7,
+      evidenceQuality: 0.8,
+    },
+    claimSourceIds: {
+      "A self-cited paraphrase absent from every canonical evidence unit.": [
+        "market_source",
+      ],
+      [canonicalPreviousContext]: ["fixture_ably"],
+    },
+  };
+  const repaired = {
+    ...unsupported,
+    whyNow: canonicalWhyNow,
+    claimSourceIds: {
+      [canonicalWhyNow]: ["market_source"],
+      [canonicalPreviousContext]: ["fixture_ably"],
+    },
+  };
+  let calls = 0;
+  let saves = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify([calls === 1 ? unsupported : repaired]);
+    },
+  }, {
+    judgments: {
+      async find() { return null; },
+      async save(record) {
+        saves += 1;
+        return {
+          state: "current" as const,
+          judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
+          ...record,
+          evidenceContextFingerprint:
+            record.evidenceContextFingerprint ?? null,
+          evidenceBindingFingerprint:
+            record.evidenceBindingFingerprint ?? null,
+          judgmentRecordFingerprint: `sha256:${"f".repeat(64)}`,
+        };
+      },
+    },
+  });
+
+  const result = await reasoner.reason(replayInput());
+
+  assert.equal(calls, 2, "canonical authority failure must trigger one repair");
+  assert.equal(saves, 1, "only the canonical repaired judgment may be saved");
+  assert.equal(result[0]?.whyNow, canonicalWhyNow);
+});
+
+test("a counterevidence-role source cannot be reused as a directional implication", async () => {
+  const canonical = canonicalReplayCompletion();
+  const counterText = sourceTextForRetrieval(eventCounterSource);
+  const whyNow = canonical.whyNow;
+  const invalid = {
+    ...canonical,
+    positiveImplications: [counterText],
+    claimSourceIds: {
+      ...canonical.claimSourceIds,
+      [counterText]: ["market_counter_source"],
+    },
+  };
+  const repaired = {
+    ...canonical,
+    positiveImplications: [whyNow],
+    claimSourceIds: {
+      ...canonical.claimSourceIds,
+      [whyNow]: ["market_source"],
+    },
+  };
+  let calls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify([calls === 1 ? invalid : repaired]);
+    },
+  });
+
+  const result = await reasoner.reason(replayInput());
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result[0]?.positiveImplications, [whyNow]);
+});
+
+test("matching reasoner rejects a semantically incomplete bounded repair without retaining raw output", async () => {
+  const sensitiveIncomplete = {
+    dealId: "deal_ably",
+    whyNow: "SENSITIVE_SEMANTICALLY_INCOMPLETE_MODEL_OUTPUT",
+    previousContext: "Complete prior-context evidence unit.",
+    positiveImplications: [],
+    negativeImplications: [],
+    selectedTriggerEventId: "event_1",
+    selectedPriorInteractionId: "fixture_ably",
+    revisitConditionIndex: 0,
+    revisitConditionText: "Relevant market change",
+    revisitCitedSourceIds: ["market_source"],
+    counterevidence: {
+      statement: "Complete counterevidence unit.",
+      citedSourceIds: ["market_source"],
+    },
+    citedSourceIds: ["market_source", "fixture_ably"],
+    scoreInputs: {
+      eventRelevance: 0.8,
+      dealRelevance: 0.8,
+      priorContextStrength: 0.7,
+      evidenceQuality: 0.8,
+    },
+    claimSourceIds: {
+      "Complete prior-context evidence unit.": ["fixture_ably"],
+    },
+  };
+  let calls = 0;
+  let saves = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify([sensitiveIncomplete]);
+    },
+  }, {
+    judgments: {
+      async find() { return null; },
+      async save(record) {
+        saves += 1;
+        return {
+          state: "current" as const,
+          judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
+          ...record,
+          evidenceContextFingerprint:
+            record.evidenceContextFingerprint ?? null,
+          evidenceBindingFingerprint:
+            record.evidenceBindingFingerprint ?? null,
+          judgmentRecordFingerprint: `sha256:${"e".repeat(64)}`,
+        };
+      },
+    },
+  });
+
+  await assert.rejects(
+    reasoner.reason(replayInput()),
+    (error: unknown) => {
+      assert.ok(error instanceof MatchingFailure);
+      assert.equal(error.code, "MATCHING_RESPONSE_INVALID");
+      assert.equal(error.phase, "response_validation");
+      assert.doesNotMatch(
+        error.message,
+        /SENSITIVE_SEMANTICALLY_INCOMPLETE_MODEL_OUTPUT/u,
+      );
+      return true;
+    },
+  );
+  assert.equal(calls, 2, "semantic validation permits exactly one repair call");
+  assert.equal(saves, 0, "an invalid repaired response must not be persisted");
+});
+
 test("both Claude prompt paths separate normalized text from quote eligibility", async () => {
   const normalized = normalizedSourceV2("normalized_prompt_source", {
     text: {
@@ -442,6 +725,8 @@ test("both Claude prompt paths separate normalized text from quote eligibility",
     }],
     events: [{
       ...marketEventV2(normalized),
+      positiveImplications: ["CANARY_EVENT_POSITIVE_IMPLICATION"],
+      negativeImplications: ["CANARY_EVENT_NEGATIVE_IMPLICATION"],
       expectedOutcome: "CANARY_EVENT_EXPECTED_OUTCOME",
     }],
     memoryContexts: [{
@@ -480,8 +765,279 @@ test("both Claude prompt paths separate normalized text from quote eligibility",
     assert.doesNotMatch(calls[0], /every cited source's excerpt/i);
     assert.doesNotMatch(calls[0], /CANARY_DEAL_EXPECTED_DIRECTION/);
     assert.doesNotMatch(calls[0], /CANARY_EVENT_EXPECTED_OUTCOME/);
+    assert.doesNotMatch(
+      calls[0],
+      /CANARY_EVENT_(?:POSITIVE|NEGATIVE)_IMPLICATION/,
+      "event-level implication metadata is retrieval annotation, not canonical evidence",
+    );
     assert.doesNotMatch(calls[0], /CANARY_CONTEXT_EXPECTED_ACTION/);
   }
+});
+
+test("matching repair cannot alter a Deal row that already passed exact authority", async () => {
+  const deals = [
+    { id: "deal_1", companyName: "Company 1", status: "passed" as const },
+    { id: "deal_2", companyName: "Company 2", status: "passed" as const },
+  ];
+  const bundles = deals.map((deal, index): DealMemoryBundle => ({
+    ...bundle,
+    dealId: deal.id,
+    companyName: deal.companyName,
+    interactions: bundle.interactions.map((interaction) => ({
+      ...interaction,
+      id: `fixture_selection_${index + 1}`,
+    })),
+  }));
+  const input = replayInput({
+    deals,
+    memoryContexts: buildStructuredMemoryContexts(bundles),
+    sources: buildMatchingSources(bundles, [event]),
+  });
+  const validFirst = canonicalCompletionFor(input, {
+    dealId: "deal_1",
+    priorId: "fixture_selection_1",
+  });
+  const validSecond = canonicalCompletionFor(input, {
+    dealId: "deal_2",
+    priorId: "fixture_selection_2",
+  });
+  const invalidSecond = {
+    ...validSecond,
+    whyNow: "Unsupported second-Deal paraphrase.",
+    claimSourceIds: {
+      ...validSecond.claimSourceIds,
+      "Unsupported second-Deal paraphrase.": ["market_source"],
+    },
+  };
+  const alteredFirst = {
+    ...validFirst,
+    scoreInputs: {
+      ...validFirst.scoreInputs,
+      eventRelevance: 0.1,
+    },
+  };
+  let calls = 0;
+  let saves = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify(calls === 1
+        ? [validFirst, invalidSecond]
+        : [alteredFirst, validSecond]);
+    },
+  }, {
+    judgments: {
+      async find() { return null; },
+      async save(record) {
+        saves += 1;
+        return {
+          state: "current" as const,
+          judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
+          ...record,
+          evidenceContextFingerprint:
+            record.evidenceContextFingerprint ?? null,
+          evidenceBindingFingerprint:
+            record.evidenceBindingFingerprint ?? null,
+          judgmentRecordFingerprint: `sha256:${"9".repeat(64)}`,
+        };
+      },
+    },
+  });
+
+  await assert.rejects(
+    reasoner.reason(input),
+    (error: unknown) =>
+      error instanceof MatchingFailure
+      && error.code === "MATCHING_RESPONSE_INVALID",
+  );
+  assert.equal(calls, 2);
+  assert.equal(saves, 0, "selection drift must fail before immutable persistence");
+});
+
+test("matching repair freezes the invalid row's selected authority and scores", async () => {
+  const alternateEvent = marketEventV2(eventSource, {
+    id: "event_2",
+    title: "Alternate realtime infrastructure event",
+    sources: [eventSource, eventCounterSource],
+  });
+  const input = replayInput({ events: [event, alternateEvent] });
+  const canonical = canonicalReplayCompletion();
+  const invalid = {
+    ...canonical,
+    whyNow: "Unsupported paraphrase that requires semantic repair.",
+    claimSourceIds: {
+      ...canonical.claimSourceIds,
+      "Unsupported paraphrase that requires semantic repair.": [
+        "market_source",
+      ],
+    },
+  };
+  const drifted = {
+    ...canonical,
+    selectedTriggerEventId: "event_2",
+    scoreInputs: {
+      ...canonical.scoreInputs,
+      eventRelevance: 0.1,
+    },
+  };
+  let calls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify([calls === 1 ? invalid : drifted]);
+    },
+  });
+
+  await assert.rejects(
+    reasoner.reason(input),
+    (error: unknown) =>
+      error instanceof MatchingFailure
+      && error.code === "MATCHING_RESPONSE_INVALID",
+  );
+  assert.equal(calls, 2);
+});
+
+test("extra claim keys, citation drift, and duplicate polarity cannot enter an immutable judgment", async () => {
+  const canonical = canonicalReplayCompletion();
+  const variants = [{
+    ...canonical,
+    claimSourceIds: {
+      ...canonical.claimSourceIds,
+      [sourceTextForRetrieval(eventCounterSource)]: ["market_counter_source"],
+    },
+  }, {
+    ...canonical,
+    citedSourceIds: [...canonical.citedSourceIds, "unknown_source"],
+  }, {
+    ...canonical,
+    positiveImplications: [canonical.whyNow, canonical.whyNow],
+  }, {
+    ...canonical,
+    positiveImplications: [canonical.whyNow],
+    negativeImplications: [canonical.whyNow],
+  }];
+
+  for (const invalid of variants) {
+    let calls = 0;
+    let saves = 0;
+    const reasoner = createClaudeMatchingReasoner({
+      async complete() {
+        calls += 1;
+        return JSON.stringify([invalid]);
+      },
+    }, {
+      judgments: {
+        async find() { return null; },
+        async save(record) {
+          saves += 1;
+          return {
+            state: "current" as const,
+            judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
+            ...record,
+            evidenceContextFingerprint:
+              record.evidenceContextFingerprint ?? null,
+            evidenceBindingFingerprint:
+              record.evidenceBindingFingerprint ?? null,
+            judgmentRecordFingerprint: `sha256:${"7".repeat(64)}`,
+          };
+        },
+      },
+    });
+
+    await assert.rejects(
+      reasoner.reason(replayInput()),
+      (error: unknown) =>
+        error instanceof MatchingFailure
+        && error.code === "MATCHING_RESPONSE_INVALID",
+    );
+    assert.equal(calls, 2);
+    assert.equal(saves, 0);
+  }
+});
+
+test("a semantically invalid current judgment cannot replay or survive save-return validation", async () => {
+  const canonical = canonicalReplayCompletion();
+  const invalid = {
+    ...canonical,
+    whyNow: "Cached self-cited paraphrase with no canonical authority.",
+    claimSourceIds: {
+      ...canonical.claimSourceIds,
+      "Cached self-cited paraphrase with no canonical authority.": [
+        "market_source",
+      ],
+    },
+  };
+  let providerCalls = 0;
+  let saves = 0;
+  const currentRecord = (fingerprint: string) => ({
+    state: "current" as const,
+    judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
+    fingerprint,
+    model: "claude-opus-4-8",
+    payload: [invalid],
+    evidenceContextFingerprint: TEST_LIVE_SCOPE.contextFingerprint,
+    evidenceBindingFingerprint: TEST_LIVE_SCOPE.bindingFingerprint,
+    judgmentRecordFingerprint: `sha256:${"8".repeat(64)}`,
+  });
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      providerCalls += 1;
+      return JSON.stringify([canonical]);
+    },
+  }, {
+    judgments: {
+      async find(fingerprint) { return currentRecord(fingerprint); },
+      async save(record) {
+        saves += 1;
+        return currentRecord(record.fingerprint);
+      },
+    },
+  });
+
+  await assert.rejects(
+    reasoner.reason(replayInput()),
+    (error: unknown) =>
+      error instanceof MatchingFailure
+      && error.code === "MATCHING_RESPONSE_INVALID",
+  );
+  assert.equal(providerCalls, 0, "a corrupted exact-context cache must fail closed");
+  assert.equal(saves, 0, "immutable corruption cannot be overwritten in place");
+});
+
+test("a repository cannot substitute another judgment identity after save", async () => {
+  const canonical = canonicalReplayCompletion();
+  let calls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return JSON.stringify([canonical]);
+    },
+  }, {
+    judgments: {
+      async find() { return null; },
+      async save(record) {
+        return {
+          state: "current" as const,
+          judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
+          ...record,
+          model: "unexpected-model",
+          evidenceContextFingerprint:
+            record.evidenceContextFingerprint ?? null,
+          evidenceBindingFingerprint:
+            record.evidenceBindingFingerprint ?? null,
+          judgmentRecordFingerprint: `sha256:${"6".repeat(64)}`,
+        };
+      },
+    },
+  });
+
+  await assert.rejects(
+    reasoner.reason(replayInput()),
+    (error: unknown) =>
+      error instanceof MatchingFailure
+      && error.code === "MATCHING_RESPONSE_INVALID",
+  );
+  assert.equal(calls, 1);
 });
 
 test("both Claude paths reject model attempts to choose direction, actions, gates, rank, or next step", async () => {
@@ -526,8 +1082,7 @@ test("both Claude paths reject model attempts to choose direction, actions, gate
   }
 });
 
-test("a reasoner v2 judgment cannot replay under the strict v3 schema", async () => {
-  const normalized = normalizedSourceV2("normalized_replay_source");
+test("an unversioned legacy judgment cannot replay under the current storage envelope", async () => {
   let modelCalls = 0;
   const requestedFingerprints: string[] = [];
   const reasoner = createClaudeMatchingReasoner({
@@ -556,21 +1111,17 @@ test("a reasoner v2 judgment cannot replay under the strict v3 schema", async ()
           state: "current" as const,
           judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
           ...record,
-          evidenceContextFingerprint: null,
-          evidenceBindingFingerprint: null,
+          evidenceContextFingerprint:
+            record.evidenceContextFingerprint ?? null,
+          evidenceBindingFingerprint:
+            record.evidenceBindingFingerprint ?? null,
           judgmentRecordFingerprint: `sha256:${"a".repeat(64)}`,
         };
       },
     },
   });
 
-  await reasoner.reason({
-    evidenceScope: TEST_LIVE_SCOPE,
-    deals: [{ id: "deal_ably", companyName: "Ably", status: "passed" }],
-    events: [marketEventV2(normalized)],
-    memoryContexts: [],
-    sources: [normalized],
-  });
+  await reasoner.reason(replayInput());
 
   assert.equal(modelCalls, 1);
   assert.match(
@@ -579,84 +1130,96 @@ test("a reasoner v2 judgment cannot replay under the strict v3 schema", async ()
   );
 });
 
-test("matching reasoner coerces numeric score strings from the model", async () => {
-  const match = {
-    dealId: "deal_x",
-    whyNow: "Event happened.",
-    previousContext: "Prior context.",
-    positiveImplications: [],
-    negativeImplications: [],
-    selectedTriggerEventId: "event_x",
-    selectedPriorInteractionId: "fixture_x",
-    revisitConditionIndex: 0,
-    revisitConditionText: "Revisit after a material event.",
-    revisitCitedSourceIds: ["source_x"],
-    counterevidence: {
-      statement: "The supplied evidence does not establish durable customer retention.",
-      citedSourceIds: ["source_x"],
+test("matching reasoner uses the v4 contract domain without replaying an old v3 judgment", async () => {
+  const complete = [canonicalReplayCompletion()];
+  let system = "";
+  let requestContent = "";
+  const primer = createClaudeMatchingReasoner({
+    async complete(input) {
+      system = input.system;
+      requestContent = String(input.messages[0].content);
+      return JSON.stringify(complete);
     },
-    citedSourceIds: ["source_x"],
+  });
+  await primer.reason(replayInput());
+  const scopeJson = stableEvidencePromptJson({
+    schemaVersion: TEST_LIVE_SCOPE.schemaVersion,
+    evidenceMode: TEST_LIVE_SCOPE.evidenceMode,
+    contextFingerprint: TEST_LIVE_SCOPE.contextFingerprint,
+    eventSetFingerprint: TEST_LIVE_SCOPE.eventSetFingerprint,
+    snapshotFingerprint: TEST_LIVE_SCOPE.snapshotFingerprint,
+  });
+  const fingerprintFor = (domain: string) =>
+    `reasoner-judgment-v3:sha256:${
+      createHash("sha256")
+        .update(
+          `${domain}\nclaude-opus-4-8\n${system}\n${requestContent}\n${scopeJson}`,
+          "utf8",
+        )
+        .digest("hex")
+    }`;
+  const oldFingerprint = fingerprintFor("reasoner-judgment-v3");
+  const expectedFingerprint = fingerprintFor("reasoner-judgment-v4");
+  let requestedFingerprint = "";
+  let providerCalls = 0;
+  const currentRecord = (fingerprint: string) => ({
+    state: "current" as const,
+    judgmentSchemaVersion: "reasoner-judgment-record-v1" as const,
+    fingerprint,
+    model: "claude-opus-4-8",
+    payload: complete,
+    evidenceContextFingerprint: TEST_LIVE_SCOPE.contextFingerprint,
+    evidenceBindingFingerprint: TEST_LIVE_SCOPE.bindingFingerprint,
+    judgmentRecordFingerprint: `sha256:${"d".repeat(64)}`,
+  });
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      providerCalls += 1;
+      return JSON.stringify(complete);
+    },
+  }, {
+    judgments: {
+      async find(fingerprint) {
+        requestedFingerprint = fingerprint;
+        return fingerprint === oldFingerprint
+          ? currentRecord(fingerprint)
+          : null;
+      },
+      async save(record) {
+        return currentRecord(record.fingerprint);
+      },
+    },
+  });
+
+  await reasoner.reason(replayInput());
+
+  assert.equal(providerCalls, 1, "the old v3-domain judgment must not replay");
+  assert.equal(requestedFingerprint, expectedFingerprint);
+  assert.notEqual(requestedFingerprint, oldFingerprint);
+});
+
+test("matching reasoner coerces numeric score strings from the model", async () => {
+  const match = canonicalReplayCompletion({
     scoreInputs: {
       eventRelevance: "0.7",
       dealRelevance: "0.6",
       priorContextStrength: "0.5",
       evidenceQuality: "0.8",
     },
-    claimSourceIds: { "Event happened.": ["source_x"] },
-  };
+  });
   const reasoner = createClaudeMatchingReasoner({
     async complete() {
       return JSON.stringify([match]);
     },
   } as never);
 
-  const source = normalizedSourceV2("source_x", {
-    text: {
-      status: "normalized_only",
-      normalizedStatement: "Event happened.",
-    },
-  });
-
-  const result = await reasoner.reason({
-    evidenceScope: TEST_LIVE_SCOPE,
-    deals: [{ id: "deal_x", companyName: "X", status: "passed" }],
-    events: [marketEventV2(source, { id: "event_x", title: "Event X" })],
-    memoryContexts: [],
-    sources: [source],
-  });
+  const result = await reasoner.reason(replayInput());
 
   assert.equal(result.length, 1, "string score values must not reject the match");
   assert.equal(result[0].scoreInputs.eventRelevance, 0.7);
 });
 
-const REPLAY_COMPLETION = `[
-  {
-    "dealId": "deal_ably",
-    "whyNow": "The official announcement concerns realtime infrastructure.",
-    "previousContext": "The synthetic record says the fund passed.",
-    "positiveImplications": [],
-    "negativeImplications": [],
-    "selectedTriggerEventId": "event_1",
-    "selectedPriorInteractionId": "fixture_ably",
-    "revisitConditionIndex": 0,
-    "revisitConditionText": "Relevant market change",
-    "revisitCitedSourceIds": ["market_source"],
-    "counterevidence": {
-      "statement": "The supplied evidence does not establish durable customer retention.",
-      "citedSourceIds": ["market_source"]
-    },
-    "citedSourceIds": ["market_source", "deal_source"],
-    "scoreInputs": {
-      "eventRelevance": 0.8,
-      "dealRelevance": 0.8,
-      "priorContextStrength": 0.7,
-      "evidenceQuality": 0.8
-    },
-    "claimSourceIds": {
-      "The official announcement concerns realtime infrastructure.": ["market_source"]
-    }
-  }
-]`;
+const REPLAY_COMPLETION = JSON.stringify([canonicalReplayCompletion()]);
 
 function replayInput(overrides: Record<string, unknown> = {}) {
   return {

@@ -754,7 +754,7 @@ test("a delayed current-live claim scans the persisted anchor while recording ac
   assert.equal(scanRetrievedAt?.toISOString(), clock.toISOString());
 });
 
-test("a current live Worker seals the exact selected events before saving its report", async () => {
+test("a current live Worker seals selected events and finalizes an incomplete report as partial", async () => {
   const baseRuns = createRunsRepository(createMemoryDataClient({
     now: () => new Date("2026-07-23T12:00:00.000Z"),
   }));
@@ -799,7 +799,23 @@ test("a current live Worker seals the exact selected events before saving its re
     authoritative.dealRegistry as DealRegistry,
   );
   const observed = observeCurrentEvidenceSeams(baseRuns, intelligenceBase);
-  const { runs, intelligence } = observed;
+  const stageUpdates: Array<Parameters<typeof baseRuns.updateStage>[0]> = [];
+  const runs = {
+    ...observed.runs,
+    async updateStage(input: Parameters<typeof baseRuns.updateStage>[0]) {
+      stageUpdates.push(structuredClone(input));
+      return observed.runs.updateStage(input);
+    },
+    async finish(input: Parameters<typeof baseRuns.finish>[0]) {
+      if (input.status === "completed") {
+        throw new Error(
+          "The database refuses completed runs whose report analysis is incomplete.",
+        );
+      }
+      return observed.runs.finish(input);
+    },
+  };
+  const { intelligence } = observed;
   const queued = await runs.create({
     workspaceId: "workspace_demo",
     mode: "structured",
@@ -880,7 +896,18 @@ test("a current live Worker seals the exact selected events before saving its re
     now: () => new Date("2026-07-23T12:00:00.000Z"),
   });
 
-  assert.equal(result.run.status, "completed", JSON.stringify(result.run.warnings));
+  assert.equal(result.run.status, "partial", JSON.stringify(result.run.warnings));
+  assert.equal(result.report.analysisStatus, "incomplete");
+  assert.equal(result.report.counts.analysisUnavailable, 1);
+  assert.deepEqual(result.run.warnings, []);
+  assert.ok(stageUpdates.some((update) =>
+    update.stage === "underwriting" && update.status === "completed"
+  ));
+  assert.deepEqual(
+    stageUpdates.filter((update) => update.stage === "notification")
+      .map((update) => update.status),
+    ["skipped"],
+  );
   assert.match(result.report.marketSummary, /1 source-backed market event/i);
   assert.equal(result.report.opportunities.length, 0);
   assert.equal(result.report.companyAnalyses.length, 19);
@@ -1303,6 +1330,9 @@ test("normal process-run recall performs zero XTrace ingest-job polling", async 
   assert.equal(calls.filter((call) => call === "list-open-jobs").length, 0);
   assert.equal(calls.filter((call) => call.startsWith("poll:")).length, 0);
   assert.equal(calls.filter((call) => call === "recall").length, 19);
+  assert.equal(result.run.status, "completed");
+  assert.deepEqual(result.run.warnings, []);
+  assert.equal(result.report.analysisStatus, "completed");
   assert.equal(result.report.counts.analysisUnavailable, 0);
 });
 
