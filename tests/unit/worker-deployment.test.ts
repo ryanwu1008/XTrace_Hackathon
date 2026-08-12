@@ -16,6 +16,7 @@ import test from "node:test";
 
 const dockerfilePath = new URL("../../Dockerfile.worker", import.meta.url);
 const packagePath = new URL("../../package.json", import.meta.url);
+const packageLockPath = new URL("../../package-lock.json", import.meta.url);
 const readmePath = new URL("../../README.md", import.meta.url);
 const repositoryRootPath = new URL("../../", import.meta.url).pathname;
 const workerLauncherSourcePath = new URL(
@@ -102,6 +103,44 @@ test("worker image has a non-root long-running command and health check", async 
   assert.match(dockerfile, /^HEALTHCHECK\b/m);
   assert.match(dockerfile, /npm",\s*"run",\s*"worker:health"/);
   assert.match(dockerfile, /^CMD \["npm",\s*"run",\s*"worker"\]$/m);
+});
+
+test("worker dependency lock supports a clean Node 22 container install", async (t) => {
+  const dockerProbe = await runCommand("docker", ["version", "--format", "{{.Server.Version}}"], {
+    ...process.env,
+  }).catch(() => ({ exitCode: 127, output: "" }));
+  if (dockerProbe.exitCode !== 0) {
+    t.skip("Docker is unavailable");
+    return;
+  }
+
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "vsee-worker-lock-"));
+  await Promise.all([
+    copyFile(packagePath, join(fixtureRoot, "package.json")),
+    copyFile(packageLockPath, join(fixtureRoot, "package-lock.json")),
+  ]);
+  t.after(async () => {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  });
+
+  const result = await runCommand(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "-v",
+      `${fixtureRoot}:/app`,
+      "-w",
+      "/app",
+      "node:22.13-bookworm-slim",
+      "npm",
+      "ci",
+      "--ignore-scripts",
+    ],
+    { ...process.env },
+  );
+
+  assert.equal(result.exitCode, 0, result.output);
 });
 
 test("worker build context includes every seed and research runtime import", async () => {
