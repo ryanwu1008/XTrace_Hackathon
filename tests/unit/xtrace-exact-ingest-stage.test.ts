@@ -126,6 +126,7 @@ test("the callable exact-ingest worker composes authority planning with v2 child
   });
   const result = await runExactXTraceIngestWorker({
     workspaceId: "workspace_demo",
+    appId: "xtrace-vc-deal-intelligence-staging",
   }, {
     dealRegistry: {
       async listForWorkspace() {

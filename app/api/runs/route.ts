@@ -14,7 +14,7 @@ import {
 import { rateLimitRequest, requirePermission } from "../../../lib/api/safety";
 import { getProductInputReadiness } from "../../../lib/corpus/import-readiness";
 import { createDefaultDemoDataStore } from "../../../lib/storage/service";
-import { isXTraceConfigured } from "../../../lib/xtrace/client";
+import { isXTraceScanModeAvailable } from "../../../lib/xtrace/client";
 import { toPublicRun } from "../../../lib/runs/public";
 import { isDurableWorkspaceMode } from "../../../lib/auth/request-context";
 import { getTestGenerationRepository } from "../../../db/repositories/test-generations";
@@ -126,7 +126,10 @@ export async function POST(
         true,
       );
     }
-    if (parsed.xtraceEnabled && !isXTraceConfigured()) {
+    if (
+      parsed.xtraceEnabled
+      && !isXTraceScanModeAvailable(process.env, context.mode)
+    ) {
       return jsonError(
         "INTEGRATION_UNAVAILABLE",
         "XTrace is required for an XTrace-mode scan.",

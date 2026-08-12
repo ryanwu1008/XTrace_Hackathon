@@ -121,6 +121,7 @@ test("browser fixture child environment keeps only loopback test configuration a
     ANTHROPIC_API_KEY:
       "belief-reversal-test-only-anthropic-0123456789abcdef",
     XTRACE_API_KEY: "mmk_test_only_0123456789abcdef",
+    XTRACE_APP_ID: "xtrace-belief-reversal-browser-0123456789abcdef",
     XTRACE_DRY_RUN: "1",
     MARKET_USER_AGENT: "VSee belief-reversal browser fixture",
     MARKET_OFFICIAL_FEEDS_JSON: "[]",
@@ -177,7 +178,9 @@ test("browser fixture exposes its allowlisted child environment as local Worker 
       ANTHROPIC_MODEL: "claude-opus-4-8",
       ANTHROPIC_API_KEY:
         "belief-reversal-test-only-anthropic-0123456789abcdef",
+      BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME: "1",
       XTRACE_API_KEY: "mmk_test_only_0123456789abcdef",
+      XTRACE_APP_ID: "xtrace-belief-reversal-browser-0123456789abcdef",
       XTRACE_DRY_RUN: "1",
       MARKET_USER_AGENT: "VSee belief-reversal browser fixture",
       MARKET_OFFICIAL_FEEDS_JSON: "[]",
@@ -213,6 +216,7 @@ test("hosted Sites handoff exports only disposable fixture values and defers pub
     ANTHROPIC_API_KEY:
       "belief-reversal-test-only-anthropic-0123456789abcdef",
     XTRACE_API_KEY: "mmk_test_only_0123456789abcdef",
+    XTRACE_APP_ID: "xtrace-belief-reversal-browser-0123456789abcdef",
     XTRACE_DRY_RUN: "1",
     MARKET_USER_AGENT: "VSee belief-reversal browser fixture",
     MARKET_OFFICIAL_FEEDS_JSON: "[]",

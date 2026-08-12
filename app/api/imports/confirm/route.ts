@@ -13,7 +13,7 @@ import {
   createDefaultDemoDataStore,
   createDefaultPrivateDocumentAccess,
 } from "../../../../lib/storage/service";
-import { isXTraceConfigured } from "../../../../lib/xtrace/client";
+import { isXTraceExecutionConfigured } from "../../../../lib/xtrace/client";
 
 const ConfirmRequestSchema = z.object({
   documentIds: z.array(z.string().min(1)).min(1),
@@ -82,7 +82,10 @@ export async function POST(
       ...input,
       workspaceId: context.workspaceId,
     });
-    const xtraceConfigured = isXTraceConfigured();
+    const xtraceConfigured = isXTraceExecutionConfigured(
+      process.env,
+      context.mode,
+    );
     return jsonOk({
       ...result,
       xtraceConfigured,

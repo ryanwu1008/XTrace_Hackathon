@@ -8,6 +8,133 @@ begin
 end;
 $$;
 
+-- Hosted Supabase runs forward migrations through a PostgreSQL 17 CREATEROLE
+-- executor whose isolated-owner membership intentionally cannot SET ROLE.
+-- Attest that bootstrap state, add only the temporary access required for
+-- owner transfers, and restore the exact state before commit.
+do $xtrace_owner_prepare$
+declare
+  executor_role text := current_user;
+  executor_is_superuser boolean;
+begin
+  select rolsuper into executor_is_superuser
+  from pg_catalog.pg_roles where rolname = executor_role;
+  if not exists (
+    select 1 from pg_catalog.pg_roles
+    where rolname = 'vsee_xtrace_owner'
+      and not rolcanlogin and not rolinherit and not rolsuper
+      and not rolcreaterole and not rolcreatedb and not rolreplication
+      and not rolbypassrls
+  ) then
+    raise exception 'VSEE_XTRACE_OWNER_ATTESTATION_FAILED';
+  end if;
+  if exists (
+    select 1 from pg_catalog.pg_auth_members as membership
+    where (
+      membership.roleid = 'vsee_xtrace_owner'::pg_catalog.regrole
+      or membership.member = 'vsee_xtrace_owner'::pg_catalog.regrole
+    ) and not (
+      not executor_is_superuser
+      and membership.roleid = 'vsee_xtrace_owner'::pg_catalog.regrole
+      and membership.member = (
+        select oid from pg_catalog.pg_roles where rolname = executor_role
+      )
+      and membership.grantor = 10
+      and (select rolsuper from pg_catalog.pg_roles
+        where oid = membership.grantor)
+      and membership.admin_option
+      and not membership.inherit_option and not membership.set_option
+    )
+  ) then
+    raise exception 'vsee_xtrace_owner is not in its attested state';
+  end if;
+  if not executor_is_superuser then
+    if not exists (
+      select 1 from pg_catalog.pg_auth_members as membership
+      where membership.roleid = 'vsee_xtrace_owner'::pg_catalog.regrole
+        and membership.member = (
+          select oid from pg_catalog.pg_roles where rolname = executor_role
+        )
+        and membership.grantor = 10
+        and (select rolsuper from pg_catalog.pg_roles
+          where oid = membership.grantor)
+        and membership.admin_option
+        and not membership.inherit_option and not membership.set_option
+    ) then
+      raise exception
+        'The migration executor lacks the attested XTrace-owner administration grant';
+    end if;
+    execute pg_catalog.format(
+      'grant vsee_xtrace_owner to %I with admin false, inherit true, set true',
+      executor_role
+    );
+  end if;
+end;
+$xtrace_owner_prepare$;
+
+do $registry_owner_prepare_0021$
+declare
+  executor_role text := current_user;
+  executor_is_superuser boolean;
+begin
+  select rolsuper into executor_is_superuser
+  from pg_catalog.pg_roles where rolname = executor_role;
+  if not exists (
+    select 1 from pg_catalog.pg_roles
+    where rolname = 'vsee_registry_owner'
+      and not rolcanlogin and not rolinherit and not rolsuper
+      and not rolcreaterole and not rolcreatedb and not rolreplication
+      and not rolbypassrls
+  ) then
+    raise exception 'VSEE_REGISTRY_OWNER_ATTESTATION_FAILED';
+  end if;
+  if exists (
+    select 1 from pg_catalog.pg_auth_members as membership
+    where (
+      membership.roleid = 'vsee_registry_owner'::pg_catalog.regrole
+      or membership.member = 'vsee_registry_owner'::pg_catalog.regrole
+    ) and not (
+      not executor_is_superuser
+      and membership.roleid = 'vsee_registry_owner'::pg_catalog.regrole
+      and membership.member = (
+        select oid from pg_catalog.pg_roles where rolname = executor_role
+      )
+      and membership.grantor = 10
+      and (select rolsuper from pg_catalog.pg_roles
+        where oid = membership.grantor)
+      and membership.admin_option
+      and not membership.inherit_option and not membership.set_option
+    )
+  ) then
+    raise exception 'vsee_registry_owner is not in its attested state';
+  end if;
+  if not executor_is_superuser then
+    if not exists (
+      select 1 from pg_catalog.pg_auth_members as membership
+      where membership.roleid = 'vsee_registry_owner'::pg_catalog.regrole
+        and membership.member = (
+          select oid from pg_catalog.pg_roles where rolname = executor_role
+        )
+        and membership.grantor = 10
+        and (select rolsuper from pg_catalog.pg_roles
+          where oid = membership.grantor)
+        and membership.admin_option
+        and not membership.inherit_option and not membership.set_option
+    ) then
+      raise exception
+        'The migration executor lacks the attested registry-owner administration grant';
+    end if;
+    execute pg_catalog.format(
+      'grant vsee_registry_owner to %I with admin false, inherit true, set true',
+      executor_role
+    );
+  end if;
+end;
+$registry_owner_prepare_0021$;
+
+revoke all on schema public from vsee_xtrace_owner;
+grant usage, create on schema public to vsee_xtrace_owner;
+
 create table public.xtrace_ingest_intents_v2 (
   intent_id text not null,
   workspace_id text not null,
@@ -118,7 +245,7 @@ alter table public.xtrace_recall_audits_v2 enable row level security;
 create or replace function public.protect_xtrace_lineage_v2()
 returns trigger
 language plpgsql
-set search_path = pg_catalog, public
+set search_path = ''
 as $$
 begin
   if current_user <> 'vsee_xtrace_owner' then
@@ -145,7 +272,7 @@ create or replace function public.xtrace_ingest_intent_v2_json(
 returns jsonb
 language sql
 stable
-set search_path = pg_catalog, public
+set search_path = ''
 as $$
   select jsonb_build_object(
     'intentId', p_intent.intent_id,
@@ -173,7 +300,7 @@ create or replace function public.reserve_xtrace_ingest_intent_v2(p_intent jsonb
 returns jsonb
 language plpgsql
 security definer
-set search_path = pg_catalog, public
+set search_path = ''
 as $$
 declare
   target public.xtrace_ingest_intents_v2%rowtype;
@@ -227,7 +354,7 @@ begin
     p_intent ->> 'sourceId', p_intent ->> 'sourceRevisionId',
     p_intent ->> 'parentFingerprint', p_intent ->> 'payloadFingerprint',
     p_intent ->> 'serializerVersion', 'submitting',
-    '["reserved","submitting"]'::jsonb, public.gen_random_uuid(),
+    '["reserved","submitting"]'::jsonb, pg_catalog.gen_random_uuid(),
     clock_timestamp() + interval '5 minutes'
   ) on conflict do nothing;
   get diagnostics created = row_count;
@@ -279,7 +406,7 @@ create or replace function public.attach_xtrace_ingest_job_v2(
 returns jsonb
 language plpgsql
 security definer
-set search_path = pg_catalog, public
+set search_path = ''
 as $$
 declare target public.xtrace_ingest_intents_v2%rowtype;
 begin
@@ -322,7 +449,7 @@ create or replace function public.mark_xtrace_submission_unknown_v2(
 returns jsonb
 language plpgsql
 security definer
-set search_path = pg_catalog, public
+set search_path = ''
 as $$
 declare target public.xtrace_ingest_intents_v2%rowtype;
 begin
@@ -355,7 +482,7 @@ create or replace function public.advance_xtrace_ingest_intent_v2(
 returns jsonb
 language plpgsql
 security definer
-set search_path = pg_catalog, public
+set search_path = ''
 as $$
 declare
   target public.xtrace_ingest_intents_v2%rowtype;
@@ -427,7 +554,7 @@ returns table (
 language sql
 stable
 security definer
-set search_path = pg_catalog, public
+set search_path = ''
 as $$
   select
     link.memory_id,
@@ -470,12 +597,37 @@ $$;
 alter function public.resolve_xtrace_memory_v2(text, text, text, text)
   owner to vsee_xtrace_owner;
 
+do $record_xtrace_recall_audit$
+declare
+  digest_schema text;
+begin
+  select namespace.nspname into strict digest_schema
+  from pg_catalog.pg_extension as extension_record
+  join pg_catalog.pg_depend as dependency
+    on dependency.refclassid = 'pg_catalog.pg_extension'::regclass
+    and dependency.refobjid = extension_record.oid
+    and dependency.classid = 'pg_catalog.pg_proc'::regclass
+    and dependency.deptype = 'e'
+  join pg_catalog.pg_proc as procedure_record
+    on procedure_record.oid = dependency.objid
+  join pg_catalog.pg_namespace as namespace
+    on namespace.oid = procedure_record.pronamespace
+  where extension_record.extname = 'pgcrypto'
+    and procedure_record.proname = 'digest'
+    and procedure_record.proargtypes = '17 25'::oidvector;
+
+  execute pg_catalog.format(
+    'grant usage on schema %I to vsee_xtrace_owner',
+    digest_schema
+  );
+  execute pg_catalog.format(
+    $function$
 create or replace function public.record_xtrace_recall_audit_v2(p_audit jsonb)
 returns void
 language plpgsql
 security definer
-set search_path = pg_catalog, public
-as $$
+set search_path = ''
+as $body$
 declare
   v_audit_id text;
   authorized boolean;
@@ -487,7 +639,10 @@ begin
      or jsonb_typeof(p_audit -> 'memoryIds') <> 'array' then
     raise exception 'Invalid exact XTrace recall audit';
   end if;
-  v_audit_id := 'xtrace_audit_' || encode(digest(p_audit::text, 'sha256'), 'hex');
+  v_audit_id := 'xtrace_audit_' || pg_catalog.encode(
+    %I.digest(pg_catalog.convert_to(p_audit::text, 'UTF8'), 'sha256'),
+    'hex'
+  );
   with authority as materialized (
     select 1
     from public.scan_runs run
@@ -520,9 +675,181 @@ begin
     raise exception 'Exact XTrace recall audit authority drifted';
   end if;
 end;
-$$;
+$body$;
+    $function$,
+    digest_schema
+  );
+end;
+$record_xtrace_recall_audit$;
 alter function public.record_xtrace_recall_audit_v2(jsonb)
   owner to vsee_xtrace_owner;
+
+-- Private forward-migration helpers. They deliberately run with the invoking
+-- migration executor's privileges, accept only the three isolated owners, and
+-- are removed by the terminal authority migration after every dependent
+-- migration has restored authority.
+create or replace function public.prepare_isolated_owner_0021(
+  p_owner_role text,
+  p_needs_public_create boolean
+)
+returns void
+language plpgsql
+set search_path = ''
+as $$
+declare
+  executor_role text := current_user;
+  executor_is_superuser boolean;
+  owner_oid oid;
+begin
+  if p_owner_role <> all(array[
+    'vsee_registry_owner', 'vsee_underwriting_owner', 'vsee_xtrace_owner'
+  ]) then
+    raise exception 'Unsupported isolated owner role';
+  end if;
+  select oid into strict owner_oid
+  from pg_catalog.pg_roles
+  where rolname = p_owner_role
+    and not rolcanlogin and not rolinherit and not rolsuper
+    and not rolcreaterole and not rolcreatedb and not rolreplication
+    and not rolbypassrls;
+  select rolsuper into strict executor_is_superuser
+  from pg_catalog.pg_roles where rolname = executor_role;
+  if pg_catalog.has_schema_privilege(p_owner_role, 'public', 'create') then
+    raise exception '% unexpectedly retains public CREATE', p_owner_role;
+  end if;
+  if exists (
+    select 1 from pg_catalog.pg_auth_members as membership
+    where (membership.roleid = owner_oid or membership.member = owner_oid)
+      and not (
+        not executor_is_superuser
+        and membership.roleid = owner_oid
+        and membership.member = (
+          select oid from pg_catalog.pg_roles where rolname = executor_role
+        )
+        and membership.grantor = 10
+        and (select rolsuper from pg_catalog.pg_roles
+          where oid = membership.grantor)
+        and membership.admin_option
+        and not membership.inherit_option and not membership.set_option
+      )
+  ) then
+    raise exception '% is not in its attested state', p_owner_role;
+  end if;
+  if not executor_is_superuser then
+    if not exists (
+      select 1 from pg_catalog.pg_auth_members as membership
+      where membership.roleid = owner_oid
+        and membership.member = (
+          select oid from pg_catalog.pg_roles where rolname = executor_role
+        )
+        and membership.grantor = 10
+        and (select rolsuper from pg_catalog.pg_roles
+          where oid = membership.grantor)
+        and membership.admin_option
+        and not membership.inherit_option and not membership.set_option
+    ) then
+      raise exception
+        'The migration executor lacks the attested owner administration grant';
+    end if;
+    execute pg_catalog.format(
+      'grant %I to %I with admin false, inherit true, set true',
+      p_owner_role,
+      executor_role
+    );
+  end if;
+  if p_needs_public_create then
+    execute pg_catalog.format(
+      'grant usage, create on schema public to %I',
+      p_owner_role
+    );
+  end if;
+end;
+$$;
+
+create or replace function public.finish_isolated_owner_0021(
+  p_owner_role text,
+  p_had_public_create boolean
+)
+returns void
+language plpgsql
+set search_path = ''
+as $$
+declare
+  executor_role text := current_user;
+  executor_is_superuser boolean;
+  owner_oid oid;
+begin
+  if p_owner_role <> all(array[
+    'vsee_registry_owner', 'vsee_underwriting_owner', 'vsee_xtrace_owner'
+  ]) then
+    raise exception 'Unsupported isolated owner role';
+  end if;
+  select oid into strict owner_oid
+  from pg_catalog.pg_roles where rolname = p_owner_role;
+  select rolsuper into strict executor_is_superuser
+  from pg_catalog.pg_roles where rolname = executor_role;
+  if p_had_public_create then
+    execute pg_catalog.format(
+      'revoke create on schema public from %I',
+      p_owner_role
+    );
+  end if;
+  if not executor_is_superuser then
+    execute pg_catalog.format(
+      'revoke %I from %I granted by %I',
+      p_owner_role,
+      executor_role,
+      executor_role
+    );
+  end if;
+  if not exists (
+      select 1 from pg_catalog.pg_roles
+      where oid = owner_oid
+        and not rolcanlogin and not rolinherit and not rolsuper
+        and not rolcreaterole and not rolcreatedb and not rolreplication
+        and not rolbypassrls
+    )
+    or (
+      not executor_is_superuser
+      and not exists (
+        select 1 from pg_catalog.pg_auth_members as membership
+        where membership.roleid = owner_oid
+          and membership.member = (
+            select oid from pg_catalog.pg_roles where rolname = executor_role
+          )
+          and membership.grantor = 10
+          and (select rolsuper from pg_catalog.pg_roles
+            where oid = membership.grantor)
+          and membership.admin_option
+          and not membership.inherit_option and not membership.set_option
+      )
+    )
+    or pg_catalog.has_schema_privilege(p_owner_role, 'public', 'create')
+    or exists (
+      select 1 from pg_catalog.pg_auth_members as membership
+      where (membership.roleid = owner_oid or membership.member = owner_oid)
+        and not (
+          not executor_is_superuser
+          and membership.roleid = owner_oid
+          and membership.member = (
+            select oid from pg_catalog.pg_roles where rolname = executor_role
+          )
+          and membership.grantor = 10
+          and (select rolsuper from pg_catalog.pg_roles
+            where oid = membership.grantor)
+          and membership.admin_option
+          and not membership.inherit_option and not membership.set_option
+        )
+    )
+  then
+    raise exception '% did not return to its attested state', p_owner_role;
+  end if;
+end;
+$$;
+
+revoke all on function public.prepare_isolated_owner_0021(text,boolean),
+  public.finish_isolated_owner_0021(text,boolean)
+  from public, anon, authenticated, service_role;
 
 grant select on public.scan_runs, public.deals, public.source_documents, public.source_revisions,
   public.deal_source_assignments to vsee_xtrace_owner;
@@ -568,5 +895,124 @@ begin
   end if;
 end;
 $$;
+
+revoke create on schema public from vsee_xtrace_owner;
+
+do $registry_owner_finish_0021$
+declare
+  executor_role text := current_user;
+  executor_is_superuser boolean;
+begin
+  select rolsuper into executor_is_superuser
+  from pg_catalog.pg_roles where rolname = executor_role;
+  if not executor_is_superuser then
+    execute pg_catalog.format(
+      'revoke vsee_registry_owner from %I granted by %I',
+      executor_role,
+      executor_role
+    );
+  end if;
+  if exists (
+    select 1 from pg_catalog.pg_auth_members as membership
+    where (
+      membership.roleid = 'vsee_registry_owner'::pg_catalog.regrole
+      or membership.member = 'vsee_registry_owner'::pg_catalog.regrole
+    ) and not (
+      not executor_is_superuser
+      and membership.roleid = 'vsee_registry_owner'::pg_catalog.regrole
+      and membership.member = (
+        select oid from pg_catalog.pg_roles where rolname = executor_role
+      )
+      and membership.grantor = 10
+      and (select rolsuper from pg_catalog.pg_roles
+        where oid = membership.grantor)
+      and membership.admin_option
+      and not membership.inherit_option and not membership.set_option
+    )
+  ) then
+    raise exception 'vsee_registry_owner did not return to its attested state';
+  end if;
+end;
+$registry_owner_finish_0021$;
+
+do $xtrace_owner_finish$
+declare
+  executor_role text := current_user;
+  executor_is_superuser boolean;
+begin
+  select rolsuper into executor_is_superuser
+  from pg_catalog.pg_roles where rolname = executor_role;
+  if not executor_is_superuser then
+    execute pg_catalog.format(
+      'revoke vsee_xtrace_owner from %I granted by %I',
+      executor_role,
+      executor_role
+    );
+  end if;
+  if exists (
+    select 1 from pg_catalog.pg_auth_members as membership
+    where (
+      membership.roleid = 'vsee_xtrace_owner'::pg_catalog.regrole
+      or membership.member = 'vsee_xtrace_owner'::pg_catalog.regrole
+    ) and not (
+      not executor_is_superuser
+      and membership.roleid = 'vsee_xtrace_owner'::pg_catalog.regrole
+      and membership.member = (
+        select oid from pg_catalog.pg_roles where rolname = executor_role
+      )
+      and membership.grantor = 10
+      and (select rolsuper from pg_catalog.pg_roles
+        where oid = membership.grantor)
+      and membership.admin_option
+      and not membership.inherit_option and not membership.set_option
+    )
+  ) then
+    raise exception 'vsee_xtrace_owner did not return to its attested state';
+  end if;
+end;
+$xtrace_owner_finish$;
+
+do $xtrace_owner_invariant$
+begin
+  if not exists (
+      select 1 from pg_catalog.pg_roles
+      where rolname = 'vsee_xtrace_owner'
+        and not rolcanlogin and not rolinherit and not rolsuper
+        and not rolcreaterole and not rolcreatedb and not rolreplication
+        and not rolbypassrls
+    )
+    or pg_catalog.has_schema_privilege(
+      'vsee_xtrace_owner', 'public', 'create'
+    )
+    or exists (
+      select 1 from pg_catalog.pg_class
+      where oid = any(array[
+        'public.xtrace_ingest_intents_v2'::regclass,
+        'public.xtrace_memory_links_v2'::regclass,
+        'public.xtrace_recall_audits_v2'::regclass
+      ])
+        and pg_catalog.pg_get_userbyid(relowner) <> 'vsee_xtrace_owner'
+    )
+    or exists (
+      select 1 from pg_catalog.pg_proc
+      where oid = any(array[
+        'public.protect_xtrace_lineage_v2()'::regprocedure,
+        'public.xtrace_ingest_intent_v2_json(public.xtrace_ingest_intents_v2)'::regprocedure,
+        'public.reserve_xtrace_ingest_intent_v2(jsonb)'::regprocedure,
+        'public.attach_xtrace_ingest_job_v2(text,uuid,text)'::regprocedure,
+        'public.mark_xtrace_submission_unknown_v2(text,uuid)'::regprocedure,
+        'public.advance_xtrace_ingest_intent_v2(text,text,text,text[])'::regprocedure,
+        'public.resolve_xtrace_memory_v2(text,text,text,text)'::regprocedure,
+        'public.record_xtrace_recall_audit_v2(jsonb)'::regprocedure
+      ]) and (
+        pg_catalog.pg_get_userbyid(proowner) <> 'vsee_xtrace_owner'
+        or proconfig is distinct from array['search_path=""']
+      )
+    )
+  then
+    raise exception 'VSEE_XTRACE_OWNER_INVARIANT_FAILED';
+  end if;
+end;
+$xtrace_owner_invariant$;
 
 commit;

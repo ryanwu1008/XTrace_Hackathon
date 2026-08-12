@@ -2,6 +2,7 @@ const BROWSER_FIXTURE_SENTINEL =
   "BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME" as const;
 
 const BROWSER_FIXTURE_WORKER_BINDING_NAMES = [
+  "BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME",
   "PUBLIC_APP_URL",
   "VSEE_DEPLOYMENT_MODE",
   "DEMO_WORKSPACE_ID",
@@ -12,6 +13,7 @@ const BROWSER_FIXTURE_WORKER_BINDING_NAMES = [
   "ANTHROPIC_MODEL",
   "ANTHROPIC_API_KEY",
   "XTRACE_API_KEY",
+  "XTRACE_APP_ID",
   "XTRACE_DRY_RUN",
   "MARKET_USER_AGENT",
   "MARKET_OFFICIAL_FEEDS_JSON",
@@ -65,6 +67,7 @@ export function resolveBeliefReversalBrowserFixtureWorkerBindings(
   if (
     !bindings.ANTHROPIC_API_KEY.startsWith("belief-reversal-test-only-")
     || !bindings.XTRACE_API_KEY.startsWith("mmk_test_only_")
+    || !bindings.XTRACE_APP_ID.startsWith("xtrace-belief-reversal-browser-")
     || bindings.XTRACE_DRY_RUN !== "1"
   ) {
     throw new Error("Browser fixture Worker provider bindings are not test-only.");

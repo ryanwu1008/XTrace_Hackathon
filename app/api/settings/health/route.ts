@@ -9,7 +9,7 @@ import { requirePermission } from "../../../../lib/api/safety";
 import { getProductInputReadiness } from "../../../../lib/corpus/import-readiness";
 import { readMarketProviderConfiguration } from "../../../../lib/market/config";
 import { createDefaultDemoDataStore } from "../../../../lib/storage/service";
-import { isXTraceConfigured } from "../../../../lib/xtrace/client";
+import { isXTraceScanModeAvailable } from "../../../../lib/xtrace/client";
 import {
   canonicalPublicAppOrigin,
   uiSessionForContext,
@@ -51,7 +51,7 @@ export async function GET(
       ...(canonicalAppOrigin ? { canonicalAppOrigin } : {}),
       postgres,
       worker,
-      xtrace: isXTraceConfigured(),
+      xtrace: isXTraceScanModeAvailable(process.env, context.mode),
       anthropic: Boolean(process.env.ANTHROPIC_API_KEY),
       storage: Boolean(
         postgres &&

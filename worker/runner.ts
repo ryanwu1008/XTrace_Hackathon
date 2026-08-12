@@ -99,9 +99,9 @@ import { createDefaultMarketProviders } from "../lib/market/providers";
 import { createMarketService } from "../lib/market/service";
 import {
   getXTraceClient,
-  isXTraceConfigured,
+  isXTraceExecutionConfigured,
 } from "../lib/xtrace/client";
-import { createXTraceService } from "../lib/xtrace/service";
+import { createXTraceService, resolveXTraceAppId } from "../lib/xtrace/service";
 import { createExactXTraceParentUnit } from "../lib/xtrace/exact-parent-planner";
 import { createDefaultDemoDataStore } from "../lib/storage/service";
 import {
@@ -388,12 +388,13 @@ export async function runNextQueuedScan(): Promise<boolean> {
         },
       }),
     });
-    const xtraceService = isXTraceConfigured()
+    const xtraceService = isXTraceExecutionConfigured()
       ? createXTraceService(getXTraceClient({
           stage: "explicit_recall",
           allowLive: true,
         }), {
           workspaceId: claimed.workspaceId,
+          appId: resolveXTraceAppId(),
           lineageRepository: lineage,
         })
       : undefined;
@@ -577,12 +578,13 @@ export async function runNextConfirmedUpload(): Promise<boolean> {
     const deals = getDealRegistry();
     const sources = getSourceRegistry();
     const evidencePacks = getEvidencePacksRepository();
-    const xtrace = isXTraceConfigured()
+    const xtrace = isXTraceExecutionConfigured()
       ? createXTraceService(getXTraceClient({
         stage: "explicit_ingest",
         allowLive: true,
       }), {
         workspaceId: claimed.workspaceId,
+        appId: resolveXTraceAppId(),
         lineageRepository: getXTraceLineageRepository(),
       })
       : null;

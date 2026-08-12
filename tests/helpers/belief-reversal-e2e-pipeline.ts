@@ -350,6 +350,10 @@ export function createBeliefReversalDeterministicProviders():
           type: "fact",
           text: parent.text,
           score: Number((0.99 - index * 0.001).toFixed(4)),
+          app_id: input.app_id ?? null,
+          user_id: input.user_id,
+          conv_id:
+            `deal:${parent.dealId}:parent:${parent.sourceRevisionId}`,
         }));
       return {
         success: true,

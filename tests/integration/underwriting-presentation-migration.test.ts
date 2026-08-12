@@ -1137,11 +1137,18 @@ test("0028 journals the local-only authority repair after the 0027 presentation 
     tag: "0027_named_lens_passages",
     breakpoints: true,
   });
-  assert.deepEqual(journal.entries.at(-1), {
+  assert.deepEqual(journal.entries.find(({ idx }) => idx === 28), {
     idx: 28,
     version: "7",
     when: 1786442400000,
     tag: "0028_named_lens_authority_repair",
+    breakpoints: true,
+  });
+  assert.deepEqual(journal.entries.at(-1), {
+    idx: 30,
+    version: "7",
+    when: 1786615200000,
+    tag: "0030_xtrace_recall_audit_authority",
     breakpoints: true,
   });
   const launcher = readFileSync(fileURLToPath(new URL(

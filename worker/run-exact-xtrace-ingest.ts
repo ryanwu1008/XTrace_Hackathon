@@ -8,6 +8,7 @@ import { getXTraceClient, type XTraceClient } from "../lib/xtrace/client";
 import { createExactParentPlanner } from "../lib/xtrace/exact-parent-planner";
 import {
   createXTraceService,
+  resolveXTraceAppId,
   type XTraceRateLimiter,
 } from "../lib/xtrace/service";
 import { runExactXTraceIngestStage } from "./ingest-exact-xtrace-parents";
@@ -24,7 +25,7 @@ type ExactWorkerDependencies = {
 };
 
 export async function runExactXTraceIngestWorker(
-  input: { workspaceId: string },
+  input: { workspaceId: string; appId?: string },
   dependencies?: ExactWorkerDependencies,
 ) {
   const runtime = dependencies ?? {
@@ -38,6 +39,7 @@ export async function runExactXTraceIngestWorker(
     planner: createExactParentPlanner(runtime),
     service: createXTraceService(runtime.client, {
       workspaceId: input.workspaceId,
+      ...(input.appId ? { appId: input.appId } : {}),
       lineageRepository: runtime.lineageRepository,
       ...(runtime.limiter ? { limiter: runtime.limiter } : {}),
     }),
@@ -47,7 +49,10 @@ export async function runExactXTraceIngestWorker(
 async function main(): Promise<void> {
   const workspaceId = process.argv[2]?.trim();
   if (!workspaceId) throw new Error("Usage: npm run xtrace:ingest -- <workspace-id>");
-  const result = await runExactXTraceIngestWorker({ workspaceId });
+  const result = await runExactXTraceIngestWorker({
+    workspaceId,
+    appId: resolveXTraceAppId(),
+  });
   console.log(JSON.stringify(result));
   if (result.results.some(({ outcome }) => outcome === "failed")) {
     process.exitCode = 1;

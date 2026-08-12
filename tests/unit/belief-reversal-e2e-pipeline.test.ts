@@ -143,12 +143,19 @@ test("deterministic E2E XTrace fake records exact parents and recalls only the q
     query:
       "Henry AI · investment decision · workflow compression · Irregular is mentioned only as context",
     user_id: "workspace:workspace_e2e",
+    app_id: "xtrace-e2e-isolated",
     mode: "retrieve",
     limit: 20,
   });
   assert.equal(recalled.success, true);
   assert.equal(recalled.data.length, 1);
   assert.match(recalled.data[0]!.text, /Henry AI/u);
+  assert.equal(recalled.data[0]!.app_id, "xtrace-e2e-isolated");
+  assert.equal(recalled.data[0]!.user_id, "workspace:workspace_e2e");
+  assert.equal(
+    recalled.data[0]!.conv_id,
+    "deal:deal_henry_ai_v1:parent:revision_henry_v1",
+  );
   assert.deepEqual(providers.inspect().xtrace, {
     ingestCalls: 2,
     searchCalls: 1,

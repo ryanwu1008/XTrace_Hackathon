@@ -121,6 +121,7 @@ export function buildBeliefReversalBrowserFixtureEnvironment(
     ANTHROPIC_API_KEY:
       `belief-reversal-test-only-anthropic-${input.resourceSuffix}`,
     XTRACE_API_KEY: `mmk_test_only_${input.resourceSuffix}`,
+    XTRACE_APP_ID: `xtrace-belief-reversal-browser-${input.resourceSuffix}`,
     XTRACE_DRY_RUN: "1",
     MARKET_USER_AGENT: "VSee belief-reversal browser fixture",
     MARKET_OFFICIAL_FEEDS_JSON: "[]",
@@ -153,6 +154,7 @@ const HOSTED_SITES_ENVIRONMENT_KEYS = [
   "ANTHROPIC_MODEL",
   "ANTHROPIC_API_KEY",
   "XTRACE_API_KEY",
+  "XTRACE_APP_ID",
   "XTRACE_DRY_RUN",
   "MARKET_USER_AGENT",
   "MARKET_OFFICIAL_FEEDS_JSON",

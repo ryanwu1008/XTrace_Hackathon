@@ -1,5 +1,9 @@
 begin;
 
+select public.prepare_isolated_owner_0021('vsee_registry_owner', true);
+select public.prepare_isolated_owner_0021('vsee_xtrace_owner', true);
+select public.prepare_isolated_owner_0021('vsee_underwriting_owner', true);
+
 -- The evidence-context wire contract and canonical fingerprint both use
 -- millisecond precision. PostgreSQL clock_timestamp() retains microseconds;
 -- normalize new current-run rows at the authority boundary so a Deal universe
@@ -121,7 +125,7 @@ returns table (
 language sql
 stable
 security definer
-set search_path = pg_catalog, public
+set search_path = ''
 as $$
   select
     link.memory_id,
@@ -1047,5 +1051,11 @@ begin
   );
 end;
 $$;
+
+select public.finish_isolated_owner_0021(
+  'vsee_underwriting_owner', true
+);
+select public.finish_isolated_owner_0021('vsee_xtrace_owner', true);
+select public.finish_isolated_owner_0021('vsee_registry_owner', true);
 
 commit;

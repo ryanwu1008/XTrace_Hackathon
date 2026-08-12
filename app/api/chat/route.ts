@@ -49,9 +49,12 @@ import { buildDemoViewModel } from "../../../lib/demo/view-model";
 import { interactionSourceV2 } from "../../../lib/matching/context";
 import {
   getXTraceClient,
-  isXTraceConfigured,
+  isXTraceExecutionConfigured,
 } from "../../../lib/xtrace/client";
-import { createXTraceService } from "../../../lib/xtrace/service";
+import {
+  createXTraceService,
+  resolveXTraceAppId,
+} from "../../../lib/xtrace/service";
 import {
   isDurableWorkspaceMode,
   type DeploymentMode,
@@ -364,7 +367,7 @@ async function recallExistingMemory(
   activeParentFingerprint: string | null,
   dependencies: Pick<RouteDependencies, "xtraceLineage"> = {},
 ): Promise<MemoryRecallOutcome> {
-  if (!isXTraceConfigured()) {
+  if (!isXTraceExecutionConfigured(process.env, mode)) {
     return { status: "unavailable" };
   }
   if (mode !== "public_demo" && (!report || !runId || !dealId)) {
@@ -382,6 +385,7 @@ async function recallExistingMemory(
     allowLive: true,
   }), {
     workspaceId,
+    appId: resolveXTraceAppId(),
     lineageRepository:
       dependencies.xtraceLineage ?? getXTraceLineageRepository(),
   });

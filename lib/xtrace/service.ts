@@ -16,13 +16,14 @@ import {
 import {
   XTraceHttpError,
   isAcceptedXTraceSearchResponse,
+  PRODUCTION_XTRACE_APP_ID,
   type XTraceClient,
   type XTraceJob,
   type XTraceSearchResult,
 } from "./client";
 
 export const DEAL_MEMORY_SERIALIZER_VERSION = "deal-memory-v1";
-const DEFAULT_APP_ID = "xtrace-vc-deal-intelligence";
+export const EXACT_XTRACE_PARENT_SERIALIZER_VERSION = "xtrace-parent-v2";
 const REQUESTS_PER_MINUTE = 25;
 const REQUEST_WINDOW_MS = 60_000;
 
@@ -94,6 +95,45 @@ export type XTraceServiceDependencies = {
   lineageRepository?: XTraceLineageRepository;
   limiter?: XTraceRateLimiter;
 };
+
+type XTraceAppEnvironment = Partial<Pick<
+  NodeJS.ProcessEnv,
+  "VSEE_DEPLOYMENT_MODE" | "XTRACE_APP_ID" | "XTRACE_API_KEY"
+>>;
+
+export function resolveXTraceAppId(
+  environment: XTraceAppEnvironment | NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = environment.XTRACE_APP_ID?.trim();
+  if (
+    environment.VSEE_DEPLOYMENT_MODE === "public_sandbox"
+    || environment.VSEE_DEPLOYMENT_MODE === "product"
+    || environment.VSEE_DEPLOYMENT_MODE === "public_demo"
+  ) {
+    if (
+      configured
+      && !(
+        environment.VSEE_DEPLOYMENT_MODE === "public_sandbox"
+        && configured === PRODUCTION_XTRACE_APP_ID
+      )
+    ) return configured;
+    throw new Error("XTRACE_APP_ID is required for durable XTrace execution.");
+  }
+  if (
+    !environment.VSEE_DEPLOYMENT_MODE
+    && !environment.XTRACE_API_KEY?.trim()
+    && !configured
+  ) {
+    return PRODUCTION_XTRACE_APP_ID;
+  }
+  throw new Error("VSEE_DEPLOYMENT_MODE is required for XTrace execution.");
+}
+
+export function exactXTraceParentSerializerVersion(appId: string): string {
+  const namespace = appId.trim();
+  if (!namespace) throw new Error("An XTrace app namespace is required.");
+  return `${EXACT_XTRACE_PARENT_SERIALIZER_VERSION}:app:${namespace}`;
+}
 
 export class XTraceUnavailableError extends Error {
   readonly code: string = "XTRACE_UNAVAILABLE";
@@ -167,10 +207,11 @@ export function createXTraceService(
           dependencies.sleep ?? defaultSleep,
         )
       : defaultXTraceRateLimiter());
-  const appId = dependencies.appId ?? DEFAULT_APP_ID;
+  const appId = dependencies.appId?.trim() || resolveXTraceAppId();
   const workspaceId = requiredWorkspaceId(dependencies.workspaceId);
-  const serializerVersion =
+  const baseSerializerVersion =
     dependencies.serializerVersion ?? DEAL_MEMORY_SERIALIZER_VERSION;
+  const serializerVersion = `${baseSerializerVersion}:app:${appId}`;
   const lineage = dependencies.lineageRepository ?? getXTraceLineageRepository();
 
   const persist = async (record: PersistedIngest) => {
@@ -186,7 +227,7 @@ export function createXTraceService(
       }
       const reservation = await lineage.reserveExactIntent({
         parent,
-        serializerVersion: "xtrace-parent-v2",
+        serializerVersion: exactXTraceParentSerializerVersion(appId),
       });
       if (reservation.action === "wait") {
         const observed = await lineage.waitForExactIntent(
@@ -445,6 +486,28 @@ export function createXTraceService(
       );
       let lineageFailure = false;
       for (const memory of response.data) {
+        const expectedUserId = stableXTraceUserId(workspaceId);
+        const scopedDealId = scopedInput.candidateDealIds.length === 1
+          ? scopedInput.candidateDealIds[0]
+          : undefined;
+        const providerScopeMatches = (
+          memory.app_id === undefined || memory.app_id === null
+            ? !v2Recall
+            : memory.app_id === appId
+        ) && (
+          memory.user_id === undefined || memory.user_id === null
+            ? !v2Recall
+            : memory.user_id === expectedUserId
+        ) && (
+          memory.conv_id === undefined || memory.conv_id === null || !scopedDealId
+            ? !v2Recall
+            : memory.conv_id === `deal:${scopedDealId}`
+              || memory.conv_id.startsWith(`deal:${scopedDealId}:parent:`)
+        );
+        if (!providerScopeMatches) {
+          if (v2Recall) lineageFailure = true;
+          continue;
+        }
         const v2DealId = scopedInput.candidateDealIds.length === 1
           ? scopedInput.candidateDealIds[0]
           : undefined;

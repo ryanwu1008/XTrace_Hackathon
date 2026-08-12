@@ -1,4 +1,5 @@
 export const XTRACE_API_BASE_URL = "https://api.production.xtrace.ai";
+export const PRODUCTION_XTRACE_APP_ID = "xtrace-vc-deal-intelligence";
 
 export type XTraceMessage = {
   role: "user" | "assistant" | "system";
@@ -106,7 +107,12 @@ type XTraceEnvironment = Partial<Pick<
   | "XTRACE_API_KEY"
   | "XTRACE_ORG_ID"
   | "XTRACE_API_BASE_URL"
+  | "XTRACE_APP_ID"
   | "XTRACE_DRY_RUN"
+  | "VSEE_DEPLOYMENT_MODE"
+  | "BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME"
+  | "PUBLIC_APP_URL"
+  | "SUPABASE_URL"
 >>;
 
 export function isXTraceConfigured(
@@ -116,6 +122,60 @@ export function isXTraceConfigured(
   if (!apiKey) return false;
   return apiKey.startsWith("mmk_")
     || Boolean(environment.XTRACE_ORG_ID?.trim());
+}
+
+export function isXTraceExecutionConfigured(
+  environment: XTraceEnvironment | NodeJS.ProcessEnv = process.env,
+  deploymentMode = environment.VSEE_DEPLOYMENT_MODE,
+): boolean {
+  if (!isXTraceConfigured(environment) || environment.XTRACE_DRY_RUN === "1") {
+    return false;
+  }
+  const appId = environment.XTRACE_APP_ID?.trim();
+  if (!appId) return false;
+  if (deploymentMode === "public_sandbox") {
+    return appId !== PRODUCTION_XTRACE_APP_ID;
+  }
+  return deploymentMode === "product" || deploymentMode === "public_demo";
+}
+
+/**
+ * Reports whether a Scan can exercise XTrace semantics. Production-like
+ * deployments require a live client. The only dry-run exception is the
+ * disposable browser fixture, whose provider is injected by the cold Worker;
+ * every identity and network boundary must prove that local test runtime.
+ */
+export function isXTraceScanModeAvailable(
+  environment: XTraceEnvironment | NodeJS.ProcessEnv = process.env,
+  deploymentMode = environment.VSEE_DEPLOYMENT_MODE,
+): boolean {
+  if (isXTraceExecutionConfigured(environment, deploymentMode)) return true;
+  return environment.BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME === "1"
+    && deploymentMode === "public_sandbox"
+    && environment.XTRACE_DRY_RUN === "1"
+    && environment.XTRACE_API_KEY?.startsWith("mmk_test_only_") === true
+    && environment.XTRACE_APP_ID?.startsWith(
+      "xtrace-belief-reversal-browser-",
+    ) === true
+    && isExactFixtureLoopbackOrigin(environment.PUBLIC_APP_URL)
+    && isExactFixtureLoopbackOrigin(environment.SUPABASE_URL);
+}
+
+function isExactFixtureLoopbackOrigin(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:"
+      && url.hostname === "127.0.0.1"
+      && Boolean(url.port)
+      && url.pathname === "/"
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash;
+  } catch {
+    return false;
+  }
 }
 
 export function createXTraceClient(options: {
@@ -228,7 +288,34 @@ export function getXTraceClient(
 }
 
 function normalizeSearchResponse(response: unknown): XTraceSearchResponse {
-  if (!isRecord(response) || !Array.isArray(response.data) || response.success === false) {
+  if (
+    !isRecord(response)
+    || !Array.isArray(response.data)
+    || (response.success !== undefined && response.success !== true)
+    || (response.object !== undefined && response.object !== "search")
+    || (
+      response.mode !== undefined
+      && response.mode !== "retrieve"
+      && response.mode !== "compose"
+    )
+    || (
+      response.context !== undefined
+      && response.context !== null
+      && typeof response.context !== "string"
+    )
+    || (
+      response.stage_timings !== undefined
+      && !isFiniteNumberRecord(response.stage_timings)
+    )
+    || (
+      response.context_selection_applied !== undefined
+      && typeof response.context_selection_applied !== "boolean"
+    )
+    || (
+      response.count !== undefined
+      && !(Number.isSafeInteger(response.count) && Number(response.count) >= 0)
+    )
+  ) {
     throw new XTraceHttpError(200, false, "XTrace search response was invalid");
   }
   const legacyEnvelope = response.success === true;
@@ -236,7 +323,11 @@ function normalizeSearchResponse(response: unknown): XTraceSearchResponse {
     response.object === "search"
     && (response.mode === "retrieve" || response.mode === "compose")
     && (typeof response.context === "string" || response.context === null)
-    && isRecord(response.stage_timings)
+    && isFiniteNumberRecord(response.stage_timings)
+    && (
+      response.count === undefined
+      || (Number.isSafeInteger(response.count) && Number(response.count) >= 0)
+    )
     && typeof response.context_selection_applied === "boolean";
   if (!legacyEnvelope && !documentedEnvelope) {
     throw new XTraceHttpError(200, false, "XTrace search response was invalid");
@@ -257,13 +348,18 @@ function normalizeSearchResponse(response: unknown): XTraceSearchResponse {
 
 function normalizeJobResponse(response: unknown): XTraceJob {
   if (!isRecord(response)) return invalidJobResponse();
-  const allowedKeys = new Set(["id", "status", "result", "error"]);
+  const allowedKeys = new Set([
+    "id", "object", "status", "created_at", "updated_at", "result", "error",
+  ]);
   if (Object.keys(response).some((key) => !allowedKeys.has(key))) {
     return invalidJobResponse();
   }
   if (
     typeof response.id !== "string"
     || response.id.trim() === ""
+    || (response.object !== undefined && response.object !== "ingest_job")
+    || !isOptionalNullableIsoTimestamp(response.created_at)
+    || !isOptionalNullableIsoTimestamp(response.updated_at)
     || !["pending", "running", "succeeded", "failed"].includes(
       String(response.status),
     )
@@ -271,10 +367,44 @@ function normalizeJobResponse(response: unknown): XTraceJob {
   const status = response.status as XTraceJob["status"];
   let result: XTraceJob["result"];
   if (status === "succeeded") {
+    const allowedResultKeys = new Set([
+      "object",
+      "memories_created",
+      "memories_updated",
+      "memories_superseded_by",
+      "ignored_group_ids",
+      "stage_timings",
+    ]);
     if (
       !isRecord(response.result)
-      || Object.keys(response.result).some((key) => key !== "memories_created")
+      || Object.keys(response.result).some((key) => !allowedResultKeys.has(key))
       || !Array.isArray(response.result.memories_created)
+      || (
+        response.result.object !== undefined
+        && response.result.object !== "ingest_result"
+      )
+      || (
+        response.result.memories_updated !== undefined
+        && (
+          !Array.isArray(response.result.memories_updated)
+          || !response.result.memories_updated.every(isStrictMemoryRef)
+        )
+      )
+      || (
+        response.result.memories_superseded_by !== undefined
+        && !isNonEmptyStringRecord(response.result.memories_superseded_by)
+      )
+      || (
+        response.result.ignored_group_ids !== undefined
+        && (
+          !Array.isArray(response.result.ignored_group_ids)
+          || !response.result.ignored_group_ids.every(isNonEmptyString)
+        )
+      )
+      || (
+        response.result.stage_timings !== undefined
+        && !isFiniteNumberRecord(response.result.stage_timings)
+      )
     ) return invalidJobResponse();
     const memories = response.result.memories_created;
     if (!memories.every(isStrictMemoryRef)) return invalidJobResponse();
@@ -321,7 +451,8 @@ function normalizeSearchResult(row: unknown): XTraceSearchResult[] {
   if (!isRecord(row)) return invalidSearchResult();
   const allowedKeys = new Set([
     "id", "type", "text", "score", "user_id", "conv_id", "app_id",
-    "agent_id", "metadata",
+    "agent_id", "metadata", "object", "group_ids", "categories",
+    "created_at", "updated_at", "details",
   ]);
   if (
     Object.keys(row).some((key) => !allowedKeys.has(key))
@@ -330,12 +461,24 @@ function normalizeSearchResult(row: unknown): XTraceSearchResult[] {
     || typeof row.text !== "string"
     || typeof row.score !== "number"
     || !Number.isFinite(row.score)
+    || (row.object !== undefined && row.object !== "memory")
     || (row.type !== undefined && typeof row.type !== "string")
     || !isOptionalNullableString(row.user_id)
     || !isOptionalNullableString(row.conv_id)
     || !isOptionalNullableString(row.app_id)
     || !isOptionalNullableString(row.agent_id)
-    || (row.metadata !== undefined && !isRecord(row.metadata))
+    || (row.metadata !== undefined && !isPlainRecord(row.metadata))
+    || (
+      row.group_ids !== undefined
+      && (!Array.isArray(row.group_ids) || !row.group_ids.every(isNonEmptyString))
+    )
+    || (
+      row.categories !== undefined
+      && (!Array.isArray(row.categories) || !row.categories.every(isNonEmptyString))
+    )
+    || !isOptionalNullableIsoTimestamp(row.created_at)
+    || !isOptionalNullableIsoTimestamp(row.updated_at)
+    || (row.details !== undefined && !isPlainRecord(row.details))
   ) return invalidSearchResult();
   return [{
     id: row.id,
@@ -352,6 +495,34 @@ function normalizeSearchResult(row: unknown): XTraceSearchResult[] {
 
 function isOptionalNullableString(value: unknown): boolean {
   return value === undefined || value === null || typeof value === "string";
+}
+
+function isOptionalNullableIsoTimestamp(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "string") return false;
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u
+      .test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function isFiniteNumberRecord(value: unknown): boolean {
+  return isPlainRecord(value)
+    && Object.values(value).every((entry) =>
+      typeof entry === "number" && Number.isFinite(entry)
+    );
+}
+
+function isNonEmptyStringRecord(value: unknown): boolean {
+  return isPlainRecord(value)
+    && Object.values(value).every(isNonEmptyString);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && !Array.isArray(value);
 }
 
 function invalidSearchResult(): never {

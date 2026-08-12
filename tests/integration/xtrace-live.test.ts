@@ -4,7 +4,10 @@ import test from "node:test";
 import { createMemoryXTraceLineageRepository } from "../../db/repositories/xtrace-lineage";
 import { DEMO_FIXTURE_LABEL } from "../../lib/contracts/domain";
 import { getXTraceClient } from "../../lib/xtrace/client";
-import { createXTraceService } from "../../lib/xtrace/service";
+import {
+  createXTraceService,
+  resolveXTraceAppId,
+} from "../../lib/xtrace/service";
 
 const LIVE_POLL_ATTEMPTS = 17;
 
@@ -22,6 +25,7 @@ test("XTrace live memory bridge", { skip: process.env.XTRACE_LIVE_TEST !== "1", 
   const sourceId = `${dealId}-source`;
   const service = createXTraceService(client, {
     workspaceId,
+    appId: resolveXTraceAppId(),
     lineageRepository: createMemoryXTraceLineageRepository(),
   });
   context.after(async () => {

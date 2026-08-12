@@ -1,5 +1,8 @@
 begin;
 
+select public.prepare_isolated_owner_0021('vsee_registry_owner', true);
+select public.prepare_isolated_owner_0021('vsee_xtrace_owner', false);
+
 -- Local/disposable terminal migration only. Production remains pinned at 0018.
 do $prerequisite$
 begin
@@ -1381,5 +1384,8 @@ begin
   end if;
 end;
 $service_grants$;
+
+select public.finish_isolated_owner_0021('vsee_xtrace_owner', false);
+select public.finish_isolated_owner_0021('vsee_registry_owner', true);
 
 commit;

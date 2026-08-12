@@ -49,14 +49,14 @@ function rpc(name: string, payload: unknown): string {
   return `set role service_role; select public.${name}($json$${JSON.stringify(payload)}$json$::jsonb)`;
 }
 
-test("terminal 0028 preserves the local-only Deal-bound research registry without parallel XTrace", () => {
+test("terminal 0030 preserves the local-only Deal-bound research registry without parallel XTrace", () => {
   assert.equal(existsSync(migrationPath), true);
   const plan = discoverMigrationPlan({
     directory: fileURLToPath(new URL("../../drizzle/", import.meta.url)),
     journalPath,
   });
-  assert.equal(plan.terminal.index, 28);
-  assert.equal(plan.terminal.tag, "0028_named_lens_authority_repair");
+  assert.equal(plan.terminal.index, 30);
+  assert.equal(plan.terminal.tag, "0030_xtrace_recall_audit_authority");
   const migration = readFileSync(migrationPath, "utf8");
   assert.match(migration, /create table public\.research_candidates/u);
   assert.match(migration, /create table public\.deal_universe_snapshots_v1/u);

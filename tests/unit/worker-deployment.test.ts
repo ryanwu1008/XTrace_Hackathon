@@ -113,6 +113,10 @@ test("worker build context includes every seed and research runtime import", asy
   );
   assert.match(
     dockerfile,
+    /^COPY --chown=node:node seed\/belief-reversal \.\/seed\/belief-reversal$/m,
+  );
+  assert.match(
+    dockerfile,
     /^COPY --chown=node:node research\/framework-authoring \.\/research\/framework-authoring$/m,
   );
 });
@@ -158,7 +162,7 @@ test("keychain worker launcher starts the worker with exact public-sandbox setti
   );
   await writeExecutable(
     join(fixtureDirectory, "npm"),
-    "#!/bin/sh\nprintf 'npm %s %s\\n' \"$1\" \"$2\" >> \"$FAKE_TRACE\"\n{\n  printf 'SUPABASE_URL=%s\\n' \"$SUPABASE_URL\"\n  printf 'SUPABASE_SERVICE_ROLE_KEY=%s\\n' \"$SUPABASE_SERVICE_ROLE_KEY\"\n  printf 'ANTHROPIC_API_KEY=%s\\n' \"$ANTHROPIC_API_KEY\"\n  printf 'XTRACE_API_KEY=%s\\n' \"$XTRACE_API_KEY\"\n  printf 'DOCUMENT_URL_SIGNING_SECRET=%s\\n' \"$DOCUMENT_URL_SIGNING_SECRET\"\n  printf 'APPLICATION_COMMIT=%s\\n' \"$APPLICATION_COMMIT\"\n  printf 'VSEE_DEPLOYMENT_MODE=%s\\n' \"$VSEE_DEPLOYMENT_MODE\"\n  printf 'DEMO_WORKSPACE_ID=%s\\n' \"$DEMO_WORKSPACE_ID\"\n  printf 'SUPABASE_STORAGE_BUCKET=%s\\n' \"$SUPABASE_STORAGE_BUCKET\"\n  printf 'ANTHROPIC_MODEL=%s\\n' \"$ANTHROPIC_MODEL\"\n  printf 'XTRACE_API_BASE_URL=%s\\n' \"$XTRACE_API_BASE_URL\"\n  printf 'MARKET_USER_AGENT=%s\\n' \"$MARKET_USER_AGENT\"\n  printf 'MARKET_OFFICIAL_FEEDS_JSON=%s\\n' \"$MARKET_OFFICIAL_FEEDS_JSON\"\n  printf 'MARKET_PUBLISHER_FEEDS_JSON=%s\\n' \"$MARKET_PUBLISHER_FEEDS_JSON\"\n} > \"$FAKE_ENVIRONMENT\"\n",
+    "#!/bin/sh\nprintf 'npm %s %s\\n' \"$1\" \"$2\" >> \"$FAKE_TRACE\"\n{\n  printf 'SUPABASE_URL=%s\\n' \"$SUPABASE_URL\"\n  printf 'SUPABASE_SERVICE_ROLE_KEY=%s\\n' \"$SUPABASE_SERVICE_ROLE_KEY\"\n  printf 'ANTHROPIC_API_KEY=%s\\n' \"$ANTHROPIC_API_KEY\"\n  printf 'XTRACE_API_KEY=%s\\n' \"$XTRACE_API_KEY\"\n  printf 'DOCUMENT_URL_SIGNING_SECRET=%s\\n' \"$DOCUMENT_URL_SIGNING_SECRET\"\n  printf 'APPLICATION_COMMIT=%s\\n' \"$APPLICATION_COMMIT\"\n  printf 'VSEE_DEPLOYMENT_MODE=%s\\n' \"$VSEE_DEPLOYMENT_MODE\"\n  printf 'DEMO_WORKSPACE_ID=%s\\n' \"$DEMO_WORKSPACE_ID\"\n  printf 'SUPABASE_STORAGE_BUCKET=%s\\n' \"$SUPABASE_STORAGE_BUCKET\"\n  printf 'ANTHROPIC_MODEL=%s\\n' \"$ANTHROPIC_MODEL\"\n  printf 'XTRACE_API_BASE_URL=%s\\n' \"$XTRACE_API_BASE_URL\"\n  printf 'XTRACE_APP_ID=%s\\n' \"$XTRACE_APP_ID\"\n  printf 'MARKET_USER_AGENT=%s\\n' \"$MARKET_USER_AGENT\"\n  printf 'MARKET_OFFICIAL_FEEDS_JSON=%s\\n' \"$MARKET_OFFICIAL_FEEDS_JSON\"\n  printf 'MARKET_PUBLISHER_FEEDS_JSON=%s\\n' \"$MARKET_PUBLISHER_FEEDS_JSON\"\n} > \"$FAKE_ENVIRONMENT\"\n",
   );
 
   const result = await runCommand("zsh", [launcherPath], {
@@ -207,6 +211,7 @@ test("keychain worker launcher starts the worker with exact public-sandbox setti
     SUPABASE_STORAGE_BUCKET: "vsee-demo-sources",
     ANTHROPIC_MODEL: "claude-opus-4-8",
     XTRACE_API_BASE_URL: "https://api.production.xtrace.ai",
+    XTRACE_APP_ID: "xtrace-vc-deal-intelligence-public-sandbox",
     MARKET_USER_AGENT: "VSee VC Intelligence public-sandbox",
     MARKET_OFFICIAL_FEEDS_JSON: '[{"id":"sequoia-official","name":"Sequoia Capital official insights","url":"https://www.sequoiacap.com/feed/","publisher":"Sequoia Capital","eventType":"funding","confidence":"medium"},{"id":"lsvp-official","name":"Lightspeed Venture Partners insights","url":"https://lsvp.com/feed/","publisher":"Lightspeed Venture Partners","eventType":"funding","confidence":"medium"}]',
     MARKET_PUBLISHER_FEEDS_JSON: '[{"id":"a16z-news","name":"a16z News","url":"https://www.a16z.news/feed","publisher":"Andreessen Horowitz","eventType":"trend","confidence":"medium"},{"id":"marijuana-moment","name":"Marijuana Moment policy news","url":"https://www.marijuanamoment.net/feed","publisher":"Marijuana Moment","eventType":"regulatory","confidence":"medium"},{"id":"fierce-healthcare","name":"Fierce Healthcare news","url":"https://www.fiercehealthcare.com/rss/xml","publisher":"Fierce Healthcare","eventType":"commercial","confidence":"medium"},{"id":"supply-chain-dive","name":"Supply Chain Dive news","url":"https://www.supplychaindive.com/feeds/news/","publisher":"Supply Chain Dive","eventType":"commercial","confidence":"medium"},{"id":"retail-dive","name":"Retail Dive news","url":"https://www.retaildive.com/feeds/news/","publisher":"Retail Dive","eventType":"commercial","confidence":"medium"}]',

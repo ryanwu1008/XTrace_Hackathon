@@ -1,5 +1,9 @@
 begin;
 
+select public.prepare_isolated_owner_0021(
+  'vsee_underwriting_owner', true
+);
+
 create or replace function public.assert_task9_current_finalization(
   p_payload jsonb,
   p_workspace_id text,
@@ -1455,5 +1459,9 @@ grant execute on function
   to service_role;
 revoke all on function public.finalize_candidate_underwriting(jsonb)
   from service_role;
+
+select public.finish_isolated_owner_0021(
+  'vsee_underwriting_owner', true
+);
 
 commit;

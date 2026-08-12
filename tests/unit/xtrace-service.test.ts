@@ -7,12 +7,15 @@ import {
   createXTraceClient,
   getXTraceClient,
   isXTraceConfigured,
+  isXTraceExecutionConfigured,
+  isXTraceScanModeAvailable,
   XTraceHttpError,
 } from "../../lib/xtrace/client";
 import {
   createPersistentXTraceRateLimiter,
   createXTraceRateLimiter,
   createXTraceService,
+  resolveXTraceAppId,
   XTracePollingTimeoutError,
   XTraceUnavailableError,
 } from "../../lib/xtrace/service";
@@ -59,6 +62,57 @@ const exactParent: ExactXTraceParentUnit = {
   payloadFingerprint: `sha256:${"b".repeat(64)}`,
   bundle,
 };
+
+test("XTrace app identity can be isolated per deployment environment", async () => {
+  let receivedAppId: string | undefined;
+  const service = createXTraceService({
+    search: async (input: { app_id?: string }) => {
+      receivedAppId = input.app_id;
+      return { success: true, data: [] };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId: "xtrace-vc-deal-intelligence-staging",
+    resolveMemory: async () => null,
+  });
+
+  await service.recallDealContext({
+    workspaceId: "workspace_demo",
+    query: "What changed?",
+    candidateDealIds: ["deal_1"],
+    limit: 5,
+  });
+
+  assert.equal(receivedAppId, "xtrace-vc-deal-intelligence-staging");
+});
+
+test("public sandbox XTrace execution refuses an implicit production namespace", () => {
+  assert.throws(
+    () => resolveXTraceAppId({ VSEE_DEPLOYMENT_MODE: "public_sandbox" }),
+    /XTRACE_APP_ID/u,
+  );
+  assert.equal(
+    resolveXTraceAppId({
+      VSEE_DEPLOYMENT_MODE: "public_sandbox",
+      XTRACE_APP_ID: "  xtrace-vc-deal-intelligence-staging-test  ",
+    }),
+    "xtrace-vc-deal-intelligence-staging-test",
+  );
+  assert.throws(
+    () => resolveXTraceAppId({
+      VSEE_DEPLOYMENT_MODE: "public_sandbox",
+      XTRACE_APP_ID: "xtrace-vc-deal-intelligence",
+    }),
+    /XTRACE_APP_ID/u,
+  );
+  assert.throws(
+    () => resolveXTraceAppId({
+      XTRACE_API_KEY: "mmk_staging",
+      XTRACE_APP_ID: "xtrace-vc-deal-intelligence-staging",
+    }),
+    /VSEE_DEPLOYMENT_MODE/u,
+  );
+});
 
 test("XTrace HTTP client keeps wait out of the memory request body", async () => {
   let request: { url: string; init?: RequestInit } | undefined;
@@ -172,6 +226,35 @@ test("XTrace search rejects success false even when the remaining fields resembl
   );
 });
 
+test("XTrace legacy search success cannot bypass validation of known envelope metadata", async () => {
+  const malformedEnvelopes = [
+    { count: "not-a-count" },
+    { context: 42 },
+    { stage_timings: { total: "not-a-duration" } },
+    { context_selection_applied: "yes" },
+    { object: "not-search" },
+    { mode: "not-retrieve" },
+  ];
+
+  for (const metadata of malformedEnvelopes) {
+    const client = createXTraceClient({
+      apiKey: "mmk_test",
+      fetch: async () => Response.json({
+        success: true,
+        data: [],
+        ...metadata,
+      }),
+    });
+
+    await assert.rejects(client.search({
+      query: "health",
+      user_id: "workspace:demo",
+      mode: "retrieve",
+      limit: 1,
+    }), XTraceHttpError);
+  }
+});
+
 test("XTrace search accepts the documented search envelope without a success field", async () => {
   const client = createXTraceClient({
     apiKey: "mmk_test",
@@ -193,6 +276,55 @@ test("XTrace search accepts the documented search envelope without a success fie
   });
 
   assert.deepEqual(result.data, []);
+});
+
+test("XTrace search accepts the documented memory row metadata without projecting it into lineage", async () => {
+  const client = createXTraceClient({
+    apiKey: "mmk_test",
+    fetch: async () => Response.json({
+      object: "search",
+      mode: "retrieve",
+      context: null,
+      stage_timings: {},
+      context_selection_applied: false,
+      data: [{
+        id: "memory_1",
+        object: "memory",
+        type: "fact",
+        text: "Acme has enterprise traction.",
+        user_id: "workspace:demo",
+        agent_id: null,
+        conv_id: "deal:deal_1",
+        app_id: "xtrace-test",
+        group_ids: [],
+        categories: ["traction"],
+        score: 0.9,
+        created_at: "2026-08-12T00:00:00.000Z",
+        updated_at: "2026-08-12T00:00:01.000Z",
+        details: {},
+      }],
+    }),
+  });
+
+  const response = await client.search({
+    query: "traction",
+    user_id: "workspace:demo",
+    app_id: "xtrace-test",
+    mode: "retrieve",
+    limit: 1,
+  });
+
+  assert.deepEqual(response.data, [{
+    id: "memory_1",
+    type: "fact",
+    text: "Acme has enterprise traction.",
+    score: 0.9,
+    user_id: "workspace:demo",
+    agent_id: null,
+    conv_id: "deal:deal_1",
+    app_id: "xtrace-test",
+    metadata: undefined,
+  }]);
 });
 
 test("XTrace search rejects a malformed memory row instead of silently dropping it", async () => {
@@ -231,6 +363,195 @@ test("XTrace ingest rejects a successful HTTP response without a strict provider
   );
 });
 
+test("XTrace ingest accepts the documented job envelope metadata", async () => {
+  const client = createXTraceClient({
+    apiKey: "mmk_test",
+    fetch: async () => Response.json({
+      id: "job_documented",
+      object: "ingest_job",
+      status: "pending",
+      created_at: "2026-08-12T00:00:00.000Z",
+      updated_at: "2026-08-12T00:00:00.000Z",
+      result: null,
+      error: null,
+    }, { status: 202 }),
+  });
+
+  assert.deepEqual(await client.ingest({
+    messages: [{ role: "user", content: "test" }],
+    user_id: "workspace_demo",
+    conv_id: "deal:test",
+  }), { id: "job_documented", status: "pending" });
+});
+
+test("XTrace job accepts documented successful result metadata", async () => {
+  const client = createXTraceClient({
+    apiKey: "mmk_test",
+    fetch: async () => Response.json({
+      id: "job_documented_success",
+      object: "ingest_job",
+      status: "succeeded",
+      created_at: "2026-08-12T00:00:00.000Z",
+      updated_at: "2026-08-12T00:00:01.000Z",
+      result: {
+        object: "ingest_result",
+        memories_created: [{ id: "memory_1", type: "fact", text: "Acme" }],
+        memories_updated: [],
+        memories_superseded_by: {},
+        ignored_group_ids: [],
+        stage_timings: { total: 1.2 },
+      },
+      error: null,
+    }),
+  });
+
+  assert.deepEqual(await client.getJob("job_documented_success"), {
+    id: "job_documented_success",
+    status: "succeeded",
+    result: {
+      memories_created: [{ id: "memory_1", type: "fact", text: "Acme" }],
+    },
+  });
+});
+
+test("XTrace job rejects malformed documented ancillary metadata", async () => {
+  const malformedJobs = [
+    {
+      id: "job_bad_timestamp",
+      object: "ingest_job",
+      status: "pending",
+      created_at: "not-a-date",
+      result: null,
+      error: null,
+    },
+    {
+      id: "job_bad_result_object",
+      object: "ingest_job",
+      status: "succeeded",
+      result: {
+        object: "not_an_ingest_result",
+        memories_created: [],
+      },
+      error: null,
+    },
+    {
+      id: "job_bad_updated_memory",
+      object: "ingest_job",
+      status: "succeeded",
+      result: {
+        object: "ingest_result",
+        memories_created: [],
+        memories_updated: [null],
+      },
+      error: null,
+    },
+    {
+      id: "job_bad_ignored_group",
+      object: "ingest_job",
+      status: "succeeded",
+      result: {
+        object: "ingest_result",
+        memories_created: [],
+        ignored_group_ids: [null],
+      },
+      error: null,
+    },
+    {
+      id: "job_bad_superseded_mapping",
+      object: "ingest_job",
+      status: "succeeded",
+      result: {
+        object: "ingest_result",
+        memories_created: [],
+        memories_superseded_by: { memory_1: null },
+      },
+      error: null,
+    },
+    {
+      id: "job_bad_superseded_array",
+      object: "ingest_job",
+      status: "succeeded",
+      result: {
+        object: "ingest_result",
+        memories_created: [],
+        memories_superseded_by: [],
+      },
+      error: null,
+    },
+    {
+      id: "job_bad_stage_timing",
+      object: "ingest_job",
+      status: "succeeded",
+      result: {
+        object: "ingest_result",
+        memories_created: [],
+        stage_timings: { total: "not-a-number" },
+      },
+      error: null,
+    },
+  ];
+
+  for (const job of malformedJobs) {
+    const client = createXTraceClient({
+      apiKey: "mmk_test",
+      fetch: async () => Response.json(job),
+    });
+    await assert.rejects(client.getJob(job.id), XTraceHttpError);
+  }
+});
+
+test("XTrace search rejects malformed documented ancillary metadata", async () => {
+  const malformedEnvelopes = [
+    { stage_timings: { total: "bad" } },
+    { stage_timings: [] },
+    { stage_timings: {}, count: "bad" },
+  ];
+  for (const override of malformedEnvelopes) {
+    const client = createXTraceClient({
+      apiKey: "mmk_test",
+      fetch: async () => Response.json({
+        object: "search",
+        mode: "retrieve",
+        context: null,
+        context_selection_applied: false,
+        data: [],
+        ...override,
+      }),
+    });
+    await assert.rejects(client.search({
+      query: "test",
+      user_id: "workspace:demo",
+      mode: "retrieve",
+      limit: 1,
+    }), XTraceHttpError);
+  }
+
+  const client = createXTraceClient({
+    apiKey: "mmk_test",
+    fetch: async () => Response.json({
+      object: "search",
+      mode: "retrieve",
+      context: null,
+      context_selection_applied: false,
+      stage_timings: {},
+      data: [{
+        id: "memory_bad_details",
+        object: "memory",
+        type: "fact",
+        text: "test",
+        score: 0.5,
+        details: [],
+      }],
+    }),
+  });
+  await assert.rejects(client.search({
+    query: "test",
+    user_id: "workspace:demo",
+    mode: "retrieve",
+    limit: 1,
+  }), XTraceHttpError);
+});
+
 test("XTrace configuration accepts mmk without an organization ID", () => {
   assert.equal(isXTraceConfigured({ XTRACE_API_KEY: "mmk_test" }), true);
   assert.equal(isXTraceConfigured({
@@ -239,6 +560,65 @@ test("XTrace configuration accepts mmk without an organization ID", () => {
   }), true);
   assert.equal(isXTraceConfigured({ XTRACE_API_KEY: "legacy_test" }), false);
   assert.equal(isXTraceConfigured({}), false);
+});
+
+test("durable XTrace readiness requires a namespace and live execution", () => {
+  const base = {
+    XTRACE_API_KEY: "mmk_test",
+    XTRACE_APP_ID: "xtrace-staging-test",
+  };
+  assert.equal(isXTraceExecutionConfigured({
+    ...base,
+    VSEE_DEPLOYMENT_MODE: "public_sandbox",
+  }), true);
+  assert.equal(isXTraceExecutionConfigured({
+    XTRACE_API_KEY: "mmk_test",
+    VSEE_DEPLOYMENT_MODE: "public_sandbox",
+  }), false);
+  assert.equal(isXTraceExecutionConfigured({
+    XTRACE_API_KEY: "mmk_test",
+    VSEE_DEPLOYMENT_MODE: "product",
+  }), false);
+  assert.equal(isXTraceExecutionConfigured({
+    ...base,
+    VSEE_DEPLOYMENT_MODE: "public_sandbox",
+    XTRACE_DRY_RUN: "1",
+  }), false);
+  assert.equal(isXTraceExecutionConfigured(base), false);
+  assert.equal(isXTraceExecutionConfigured({
+    ...base,
+    VSEE_DEPLOYMENT_MODE: "stagin",
+  }), false);
+  assert.equal(isXTraceExecutionConfigured({
+    XTRACE_API_KEY: "mmk_test",
+    XTRACE_APP_ID: "xtrace-vc-deal-intelligence",
+    VSEE_DEPLOYMENT_MODE: "public_sandbox",
+  }), false);
+});
+
+test("only the exact loopback deterministic fixture may advertise XTrace scan mode while dry-run remains non-live", () => {
+  const fixture = {
+    BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME: "1",
+    VSEE_DEPLOYMENT_MODE: "public_sandbox",
+    PUBLIC_APP_URL: "http://127.0.0.1:3100",
+    SUPABASE_URL: "http://127.0.0.1:43123",
+    XTRACE_API_KEY: "mmk_test_only_0123456789abcdef",
+    XTRACE_APP_ID: "xtrace-belief-reversal-browser-0123456789abcdef",
+    XTRACE_DRY_RUN: "1",
+  };
+
+  assert.equal(isXTraceScanModeAvailable(fixture), true);
+  assert.equal(isXTraceExecutionConfigured(fixture), false);
+  for (const override of [
+    { BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME: undefined },
+    { VSEE_DEPLOYMENT_MODE: "product" },
+    { PUBLIC_APP_URL: "https://127.0.0.1:3100" },
+    { SUPABASE_URL: "http://localhost:43123" },
+    { XTRACE_API_KEY: "mmk_non_fixture" },
+    { XTRACE_APP_ID: "xtrace-staging" },
+  ]) {
+    assert.equal(isXTraceScanModeAvailable({ ...fixture, ...override }), false);
+  }
 });
 
 test("ordinary and dry-run paths cannot construct the live XTrace client", () => {
@@ -493,7 +873,10 @@ test("reuses an equivalent non-failed XTrace ingest instead of creating a duplic
     storedJob.bundleFingerprint,
     createHash("sha256").update(sentMessage, "utf8").digest("hex"),
   );
-  assert.equal(storedJob.serializerVersion, "deal-memory-v1");
+  assert.equal(
+    storedJob.serializerVersion,
+    "deal-memory-v1:app:xtrace-vc-deal-intelligence",
+  );
 });
 
 test("does not reuse a succeeded ingest that produced no memories", async () => {
@@ -574,6 +957,33 @@ test("does not reuse an XTrace ingest across serializer versions", async () => {
   await versionTwo.ingestDealMemory(bundle);
 
   assert.equal(ingestCalls, 2);
+});
+
+test("does not reuse a legacy XTrace ingest across app namespaces", async () => {
+  let ingestCalls = 0;
+  const lineage = createMemoryXTraceLineageRepository();
+  const client = {
+    ingest: async () => {
+      ingestCalls += 1;
+      return { id: `job_app_${ingestCalls}`, status: "pending" as const };
+    },
+  };
+  const oldNamespace = createXTraceService(client as never, {
+    workspaceId: "workspace_demo",
+    appId: "xtrace-staging-old",
+    lineageRepository: lineage,
+  });
+  const newNamespace = createXTraceService(client as never, {
+    workspaceId: "workspace_demo",
+    appId: "xtrace-staging-new",
+    lineageRepository: lineage,
+  });
+
+  const first = await oldNamespace.ingestDealMemory(bundle);
+  const second = await newNamespace.ingestDealMemory(bundle);
+
+  assert.equal(ingestCalls, 2);
+  assert.notEqual(first.jobId, second.jobId);
 });
 
 test("Supabase lineage persists and queries fingerprint plus serializer version", async () => {
@@ -1087,6 +1497,31 @@ test("concurrent exact-parent reserves permit exactly one provider POST", async 
   assert.equal(results.filter((result) => result.state === "submitted").length, 2);
 });
 
+test("exact-parent intent identity includes the deployment app namespace", async () => {
+  const lineage = createMemoryXTraceLineageRepository();
+  const providerCalls: string[] = [];
+  const buildService = (appId: string) => createXTraceService({
+    ingest: async (input: { app_id?: string }) => {
+      providerCalls.push(input.app_id ?? "");
+      return {
+        id: `job_${providerCalls.length}`,
+        status: "pending" as const,
+      };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId,
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+
+  const first = await buildService("xtrace-staging-v1").ingestExactParent(exactParent);
+  const second = await buildService("xtrace-staging-v2").ingestExactParent(exactParent);
+
+  assert.deepEqual(providerCalls, ["xtrace-staging-v1", "xtrace-staging-v2"]);
+  assert.notEqual(first.intentId, second.intentId);
+});
+
 test("an expired submitter lease becomes submission_unknown and cannot attach", async () => {
   let now = Date.parse("2026-08-03T00:00:00.000Z");
   const lineage = createMemoryXTraceLineageRepository({
@@ -1323,6 +1758,74 @@ test("recall audit persistence failure blocks matching for only that Deal", asyn
   );
 });
 
+test("exact recall rejects provider rows from another app, workspace user, or Deal conversation", async () => {
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+  });
+  const appId = "xtrace-staging-isolated";
+  const service = createXTraceService({
+    ingest: async () => ({
+      id: "job_scoped",
+      status: "succeeded",
+      result: {
+        memories_created: [{ id: "memory_scoped", type: "fact", text: "Scoped" }],
+      },
+    }),
+    search: async () => ({
+      object: "search",
+      mode: "retrieve",
+      data: [
+        {
+          id: "memory_scoped",
+          type: "fact",
+          text: "Wrong app",
+          score: 0.9,
+          app_id: "xtrace-other",
+          user_id: "workspace:workspace_demo",
+          conv_id: "deal:deal_1:parent:revision_1",
+        },
+        {
+          id: "memory_scoped",
+          type: "fact",
+          text: "Wrong user",
+          score: 0.9,
+          app_id: appId,
+          user_id: "workspace:other",
+          conv_id: "deal:deal_1:parent:revision_1",
+        },
+        {
+          id: "memory_scoped",
+          type: "fact",
+          text: "Wrong Deal",
+          score: 0.9,
+          app_id: appId,
+          user_id: "workspace:workspace_demo",
+          conv_id: "deal:deal_2:parent:revision_1",
+        },
+      ],
+      context: null,
+    }),
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId,
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+  await service.ingestExactParent(exactParent);
+
+  await assert.rejects(service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "scope",
+    candidateDealIds: ["deal_1"],
+    limit: 5,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  }), (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "XTRACE_RECALL_LINEAGE_FAILED");
+});
+
 test("a stale exact parent fails only its Deal while another active parent recalls", async () => {
   const inactive = new Set(["source_1"]);
   const lineage = createMemoryXTraceLineageRepository({
@@ -1357,12 +1860,21 @@ test("a stale exact parent fails only its Deal while another active parent recal
         },
       };
     },
-    search: async (input: { query: string }) => ({
-      success: true,
-      data: input.query.includes("Beacon Systems")
-        ? [{ id: "memory_2", text: "Beacon context", score: 0.9 }]
-        : [{ id: "memory_1", text: "Asteria context", score: 0.9 }],
-    }),
+    search: async (input: { query: string; app_id?: string; user_id: string }) => {
+      const isBeacon = input.query.includes("Beacon Systems");
+      const dealId = isBeacon ? "deal_2" : "deal_1";
+      return {
+        success: true,
+        data: [{
+          id: isBeacon ? "memory_2" : "memory_1",
+          text: isBeacon ? "Beacon context" : "Asteria context",
+          score: 0.9,
+          app_id: input.app_id,
+          user_id: input.user_id,
+          conv_id: `deal:${dealId}:parent:${isBeacon ? "revision_2" : "revision_1"}`,
+        }],
+      };
+    },
   } as never, {
     workspaceId: "workspace_demo",
     lineageRepository: lineage,
@@ -1424,9 +1936,57 @@ test("uses the bridge to persist and complete a worker ingest stage", async () =
   assert.deepEqual(result, { dealId: "deal_1", jobId: "job_1", status: "succeeded", memoryIds: ["mem_1"] });
 });
 
+test("legacy worker ingest composes the explicit deployment app namespace", async () => {
+  const previous = {
+    apiKey: process.env.XTRACE_API_KEY,
+    baseUrl: process.env.XTRACE_API_BASE_URL,
+    appId: process.env.XTRACE_APP_ID,
+    deploymentMode: process.env.VSEE_DEPLOYMENT_MODE,
+  };
+  const previousFetch = globalThis.fetch;
+  const expectedAppId = "xtrace-vc-deal-intelligence-staging-legacy-test";
+  let receivedAppId: string | undefined;
+  process.env.XTRACE_API_KEY = "mmk_legacy_stage_test";
+  process.env.XTRACE_API_BASE_URL = "https://xtrace.example.test";
+  process.env.XTRACE_APP_ID = expectedAppId;
+  process.env.VSEE_DEPLOYMENT_MODE = "public_sandbox";
+  globalThis.fetch = async (request, init) => {
+    assert.match(String(request), /xtrace\.example\.test\/v1\/memories$/u);
+    receivedAppId = (JSON.parse(String(init?.body)) as { app_id?: string }).app_id;
+    return Response.json({
+      object: "ingest_job",
+      id: `job_legacy_${crypto.randomUUID()}`,
+      status: "succeeded",
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+      result: { memories_created: [] },
+      error: null,
+    });
+  };
+
+  try {
+    await ingestMemoryStage({
+      ...bundle,
+      dealId: `deal_legacy_${crypto.randomUUID()}`,
+    }, { workspaceId: "workspace_demo" });
+    assert.equal(receivedAppId, expectedAppId);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnvironment("XTRACE_API_KEY", previous.apiKey);
+    restoreEnvironment("XTRACE_API_BASE_URL", previous.baseUrl);
+    restoreEnvironment("XTRACE_APP_ID", previous.appId);
+    restoreEnvironment("VSEE_DEPLOYMENT_MODE", previous.deploymentMode);
+  }
+});
+
 if (false) {
   // @ts-expect-error lower-level XTrace services must select a trusted workspace
   createXTraceService({} as never);
   // @ts-expect-error worker ingest stages must receive the claimed workspace
   void ingestMemoryStage({} as never);
+}
+
+function restoreEnvironment(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }

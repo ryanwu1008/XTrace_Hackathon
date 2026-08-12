@@ -27,6 +27,7 @@ import {
   normalizedSourceV2,
 } from "../helpers/source-evidence-v2";
 import type { ExactXTraceParentUnit } from "../../lib/xtrace/exact-parent-planner";
+import { exactXTraceParentSerializerVersion } from "../../lib/xtrace/service";
 
 test("Chat route uses an injected rate limiter without consulting ambient infrastructure", async () => {
   let limiterCalls = 0;
@@ -186,6 +187,7 @@ test("public demo local and recalled Sample decision records share one canonical
   await withMockXTraceSearch({
     memoryId,
     text: "Sample decision record for 7bridges.",
+    appId: "xtrace-vc-deal-intelligence-staging-test",
     action: async () => {
       const response = await POST(
         chatRequest("Why did we mark 7bridges as passed?", true),
@@ -1489,7 +1491,9 @@ async function recordExactMemory(
 ): Promise<void> {
   const reservation = await lineage.reserveExactIntent({
     parent,
-    serializerVersion: "xtrace-parent-v2",
+    serializerVersion: exactXTraceParentSerializerVersion(
+      process.env.XTRACE_APP_ID ?? "xtrace-vc-deal-intelligence",
+    ),
   });
   assert.equal(reservation.action, "submit");
   assert.ok(reservation.intent.leaseToken);
@@ -1525,22 +1529,30 @@ function chatRequest(
 async function withMockXTraceSearch(input: {
   memoryId: string;
   text: string;
+  appId?: string;
   action(): Promise<void>;
 }): Promise<void> {
   const previousApiKey = process.env.XTRACE_API_KEY;
   const previousBaseUrl = process.env.XTRACE_API_BASE_URL;
+  const previousAppId = process.env.XTRACE_APP_ID;
   const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
   const previousSupabaseUrl = process.env.SUPABASE_URL;
   const previousSupabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const previousFetch = globalThis.fetch;
   process.env.XTRACE_API_KEY = "mmk_product_test";
   process.env.XTRACE_API_BASE_URL = "https://xtrace.example.test";
+  if (input.appId) process.env.XTRACE_APP_ID = input.appId;
+  else delete process.env.XTRACE_APP_ID;
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.SUPABASE_URL;
   delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-  globalThis.fetch = async (request) => {
+  globalThis.fetch = async (request, init) => {
     const url = String(request);
     assert.match(url, /xtrace\.example\.test\/v1\/memories\/search$/);
+    if (input.appId) {
+      const body = JSON.parse(String(init?.body)) as { app_id?: string };
+      assert.equal(body.app_id, input.appId);
+    }
     return Response.json({
       success: true,
       data: [{
@@ -1557,6 +1569,7 @@ async function withMockXTraceSearch(input: {
     globalThis.fetch = previousFetch;
     restoreEnvironment("XTRACE_API_KEY", previousApiKey);
     restoreEnvironment("XTRACE_API_BASE_URL", previousBaseUrl);
+    restoreEnvironment("XTRACE_APP_ID", previousAppId);
     restoreEnvironment("ANTHROPIC_API_KEY", previousAnthropicApiKey);
     restoreEnvironment("SUPABASE_URL", previousSupabaseUrl);
     restoreEnvironment("SUPABASE_SERVICE_ROLE_KEY", previousSupabaseKey);

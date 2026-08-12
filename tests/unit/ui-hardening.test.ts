@@ -198,10 +198,16 @@ test("health exposes all testing controls for a public sandbox context", async (
   });
 });
 
-test("health reports XTrace configured for an mmk key without an organization ID", async () => {
+test("health reports durable XTrace ready only with a live isolated namespace", async () => {
   const previousApiKey = process.env.XTRACE_API_KEY;
   const previousOrgId = process.env.XTRACE_ORG_ID;
+  const previousAppId = process.env.XTRACE_APP_ID;
+  const previousDryRun = process.env.XTRACE_DRY_RUN;
+  const previousMode = process.env.VSEE_DEPLOYMENT_MODE;
   process.env.XTRACE_API_KEY = "mmk_test";
+  process.env.XTRACE_APP_ID = "xtrace-health-staging-test";
+  process.env.VSEE_DEPLOYMENT_MODE = "public_sandbox";
+  delete process.env.XTRACE_DRY_RUN;
   delete process.env.XTRACE_ORG_ID;
 
   try {
@@ -216,6 +222,99 @@ test("health reports XTrace configured for an mmk key without an organization ID
     else process.env.XTRACE_API_KEY = previousApiKey;
     if (previousOrgId === undefined) delete process.env.XTRACE_ORG_ID;
     else process.env.XTRACE_ORG_ID = previousOrgId;
+    if (previousAppId === undefined) delete process.env.XTRACE_APP_ID;
+    else process.env.XTRACE_APP_ID = previousAppId;
+    if (previousDryRun === undefined) delete process.env.XTRACE_DRY_RUN;
+    else process.env.XTRACE_DRY_RUN = previousDryRun;
+    if (previousMode === undefined) delete process.env.VSEE_DEPLOYMENT_MODE;
+    else process.env.VSEE_DEPLOYMENT_MODE = previousMode;
+  }
+});
+
+test("health does not claim durable XTrace readiness for dry-run or missing namespace", async () => {
+  const previous = {
+    apiKey: process.env.XTRACE_API_KEY,
+    appId: process.env.XTRACE_APP_ID,
+    dryRun: process.env.XTRACE_DRY_RUN,
+  };
+  process.env.XTRACE_API_KEY = "mmk_test";
+  delete process.env.XTRACE_APP_ID;
+  delete process.env.XTRACE_DRY_RUN;
+
+  try {
+    const missingNamespace = await getHealth(
+      new Request("http://localhost/api/settings/health"),
+      undefined,
+      {
+        async resolveRequestContext() {
+          return {
+            mode: "public_sandbox" as const,
+            principal: { userId: "sandbox", email: "sandbox@invalid.local" },
+            workspaceId: "workspace_demo",
+            role: "sandbox" as const,
+            permissions: {
+              readWorkspace: true as const,
+              readPrivateSources: true,
+              mutateSources: true,
+              managePolicy: true,
+              administerFrameworks: false,
+            },
+          };
+        },
+      },
+    );
+    assert.equal((await missingNamespace.json()).data.xtrace, false);
+
+    process.env.XTRACE_APP_ID = "xtrace-health-staging-test";
+    process.env.XTRACE_DRY_RUN = "1";
+    const dryRun = await getHealth(
+      new Request("http://localhost/api/settings/health"),
+    );
+    assert.equal((await dryRun.json()).data.xtrace, false);
+  } finally {
+    if (previous.apiKey === undefined) delete process.env.XTRACE_API_KEY;
+    else process.env.XTRACE_API_KEY = previous.apiKey;
+    if (previous.appId === undefined) delete process.env.XTRACE_APP_ID;
+    else process.env.XTRACE_APP_ID = previous.appId;
+    if (previous.dryRun === undefined) delete process.env.XTRACE_DRY_RUN;
+    else process.env.XTRACE_DRY_RUN = previous.dryRun;
+  }
+});
+
+test("health exposes deterministic fixture scan readiness only behind the exact loopback fixture identity", async () => {
+  const names = [
+    "BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME",
+    "VSEE_DEPLOYMENT_MODE",
+    "PUBLIC_APP_URL",
+    "SUPABASE_URL",
+    "XTRACE_API_KEY",
+    "XTRACE_APP_ID",
+    "XTRACE_DRY_RUN",
+  ] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  Object.assign(process.env, {
+    BELIEF_REVERSAL_BROWSER_FIXTURE_RUNTIME: "1",
+    VSEE_DEPLOYMENT_MODE: "public_sandbox",
+    PUBLIC_APP_URL: "http://127.0.0.1:3100",
+    SUPABASE_URL: "http://127.0.0.1:43123",
+    XTRACE_API_KEY: "mmk_test_only_health_fixture",
+    XTRACE_APP_ID: "xtrace-belief-reversal-browser-health-fixture",
+    XTRACE_DRY_RUN: "1",
+  });
+
+  try {
+    const ready = await getHealth(new Request("http://127.0.0.1:3100/api/settings/health"));
+    assert.equal((await ready.json()).data.xtrace, true);
+
+    process.env.PUBLIC_APP_URL = "https://staging.example.test";
+    const rejected = await getHealth(new Request("http://127.0.0.1:3100/api/settings/health"));
+    assert.equal((await rejected.json()).data.xtrace, false);
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });
 

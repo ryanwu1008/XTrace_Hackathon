@@ -1,5 +1,10 @@
 begin;
 
+select public.prepare_isolated_owner_0021('vsee_registry_owner', false);
+select public.prepare_isolated_owner_0021(
+  'vsee_underwriting_owner', true
+);
+
 -- Local/disposable forward migration only. Production remains pinned at 0018.
 -- This repair makes the SQL finalizer enforce the same current Named Lens
 -- identity, catalog, refresh, and terminal-state authority as the runtime.
@@ -1738,5 +1743,10 @@ revoke all on function public.finalize_or_reuse_candidate_underwriting(jsonb)
   from public, anon, authenticated;
 grant execute on function public.finalize_or_reuse_candidate_underwriting(jsonb)
   to service_role;
+
+select public.finish_isolated_owner_0021(
+  'vsee_underwriting_owner', true
+);
+select public.finish_isolated_owner_0021('vsee_registry_owner', false);
 
 commit;
