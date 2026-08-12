@@ -1797,6 +1797,226 @@ test("recall audit persistence failure blocks matching for only that Deal", asyn
   );
 });
 
+test("exact recall tries one distinguishing fallback after an empty primary and writes one audit", async () => {
+  const searches: string[] = [];
+  const audits: Array<{ queryFingerprint: string; memoryIds: string[] }> = [];
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+    persistRecallAudit: (audit) => {
+      audits.push({
+        queryFingerprint: audit.queryFingerprint,
+        memoryIds: audit.memoryIds,
+      });
+    },
+  });
+  const appId = "xtrace-staging-isolated";
+  const service = createXTraceService({
+    ingest: async () => ({
+      id: "job_fallback",
+      status: "succeeded",
+      result: {
+        memories_created: [{ id: "memory_fallback", type: "fact", text: "Scoped" }],
+      },
+    }),
+    search: async (input: { query: string; app_id?: string; user_id: string }) => {
+      searches.push(input.query);
+      return {
+        object: "search" as const,
+        mode: "retrieve" as const,
+        data: input.query === "primary query"
+          ? []
+          : [{
+              id: "memory_fallback",
+              type: "fact",
+              text: "Scoped",
+              score: 0.9,
+              app_id: input.app_id,
+              user_id: input.user_id,
+              conv_id: "deal:deal_1:parent:revision_1",
+            }],
+        context: null,
+      };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId,
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+  await service.ingestExactParent(exactParent);
+
+  const contexts = await service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "primary query",
+    fallbackQuery: "fallback query",
+    candidateDealIds: ["deal_1"],
+    limit: 20,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  });
+
+  assert.deepEqual(searches, ["primary query", "fallback query"]);
+  assert.deepEqual(contexts.map(({ memoryId }) => memoryId), ["memory_fallback"]);
+  assert.deepEqual(audits, [{
+    queryFingerprint: "7698f70190377d39b13e68b6f02268e53d08c4952fd6bd42937c6fc137f875d4",
+    memoryIds: ["memory_fallback"],
+  }]);
+});
+
+test("exact recall with a configured fallback stops after a non-empty primary", async () => {
+  let searches = 0;
+  const audits: string[] = [];
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+    persistRecallAudit: (audit) => {
+      audits.push(audit.queryFingerprint);
+    },
+  });
+  const appId = "xtrace-staging-isolated";
+  const service = createXTraceService({
+    ingest: async () => ({
+      id: "job_primary",
+      status: "succeeded",
+      result: {
+        memories_created: [{ id: "memory_primary", type: "fact", text: "Scoped" }],
+      },
+    }),
+    search: async (input: { app_id?: string; user_id: string }) => {
+      searches += 1;
+      return {
+        object: "search" as const,
+        mode: "retrieve" as const,
+        data: [{
+          id: "memory_primary",
+          type: "fact",
+          text: "Scoped",
+          score: 0.9,
+          app_id: input.app_id,
+          user_id: input.user_id,
+          conv_id: "deal:deal_1:parent:revision_1",
+        }],
+        context: null,
+      };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId,
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+  await service.ingestExactParent(exactParent);
+
+  const contexts = await service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "primary query",
+    fallbackQuery: "fallback query",
+    candidateDealIds: ["deal_1"],
+    limit: 20,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  });
+
+  assert.equal(searches, 1);
+  assert.deepEqual(contexts.map(({ memoryId }) => memoryId), ["memory_primary"]);
+  assert.deepEqual(audits, [
+    "48f6cfbfc73383dd2816661246ecef78fcfe7e5c23374f61dd629fda92bcbb34",
+  ]);
+});
+
+test("exact recall writes one empty audit after both bounded query variants miss", async () => {
+  let searches = 0;
+  const audits: Array<{ queryFingerprint: string; memoryIds: string[] }> = [];
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+    persistRecallAudit: (audit) => {
+      audits.push({
+        queryFingerprint: audit.queryFingerprint,
+        memoryIds: audit.memoryIds,
+      });
+    },
+  });
+  const service = createXTraceService({
+    search: async () => {
+      searches += 1;
+      return { success: true as const, data: [] };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId: "xtrace-staging-isolated",
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+
+  const contexts = await service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "primary query",
+    fallbackQuery: "fallback query",
+    candidateDealIds: ["deal_1"],
+    limit: 20,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  });
+
+  assert.equal(searches, 2);
+  assert.deepEqual(contexts, []);
+  assert.deepEqual(audits, [{
+    queryFingerprint: "7698f70190377d39b13e68b6f02268e53d08c4952fd6bd42937c6fc137f875d4",
+    memoryIds: [],
+  }]);
+});
+
+test("exact recall never tries its fallback after a primary tenant-scope failure", async () => {
+  let searches = 0;
+  let audits = 0;
+  const lineage = createMemoryXTraceLineageRepository({
+    isParentActive: () => true,
+    persistRecallAudit: () => {
+      audits += 1;
+    },
+  });
+  const service = createXTraceService({
+    search: async () => {
+      searches += 1;
+      return {
+        success: true as const,
+        data: [{
+          id: "provider_memory",
+          type: "fact",
+          text: "Foreign tenant",
+          score: 0.9,
+          app_id: "xtrace-other",
+          user_id: "workspace:workspace_demo",
+          conv_id: "deal:deal_1:parent:revision_1",
+        }],
+      };
+    },
+  } as never, {
+    workspaceId: "workspace_demo",
+    appId: "xtrace-staging-isolated",
+    lineageRepository: lineage,
+    limiter: { async acquire() {} },
+  });
+
+  await assert.rejects(service.recallDealContext({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    query: "primary query",
+    fallbackQuery: "fallback query",
+    candidateDealIds: ["deal_1"],
+    limit: 20,
+    evidenceContextFingerprint: `sha256:${"1".repeat(64)}`,
+    activeParentFingerprint: `sha256:${"2".repeat(64)}`,
+  }), (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "XTRACE_RECALL_LINEAGE_FAILED");
+
+  assert.equal(searches, 1);
+  assert.equal(audits, 0);
+});
+
 test("exact recall rejects provider rows from another app, workspace user, or Deal conversation", async () => {
   const lineage = createMemoryXTraceLineageRepository({
     isParentActive: () => true,

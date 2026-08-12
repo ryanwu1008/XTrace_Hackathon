@@ -77,6 +77,27 @@ test("Claude client does not retry non-retryable request errors", async () => {
   assert.equal(calls, 1, "a 400 must not be retried");
 });
 
+test("Claude client preserves the provider status needed for safe failure classification", async () => {
+  for (const status of [401, 403, 429, 503]) {
+    const client = createClaudeClient({
+      apiKey: "test-key",
+      backoffMs: 0,
+      fetchImpl: async () => new Response("provider error", { status }),
+    });
+
+    await assert.rejects(
+      client.complete({
+        system: "Return JSON.",
+        messages: [{ role: "user", content: "Test" }],
+      }),
+      (error: unknown) =>
+        error instanceof IntegrationTransportError
+        && error.status === status,
+      `HTTP ${status} must remain available as safe structured metadata`,
+    );
+  }
+});
+
 test("Claude client retries once when the request itself fails", async () => {
   let calls = 0;
   const client = createClaudeClient({

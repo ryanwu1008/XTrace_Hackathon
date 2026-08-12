@@ -127,6 +127,7 @@ export function createClaudeClient(options: {
     if (!response.ok) {
       throw new IntegrationTransportError({
         retryable: isRetryableTransportStatus(response.status),
+        status: response.status,
       });
     }
     const body = await response.json() as {

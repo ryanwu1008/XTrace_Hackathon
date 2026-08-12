@@ -17,6 +17,7 @@ import { WritableMarketEventV2Schema } from "../../lib/contracts/source-evidence
 import { buildPreloadedDealMemoryBundles } from "../../lib/corpus/service";
 import { refingerprintMarketEvent } from "../../lib/market/identity";
 import type { NormalizedMarketEvent } from "../../lib/market/types";
+import { MatchingFailure } from "../../lib/matching/failure";
 import { processClaimedRun } from "../../worker/process-run";
 import { toPublicReport } from "../../lib/reports/public";
 import {
@@ -415,6 +416,95 @@ test("a failed stage persists its exact error in the durable run warnings", asyn
     failed?.warnings,
     ["market_scan failed: FTC feed returned HTML"],
   );
+});
+
+test("a matching failure persists only its safe code and phase", async () => {
+  const baseRuns = createRunsRepository(createMemoryDataClient());
+  const stageUpdates: Array<Parameters<typeof baseRuns.updateStage>[0]> = [];
+  const runs = {
+    ...baseRuns,
+    async updateStage(input: Parameters<typeof baseRuns.updateStage>[0]) {
+      stageUpdates.push(structuredClone(input));
+      return baseRuns.updateStage(input);
+    },
+  };
+  const authoritative = authoritativeDeals(buildPreloadedDealMemoryBundles());
+  await runs.create({
+    workspaceId: "workspace_demo",
+    mode: "structured",
+    windowDays: 14,
+  });
+  const run = await runs.claimNext("test-worker");
+  assert.ok(run);
+  const sensitiveProviderDetail = "SENSITIVE_PROVIDER_DETAIL_MUST_NOT_PERSIST";
+
+  const result = await processClaimedRun(run, {
+    runs,
+    intelligence: createTestIntelligenceRepository(
+      authoritative.dealRegistry as DealRegistry,
+    ),
+    ...authoritative,
+    importGate: READY_IMPORT_GATE,
+    market: {
+      async scanMarketWindow() {
+        return {
+          status: "completed",
+          window: {
+            from: "2026-07-10T12:00:00.000Z",
+            to: "2026-07-24T12:00:00.000Z",
+            days: 14,
+          },
+          providers: [{
+            providerId: "official",
+            providerName: "Official source",
+            fetchedCount: 1,
+            acceptedCount: 1,
+            rejectedCount: 0,
+            lastSuccessAt: "2026-07-24T12:00:00.000Z",
+          }],
+          events: [marketEventFixture({
+            id: "market_matching_failure",
+            sourceId: "market_matching_failure_source",
+            title: "Realtime infrastructure announcement",
+            statement: "A source-backed realtime infrastructure event occurred.",
+            canonicalUrl: "https://example.com/matching-failure",
+            publishedAt: "2026-07-23T00:00:00.000Z",
+            eventType: "technology",
+            sectors: ["infrastructure"],
+            themes: ["realtime"],
+            confidence: "high",
+            entityKeys: ["ably"],
+          })],
+        };
+      },
+    },
+    reasoner: {
+      async reason() {
+        const failure = new MatchingFailure({
+          code: "MATCHING_PROVIDER_AUTH_FAILED",
+          phase: "provider_request",
+        });
+        failure.message = sensitiveProviderDetail;
+        throw failure;
+      },
+    },
+    now: () => new Date("2026-07-24T12:00:00.000Z"),
+  });
+
+  const expectedWarning = [
+    "Company matching was unavailable; affected analyses are marked unavailable.",
+    "Diagnostic: code=MATCHING_PROVIDER_AUTH_FAILED phase=provider_request.",
+  ].join(" ");
+  const failedStage = stageUpdates.find((update) =>
+    update.stage === "opportunity_matching" && update.status === "failed"
+  );
+  assert.equal(failedStage?.warning, expectedWarning);
+  assert.ok(result.run.warnings.includes(expectedWarning));
+  assert.doesNotMatch(result.run.warnings.join(" "), new RegExp(sensitiveProviderDetail, "u"));
+  assert.equal(result.run.status, "partial");
+  assert.ok(result.report.companyAnalyses.every((analysis) =>
+    analysis.outcome === "analysis_unavailable"
+  ));
 });
 
 test("a new analysis run rejects registry bundles without immutable Deal revisions", async () => {

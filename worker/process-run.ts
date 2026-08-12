@@ -37,6 +37,7 @@ import type {
   MatchingReasoner,
 } from "../lib/matching/service";
 import { createMatchingService } from "../lib/matching/service";
+import { safeMatchingFailureDiagnostic } from "../lib/matching/failure";
 import {
   selectMarketEventsForAnalysis,
   type MarketEventSelection,
@@ -447,10 +448,13 @@ export async function processClaimedRun(
           sources,
         });
       await updateStage("opportunity_matching", "completed");
-    } catch {
+    } catch (error) {
       for (const deal of deals) unavailableDealIds.add(deal.id);
-      const warning =
-        "Company matching was unavailable; affected analyses are marked unavailable.";
+      const diagnostic = safeMatchingFailureDiagnostic(error);
+      const warning = [
+        "Company matching was unavailable; affected analyses are marked unavailable.",
+        `Diagnostic: code=${diagnostic.code} phase=${diagnostic.phase}.`,
+      ].join(" ");
       warnings.push(warning);
       await updateStage("opportunity_matching", "failed", warning);
     }

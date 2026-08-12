@@ -7,6 +7,9 @@ import {
   buildStructuredMemoryContexts,
 } from "../../lib/matching/context";
 import { createClaudeMatchingReasoner } from "../../lib/matching/claude-reasoner";
+import { IntegrationTransportError } from "../../lib/api/errors";
+import { ClaudeCompletionTruncatedError } from "../../lib/claude/client";
+import { MatchingFailure } from "../../lib/matching/failure";
 import { createClaudeReasoner } from "../../lib/claude/service";
 import {
   sourceTextForRetrieval,
@@ -536,6 +539,96 @@ function replayInput(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+test("matching reasoner classifies provider failures without exposing provider content", async () => {
+  const cases = [
+    {
+      name: "401 authentication",
+      error: new IntegrationTransportError({ retryable: false, status: 401 }),
+      code: "MATCHING_PROVIDER_AUTH_FAILED",
+      phase: "provider_request",
+    },
+    {
+      name: "403 authentication",
+      error: new IntegrationTransportError({ retryable: false, status: 403 }),
+      code: "MATCHING_PROVIDER_AUTH_FAILED",
+      phase: "provider_request",
+    },
+    {
+      name: "429 rate limit",
+      error: new IntegrationTransportError({ retryable: true, status: 429 }),
+      code: "MATCHING_PROVIDER_RATE_LIMITED",
+      phase: "provider_request",
+    },
+    {
+      name: "503 provider outage",
+      error: new IntegrationTransportError({ retryable: true, status: 503 }),
+      code: "MATCHING_PROVIDER_UNAVAILABLE",
+      phase: "provider_request",
+    },
+    {
+      name: "network outage",
+      error: new IntegrationTransportError({ retryable: true }),
+      code: "MATCHING_PROVIDER_UNAVAILABLE",
+      phase: "provider_request",
+    },
+    {
+      name: "truncated response",
+      error: new ClaudeCompletionTruncatedError(
+        "SENSITIVE_PROVIDER_RESPONSE_MUST_NOT_PERSIST",
+      ),
+      code: "MATCHING_RESPONSE_TRUNCATED",
+      phase: "provider_response",
+    },
+  ] as const;
+
+  for (const fixture of cases) {
+    const reasoner = createClaudeMatchingReasoner({
+      async complete() {
+        throw fixture.error;
+      },
+    });
+    await assert.rejects(
+      reasoner.reason(replayInput()),
+      (error: unknown) => {
+        assert.ok(error instanceof MatchingFailure, fixture.name);
+        assert.equal(error.code, fixture.code, fixture.name);
+        assert.equal(error.phase, fixture.phase, fixture.name);
+        assert.doesNotMatch(
+          error.message,
+          /SENSITIVE_PROVIDER_RESPONSE_MUST_NOT_PERSIST/u,
+          fixture.name,
+        );
+        return true;
+      },
+    );
+  }
+});
+
+test("matching reasoner classifies an invalid repaired response without retaining raw output", async () => {
+  let calls = 0;
+  const reasoner = createClaudeMatchingReasoner({
+    async complete() {
+      calls += 1;
+      return "SENSITIVE_INVALID_MODEL_OUTPUT_MUST_NOT_PERSIST";
+    },
+  });
+
+  await assert.rejects(
+    reasoner.reason(replayInput()),
+    (error: unknown) => {
+      assert.ok(error instanceof MatchingFailure);
+      assert.equal(error.code, "MATCHING_RESPONSE_INVALID");
+      assert.equal(error.phase, "response_validation");
+      assert.doesNotMatch(
+        error.message,
+        /SENSITIVE_INVALID_MODEL_OUTPUT_MUST_NOT_PERSIST/u,
+      );
+      return true;
+    },
+  );
+  assert.equal(calls, 2, "one repair attempt is required before classification");
+});
 
 test("judgment replay is scoped to evidence context while identical pinned evidence ignores run binding identity", async () => {
   const { createMemoryReasonerJudgmentsRepository } = await import(

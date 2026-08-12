@@ -132,6 +132,34 @@ test("recall queries carry each Deal's own decision context, not only template w
   }
 });
 
+test("current Deal recall supplies one deterministic distinguishing fallback query", async () => {
+  const bundle = buildPreloadedDealMemoryBundles().find(
+    ({ dealId }) => dealId === "deal_unikudo",
+  );
+  assert.ok(bundle, "Unikudo must remain in the 30-Deal recall universe");
+  let observed: (RecallDealContextInput & { fallbackQuery?: string }) | undefined;
+
+  await recallAllDealContexts({
+    workspaceId: "workspace_demo",
+    runId: "00000000-0000-4000-8000-000000000001",
+    bundles: [bundle],
+    service: {
+      async recallDealContext(input) {
+        observed = input;
+        return [];
+      },
+    },
+  });
+
+  const fallback = observed?.fallbackQuery;
+  assert.equal(typeof fallback, "string");
+  assert.ok(fallback && fallback.length <= 4_000);
+  assert.notEqual(fallback, observed?.query);
+  assert.ok(fallback?.includes(bundle.companyName));
+  assert.ok(fallback?.includes(bundle.dealId));
+  assert.ok(fallback?.includes(bundle.interactions.at(-1)?.summary ?? ""));
+});
+
 test("missing XTrace service marks every Deal unavailable without local fallback", async () => {
   const result = await recallAllDealContexts({
     workspaceId: "workspace_demo",

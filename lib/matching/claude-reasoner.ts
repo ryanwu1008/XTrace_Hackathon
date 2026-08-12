@@ -15,6 +15,10 @@ import {
   serializeMatchingPromptInput,
   stableEvidencePromptJson,
 } from "./prompt-evidence";
+import {
+  classifyMatchingProviderFailure,
+  MatchingFailure,
+} from "./failure";
 
 export type ClaudeMatchingReasonerOptions = {
   // Persisted judgment replay. Opus 4.8 exposes no sampling controls, so the
@@ -114,7 +118,7 @@ export function createClaudeMatchingReasoner(
         );
         if (replayed) return replayed;
       }
-      let response = await client.complete({
+      let response = await completeMatching(client, {
         system,
         messages: [{
           role: "user",
@@ -126,7 +130,7 @@ export function createClaudeMatchingReasoner(
       try {
         parsed = ClaudeReasonedMatchesSchema.parse(parseJson(response));
       } catch {
-        response = await client.complete({
+        response = await completeMatching(client, {
           system,
           messages: [{
             role: "user",
@@ -139,7 +143,14 @@ export function createClaudeMatchingReasoner(
           }],
           maxTokens: 6_000,
         });
-        parsed = ClaudeReasonedMatchesSchema.parse(parseJson(response));
+        try {
+          parsed = ClaudeReasonedMatchesSchema.parse(parseJson(response));
+        } catch {
+          throw new MatchingFailure({
+            code: "MATCHING_RESPONSE_INVALID",
+            phase: "response_validation",
+          });
+        }
       }
       const matches = normalizeMatches(parsed, input);
       if (options.judgments) {
@@ -158,6 +169,17 @@ export function createClaudeMatchingReasoner(
       return matches;
     },
   };
+}
+
+async function completeMatching(
+  client: ClaudeClient,
+  input: Parameters<ClaudeClient["complete"]>[0],
+): Promise<string> {
+  try {
+    return await client.complete(input);
+  } catch (error) {
+    throw classifyMatchingProviderFailure(error);
+  }
 }
 
 async function replayJudgment(

@@ -51,6 +51,7 @@ export async function recallAllDealContexts(input: {
         workspaceId: input.workspaceId,
         runId: input.runId,
         query: dealRecallQuery(bundle),
+        fallbackQuery: dealRecallFallbackQuery(bundle),
         candidateDealIds: [bundle.dealId],
         limit: 20,
         evidenceContextFingerprint: input.evidenceContextFingerprint,
@@ -138,6 +139,20 @@ export function dealRecallQuery(bundle: DealMemoryBundle): string {
     ...decisionContext,
     ...factTexts,
   ].join(" · ").slice(0, 4_000);
+}
+
+function dealRecallFallbackQuery(bundle: DealMemoryBundle): string | undefined {
+  const distinguishingContext = bundle.interactions.at(-1)?.summary
+    ?? bundle.facts[0]?.text;
+  if (!distinguishingContext) return undefined;
+  return [
+    distinguishingContext,
+    distinguishingContext,
+    distinguishingContext,
+    bundle.companyName,
+    bundle.dealId,
+    bundle.facts[0]?.text,
+  ].filter((value): value is string => Boolean(value)).join(" · ").slice(0, 4_000);
 }
 
 function safeRecallFailure(error: unknown): string {

@@ -31,6 +31,7 @@ export type RecallDealContextInput = {
   workspaceId: string;
   runId?: string;
   query: string;
+  fallbackQuery?: string;
   candidateDealIds: string[];
   limit: number;
   evidenceContextFingerprint?: string;
@@ -473,127 +474,139 @@ export function createXTraceService(
       const fingerprint = recallFingerprint(scopedInput);
       const cached = cache.get(fingerprint);
       if (cached) return cached;
-
-      const response = await invoke(async () => {
-        await limiter.acquire();
-        return client.search({
-          query: scopedInput.query,
-          user_id: stableXTraceUserId(workspaceId),
-          app_id: appId,
-          mode: "retrieve",
-          limit: Math.max(1, Math.min(scopedInput.limit, 100)),
-        });
-      });
-      if (!isAcceptedXTraceSearchResponse(response)) {
-        throw new XTraceUnavailableError(false, "XTrace search response was invalid");
-      }
-      if (response.data.length > scopedInput.limit) {
-        throw new XTraceRecallLimitError();
-      }
       const allowedDealIds = new Set(scopedInput.candidateDealIds);
-      const contexts: MemoryContext[] = [];
       const v2Recall = Boolean(
         scopedInput.activeParentFingerprint
         && scopedInput.candidateDealIds.length === 1,
       );
-      const exactOwnerships = v2Recall && scopedInput.candidateDealIds[0]
-        ? await lineage.resolveExactOwnerships({
-            memoryIds: response.data.map((memory) => memory.id),
-            workspaceId,
-            dealId: scopedInput.candidateDealIds[0],
-          })
-        : new Map<string, Awaited<
-          ReturnType<XTraceLineageRepository["resolveExact"]>
-        >>();
-      let lineageFailure = false;
-      for (const memory of response.data) {
-        const expectedUserId = stableXTraceUserId(workspaceId);
-        const scopedDealId = scopedInput.candidateDealIds.length === 1
-          ? scopedInput.candidateDealIds[0]
-          : undefined;
-        const providerTenantScopeMatches = (
-          memory.app_id === undefined || memory.app_id === null
-            ? !v2Recall
-            : memory.app_id === appId
-        ) && (
-          memory.user_id === undefined || memory.user_id === null
-            ? !v2Recall
-            : memory.user_id === expectedUserId
-        );
-        if (!providerTenantScopeMatches) {
-          if (v2Recall) lineageFailure = true;
-          continue;
+      const queryVariants = recallQueryVariants(scopedInput, v2Recall);
+      const attemptedQueries: string[] = [];
+      const resolveResponse = async (
+        response: Awaited<ReturnType<XTraceClient["search"]>>,
+      ): Promise<MemoryContext[]> => {
+        if (!isAcceptedXTraceSearchResponse(response)) {
+          throw new XTraceUnavailableError(false, "XTrace search response was invalid");
         }
-        const providerDealScopeMatches = (
-          memory.conv_id === undefined || memory.conv_id === null || !scopedDealId
-            ? !v2Recall
-            : memory.conv_id === `deal:${scopedDealId}`
-              || memory.conv_id.startsWith(`deal:${scopedDealId}:parent:`)
-        );
-        if (!providerDealScopeMatches) {
-          if (v2Recall && scopedDealId) {
-            // Semantic search is scoped by app and workspace user, but the
-            // provider can legitimately return nearby memories owned by a
-            // different Deal. Discard those rows. If the external memory ID
-            // is actually bound to this Deal locally, however, contradictory
-            // provider conversation metadata is a lineage failure.
-            const contradictsLocalAuthority = exactOwnerships.get(memory.id);
-            if (contradictsLocalAuthority) lineageFailure = true;
-          }
-          continue;
+        if (response.data.length > scopedInput.limit) {
+          throw new XTraceRecallLimitError();
         }
-        const v2DealId = scopedInput.candidateDealIds.length === 1
-          ? scopedInput.candidateDealIds[0]
-          : undefined;
-        const resolved = scopedInput.activeParentFingerprint && v2DealId
-          ? await lineage.resolveExact({
-              memoryId: memory.id,
+        const contexts: MemoryContext[] = [];
+        const exactOwnerships = v2Recall && scopedInput.candidateDealIds[0]
+          ? await lineage.resolveExactOwnerships({
+              memoryIds: response.data.map((memory) => memory.id),
               workspaceId,
-              dealId: v2DealId,
-              activeParentFingerprint: scopedInput.activeParentFingerprint,
+              dealId: scopedInput.candidateDealIds[0],
             })
-          : dependencies.resolveMemory
-          ? await dependencies.resolveMemory(memory, {
-              workspaceId,
-              candidateDealIds: scopedInput.candidateDealIds,
-            })
-          : await lineage.resolve({
-              memoryId: memory.id,
-              workspaceId,
-            });
-        if (!resolved || !allowedDealIds.has(resolved.dealId)) {
-          if (v2Recall && v2DealId) {
-            const ownedByRequestedDeal = exactOwnerships.get(memory.id);
-            if (ownedByRequestedDeal) lineageFailure = true;
-          }
-          continue;
-        }
-        if (v2Recall && scopedDealId) {
-          const sourceRevisionIds = resolved.sourceRevisionIds ?? [];
-          const expectedParentConversation = sourceRevisionIds.length === 1
-            ? `deal:${scopedDealId}:parent:${sourceRevisionIds[0]}`
+          : new Map<string, Awaited<
+            ReturnType<XTraceLineageRepository["resolveExact"]>
+          >>();
+        let lineageFailure = false;
+        for (const memory of response.data) {
+          const expectedUserId = stableXTraceUserId(workspaceId);
+          const scopedDealId = scopedInput.candidateDealIds.length === 1
+            ? scopedInput.candidateDealIds[0]
             : undefined;
-          if (!expectedParentConversation || memory.conv_id !== expectedParentConversation) {
-            lineageFailure = true;
+          const providerTenantScopeMatches = (
+            memory.app_id === undefined || memory.app_id === null
+              ? !v2Recall
+              : memory.app_id === appId
+          ) && (
+            memory.user_id === undefined || memory.user_id === null
+              ? !v2Recall
+              : memory.user_id === expectedUserId
+          );
+          if (!providerTenantScopeMatches) {
+            if (v2Recall) lineageFailure = true;
             continue;
           }
+          const providerDealScopeMatches = (
+            memory.conv_id === undefined || memory.conv_id === null || !scopedDealId
+              ? !v2Recall
+              : memory.conv_id === `deal:${scopedDealId}`
+                || memory.conv_id.startsWith(`deal:${scopedDealId}:parent:`)
+          );
+          if (!providerDealScopeMatches) {
+            if (v2Recall && scopedDealId) {
+              // Semantic search is scoped by app and workspace user, but the
+              // provider can legitimately return nearby memories owned by a
+              // different Deal. Discard those rows. If the external memory ID
+              // is actually bound to this Deal locally, however, contradictory
+              // provider conversation metadata is a lineage failure.
+              const contradictsLocalAuthority = exactOwnerships.get(memory.id);
+              if (contradictsLocalAuthority) lineageFailure = true;
+            }
+            continue;
+          }
+          const v2DealId = scopedInput.candidateDealIds.length === 1
+            ? scopedInput.candidateDealIds[0]
+            : undefined;
+          const resolved = scopedInput.activeParentFingerprint && v2DealId
+            ? await lineage.resolveExact({
+                memoryId: memory.id,
+                workspaceId,
+                dealId: v2DealId,
+                activeParentFingerprint: scopedInput.activeParentFingerprint,
+              })
+            : dependencies.resolveMemory
+            ? await dependencies.resolveMemory(memory, {
+                workspaceId,
+                candidateDealIds: scopedInput.candidateDealIds,
+              })
+            : await lineage.resolve({
+                memoryId: memory.id,
+                workspaceId,
+              });
+          if (!resolved || !allowedDealIds.has(resolved.dealId)) {
+            if (v2Recall && v2DealId) {
+              const ownedByRequestedDeal = exactOwnerships.get(memory.id);
+              if (ownedByRequestedDeal) lineageFailure = true;
+            }
+            continue;
+          }
+          if (v2Recall && scopedDealId) {
+            const sourceRevisionIds = resolved.sourceRevisionIds ?? [];
+            const expectedParentConversation = sourceRevisionIds.length === 1
+              ? `deal:${scopedDealId}:parent:${sourceRevisionIds[0]}`
+              : undefined;
+            if (!expectedParentConversation || memory.conv_id !== expectedParentConversation) {
+              lineageFailure = true;
+              continue;
+            }
+          }
+          const fixtureIds = resolved.fixtureIds ?? [];
+          if (!resolved.sourceIds.length && !fixtureIds.length) continue;
+          contexts.push({
+            dealId: resolved.dealId,
+            memoryId: memory.id,
+            memoryType: memory.type,
+            text: memory.text,
+            score: memory.score,
+            provenance: resolved.provenance,
+            sourceRevisionIds: resolved.sourceRevisionIds ?? [],
+            sourceIds: resolved.sourceIds,
+            fixtureIds,
+          });
         }
-        const fixtureIds = resolved.fixtureIds ?? [];
-        if (!resolved.sourceIds.length && !fixtureIds.length) continue;
-        contexts.push({
-          dealId: resolved.dealId,
-          memoryId: memory.id,
-          memoryType: memory.type,
-          text: memory.text,
-          score: memory.score,
-          provenance: resolved.provenance,
-          sourceRevisionIds: resolved.sourceRevisionIds ?? [],
-          sourceIds: resolved.sourceIds,
-          fixtureIds,
+        if (lineageFailure) throw new XTraceLineageError();
+        return contexts.slice(0, input.limit);
+      };
+
+      let result: MemoryContext[] = [];
+      for (const query of queryVariants) {
+        attemptedQueries.push(query);
+        const response = await invoke(async () => {
+          await limiter.acquire();
+          return client.search({
+            query,
+            user_id: stableXTraceUserId(workspaceId),
+            app_id: appId,
+            mode: "retrieve",
+            limit: Math.max(1, Math.min(scopedInput.limit, 100)),
+          });
         });
+        result = await resolveResponse(response);
+        if (result.length > 0) break;
       }
-      if (lineageFailure) throw new XTraceLineageError();
-      const result = contexts.slice(0, input.limit);
       if (v2Recall) {
         try {
           await lineage.recordRecallAudit({
@@ -602,9 +615,10 @@ export function createXTraceService(
             dealId: scopedInput.candidateDealIds[0],
             evidenceContextFingerprint: scopedInput.evidenceContextFingerprint ?? "",
             activeParentFingerprint: scopedInput.activeParentFingerprint ?? "",
-            queryFingerprint: createHash("sha256")
-              .update(scopedInput.query, "utf8")
-              .digest("hex"),
+            queryFingerprint: recallQueryAuditFingerprint(
+              queryVariants,
+              attemptedQueries,
+            ),
             memoryIds: result.map((context) => context.memoryId),
           });
         } catch {
@@ -764,11 +778,42 @@ function recallFingerprint(input: RecallDealContextInput): string {
     workspaceId: input.workspaceId,
     runId: input.runId ?? "",
     query: input.query.trim().toLocaleLowerCase(),
+    fallbackQuery: input.fallbackQuery?.trim().toLocaleLowerCase() ?? "",
     candidateDealIds: [...input.candidateDealIds].sort(),
     limit: input.limit,
     evidenceContextFingerprint: input.evidenceContextFingerprint ?? "",
     activeParentFingerprint: input.activeParentFingerprint ?? "",
   });
+}
+
+function recallQueryVariants(
+  input: RecallDealContextInput,
+  exactRecall: boolean,
+): string[] {
+  const variants = [input.query];
+  const fallback = input.fallbackQuery?.trim().slice(0, 4_000);
+  if (
+    exactRecall
+    && fallback
+    && fallback !== input.query.trim()
+  ) variants.push(fallback);
+  return variants;
+}
+
+function recallQueryAuditFingerprint(
+  queryVariants: readonly string[],
+  attemptedQueries: readonly string[],
+): string {
+  if (queryVariants.length === 1 && attemptedQueries.length === 1) {
+    return createHash("sha256").update(attemptedQueries[0], "utf8").digest("hex");
+  }
+  const fingerprint = (query: string) =>
+    createHash("sha256").update(query, "utf8").digest("hex");
+  return createHash("sha256").update(JSON.stringify([
+    "xtrace-recall-query-attempts-v1",
+    queryVariants.map(fingerprint),
+    attemptedQueries.map(fingerprint),
+  ]), "utf8").digest("hex");
 }
 
 export function stableXTraceUserId(workspaceId: string): string {
