@@ -204,7 +204,7 @@ preceding sections.
 
 ### Current source and isolated release gates
 
-- Verified HEAD:
+- Verified executable application commit:
   `c7dd8248206de1fa8f15fd79a7f66f04c9cc6f5c`.
 - Current migration authority: terminal `0030`.
 - Fresh PostgreSQL 17.6 migration suite: **114/114 passed**.
@@ -225,7 +225,8 @@ Anthropic provider.
 
 - Private owner-only Sites project:
   `appgprj_6a714b15f3488191998e357436151354`.
-- Deployed Sites version: **version 5**, at
+- Deployed Sites version: **version 6**, built from executable source commit
+  `db83351a165f707c8b7435b34af31d443047bd20`, at
   <https://vsee-xtrace-staging-20260803-3b6c348.dream86625.chatgpt.site>.
 - Isolated staging Supabase project ref: `gvkhitbljkrnzjzxtyua`.
 - Persisted staging registry: **30 Companies / 30 Deals / 30
@@ -236,8 +237,10 @@ Anthropic provider.
   30 Deals covered**.
 - The `v3` suffix identifies the isolated staging app namespace. It does not
   change the persisted parent serializer, which remains `xtrace-parent-v2`.
-- A local foreground Worker running the same `c7dd8248206d` source revision
-  has published a current heartbeat against the isolated staging data plane.
+- The same-source local foreground Worker was stopped after infrastructure
+  verification. It must remain stopped until a valid staging-only Anthropic
+  key is installed; then it must restart from the exact deployed version-6
+  source before a real-provider Scan is queued.
 
 ### Real-provider E2E status
 
@@ -248,7 +251,7 @@ CompanyAnalyses but ended partial with **30 `analysis_unavailable` outcomes
 and 0 reasoner judgments**. That run is diagnostic evidence of fail-closed
 behavior, not an accepted underwriting result.
 
-Consequently, the `c7dd8248206d` one-click staging path still awaits a valid,
+Consequently, the deployed executable application path still awaits a valid,
 staging-only, standard Anthropic API key before it can prove:
 
 ```text

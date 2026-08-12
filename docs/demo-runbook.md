@@ -6,8 +6,8 @@ The current deployed application is an **owner-only private Staging** target,
 not production and not a public no-login sandbox:
 
 - Sites project: `appgprj_6a714b15f3488191998e357436151354`.
-- Live Sites version: `5`, built from commit
-  `c7dd8248206de1fa8f15fd79a7f66f04c9cc6f5c`.
+- Live Sites version: `6`, built from executable source commit
+  `db83351a165f707c8b7435b34af31d443047bd20`.
 - URL:
   `https://vsee-xtrace-staging-20260803-3b6c348.dream86625.chatgpt.site`.
 - Access: custom owner-only access; no external viewers or groups.
@@ -18,8 +18,10 @@ not production and not a public no-login sandbox:
   succeeded ingest intents covering all 30 Deals and 165 memory links. `v3`
   identifies the app-namespace generation; the serialized parent contract
   remains `xtrace-parent-v2`.
-- Worker: a same-commit local foreground Worker, currently identified as
-  `vsee-staging-mac-c7dd824`. It is not a durable hosted Worker.
+- Worker: the verified local foreground Worker is stopped while the valid
+  staging-only Anthropic key is absent. It must restart from the exact
+  version-6 source before a real-provider Scan. It is not a durable hosted
+  Worker.
 
 The application runtime uses `VSEE_DEPLOYMENT_MODE=public_sandbox`, but the
 hosting access boundary remains private and owner-only. Do not describe this
@@ -232,8 +234,10 @@ fixture checkpoint and are not evidence that the real provider or the current
 ### Current private-Staging infrastructure checkpoint
 
 The private Sites version, isolated Staging database, 30/30/30 registry,
-same-commit local Worker heartbeat, and XTrace v3 app-namespace ingest described
-at the top of this runbook have been verified. The Staging schema also satisfies
+historical same-source Worker heartbeat, and XTrace v3 app-namespace ingest
+described at the top of this runbook have been verified. That Worker is now
+intentionally stopped until the staging-only Anthropic key passes validation.
+The Staging schema also satisfies
 the terminal-`0030_xtrace_recall_audit_authority` owner, empty-search-path,
 extension-digest, and public-schema-ACL invariants. Because the Staging database
 does not expose an application migration-journal table, describe this as an
@@ -243,9 +247,10 @@ The real Anthropic E2E has **not passed**. The existing Staging run
 `cf52d17a-d4e0-47ae-b247-6569f954d79f` ended partial: matching failed, one
 XTrace recall failed, all 30 CompanyAnalyses were `analysis_unavailable`, and
 its report remained incomplete. Staging currently has zero persisted
-`reasoner_judgments`. Commit `c7dd8248206de1fa8f15fd79a7f66f04c9cc6f5c`
-contains and deploys the fallback and safe matching-failure telemetry, but no
-completed same-commit Scan has yet proved real Claude matching, validator
+`reasoner_judgments`. The executable application tree introduced at commit
+`c7dd8248206de1fa8f15fd79a7f66f04c9cc6f5c` contains the fallback and safe
+matching-failure telemetry and is included in deployed source `db83351`, but
+no completed same-source Scan has yet proved real Claude matching, validator
 repair, belief revisions, Deep Underwriting, Named Lens output, finalized
 Report/Chat, or hosted browser behavior.
 
