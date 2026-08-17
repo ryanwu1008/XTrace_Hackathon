@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ReportDraftDialog } from "./report-draft-dialog";
+import { FixedDeepUnderwriteReport } from "./fixed-deep-underwrite-report";
 import { ScanProgress } from "./scan-progress";
 import { FundPolicyView } from "./fund-policy";
 import {
@@ -339,14 +340,23 @@ export function buildPinnedThirtyDealDemoEvidenceRequest():
   };
 }
 
+export function shouldOpenFixedDeepUnderwriteReport(
+  deploymentMode: UiSession["deploymentMode"],
+  request: RunEvidenceRequestV1,
+): boolean {
+  return deploymentMode === "public_sandbox"
+    && request.evidenceMode === "pinned"
+    && request.snapshotId === PINNED_THIRTY_DEAL_DEMO_SNAPSHOT_ID;
+}
+
 export function PinnedThirtyDealDemoButton(props: {
   busy: boolean;
   disabled: boolean;
   onRun(request: RunEvidenceRequestV1): void | Promise<void>;
 }) {
   const label = props.busy
-    ? "QUEUING PINNED 30-DEAL DEMO…"
-    : "RUN PINNED 30-DEAL DEMO · AUG 1, 2026";
+    ? "OPENING DEEP UNDERWRITE DEMO…"
+    : "RUN DEEP UNDERWRITE DEMO · IRREGULAR";
   return (
     <button
       className="vsee-run"
@@ -354,8 +364,8 @@ export function PinnedThirtyDealDemoButton(props: {
         buildPinnedThirtyDealDemoEvidenceRequest(),
       )}
       disabled={props.disabled}
-      aria-label={`${label}. Immutable evidence anchor: Aug 1, 2026.`}
-      title="Immutable evidence anchor: Aug 1, 2026"
+      aria-label={`${label}. English semantic edition. Immutable evidence anchor: Aug 1, 2026.`}
+      title="Irregular · English semantic edition · Immutable evidence anchor: Aug 1, 2026"
     >
       {label} <span>→</span>
     </button>
@@ -453,6 +463,7 @@ export default function Home() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeRun, setActiveRun] = useState<Run | null>(null);
   const [scanProgressOpen, setScanProgressOpen] = useState(false);
+  const [fixedDeepUnderwriteOpen, setFixedDeepUnderwriteOpen] = useState(false);
   const [resetTestViewOpen, setResetTestViewOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -692,6 +703,17 @@ export default function Home() {
     schemaVersion: "run-evidence-request-v1",
     evidenceMode: "live",
   }) {
+    if (shouldOpenFixedDeepUnderwriteReport(
+      uiSession.deploymentMode,
+      evidenceRequest,
+    )) {
+      setError("");
+      setNotice(
+        "Deep Underwrite demo ready. Showing the fixed Irregular English semantic edition.",
+      );
+      setFixedDeepUnderwriteOpen(true);
+      return;
+    }
     if (!uiSession.capabilities.runScans) {
       setError(
         "Market scans are disabled in this read-only public demo.",
@@ -1042,7 +1064,7 @@ export default function Home() {
             {canRunPinnedDemo(uiSession.deploymentMode) && (
               <PinnedThirtyDealDemoButton
                 busy={busy === "scan"}
-                disabled={busy === "scan" || !scanReady}
+                disabled={busy === "scan"}
                 onRun={runScan}
               />
             )}
@@ -1153,6 +1175,10 @@ export default function Home() {
       <ReportDraftDialog
         draft={reportDraft}
         onClose={() => setReportDraft(null)}
+      />
+      <FixedDeepUnderwriteReport
+        open={fixedDeepUnderwriteOpen}
+        onClose={() => setFixedDeepUnderwriteOpen(false)}
       />
       <ResetTestViewDialog
         open={resetTestViewOpen}

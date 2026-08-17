@@ -334,6 +334,161 @@
 @media(max-width:980px){.vsee-policy-grid{grid-template-columns:1fr}.vsee-policy-versions>div>article{grid-template-columns:100px 130px 1fr}.vsee-policy-versions small{grid-column:1/-1}.vsee-underwriting-section{grid-template-columns:1fr}.vsee-underwriting-section>header{padding:18px 22px;border-right:0;border-bottom:1px solid var(--line)}.vsee-underwriting-section h3{font-size:22px}.vsee-upload-confirm-fields{grid-template-columns:1fr 1fr}.vsee-version-grid{grid-template-columns:1fr}.vsee-analyst-issue-grid{grid-template-columns:1fr}}
 @media(max-width:680px){.vsee-policy-summary,.vsee-impact-grid,.vsee-evidence-ledger,.vsee-scenario-grid,.vsee-financial-grid,.vsee-decision-dimensions,.vsee-action-list,.vsee-affected-company,.vsee-then-now,.vsee-snapshot-grid,.vsee-ic-debate,.vsee-evidence-classification{grid-template-columns:1fr}.vsee-policy-summary>article,.vsee-policy-summary>article:nth-child(3n){border-right:0}.vsee-policy-group dl>div{grid-template-columns:1fr;gap:6px}.vsee-policy-versions>div>article{grid-template-columns:1fr;gap:6px}.vsee-policy-dialog,.vsee-underwriting-dialog,.vsee-action-draft-dialog{width:100vw;max-width:none;max-height:calc(100dvh - 10px);margin:auto 0 0;border-width:1px 0 0}.vsee-policy-diff>article{grid-template-columns:1fr;gap:7px}.vsee-policy-diff b{text-align:left;transform:rotate(90deg)}.vsee-policy-dialog>div>footer,.vsee-upload-confirmation>footer,.vsee-action-draft-editor>footer{align-items:stretch;flex-direction:column}.vsee-policy-dialog footer p{margin:0}.vsee-upload-facts,.vsee-upload-confirm-fields,.vsee-upload-terminal-ids{grid-template-columns:1fr}.vsee-upload-facts>article{border-right:0}.vsee-underwriting-summary>header{flex-direction:column}.vsee-underwriting-status-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.vsee-underwriting-count{border-bottom:1px solid var(--line)}.vsee-underwriting-row{grid-template-columns:1fr;padding:18px}.vsee-underwriting-decision,.vsee-underwriting-row>button{grid-column:1}.vsee-underwriting-row>button{width:100%}.vsee-executive-memo-lead{grid-template-columns:1fr;gap:12px}.vsee-executive-memo-grid{grid-template-columns:1fr}.vsee-analyst-panel-meta{align-items:flex-start;flex-direction:column}.vsee-underwriting-detail>.vsee-evidence-context{grid-template-columns:1fr;padding:14px 18px}.vsee-underwriting-section>div{padding:18px}.vsee-underwriting-dialog-card>header,.vsee-action-draft-card>header{position:sticky;top:0;z-index:2;background:#0b0e0c}.vsee-action-draft-editor footer>div{display:grid;grid-template-columns:1fr}.vsee-action-draft-editor button{width:100%}}
 
+.vsee-fixed-report-dialog {
+  width: min(1560px, calc(100vw - 24px));
+  height: calc(100dvh - 24px);
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  border: 1px solid #465047;
+  background: #070a08;
+  color: var(--text);
+  box-shadow: 0 30px 100px rgba(0, 0, 0, .82);
+}
+
+.vsee-fixed-report-dialog::backdrop {
+  background: rgba(0, 0, 0, .86);
+  backdrop-filter: blur(8px);
+}
+
+.vsee-fixed-report-card {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.vsee-fixed-report-card > header {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  background: #0b0e0c;
+}
+
+.vsee-fixed-report-card h2 {
+  margin: 7px 0 5px;
+  font: 400 clamp(26px, 3vw, 40px)/1.05 var(--serif);
+}
+
+.vsee-fixed-report-card header p {
+  margin: 0;
+  color: #89938d;
+  font: 600 9px/1.55 var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.vsee-fixed-report-actions {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.vsee-fixed-report-actions a,
+.vsee-fixed-report-actions button {
+  min-height: 44px;
+  padding: 0 15px;
+  border: 1px solid #465047;
+  background: #0c0f0d;
+  color: #dce2dd;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  font: 700 9px/1.3 var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.vsee-fixed-report-actions a:first-child {
+  border-color: var(--lime);
+  background: var(--lime);
+  color: #080b09;
+}
+
+.vsee-fixed-report-actions > * + * {
+  border-left: 0;
+}
+
+.vsee-fixed-report-actions button {
+  width: 44px;
+  padding: 0;
+  color: #aeb7b1;
+  font-size: 22px;
+}
+
+.vsee-fixed-report-viewer {
+  min-height: 0;
+  padding: 10px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  background: #050806;
+}
+
+.vsee-fixed-report-viewer iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: #050806;
+}
+
+.vsee-fixed-report-viewer > p {
+  margin: 7px 0 0;
+  color: #89938d;
+  text-align: center;
+  font: 600 9px/1.4 var(--mono);
+}
+
+.vsee-fixed-report-viewer > p a {
+  color: var(--lime);
+  text-underline-offset: 3px;
+}
+
+@media(max-width:680px) {
+  .vsee-fixed-report-dialog {
+    width: 100vw;
+    height: calc(100dvh - 8px);
+    max-width: none;
+    max-height: calc(100dvh - 8px);
+    margin: auto 0 0;
+    border-width: 1px 0 0;
+  }
+
+  .vsee-fixed-report-card > header {
+    padding: 14px;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 13px;
+  }
+
+  .vsee-fixed-report-card h2 {
+    font-size: 29px;
+  }
+
+  .vsee-fixed-report-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr 44px;
+  }
+
+  .vsee-fixed-report-actions a,
+  .vsee-fixed-report-actions button {
+    padding: 0 9px;
+    font-size: 8px;
+  }
+
+  .vsee-fixed-report-actions button {
+    padding: 0;
+    font-size: 22px;
+  }
+
+  .vsee-fixed-report-viewer {
+    padding: 6px;
+  }
+}
+
 /* 2026-08-04 editorial IC memo and site-wide reading scale. */
 .vsee-shell{
   --vsee-type-body:16px;

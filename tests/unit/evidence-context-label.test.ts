@@ -116,8 +116,61 @@ test("the pinned demo button visibly anchors the 30-Deal replay and submits only
   assert.deepEqual(buildRequest(), expectedRequest);
   assert.deepEqual(submitted, [expectedRequest]);
   const html = renderToStaticMarkup(button);
-  assert.match(html, /PINNED 30-DEAL DEMO/iu);
-  assert.match(html, /AUG 1, 2026/iu);
+  assert.match(html, /RUN DEEP UNDERWRITE DEMO/iu);
+  assert.match(html, /IRREGULAR/iu);
   assert.match(html, /immutable evidence anchor/iu);
   assert.doesNotMatch(html, /TOP\s*5/iu);
+});
+
+test("private staging routes only the reviewed pinned run to the fixed Irregular Deep Underwrite report", () => {
+  const shouldOpenFixedReport = (
+    pageModule as typeof pageModule & {
+      shouldOpenFixedDeepUnderwriteReport?: (
+        deploymentMode: "product" | "public_demo" | "public_sandbox",
+        request: RunEvidenceRequestV1,
+      ) => boolean;
+    }
+  ).shouldOpenFixedDeepUnderwriteReport;
+  assert.ok(shouldOpenFixedReport);
+
+  const pinned = {
+    schemaVersion: "run-evidence-request-v1" as const,
+    evidenceMode: "pinned" as const,
+    snapshotId: PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+  };
+  const live = {
+    schemaVersion: "run-evidence-request-v1" as const,
+    evidenceMode: "live" as const,
+  };
+
+  assert.equal(shouldOpenFixedReport("public_sandbox", pinned), true);
+  assert.equal(shouldOpenFixedReport("public_sandbox", live), false);
+  assert.equal(shouldOpenFixedReport("public_sandbox", {
+    ...pinned,
+    snapshotId: "belief_reversal_unreviewed_snapshot",
+  }), false);
+  assert.equal(shouldOpenFixedReport("product", pinned), false);
+  assert.equal(shouldOpenFixedReport("public_demo", pinned), false);
+});
+
+test("the private-staging pinned control is labeled as the immediate Irregular Deep Underwrite demo", () => {
+  const PinnedDemoButton = (
+    pageModule as typeof pageModule & {
+      PinnedThirtyDealDemoButton?: (props: {
+        busy: boolean;
+        disabled: boolean;
+        onRun(request: RunEvidenceRequestV1): void;
+      }) => ReactElement;
+    }
+  ).PinnedThirtyDealDemoButton;
+  assert.ok(PinnedDemoButton);
+
+  const html = renderToStaticMarkup(PinnedDemoButton({
+    busy: false,
+    disabled: false,
+    onRun() {},
+  }));
+  assert.match(html, /RUN DEEP UNDERWRITE DEMO/iu);
+  assert.match(html, /IRREGULAR/iu);
+  assert.match(html, /ENGLISH SEMANTIC EDITION/iu);
 });
