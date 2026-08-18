@@ -349,6 +349,17 @@ export function shouldOpenFixedDeepUnderwriteReport(
     && request.snapshotId === PINNED_THIRTY_DEAL_DEMO_SNAPSHOT_ID;
 }
 
+export function buildPrimaryRunEvidenceRequest(
+  deploymentMode: UiSession["deploymentMode"],
+): RunEvidenceRequestV1 {
+  return deploymentMode === "public_sandbox"
+    ? buildPinnedThirtyDealDemoEvidenceRequest()
+    : {
+        schemaVersion: "run-evidence-request-v1",
+        evidenceMode: "live",
+      };
+}
+
 export function PinnedThirtyDealDemoButton(props: {
   busy: boolean;
   disabled: boolean;
@@ -683,6 +694,8 @@ export default function Home() {
     health.corpusReady &&
     (!xtraceEnabled || health.xtrace),
   );
+  const fixedDeepUnderwriteDemo = canRunPinnedDemo(uiSession.deploymentMode);
+  const primaryRunReady = fixedDeepUnderwriteDemo || scanReady;
 
   function navigate(nextView: View) {
     if (nextView === "chat") {
@@ -711,6 +724,7 @@ export default function Home() {
       setNotice(
         "Deep Underwrite demo ready. Showing the fixed Irregular English semantic edition.",
       );
+      setScanProgressOpen(false);
       setFixedDeepUnderwriteOpen(true);
       return;
     }
@@ -742,6 +756,10 @@ export default function Home() {
     } finally {
       setBusy(null);
     }
+  }
+
+  function runPrimaryAction() {
+    return runScan(buildPrimaryRunEvidenceRequest(uiSession.deploymentMode));
   }
 
   async function resetTestView() {
@@ -1044,29 +1062,30 @@ export default function Home() {
               <span />
               XTrace {xtraceEnabled ? "ON" : "OFF"}
             </button>
-            <button
-              className="vsee-run"
-              onClick={() => void runScan()}
-              disabled={busy === "scan" || !scanReady}
-              aria-label={scanReady
-                ? "Run a 14-day market scan"
-                : uiSession.deploymentMode === "public_demo"
-                ? "Scan disabled in the read-only public demo"
-                : "Scan unavailable until required integrations are ready"}
-              title={scanReady
-                ? undefined
-                : uiSession.deploymentMode === "public_demo"
-                ? "Public demo is read-only."
-                : "PostgreSQL, worker, Anthropic, and the selected memory mode must be ready"}
-            >
-              {busy === "scan" ? "QUEUING…" : "WAKE AGENT & SCAN MARKET"} <span>→</span>
-            </button>
-            {canRunPinnedDemo(uiSession.deploymentMode) && (
+            {fixedDeepUnderwriteDemo ? (
               <PinnedThirtyDealDemoButton
                 busy={busy === "scan"}
                 disabled={busy === "scan"}
                 onRun={runScan}
               />
+            ) : (
+              <button
+                className="vsee-run"
+                onClick={() => void runPrimaryAction()}
+                disabled={busy === "scan" || !primaryRunReady}
+                aria-label={scanReady
+                  ? "Run a 14-day market scan"
+                  : uiSession.deploymentMode === "public_demo"
+                  ? "Scan disabled in the read-only public demo"
+                  : "Scan unavailable until required integrations are ready"}
+                title={scanReady
+                  ? undefined
+                  : uiSession.deploymentMode === "public_demo"
+                  ? "Public demo is read-only."
+                  : "PostgreSQL, worker, Anthropic, and the selected memory mode must be ready"}
+              >
+                {busy === "scan" ? "QUEUING…" : "WAKE AGENT & SCAN MARKET"} <span>→</span>
+              </button>
             )}
           </div>
         </header>
@@ -1090,8 +1109,8 @@ export default function Home() {
                 latestReport={latestReport}
                 events={events}
                 onNavigate={navigate}
-                onRun={runScan}
-                scanReady={scanReady}
+                onRun={runPrimaryAction}
+                scanReady={primaryRunReady}
                 xtraceEnabled={xtraceEnabled}
                 deploymentMode={uiSession.deploymentMode}
               />
@@ -1342,7 +1361,9 @@ function OverviewView({
           <header>
             <span>LIVE WORKFLOW</span>
             <button onClick={onRun} disabled={!scanReady}>
-              {scanReady
+              {deploymentMode === "public_sandbox"
+                ? "OPEN IRREGULAR DEEP UNDERWRITE →"
+                : scanReady
                 ? "START SCAN →"
                 : deploymentMode === "public_demo"
                 ? "READ-ONLY DEMO"

@@ -153,6 +153,47 @@ test("private staging routes only the reviewed pinned run to the fixed Irregular
   assert.equal(shouldOpenFixedReport("public_demo", pinned), false);
 });
 
+test("every primary private-staging Run entry resolves to the reviewed fixed Irregular request", () => {
+  const buildPrimaryRequest = (
+    pageModule as typeof pageModule & {
+      buildPrimaryRunEvidenceRequest?: (
+        deploymentMode: "product" | "public_demo" | "public_sandbox",
+      ) => RunEvidenceRequestV1;
+    }
+  ).buildPrimaryRunEvidenceRequest;
+  assert.ok(buildPrimaryRequest);
+
+  const pinned = {
+    schemaVersion: "run-evidence-request-v1" as const,
+    evidenceMode: "pinned" as const,
+    snapshotId: PINNED_THIRTY_DEAL_SNAPSHOT_ID,
+  };
+  const live = {
+    schemaVersion: "run-evidence-request-v1" as const,
+    evidenceMode: "live" as const,
+  };
+
+  assert.deepEqual(buildPrimaryRequest("public_sandbox"), pinned);
+  assert.deepEqual(buildPrimaryRequest("product"), live);
+  assert.deepEqual(buildPrimaryRequest("public_demo"), live);
+  assert.equal(
+    pageModule.shouldOpenFixedDeepUnderwriteReport(
+      "public_sandbox",
+      buildPrimaryRequest("public_sandbox"),
+    ),
+    true,
+  );
+});
+
+test("the header and Overview primary controls cannot leak a click event into runScan", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /onRun=\{runPrimaryAction\}/u);
+  assert.match(source, /onClick=\{\(\) => void runPrimaryAction\(\)\}/u);
+  assert.doesNotMatch(source, /onClick=\{\(\) => void runScan\(\)\}/u);
+});
+
 test("the private-staging pinned control is labeled as the immediate Irregular Deep Underwrite demo", () => {
   const PinnedDemoButton = (
     pageModule as typeof pageModule & {
